@@ -1,5 +1,20 @@
+use reify_types::DiagnosticInfo;
+
 use crate::diff::{StateDelta, delta_to_events, diff_gui_state, push_serialized_event};
 use crate::types::*;
+
+fn sample_diagnostic(severity: &str, message: &str) -> DiagnosticInfo {
+    DiagnosticInfo {
+        file_path: "test.ri".to_string(),
+        line: 1,
+        column: 1,
+        end_line: 1,
+        end_column: 1,
+        severity: severity.to_string(),
+        message: message.to_string(),
+        code: None,
+    }
+}
 
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
     ValueData {
@@ -43,6 +58,7 @@ fn diff_identical_states_returns_empty_delta() {
         values: vec![sample_value("Bracket.width", "80")],
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&state, &state);
@@ -68,12 +84,14 @@ fn diff_detects_changed_value() {
         values: vec![sample_value("Bracket.width", "80")],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
         values: vec![sample_value("Bracket.width", "120")],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -91,12 +109,14 @@ fn diff_detects_changed_constraint() {
         values: vec![],
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
         values: vec![],
         constraints: vec![sample_constraint("Bracket.0", "Violated")],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -117,6 +137,7 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
         values: vec![],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![
@@ -126,6 +147,7 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
         values: vec![],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -146,6 +168,7 @@ fn diff_handles_added_and_removed_entities() {
         ],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
@@ -155,6 +178,7 @@ fn diff_handles_added_and_removed_entities() {
         ],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -178,6 +202,7 @@ fn full_delta_contains_all_items_from_state() {
         values: vec![sample_value("Bracket.width", "80")],
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = StateDelta::full(&state);
@@ -202,6 +227,7 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
         values: vec![sample_value("Bracket.width", "80")],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     // First call with None last_state → full delta
@@ -215,6 +241,7 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
         values: vec![sample_value("Bracket.width", "120")],             // changed
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let delta = compute_delta(&last_state, &state2);
     assert!(delta.changed_meshes.is_empty(), "diff: mesh unchanged");
@@ -233,6 +260,7 @@ fn delta_to_events_returns_correct_tuples_for_changes_and_removals() {
         removed_mesh_paths: vec!["Bracket.old_body".to_string()],
         removed_value_ids: vec!["Bracket.old_param".to_string()],
         removed_constraint_ids: vec!["Bracket.old_constraint".to_string()],
+        changed_tessellation_diagnostics: None,
     };
 
     let events = delta_to_events(&delta);
@@ -301,6 +329,7 @@ fn delta_to_events_returns_empty_vec_for_empty_delta() {
         removed_mesh_paths: vec![],
         removed_value_ids: vec![],
         removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
     };
 
     let events = delta_to_events(&delta);
@@ -319,6 +348,7 @@ fn delta_to_events_emits_serialization_error_event_on_failure() {
         removed_mesh_paths: vec![],
         removed_value_ids: vec![],
         removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
     };
 
     let events = delta_to_events(&delta);
@@ -374,6 +404,7 @@ fn delta_to_events_warns_and_skips_on_serialization_failure() {
         removed_mesh_paths: vec![],
         removed_value_ids: vec![],
         removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
     };
 
     let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
@@ -424,6 +455,7 @@ fn delta_to_events_multiple_failures_warn_for_each() {
         removed_mesh_paths: vec![],
         removed_value_ids: vec![],
         removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
     };
 
     let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
@@ -513,3 +545,125 @@ fn push_serialized_event_pushes_error_and_warns_on_err() {
     );
 }
 
+/// diff_gui_state: identical tessellation_diagnostics in old and new → delta field is None.
+#[test]
+fn diff_identical_tessellation_diagnostics_returns_none() {
+    let diags = vec![sample_diagnostic("Error", "geometry error: kernel failure")];
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: diags.clone(),
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: diags.clone(),
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_tessellation_diagnostics.is_none(),
+        "expected None when diagnostics are identical, got {:?}",
+        delta.changed_tessellation_diagnostics
+    );
+}
+
+/// diff_gui_state: different tessellation_diagnostics → delta field is Some with the new vec.
+#[test]
+fn diff_changed_tessellation_diagnostics_returns_some() {
+    let old_diags = vec![sample_diagnostic("Error", "geometry error: old failure")];
+    let new_diags = vec![
+        sample_diagnostic("Error", "geometry error: new failure"),
+        sample_diagnostic("Warning", "geometry warning: suspect shape"),
+    ];
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: old_diags,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: new_diags.clone(),
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    let changed = delta
+        .changed_tessellation_diagnostics
+        .as_ref()
+        .expect("expected Some when diagnostics changed, got None");
+    assert_eq!(
+        changed, &new_diags,
+        "delta should carry the new diagnostics vec"
+    );
+}
+
+/// delta_to_events: when `changed_tessellation_diagnostics` is Some(vec),
+/// exactly one event named "tessellation-diagnostics" is produced with the vec
+/// as its JSON payload.
+#[test]
+fn delta_to_events_emits_tessellation_diagnostics_event() {
+    let diags = vec![
+        sample_diagnostic("Error", "geometry error: kernel failure"),
+        sample_diagnostic("Warning", "geometry warning: suspect shape"),
+    ];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: Some(diags.clone()),
+    };
+
+    let events = delta_to_events(&delta);
+
+    let tess_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "tessellation-diagnostics")
+        .collect();
+    assert_eq!(
+        tess_events.len(),
+        1,
+        "expected exactly one tessellation-diagnostics event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected = serde_json::to_value(&diags).expect("failed to serialize diagnostics");
+    assert_eq!(
+        tess_events[0].1, expected,
+        "tessellation-diagnostics payload must match the diagnostics vec"
+    );
+}
+
+/// delta_to_events: when `changed_tessellation_diagnostics` is None,
+/// no "tessellation-diagnostics" event is emitted.
+#[test]
+fn delta_to_events_omits_tessellation_diagnostics_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events.iter().all(|(n, _)| n != "tessellation-diagnostics"),
+        "expected no tessellation-diagnostics event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}

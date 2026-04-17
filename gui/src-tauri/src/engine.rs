@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use tracing::warn;
+
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
@@ -10,7 +12,7 @@ use reify_types::{
     ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
 
-use reify_types::{DiagnosticInfo, SourceLocationInfo};
+use reify_types::{Diagnostic, DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
     ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MeshData,
@@ -387,40 +389,7 @@ impl EngineSession {
             }
         };
 
-        // Build the newline table once (O(M)) so each span lookup is O(log M).
-        let line_offsets = build_line_offsets(source);
-        // Allocate an owned String once; move it into the closure to avoid
-        // re-allocating per diagnostic.
-        let file_path = file_path.to_owned();
-
-        compiled
-            .diagnostics
-            .iter()
-            .map(|diag| {
-                // Use the first label's span if available; otherwise default to (1,1,1,1).
-                let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
-                {
-                    let (l, c) =
-                        offset_to_line_col_fast(source, &line_offsets, label.span.start as usize);
-                    let (el, ec) =
-                        offset_to_line_col_fast(source, &line_offsets, label.span.end as usize);
-                    (l as u32, c as u32, el as u32, ec as u32)
-                } else {
-                    (1, 1, 1, 1)
-                };
-
-                DiagnosticInfo {
-                    file_path: file_path.clone(),
-                    line,
-                    column,
-                    end_line,
-                    end_column,
-                    severity: diag.severity.to_string(),
-                    message: diag.message.clone(),
-                    code: None,
-                }
-            })
-            .collect()
+        diagnostics_to_info(&compiled.diagnostics, file_path, source)
     }
 
     /// Build the full GUI state from the current engine state.
@@ -433,6 +402,7 @@ impl EngineSession {
                     values: Vec::new(),
                     constraints: Vec::new(),
                     files: Vec::new(),
+                    tessellation_diagnostics: Vec::new(),
                 });
             }
         };
@@ -442,13 +412,41 @@ impl EngineSession {
         let values = build_values(compiled, check);
         let constraints = build_constraints(compiled, check);
 
-        // Build meshes (from tessellation of realizations)
-        let meshes = match self.engine.tessellate_snapshot(compiled) {
+        // Build meshes (from tessellation of realizations) and capture any
+        // tessellation diagnostics (e.g. OCCT kernel errors).
+        let (meshes, tessellation_diagnostics) = match self.engine.tessellate_snapshot(compiled) {
             Some(result) => {
-                for diag in &result.diagnostics {
-                    eprintln!("[tessellation] {:?}: {}", diag.severity, diag.message);
-                }
-                result
+                // Map tessellation diagnostics → DiagnosticInfo and emit backend
+                // log entries so headless/CI runs still surface these via tracing.
+                let tess_diags = if result.diagnostics.is_empty() {
+                    Vec::new()
+                } else {
+                    // Log each diagnostic before mapping so stderr/tracing output
+                    // is available even when the GUI channel is not subscribed.
+                    for diag in &result.diagnostics {
+                        warn!(severity = ?diag.severity, message = %diag.message, "tessellation diagnostic");
+                    }
+                    // Resolve source for span lookup.  When source is unavailable
+                    // (e.g. break_*_for_test helpers), we still produce
+                    // DiagnosticInfo but tag code = "unresolved-source" so
+                    // frontends can distinguish reliable from unreliable positions.
+                    let source_info = self
+                        .resolve_source()
+                        .map(|(f, s)| (f.to_owned(), s.to_owned()));
+                    let unresolved = source_info.is_none();
+                    let (file_path, source) =
+                        source_info.unwrap_or_else(|| ("<unknown>".to_owned(), String::new()));
+                    let mut diags = diagnostics_to_info(&result.diagnostics, &file_path, &source);
+                    if unresolved {
+                        for d in &mut diags {
+                            if d.code.is_none() {
+                                d.code = Some("unresolved-source".to_owned());
+                            }
+                        }
+                    }
+                    diags
+                };
+                let meshes = result
                     .meshes
                     .into_iter()
                     .map(|(entity_path, mesh)| MeshData {
@@ -457,9 +455,10 @@ impl EngineSession {
                         indices: mesh.indices,
                         normals: mesh.normals,
                     })
-                    .collect()
+                    .collect();
+                (meshes, tess_diags)
             }
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
 
         // Build files
@@ -477,6 +476,7 @@ impl EngineSession {
             values,
             constraints,
             files,
+            tessellation_diagnostics,
         })
     }
 
@@ -861,6 +861,7 @@ fn build_preview_gui_state(
         values: build_values(compiled, check),
         constraints: build_constraints(compiled, check),
         files: Vec::new(),
+        tessellation_diagnostics: Vec::new(),
     }
 }
 
@@ -1333,6 +1334,59 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
     refs.sort();
     refs.dedup();
     refs
+}
+
+/// Map a slice of [`Diagnostic`] to `Vec<DiagnosticInfo>`.
+///
+/// `file_path` is the source file name used for all produced `DiagnosticInfo`
+/// entries.  When no file is available (e.g. tessellation errors without a
+/// known source location), pass `"<unknown>"` and an empty string for `source`.
+///
+/// Each diagnostic's first label span is used for line/column resolution.
+/// Diagnostics without labels (labelless fallback) produce `(1, 1, 1, 1)`.
+///
+/// # Severity format
+///
+/// `DiagnosticInfo::severity` is serialized as PascalCase (`"Error"`,
+/// `"Warning"`, `"Info"`).  This is the canonical wire format for all
+/// callers — both `get_diagnostics` (compile-time) and the tessellation path.
+/// MCP consumers and TypeScript code must compare against PascalCase strings.
+fn diagnostics_to_info(diagnostics: &[Diagnostic], file_path: &str, source: &str) -> Vec<DiagnosticInfo> {
+    if diagnostics.is_empty() {
+        return Vec::new();
+    }
+    // Build the newline table once (O(M)) so each span lookup is O(log M).
+    let line_offsets = build_line_offsets(source);
+    diagnostics
+        .iter()
+        .map(|diag| {
+            // Use the first label's span if available; otherwise default to (1,1,1,1).
+            let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
+                let (l, c) =
+                    offset_to_line_col_fast(source, &line_offsets, label.span.start as usize);
+                let (el, ec) =
+                    offset_to_line_col_fast(source, &line_offsets, label.span.end as usize);
+                (l as u32, c as u32, el as u32, ec as u32)
+            } else {
+                (1, 1, 1, 1)
+            };
+            DiagnosticInfo {
+                file_path: file_path.to_owned(),
+                line,
+                column,
+                end_line,
+                end_column,
+                severity: match diag.severity {
+                    Severity::Error => "Error",
+                    Severity::Warning => "Warning",
+                    Severity::Info => "Info",
+                }
+                .to_owned(),
+                message: diag.message.clone(),
+                code: None,
+            }
+        })
+        .collect()
 }
 
 /// Pre-compute byte positions of all `\n` characters in `source` in O(M).

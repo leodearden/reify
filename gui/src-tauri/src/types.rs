@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde::ser::Error as SerError;
 
-use reify_types::{DeterminacyState, Value};
+use reify_types::{DeterminacyState, DiagnosticInfo, Value};
 
 /// Custom serializer for `Vec<f32>` that rejects non-finite values.
 ///
@@ -63,6 +63,11 @@ pub struct GuiState {
     pub values: Vec<ValueData>,
     pub constraints: Vec<ConstraintData>,
     pub files: Vec<FileData>,
+    /// Diagnostics produced during the most recent tessellation pass.
+    ///
+    /// Non-empty when `tessellate_snapshot` encounters geometry errors (e.g.
+    /// OCCT kernel failures). Empty on preview snapshots and after a clean eval.
+    pub tessellation_diagnostics: Vec<DiagnosticInfo>,
 }
 
 /// Tessellated mesh for 3D display.

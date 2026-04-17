@@ -49,6 +49,24 @@ export interface ConstraintData {
   parameter_ids: string[];
 }
 
+/** A diagnostic produced during compilation or tessellation. */
+export interface DiagnosticInfo {
+  file_path: string;
+  line: number;
+  column: number;
+  end_line: number;
+  end_column: number;
+  /**
+   * PascalCase severity string: `"Error"`, `"Warning"`, or `"Info"`.
+   * This is the canonical wire format — compare against PascalCase strings.
+   * When `code === "unresolved-source"`, position data (line/column) is
+   * unreliable because the backend could not resolve the source file.
+   */
+  severity: string;
+  message: string;
+  code: string | null;
+}
+
 /** A location span in source code. */
 export interface SourceLocation {
   file_path: string;
@@ -70,6 +88,7 @@ export interface GuiState {
   values: ValueData[];
   constraints: ConstraintData[];
   files: FileData[];
+  tessellation_diagnostics: DiagnosticInfo[];
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -78,6 +97,7 @@ export interface RawGuiState {
   values: ValueData[];
   constraints: ConstraintData[];
   files: FileData[];
+  tessellation_diagnostics: DiagnosticInfo[];
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -87,6 +107,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     values: raw.values,
     constraints: raw.constraints,
     files: raw.files,
+    tessellation_diagnostics: raw.tessellation_diagnostics,
   };
 }
 

@@ -585,10 +585,10 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         first.file_path
     );
 
-    // severity must be "warning"
+    // severity must be "Warning"
     assert_eq!(
-        first.severity, "warning",
-        "expected severity 'warning', got '{}'",
+        first.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
         first.severity
     );
 

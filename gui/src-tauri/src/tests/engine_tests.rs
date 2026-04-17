@@ -2,7 +2,7 @@ use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    MockGeometryKernel, bracket_source, bracket_source_with_width,
+    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_with_width,
     warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
 use reify_types::ExportFormat;
@@ -879,10 +879,10 @@ fn engine_get_diagnostics_returns_populated_warning() {
 
     let first = &diags[0];
 
-    // severity must be "warning"
+    // severity must be "Warning"
     assert_eq!(
-        first.severity, "warning",
-        "expected severity 'warning', got '{}'",
+        first.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
         first.severity
     );
 
@@ -1012,7 +1012,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
         "expected at least one diagnostic for unknown port type"
     );
     assert_eq!(
-        diags[0].severity, "warning",
+        diags[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, load_from_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1051,7 +1051,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should have diagnostics after initial load"
     );
     assert_eq!(
-        diags_before[0].severity, "warning",
+        diags_before[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, load_from_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1071,7 +1071,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should still have diagnostics after update_source"
     );
     assert_eq!(
-        diags_after[0].severity, "warning",
+        diags_after[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, update_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1137,8 +1137,8 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
 
     // (c) Severity preserved
     assert_eq!(
-        injected.severity, "warning",
-        "expected severity 'warning', got '{}'",
+        injected.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
         injected.severity
     );
 
@@ -3323,5 +3323,67 @@ fn get_containing_definition_reads_from_line_offsets_cache() {
         after.is_none(),
         "after injecting empty line_offsets_cache, get_containing_definition(2,1) \
          should return None (proves the method uses the cached table)"
+    );
+}
+
+#[test]
+fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with valid bracket source");
+
+    // With a successful tessellation (MockGeometryKernel never errors),
+    // tessellation_diagnostics must be empty.
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "expected empty tessellation_diagnostics after successful tessellation, got {:?}",
+        state.tessellation_diagnostics
+    );
+}
+
+#[test]
+fn build_gui_state_captures_tessellation_errors_from_failing_kernel() {
+    let checker = SimpleConstraintChecker;
+    // FailingMockGeometryKernel::execute always returns Err, causing the eval
+    // pipeline to emit Diagnostic::error("geometry error: ...") via
+    // tessellate_from_values.
+    let kernel = FailingMockGeometryKernel;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed even with failing geometry kernel");
+
+    // The failing kernel forces tessellation errors to be captured.
+    assert!(
+        !state.tessellation_diagnostics.is_empty(),
+        "expected non-empty tessellation_diagnostics from failing kernel"
+    );
+
+    // Every diagnostic must have severity == "Error"
+    for diag in &state.tessellation_diagnostics {
+        assert_eq!(
+            diag.severity, "Error",
+            "expected severity 'Error', got '{}'",
+            diag.severity
+        );
+    }
+
+    // At least one diagnostic message must mention "geometry"
+    assert!(
+        state
+            .tessellation_diagnostics
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("geometry")),
+        "expected at least one diagnostic message containing 'geometry', got: {:?}",
+        state
+            .tessellation_diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
