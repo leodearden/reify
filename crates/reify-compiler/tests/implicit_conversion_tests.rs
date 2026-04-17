@@ -608,9 +608,12 @@ fn error_wildcard_implicit_error_to_string() {
 }
 
 /// `implicitly_converts_to(Error, Error) == true`.
-/// The wildcard guard sits BEFORE the identity check, so this pins that
-/// removing only the guard (while leaving the identity arm) would be
-/// caught if a future refactor accidentally orders the arms differently.
+/// Note: this case is also covered by the identity arm (`from == to`), so it
+/// does NOT discriminate between guard-present and guard-removed. It is kept
+/// for completeness. The actual guard-pinning tests are
+/// `error_wildcard_implicit_from_error_to_real` and
+/// `error_wildcard_implicit_from_real_to_error`, which use types that are not
+/// convertible without the guard (task-1912).
 #[test]
 fn error_wildcard_implicit_error_to_error() {
     assert!(
