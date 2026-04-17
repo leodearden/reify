@@ -342,5 +342,26 @@ assert "null top-level error mentions schema or object or dict" \
 assert "null top-level does NOT leak Traceback" \
     bash -c "! python3 '$VALIDATOR' '$NULL_TOP_LEVEL' 2>&1 | grep -q 'Traceback'"
 
+# -- Unhashable id (invariant-3 Counter hardening) ----------------------------
+echo ""
+echo "--- Test: unhashable id (invariant-3 Counter hardening) ---"
+
+# A task whose id is a JSON list (['1','2']).  collections.Counter crashes on
+# unhashable types; the validator must exit nonzero with a clean invariant-1
+# error and NO traceback.
+UNHASHABLE_ID_LIST="$TMPDIR_FIXTURES/unhashable_id_list.json"
+cat >"$UNHASHABLE_ID_LIST" <<'EOF'
+{"master":{"tasks":[{"id":["1","2"],"dependencies":[]}]}}
+EOF
+
+assert "unhashable list id fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$UNHASHABLE_ID_LIST'"
+
+assert "unhashable list id error mentions invariant 1 or expected str" \
+    bash -c "python3 '$VALIDATOR' '$UNHASHABLE_ID_LIST' 2>&1 | grep -qiE 'invariant 1|expected str'"
+
+assert "unhashable list id does NOT leak Traceback" \
+    bash -c "! python3 '$VALIDATOR' '$UNHASHABLE_ID_LIST' 2>&1 | grep -q 'Traceback'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
