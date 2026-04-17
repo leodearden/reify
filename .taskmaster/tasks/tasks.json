@@ -36575,7 +36575,7 @@
         "description": "Extend the single-selection model to multi-selection. Ctrl+click toggles entities in/out of selection set, Shift+click range-selects in the tree. Multi-selection syncs between tree and viewport. Bulk visibility operations apply to all selected entities. Escape clears selection.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 10 (Multi-Selection) and 4.3 (Interaction — Ctrl/Shift click).\n\n### Implementation\n\n1. **Extend `selectionStore.ts`**\n   - Change from `selectedEntity: string | null` to `selectedEntities: Set<string>`\n   - Add `anchorEntity: string | null` for Shift+click range calculation\n   - `selectSingle(path)`: clear set, add path, set anchor\n   - `toggleSelect(path)`: add/remove from set (Ctrl+click)\n   - `rangeSelect(path)`: select all visible tree nodes between anchor and target (Shift+click)\n   - `clearSelection()`: empty set\n   - `selectAll()`: add all visible tree nodes\n   - Backward-compatible: `primarySelected` getter returns first/most-recent item for PropertyEditor focus\n\n2. **Update `panels/DesignTree.tsx`**\n   - Click: `selectSingle`\n   - Ctrl+click: `toggleSelect`\n   - Shift+click: `rangeSelect` (requires knowing visible node order — flatten expanded tree)\n   - Ctrl+A: `selectAll` (when tree panel has focus)\n   - Escape: `clearSelection`\n   - Visual: selected nodes get highlight background; multi-selected nodes all highlighted\n   - Eye icon click with multi-selection: apply visibility change to all selected nodes\n\n3. **Update `viewport/selection.ts`**\n   - Click: `selectSingle` (existing behavior, now via store method)\n   - Ctrl+click: `toggleSelect` (add/remove mesh's entity from selection set)\n   - Multi-selected entities all get wireframe overlay\n   - Ghost entities remain non-selectable\n\n4. **Update backend `selectionStore` sync**\n   - `update_selection` Tauri command may need to accept a list instead of single entity\n   - Or batch multiple calls — depends on how MCP tools consume selection\n\n5. **Keyboard shortcuts**\n   - Escape: clear selection (global)\n   - Ctrl+A: select all (when tree focused)\n\n### Requirements covered\nMS-1, MS-2, MS-3, MS-4, MS-5, MS-6, T-10, T-11, T-12\n\n### memory_hints\n- search: \"selectionStore selected entity\"\n- search: \"selection.ts raycasting wireframe\"\n- search: \"update_selection Tauri command\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "1741"
         ],
@@ -36607,9 +36607,15 @@
             "gui/src/stores/selectionStore.ts",
             "gui/src/viewport/Viewport.tsx",
             "gui/src/viewport/selection.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Multi-selection in Design Tree and viewport"
+            ]
+          }
         },
-        "updatedAt": "2026-04-17T04:42:39.326Z"
+        "updatedAt": "2026-04-17T04:44:51.566Z"
       },
       {
         "id": "1745",
@@ -40083,7 +40089,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T04:42:39.326Z",
+      "lastModified": "2026-04-17T04:44:51.566Z",
       "taskCount": 1910,
       "completedCount": 1642,
       "tags": [
