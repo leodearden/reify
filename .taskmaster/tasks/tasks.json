@@ -40523,6 +40523,17 @@
             "crates/reify-compiler/src"
           ]
         }
+      },
+      {
+        "id": "1938",
+        "title": "validate_tasks_json.py: multi-tag support + remove dead context param",
+        "description": "Review follow-up from Task 1888. scripts/validate_tasks_json.py hardcodes `data.get('master', {}).get('tasks', [])` and silently ignores any other top-level tags. Taskmaster's schema supports sibling tags alongside `master`; if/when this repo ever uses them, drift would go unchecked.\n\nFix: iterate every top-level key whose value is a dict with a `tasks` list, running `_validate_tasks` per tag with `context=tag_name` (the currently-dead `context` parameter already anticipates this). At minimum, warn if unexpected top-level keys exist so regressions are loud rather than silent.\n\nSecondary: the `_validate_tasks(..., context: str)` parameter is currently dead — it is always called with `\"\"` and the `prefix` interpolation adds zero value today. Either wire it to real tag names (preferred, per the primary fix) or drop the parameter and `prefix` machinery until needed.\n\nFiles: scripts/validate_tasks_json.py (lines 56, 68, 76, 81).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -40532,7 +40543,10 @@
       "completedCount": 1660,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T12:53:50.913Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-17T12:53:51.074Z"
     }
   }
 }
