@@ -611,6 +611,91 @@ describe('DesignTree — select all', () => {
   });
 });
 
+describe('DesignTree — bulk eye-icon', () => {
+  it('clicking eye-icon on a row in a multi-selection cycles ALL selected rows', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    // Root.A and Root.B are selected
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    // Click eye-icon on Root.A (which is in the selected set)
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    // Both Root.A and Root.B should be cycled (show → ghost)
+    expect(store.state.explicit['Root.A']).toBe('ghost');
+    expect(store.state.explicit['Root.B']).toBe('ghost');
+    // Root.C (not selected) should be unchanged
+    expect(store.state.explicit['Root.C']).toBeUndefined();
+  });
+
+  it('clicking eye-icon on a row NOT in the selection cycles only that row', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    // Click eye-icon on Root.C (NOT in selection)
+    fireEvent.click(screen.getByTestId('eye-icon-Root.C'));
+    // Only Root.C should be cycled
+    expect(store.state.explicit['Root.C']).toBe('ghost');
+    // Root.A and Root.B unchanged
+    expect(store.state.explicit['Root.A']).toBeUndefined();
+    expect(store.state.explicit['Root.B']).toBeUndefined();
+  });
+
+  it('clicking eye-icon with single-item selectedEntities cycles only that one row', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A']}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    expect(store.state.explicit['Root.A']).toBe('ghost');
+    expect(store.state.explicit['Root.B']).toBeUndefined();
+  });
+
+  it('backward-compat: no selectedEntities prop → clicking eye cycles just that row', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity="Root.A"
+      />
+    ));
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    expect(store.state.explicit['Root.A']).toBe('ghost');
+    expect(store.state.explicit['Root.B']).toBeUndefined();
+  });
+});
+
 describe('DesignTree — keyboard shortcuts', () => {
   it('pressing H with selected entity sets hidden+cascade', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
