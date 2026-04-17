@@ -74,6 +74,22 @@ export function createSelectionStore() {
     }
   });
 
+  function selectSingle(entityPath: string | null) {
+    if (entityPath === null) {
+      batch(() => {
+        setState('selectedEntities', []);
+        setState('selectedEntity', null);
+        setState('anchorEntity', null);
+      });
+    } else {
+      batch(() => {
+        setState('selectedEntities', [entityPath]);
+        setState('selectedEntity', entityPath);
+        setState('anchorEntity', entityPath);
+      });
+    }
+  }
+
   function selectEntity(entityPath: string | null) {
     setState('selectedEntity', entityPath);
   }
@@ -104,5 +120,5 @@ export function createSelectionStore() {
     });
   }
 
-  return { state, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
+  return { state, selectSingle, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
 }
