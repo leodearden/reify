@@ -1,5 +1,10 @@
 import { createStore, produce } from 'solid-js/store';
 import type { EntityTreeNode, ExplicitVisibility, VisibilityState } from '../types';
+import {
+  generateDefaultView,
+  generateAllGeometryView,
+  generatePurposeViews,
+} from './autoViewGenerator';
 import type { ViewDefinition } from './autoViewGenerator';
 
 // ---------------------------------------------------------------------------
@@ -226,6 +231,35 @@ export function createViewStateStore() {
     }));
   }
 
+  /**
+   * Regenerate all `auto:*` views from the current tree and active purposes,
+   * then preserve any `user:*` views unchanged.
+   *
+   * Step-10 version: populates views only, does NOT yet reconcile explicit
+   * state against the active view (that is added in step-12).
+   */
+  function regenerateAutoViews(tree: EntityTreeNode[], activePurposes: string[] = []): void {
+    const freshDefault = generateDefaultView(tree);
+    const freshAllGeo = generateAllGeometryView(tree);
+    const freshPurpose = generatePurposeViews(tree, activePurposes);
+
+    setState(produce((s) => {
+      // Delete all stale auto:* entries.
+      for (const key of Object.keys(s.views)) {
+        if (key.startsWith('auto:')) {
+          delete s.views[key];
+        }
+      }
+      // Insert fresh auto views.
+      s.views[freshDefault.id] = freshDefault;
+      s.views[freshAllGeo.id] = freshAllGeo;
+      for (const pv of freshPurpose) {
+        s.views[pv.id] = pv;
+      }
+      // user:* views are left untouched (not touched above).
+    }));
+  }
+
   function hasOverride(path: string): boolean {
     const exp = state.explicit[path];
     if (exp == null) return false;
@@ -259,5 +293,6 @@ export function createViewStateStore() {
     // View management
     seedView,
     setActiveView,
+    regenerateAutoViews,
   };
 }
