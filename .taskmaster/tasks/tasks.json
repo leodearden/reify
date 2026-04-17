@@ -38479,11 +38479,11 @@
         "description": "MenuBar.tsx hardcodes `disabled: true` on its undo/redo MenuItemDef entries (lines 49-50), independently of the `ShortcutDef.disabled` field in shortcuts.ts. The disabled state is now expressed in two places that can drift. If undo/redo are later enabled in the registry, MenuBar would remain disabled.\n\nFix: Have MenuBar derive its disabled state from the shortcut registry, e.g. `disabled: getShortcut(item.shortcutId)?.disabled ?? false`, or restructure so MenuItemDef reads from the registry rather than duplicating the flag.\n\nmemory_hints: search \"undo redo shortcut disabled MenuBar registry\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:58.702Z",
+        "updatedAt": "2026-04-17T12:46:22.687Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/MenuBar.test.tsx",
@@ -40526,7 +40526,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T12:46:22.158Z",
+      "lastModified": "2026-04-17T12:46:22.687Z",
       "taskCount": 1932,
       "completedCount": 1659,
       "tags": [
