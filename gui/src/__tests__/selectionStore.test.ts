@@ -90,6 +90,67 @@ describe('selectionStore', () => {
     });
   });
 
+  describe('toggleSelect', () => {
+    it('adds path when absent, appends to selectedEntities, primary=path', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect } = createSelectionStore();
+        toggleSelect('Bracket');
+        expect(state.selectedEntities).toEqual(['Bracket']);
+        expect(state.selectedEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('removes path when present, primary updates to last remaining', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect } = createSelectionStore();
+        toggleSelect('Bracket');
+        toggleSelect('Mount');
+        // now both are in: ['Bracket', 'Mount']
+        toggleSelect('Mount');
+        // Mount removed, only Bracket remains
+        expect(state.selectedEntities).toEqual(['Bracket']);
+        expect(state.selectedEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('removing last element sets primary to null', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect } = createSelectionStore();
+        toggleSelect('Bracket');
+        toggleSelect('Bracket');
+        expect(state.selectedEntities).toEqual([]);
+        expect(state.selectedEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('preserves insertion order of other entries', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect } = createSelectionStore();
+        toggleSelect('A');
+        toggleSelect('B');
+        toggleSelect('C');
+        toggleSelect('B'); // remove middle
+        expect(state.selectedEntities).toEqual(['A', 'C']);
+        dispose();
+      });
+    });
+
+    it('does not change anchorEntity', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, toggleSelect } = createSelectionStore();
+        selectSingle('Bracket');
+        expect(state.anchorEntity).toBe('Bracket');
+        toggleSelect('Mount');
+        // anchor should still be Bracket (only selectSingle sets anchor)
+        expect(state.anchorEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+  });
+
   it('selectEntity sets selectedEntity', () => {
     createRoot((dispose) => {
       const { state, selectEntity } = createSelectionStore();
