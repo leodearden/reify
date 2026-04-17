@@ -40335,23 +40335,21 @@
         "description": "Follow-up from task 765 review.\n\nProblem: `gui/src-tauri/src/engine.rs:1413` `offset_to_line_col_fast` does NOT short-circuit the `SourceSpan::prelude()` sentinel (offset == u32::MAX). It's the first-label renderer for every diagnostic (engine.rs:1360–1372). For cross-prelude collision warnings the first/only label IS the prelude sentinel, so this path computes `line = line_offsets.len() + 1` (past-last-line) — not an EOF position as `SourceSpan::prelude`'s rustdoc currently claims (`crates/reify-types/src/diagnostics.rs:48-51`). `byte_offset_to_line_col` was fixed in the task-765 diff but the fast variant was not, breaking the \"two convergent implementations agree\" invariant (see `engine_tests.rs:1386 matches_original_every_offset`).\n\nFix (preferred): Add the same early return at the top of `offset_to_line_col_fast`, e.g.\n```\nif offset == u32::MAX as usize { return (1, 1); }\n```\nand extend the cross-validation test so the sentinel is included in the \"two functions agree\" invariant.\n\nAlso update the rustdoc on `SourceSpan::prelude` (`crates/reify-types/src/diagnostics.rs:48-51`) to match actual behaviour once the fast path short-circuits — both paths now return (1,1).\n\nAlternative (not recommended): short-circuit in the caller at `engine.rs:1364` via `label.span.is_prelude()`. This duplicates logic and diverges from the library-level contract.\n\nAcceptance:\n- `offset_to_line_col_fast(..., u32::MAX as usize)` returns (1, 1).\n- Cross-validation test covers the sentinel offset.\n- Rustdoc on `SourceSpan::prelude` describes the actual behaviour of GUI/LSP renderers.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:50:16.439Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:49:56.726Z",
-      "taskCount": 1924,
+      "lastModified": "2026-04-17T05:50:16.443Z",
+      "taskCount": 1925,
       "completedCount": 1654,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T05:50:08.792Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-17T05:50:08.893Z"
+      ]
     }
   }
 }
