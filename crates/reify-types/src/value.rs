@@ -201,6 +201,9 @@ pub enum Value {
     /// Convention (ii) — the `single_point_param` path — applies when and only
     /// when `lambda.params.len() == 1 && n > 1`; otherwise convention (i)
     /// applies.  The source of `n` is `domain_type`.
+    ///
+    /// See `reify_expr::calculus::detect_single_point_param` for the reference
+    /// implementation of this heuristic; keep this doc in sync with that function.
     Field {
         domain_type: crate::ty::Type,
         codomain_type: crate::ty::Type,
@@ -6903,27 +6906,45 @@ mod tests {
 
     // ── doc-invariant tests ───────────────────────────────────────────────────
 
+    /// Returns the slice of `source` between `start_sentinel` (inclusive) and
+    /// `end_sentinel` (exclusive).  Panics with a descriptive message if either
+    /// sentinel is not found.
+    fn doc_region<'s>(source: &'s str, start_sentinel: &str, end_sentinel: &str) -> &'s str {
+        let start = source
+            .find(start_sentinel)
+            .unwrap_or_else(|| panic!("start sentinel not found in value.rs: {start_sentinel:?}"));
+        let end_offset = source[start..]
+            .find(end_sentinel)
+            .unwrap_or_else(|| {
+                panic!(
+                    "end sentinel not found in value.rs after {start_sentinel:?}: {end_sentinel:?}"
+                )
+            });
+        &source[start..start + end_offset]
+    }
+
+    /// Returns the source text of `value.rs` for use by doc-invariant tests.
+    fn value_rs_source() -> String {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/value.rs");
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
+    }
+
     /// Asserts that `FieldSourceKind::Gradient`'s doc describes provenance
     /// only, without leaking reify-expr implementation details ("lambda slot",
     /// "sample handler", "central-difference").  Fails against the current
     /// doc; passes once step-4 rewrites it.
     #[test]
     fn field_source_kind_gradient_doc_describes_provenance_only() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/value.rs");
-        let source = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let source = value_rs_source();
 
         // Slice the region from just before "A field produced by `gradient()`"
         // up to (but not including) the "    Gradient," token.
-        let start_sentinel = "A field produced by `gradient()`";
-        let end_sentinel = "    Gradient,";
-        let start = source
-            .find(start_sentinel)
-            .unwrap_or_else(|| panic!("sentinel not found in value.rs: {start_sentinel:?}"));
-        let end_offset = source[start..]
-            .find(end_sentinel)
-            .unwrap_or_else(|| panic!("sentinel not found in value.rs after Gradient doc start: {end_sentinel:?}"));
-        let region = &source[start..start + end_offset];
+        let region = doc_region(
+            &source,
+            "A field produced by `gradient()`",
+            "    Gradient,",
+        );
 
         // (a) Must NOT mention reify-expr implementation internals.
         assert!(
@@ -6952,21 +6973,15 @@ mod tests {
     /// current doc; passes once step-6 expands it.
     #[test]
     fn value_field_doc_documents_single_point_param_contract() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/value.rs");
-        let source = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let source = value_rs_source();
 
         // Slice the region from the Field variant's leading doc line up to
         // (but not including) the next "    Lambda {" variant declaration.
-        let start_sentinel = "Field value: a typed domain->codomain mapping";
-        let end_sentinel = "    Lambda {";
-        let start = source
-            .find(start_sentinel)
-            .unwrap_or_else(|| panic!("sentinel not found in value.rs: {start_sentinel:?}"));
-        let end_offset = source[start..]
-            .find(end_sentinel)
-            .unwrap_or_else(|| panic!("sentinel not found in value.rs after Field: {end_sentinel:?}"));
-        let region = &source[start..start + end_offset];
+        let region = doc_region(
+            &source,
+            "Field value: a typed domain->codomain mapping",
+            "    Lambda {",
+        );
 
         // (a) Must name the heuristic so readers grepping for it land here.
         assert!(
@@ -6997,22 +7012,16 @@ mod tests {
     /// the doc.
     #[test]
     fn value_field_lambda_doc_enumerates_all_content_kinds() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/value.rs");
-        let source = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let source = value_rs_source();
 
         // Slice the region that covers the Field variant doc block and the
         // lambda field doc — from the Field variant's leading doc line up to
         // (but not including) the next "Lambda {" variant declaration.
-        let start_sentinel = "Field value: a typed domain->codomain mapping";
-        let end_sentinel = "    Lambda {";
-        let start = source
-            .find(start_sentinel)
-            .unwrap_or_else(|| panic!("sentinel not found in value.rs: {start_sentinel:?}"));
-        let end_offset = source[start..]
-            .find(end_sentinel)
-            .unwrap_or_else(|| panic!("sentinel not found in value.rs after Field: {end_sentinel:?}"));
-        let region = &source[start..start + end_offset];
+        let region = doc_region(
+            &source,
+            "Field value: a typed domain->codomain mapping",
+            "    Lambda {",
+        );
 
         // (a) Must mention all four valid content types for the lambda field.
         assert!(
@@ -7033,7 +7042,30 @@ mod tests {
         );
 
         // (b) Must map each FieldSourceKind variant to its content kind.
-        for variant in &[
+        //
+        // The exhaustive match below is never called at runtime; it exists so
+        // the compiler enforces that this list is updated whenever a new
+        // FieldSourceKind variant is added.  Adding a variant without updating
+        // the match produces a "non-exhaustive patterns" compile error, which
+        // serves as a reminder to extend the doc table as well.
+        #[allow(dead_code)]
+        fn _exhaustive_guard(k: FieldSourceKind) {
+            match k {
+                FieldSourceKind::Analytical
+                | FieldSourceKind::Composed
+                | FieldSourceKind::Sampled
+                | FieldSourceKind::Imported
+                | FieldSourceKind::Gradient
+                | FieldSourceKind::Divergence
+                | FieldSourceKind::Curl
+                | FieldSourceKind::Laplacian
+                | FieldSourceKind::VonMises
+                | FieldSourceKind::PrincipalStresses
+                | FieldSourceKind::MaxShear
+                | FieldSourceKind::SafetyFactor => {}
+            }
+        }
+        let variants = [
             "Analytical",
             "Composed",
             "Sampled",
@@ -7046,7 +7078,8 @@ mod tests {
             "PrincipalStresses",
             "MaxShear",
             "SafetyFactor",
-        ] {
+        ];
+        for variant in &variants {
             assert!(
                 region.contains(variant),
                 "Value::Field.lambda doc must mention FieldSourceKind::{variant}; region:\n{region}"
