@@ -134,5 +134,27 @@ assert "top-level id normalized to string in field-preservation fixture" \
 assert "subtask id normalized to string in field-preservation fixture" \
     bash -c "[ \"\$(jq -r '.master.tasks[0].subtasks[0].id | type' '$_fix5')\" = 'string' ]"
 
+# ==============================================================================
+# Check 6: multi-tag — non-master tag namespaces are also normalized
+# ==============================================================================
+echo ""
+echo "--- Check 6: non-master tag namespace normalization ---"
+
+_fix6="$_tmpdir/fix_multitag.json"
+cat > "$_fix6" <<'FIXTURE'
+{"master":{"tasks":[{"id":"1","subtasks":[]}]},"feature-x":{"tasks":[{"id":2,"subtasks":[{"id":3}]}]}}
+FIXTURE
+
+python3 "$NORMALIZE" "$_fix6"
+
+assert "non-master tag: numeric task id is normalized to string" \
+    bash -c "[ \"\$(jq -r '.\"feature-x\".tasks[0].id | type' '$_fix6')\" = 'string' ]"
+
+assert "non-master tag: numeric subtask id is normalized to string" \
+    bash -c "[ \"\$(jq -r '.\"feature-x\".tasks[0].subtasks[0].id | type' '$_fix6')\" = 'string' ]"
+
+assert "master tag: unchanged by multi-tag run" \
+    bash -c "[ \"\$(jq -r '.master.tasks[0].id' '$_fix6')\" = '1' ]"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
