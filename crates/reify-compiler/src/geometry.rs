@@ -46,7 +46,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around"
         | "circular_pattern" | "linear_pattern" | "mirror"
         | "extrude" | "revolve" | "revolve_full"
-        | "shell" | "thicken" | "draft" => &[0],
+        | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
         "sweep" => &[0, 1],
         // NOTE: `loft` is handled specially (variadic geometry args) in the resolution block.
         // IMPORTANT: New geometry functions that take geometry args MUST be registered here
@@ -595,15 +595,10 @@ pub(crate) fn compile_geometry_call(
             compile_transform_op(name, compiled_args, geom_ref(0), diagnostics, sub_ops)
         }
         // --- Modify extensions ---
-        // shell/thicken/draft: pass geom_ref(0) as target (correctly resolved from geom_refs).
-        "shell" | "thicken" | "draft" => {
+        // All five modifiers take a geometry target as their first argument (correctly
+        // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
+        "shell" | "thicken" | "draft" | "chamfer" | "fillet" => {
             compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
-        }
-        // chamfer/fillet: pass GeomRef::Step(0) explicitly to preserve the known bug.
-        // These are NOT registered in geometry_arg_indices(), so sub_ops is always empty
-        // and geom_ref(0) would fall back to GeomRef::Step(step_offset), not Step(0).
-        "chamfer" | "fillet" => {
-            compile_modify_op(name, compiled_args, GeomRef::Step(0), expr.span, diagnostics, sub_ops)
         }
         // --- Curve constructors ---
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
@@ -686,6 +681,8 @@ mod tests {
         "shell",
         "thicken",
         "draft",
+        "chamfer",
+        "fillet",
         "sweep",
     ];
 
@@ -698,8 +695,6 @@ mod tests {
         "sphere",
         "linear_pattern_2d",
         "arbitrary_pattern",
-        "chamfer",
-        "fillet",
         "line_segment",
         "arc",
         "helix",
@@ -713,11 +708,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    14  (translate, rotate, scale, rotate_around, circular_pattern,
+    /// GEOM_ARG_FUNCTIONS    16  (translate, rotate, scale, rotate_around, circular_pattern,
     ///                            linear_pattern, mirror, extrude, revolve, revolve_full,
-    ///                            shell, thicken, draft, sweep)
-    /// NO_GEOM_ARG_FUNCTIONS 13  (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
-    ///                            chamfer, fillet, line_segment, arc, helix, interp, bezier, nurbs)
+    ///                            shell, thicken, draft, sweep, chamfer, fillet)
+    /// NO_GEOM_ARG_FUNCTIONS 11  (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
+    ///                            line_segment, arc, helix, interp, bezier, nurbs)
     /// boolean ops            5  (union, intersection, difference, union_all, intersection_all)
     /// loft                   1
     /// Total                 33
