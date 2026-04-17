@@ -40468,11 +40468,11 @@
         "description": "Follow-up to task 448 review. The `find_node` helper at crates/reify-compiler/tests/type_error_propagation_tests.rs:12-44 only recurses into BinOp, UnOp, FunctionCall, Conditional, MethodCall, and IndexAccess — returning None for everything else (Quantifier.predicate, ListLiteral elements, SetLiteral elements, Lambda body, Let/Block, etc.). The quantifier test currently works because it pattern-matches the top-level Quantifier out first, but any future refactor that wraps the quantifier or embeds the predicate inside an unhandled variant would cause the `Type::Error` search to silently return None and the assertion would fail in a misleading way.\n\nEither:\n- Extend `find_node` to recurse into all CompiledExprKind variants that contain sub-expressions (Quantifier.predicate, list/set element exprs, Lambda body, Let bindings/body, Block stmts, etc.), OR\n- Document the restricted scope at the top of the helper and panic on unknown recursive kinds so coverage gaps surface loudly instead of silently missing.\n\nPreferred: the extend-coverage approach so anti-cascade tests stay robust against AST/IR restructuring.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T06:35:22.153Z",
+        "updatedAt": "2026-04-17T12:46:00.615Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40485,11 +40485,11 @@
         "description": "Follow-up to task 448 review. `implicitly_converts_to` and `type_compatible` in crates/reify-compiler/src/type_compat.rs (lines 9-11, 94-96) now return `true` unconditionally when either side is `Type::Error`. This is correct for anti-cascade, but these predicates are also consumed by trait-conformance and field-composition checks — meaning a structure with a Type::Error-poisoned field will silently satisfy any trait signature. Today this is safe because the root-cause diagnostic was emitted at the producer site, but if that diagnostic is ever downgraded/suppressed elsewhere, conformance could silently go green with no visible error.\n\nAdd an integration test: compile a structure with a poisoned field (e.g. `x: self.unknown_member` or another known Type::Error producer) that implements a trait expecting a specific field type, and assert:\n1. Conformance is not reported as a clean/green success, OR\n2. The module's diagnostic buffer contains at least one `Severity::Error` whenever the conformance check succeeds on a Type::Error operand.\n\nPin this invariant so that future changes to the Type::Error wildcard behavior in type_compat.rs can't silently hide trait-conformance regressions.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T06:36:25.113Z",
+        "updatedAt": "2026-04-17T12:46:00.701Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/trait_conformance_tests.rs",
@@ -40507,11 +40507,11 @@
         "description": "Follow-up to task 448 review. `implicitly_converts_to` and `type_compatible` in crates/reify-compiler/src/type_compat.rs (lines 9-11, 94-96) return `true` unconditionally when either side is `Type::Error`. Correct for anti-cascade, but these predicates are also consumed by trait-conformance and field-composition checks — a structure with a Type::Error-poisoned field will silently satisfy any trait signature. Safe today because the producer diagnostic exists, but if that diagnostic is ever downgraded/suppressed, conformance could silently go green with no visible error.\n\nAdd integration test: compile a structure with a poisoned field (e.g. `x: self.unknown_member`) implementing a trait expecting a specific field type, and assert: (1) conformance isn't reported as clean success, OR (2) the diagnostic buffer contains a Severity::Error whenever conformance succeeds on a Type::Error operand. Pin the invariant so future changes to the wildcard can't silently hide trait-conformance regressions.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T06:37:14.352Z",
+        "updatedAt": "2026-04-17T12:46:00.850Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/trait_conformance_tests.rs",
@@ -40526,7 +40526,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T12:46:00.420Z",
+      "lastModified": "2026-04-17T12:46:00.850Z",
       "taskCount": 1932,
       "completedCount": 1659,
       "tags": [
