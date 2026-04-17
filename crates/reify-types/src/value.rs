@@ -6930,20 +6930,59 @@ mod tests {
             .unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
     }
 
+    /// Returns the contiguous `///`-prefixed doc block that immediately
+    /// precedes `variant_line` inside the definition of `enum enum_name`.
+    ///
+    /// Strategy: find `enum {enum_name} {` to anchor inside the real enum
+    /// definition (not test source), then scan forward for `variant_line`,
+    /// then walk backwards line-by-line collecting every line whose trimmed
+    /// form starts with `///`, and return them joined in document order.
+    ///
+    /// Panics with a descriptive message if the enum or variant is not found.
+    fn enum_variant_doc_region(source: &str, enum_name: &str, variant_line: &str) -> String {
+        let enum_header = format!("enum {enum_name} {{");
+        let enum_start = source.find(&enum_header).unwrap_or_else(|| {
+            panic!("enum definition not found in value.rs: {enum_header:?}")
+        });
+
+        let after_enum = &source[enum_start..];
+        let variant_offset = after_enum.find(variant_line).unwrap_or_else(|| {
+            panic!(
+                "variant line {variant_line:?} not found in enum {enum_name} in value.rs"
+            )
+        });
+
+        // Absolute byte offset of the variant line's start in source.
+        let variant_abs = enum_start + variant_offset;
+
+        // Walk backwards over lines, collecting contiguous `///`-prefixed ones.
+        let before_variant = &source[..variant_abs];
+        let mut doc_lines: Vec<&str> = Vec::new();
+        for line in before_variant.lines().rev() {
+            if line.trim_start().starts_with("///") {
+                doc_lines.push(line);
+            } else {
+                break;
+            }
+        }
+        doc_lines.reverse();
+        doc_lines.join("\n")
+    }
+
     /// Asserts that `FieldSourceKind::Gradient`'s doc describes provenance
     /// only, without leaking reify-expr implementation details ("lambda slot",
-    /// "sample handler", "central-difference").  Fails against the current
-    /// doc; passes once step-4 rewrites it.
+    /// "sample handler", "central-difference").
     #[test]
     fn field_source_kind_gradient_doc_describes_provenance_only() {
         let source = value_rs_source();
 
-        // Slice the region from just before "A field produced by `gradient()`"
-        // up to (but not including) the "    Gradient," token.
-        let region = doc_region(
-            &source,
-            "A field produced by `gradient()`",
-            "    Gradient,",
+        let region = enum_variant_doc_region(&source, "FieldSourceKind", "    Gradient,\n");
+
+        // Locator self-checks: ensure we got a real doc block.
+        assert!(!region.is_empty(), "Gradient doc region must not be empty");
+        assert!(
+            region.trim_start().starts_with("///"),
+            "Gradient doc region must start with ///; got:\n{region}"
         );
 
         // (a) Must NOT mention reify-expr implementation internals.
@@ -7006,49 +7045,25 @@ mod tests {
         );
     }
 
-    /// Self-check: verifies that the `doc_region` locator used in
-    /// `field_source_kind_gradient_doc_describes_provenance_only` actually
-    /// returns the real `FieldSourceKind::Gradient` doc block rather than a
-    /// fragment of test source.
-    ///
-    /// This test MUST FAIL until step-8 replaces the fragile sentinel-based
-    /// locator with a robust walk-backwards `enum_variant_doc_region` helper.
-    /// The failure mode: after the doc was rewritten in step-4 to say "A field
-    /// produced by the language-level `gradient()` operator", the exact
-    /// substring "A field produced by `gradient()`" no longer appears in the
-    /// actual Gradient doc — its first occurrence in the file is inside the
-    /// `field_source_kind_gradient_doc_describes_provenance_only` test body
-    /// (comment + string literal).  `doc_region` therefore slices a fragment
-    /// of test source, not a `///`-prefixed doc block, causing assertions (b)
-    /// and (c) below to fire.
+    /// Verifies that `enum_variant_doc_region` returns the real
+    /// `FieldSourceKind::Gradient` doc block: non-empty, starts with `///`,
+    /// and contains no test-body tokens.
     #[test]
     fn gradient_doc_region_locator_self_check() {
         let source = value_rs_source();
 
-        // Same locator call as field_source_kind_gradient_doc_describes_provenance_only.
-        let region = doc_region(
-            &source,
-            "A field produced by `gradient()`",
-            "    Gradient,",
-        );
+        let region = enum_variant_doc_region(&source, "FieldSourceKind", "    Gradient,\n");
 
         // (a) The region must not be empty.
-        assert!(
-            !region.trim().is_empty(),
-            "doc_region returned an empty region; locator is completely broken"
-        );
+        assert!(!region.is_empty(), "Gradient doc region must not be empty");
 
-        // (b) The region must begin with a doc-comment line (///), not with
-        //     arbitrary source text pulled from the test function's body.
+        // (b) The region must begin with a doc-comment line (///), not test source.
         assert!(
             region.trim_start().starts_with("///"),
-            "doc_region did not return a ///‐prefixed doc block; \
-             the sentinel likely matched inside test source rather than the \
-             real Gradient doc.\nRegion:\n{region}"
+            "Gradient doc region must start with ///; got:\n{region}"
         );
 
-        // (c) The region must contain none of the test-body-only tokens that
-        //     would appear if the locator sliced the test function's own source.
+        // (c) Must not contain test-body tokens.
         for forbidden in &[
             "fn field_source_kind_gradient_doc",
             "assert!",
@@ -7057,8 +7072,8 @@ mod tests {
         ] {
             assert!(
                 !region.contains(forbidden),
-                "doc_region region contains test-only token {forbidden:?}; \
-                 the sentinel matched test source instead of the Gradient doc.\n\
+                "Gradient doc region contains test-only token {forbidden:?}; \
+                 locator matched test source instead of the real doc.\n\
                  Region:\n{region}"
             );
         }
