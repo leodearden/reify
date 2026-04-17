@@ -90,6 +90,21 @@ export function createSelectionStore() {
     }
   }
 
+  function toggleSelect(entityPath: string) {
+    batch(() => {
+      const current = state.selectedEntities;
+      const idx = current.indexOf(entityPath);
+      let next: string[];
+      if (idx >= 0) {
+        next = current.filter((p) => p !== entityPath);
+      } else {
+        next = [...current, entityPath];
+      }
+      setState('selectedEntities', next);
+      setState('selectedEntity', next.length > 0 ? next[next.length - 1] : null);
+    });
+  }
+
   function selectEntity(entityPath: string | null) {
     setState('selectedEntity', entityPath);
   }
@@ -120,5 +135,5 @@ export function createSelectionStore() {
     });
   }
 
-  return { state, selectSingle, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
+  return { state, selectSingle, toggleSelect, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
 }
