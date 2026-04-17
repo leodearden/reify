@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections, median } from './test-utils';
+import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections, median, formatPerfSamples } from './test-utils';
 
 describe('flushMacrotasks', () => {
   it('returns a Promise that resolves after yielding to the macrotask queue', async () => {
@@ -373,5 +373,36 @@ describe('median', () => {
     const copy = [...input];
     median(input);
     expect(input).toEqual(copy);
+  });
+});
+
+describe('formatPerfSamples', () => {
+  it('returns a string containing median=, min=, max=, and samples= substrings', () => {
+    const result = formatPerfSamples([1, 2, 3]);
+    expect(result).toContain('median=');
+    expect(result).toContain('min=');
+    expect(result).toContain('max=');
+    expect(result).toContain('samples=');
+  });
+
+  it('formats the median field to 2 decimal places', () => {
+    // median of [1.234, 5.678, 9.012] is 5.678 → "5.68"
+    const result = formatPerfSamples([1.234, 5.678, 9.012]);
+    expect(result).toContain('median=5.68ms');
+  });
+
+  it('rounds sample values to 2 decimal places in the samples array', () => {
+    const result = formatPerfSamples([1.234567]);
+    expect(result).toContain('samples=[1.23]');
+  });
+
+  it('formats min and max fields rounded to 2 decimal places', () => {
+    const result = formatPerfSamples([1.234, 5.678, 9.012]);
+    expect(result).toContain('min=1.23');
+    expect(result).toContain('max=9.01');
+  });
+
+  it('propagates the median() non-finite guard', () => {
+    expect(() => formatPerfSamples([1, Infinity])).toThrow(/non-finite/i);
   });
 });
