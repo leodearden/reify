@@ -39818,7 +39818,7 @@
         "description": "gui/src/stores/viewStateStore.ts line 122 has a misleading comment:\n\n  // Mutations (stubs — fully implemented in later steps)\n\nBut all four mutations below it (setVisibility, setVisibilityWithoutCascade, resetToInherit, showOnly, cycleCascading) are fully implemented and covered by tests in gui/src/__tests__/viewStateStore.test.ts. The \"stubs — fully implemented in later steps\" phrasing is a leftover from initial scaffolding and will mislead future readers into thinking the section is incomplete.\n\nFix: replace the comment with a neutral section header such as:\n\n  // Mutations\n\nOr drop the parenthetical and keep \"Mutations\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -39836,7 +39836,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T02:47:06.572Z"
+        "updatedAt": "2026-04-17T03:17:02.896Z"
       },
       {
         "id": "1903",
@@ -39931,7 +39931,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:12:45.399Z"
+        "updatedAt": "2026-04-17T03:12:45.399Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tessellation diagnostics: eliminate source clone, derive Severity serialize, align log format"
+            ]
+          }
+        }
       },
       {
         "id": "1909",
@@ -39954,7 +39962,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T03:12:45.400Z",
+      "lastModified": "2026-04-17T03:17:02.896Z",
       "taskCount": 1904,
       "completedCount": 1639,
       "tags": [
