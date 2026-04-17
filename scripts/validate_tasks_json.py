@@ -61,22 +61,26 @@ def main() -> None:
     tag_results: list[tuple[str, list, set]] = []
 
     for tag_name, tag_value in data.items():
+        # Skip known metadata keys that are deliberately not tag namespaces.
+        if tag_name.startswith("_"):
+            continue
         if not isinstance(tag_value, dict):
             warnings.append(
-                f"unexpected top-level key {tag_name!r}: value is"
-                f" {type(tag_value).__name__!r}, expected dict"
+                f"top-level key {tag_name!r} has no tasks list; skipping"
+                f" (value type: {type(tag_value).__name__!r})"
             )
             continue
         tasks_list = tag_value.get("tasks")
         if tasks_list is None:
             warnings.append(
-                f"unexpected top-level key {tag_name!r}: missing 'tasks' list"
+                f"top-level key {tag_name!r} has no tasks list; skipping"
+                f" (missing 'tasks' field)"
             )
             continue
         if not isinstance(tasks_list, list):
             warnings.append(
-                f"unexpected top-level key {tag_name!r}: 'tasks' is"
-                f" {type(tasks_list).__name__!r}, expected list"
+                f"top-level key {tag_name!r} has no tasks list; skipping"
+                f" ('tasks' is {type(tasks_list).__name__!r}, expected list)"
             )
             continue
         known_ids = _validate_tasks(tasks_list, errors, context=tag_name)
@@ -90,13 +94,15 @@ def main() -> None:
                     parent_id = task.get("id", "?")
                     _validate_subtasks(subtasks, known_ids, parent_id, errors, tag_context=tag_name)
 
-    for warn in warnings:
-        print(f"WARN: {warn}", file=sys.stderr)
-
     if errors:
         for err in errors:
             print(err, file=sys.stderr)
+        for warn in warnings:
+            print(f"WARN: {warn}", file=sys.stderr)
         sys.exit(1)
+
+    for warn in warnings:
+        print(f"WARN: {warn}", file=sys.stderr)
 
 
 def _validate_tasks(tasks: list, errors: list, context: str) -> set:
