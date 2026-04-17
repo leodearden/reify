@@ -95,16 +95,26 @@ const DesignTree: Component<Props> = (props) => {
       return;
     }
 
-    const selected = props.selectedEntity;
-    if (!selected) return;
     // Don't steal browser/OS shortcuts (Ctrl+S = save, etc.)
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    // Apply visibility shortcuts to ALL currently-selected rows so that
+    // multi-selection behaves consistently with the bulk eye-icon cycle.
+    const sel = effectiveSelected();
+    if (sel.size === 0) return;
     const vs = props.viewStateStore;
+    let mode: 'hidden' | 'ghost' | 'show' | null = null;
     switch (e.key.toLowerCase()) {
-      case 'h': e.preventDefault(); vs.setVisibility(selected, 'hidden', true); break;
-      case 'g': e.preventDefault(); vs.setVisibility(selected, 'ghost', true); break;
+      case 'h': mode = 'hidden'; break;
+      case 'g': mode = 'ghost'; break;
       case 's':
-      case 'enter': e.preventDefault(); vs.setVisibility(selected, 'show', true); break;
+      case 'enter': mode = 'show'; break;
+    }
+    if (mode !== null) {
+      e.preventDefault();
+      for (const path of sel) {
+        vs.setVisibility(path, mode, true);
+      }
     }
   }
 

@@ -770,4 +770,66 @@ describe('DesignTree — keyboard shortcuts', () => {
     fireEvent.keyDown(treeRoot, { key: 'h', metaKey: true });
     expect(store.state.explicit['Root.A']).toBeUndefined();
   });
+
+  it('pressing H with multiple entities selected hides ALL of them', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'h' });
+    expect(store.state.explicit['Root.A']).toBe('hidden');
+    expect(store.state.explicit['Root.B']).toBe('hidden');
+    // Root.C (not selected) must remain unchanged
+    expect(store.state.explicit['Root.C']).toBeUndefined();
+  });
+
+  it('pressing G with multiple entities selected ghosts ALL of them', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'g' });
+    expect(store.state.explicit['Root.A']).toBe('ghost');
+    expect(store.state.explicit['Root.B']).toBe('ghost');
+  });
+
+  it('pressing S with multiple entities selected shows ALL of them', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    store.setVisibility('Root.A', 'hidden', false);
+    store.setVisibility('Root.B', 'hidden', false);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 's' });
+    expect(store.state.explicit['Root.A']).toBe('show');
+    expect(store.state.explicit['Root.B']).toBe('show');
+  });
 });
