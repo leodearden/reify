@@ -55,17 +55,26 @@ def main() -> None:
         print(f"ERROR: cannot load {args.path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    tasks = data.get("master", {}).get("tasks", [])
     errors: list[str] = []
+    # Per-tag list of (tag_name, tasks, known_ids) for subtask iteration.
+    tag_results: list[tuple[str, list, set]] = []
 
-    known_ids = _validate_tasks(tasks, errors, context="")
+    for tag_name, tag_value in data.items():
+        if not isinstance(tag_value, dict):
+            continue
+        tasks_list = tag_value.get("tasks", [])
+        if not isinstance(tasks_list, list):
+            continue
+        known_ids = _validate_tasks(tasks_list, errors, context=tag_name)
+        tag_results.append((tag_name, tasks_list, known_ids))
 
     if args.check_subtasks:
-        for task in tasks:
-            subtasks = task.get("subtasks", [])
-            if subtasks:
-                parent_id = task.get("id", "?")
-                _validate_subtasks(subtasks, known_ids, parent_id, errors)
+        for tag_name, tasks_list, known_ids in tag_results:
+            for task in tasks_list:
+                subtasks = task.get("subtasks", [])
+                if subtasks:
+                    parent_id = task.get("id", "?")
+                    _validate_subtasks(subtasks, known_ids, parent_id, errors)
 
     if errors:
         for err in errors:
