@@ -1101,10 +1101,10 @@ pub(crate) fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<
             // structure names as StructureRef (concrete names, not type variables).
             // DimensionalOp cannot appear as a type-parameter default — the grammar
             // only allows Named nodes in that position, so this arm is unreachable.
-            let default = d.default.as_ref().and_then(|te| {
+            let default = d.default.as_ref().map(|te| {
                 match &te.kind {
                     reify_syntax::TypeExprKind::Named { name, .. } => {
-                        Some(resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone())))
+                        resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone()))
                     }
                     reify_syntax::TypeExprKind::DimensionalOp { .. } => {
                         unreachable!(
