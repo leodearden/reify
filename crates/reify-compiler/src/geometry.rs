@@ -255,10 +255,13 @@ pub(crate) fn compile_geometry_call(
         // linear_pattern(target, dx, dy, dz, count, spacing)
         "linear_pattern" => {
             if compiled_args.len() != 6 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "linear_pattern() expects 6 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "linear_pattern() expects 6 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
