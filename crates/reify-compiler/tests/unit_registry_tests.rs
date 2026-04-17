@@ -1722,6 +1722,28 @@ fn test_expect_binop_extracts_op_and_operands() {
 
 // ── step-7 (task-765): cross-prelude collision emits a warning ─────────────────
 
+/// Build a prelude `CompiledModule` that exports `pub unit foo : Length = <factor>`
+/// under `ModulePath::single(name)`. Panics on any parse or compile errors so
+/// callers get a descriptive failure site instead of a silent misconfiguration.
+fn prelude_module(name: &str, factor: f64) -> reify_compiler::CompiledModule {
+    let source = format!("pub unit foo : Length = {factor:?}");
+    let parsed = reify_syntax::parse(&source, ModulePath::single(name));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in {}: {:?}",
+        name,
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "{} compilation errors: {:?}",
+        name,
+        errors_only(&compiled)
+    );
+    compiled
+}
+
 /// When two prelude modules export the same pub unit name, `compile_with_prelude`
 /// should emit exactly one `Severity::Warning` diagnostic whose message:
 /// (a) mentions the unit name 'foo',
@@ -1733,38 +1755,10 @@ fn test_expect_binop_extracts_op_and_operands() {
 #[test]
 fn prelude_module_unit_collision_emits_warning() {
     // mod_a: pub unit foo with SI factor 1.0 m
-    let mod_a_parsed = reify_syntax::parse(
-        "pub unit foo : Length = 1.0",
-        ModulePath::single("mod_a"),
-    );
-    assert!(
-        mod_a_parsed.errors.is_empty(),
-        "parse errors in mod_a: {:?}",
-        mod_a_parsed.errors
-    );
-    let mod_a = compile(&mod_a_parsed);
-    assert!(
-        errors_only(&mod_a).is_empty(),
-        "mod_a compilation errors: {:?}",
-        errors_only(&mod_a)
-    );
+    let mod_a = prelude_module("mod_a", 1.0);
 
     // mod_b: pub unit foo with SI factor 2.0 m — same name, different factor
-    let mod_b_parsed = reify_syntax::parse(
-        "pub unit foo : Length = 2.0",
-        ModulePath::single("mod_b"),
-    );
-    assert!(
-        mod_b_parsed.errors.is_empty(),
-        "parse errors in mod_b: {:?}",
-        mod_b_parsed.errors
-    );
-    let mod_b = compile(&mod_b_parsed);
-    assert!(
-        errors_only(&mod_b).is_empty(),
-        "mod_b compilation errors: {:?}",
-        errors_only(&mod_b)
-    );
+    let mod_b = prelude_module("mod_b", 2.0);
 
     // User module uses `foo` (which will resolve to mod_b's definition via last-wins).
     // `unit bar : Length = 1foo` means bar's SI factor = 1 * foo's factor.
@@ -1859,31 +1853,13 @@ fn prelude_module_unit_collision_emits_warning() {
 #[test]
 fn three_prelude_collision_emits_two_chained_warnings() {
     // mod_a: pub unit foo with SI factor 1.0 m
-    let mod_a_parsed = reify_syntax::parse(
-        "pub unit foo : Length = 1.0",
-        ModulePath::single("mod_a"),
-    );
-    assert!(mod_a_parsed.errors.is_empty(), "parse errors in mod_a: {:?}", mod_a_parsed.errors);
-    let mod_a = compile(&mod_a_parsed);
-    assert!(errors_only(&mod_a).is_empty(), "mod_a errors: {:?}", errors_only(&mod_a));
+    let mod_a = prelude_module("mod_a", 1.0);
 
     // mod_b: pub unit foo with SI factor 2.0 m
-    let mod_b_parsed = reify_syntax::parse(
-        "pub unit foo : Length = 2.0",
-        ModulePath::single("mod_b"),
-    );
-    assert!(mod_b_parsed.errors.is_empty(), "parse errors in mod_b: {:?}", mod_b_parsed.errors);
-    let mod_b = compile(&mod_b_parsed);
-    assert!(errors_only(&mod_b).is_empty(), "mod_b errors: {:?}", errors_only(&mod_b));
+    let mod_b = prelude_module("mod_b", 2.0);
 
     // mod_c: pub unit foo with SI factor 3.0 m — final winner
-    let mod_c_parsed = reify_syntax::parse(
-        "pub unit foo : Length = 3.0",
-        ModulePath::single("mod_c"),
-    );
-    assert!(mod_c_parsed.errors.is_empty(), "parse errors in mod_c: {:?}", mod_c_parsed.errors);
-    let mod_c = compile(&mod_c_parsed);
-    assert!(errors_only(&mod_c).is_empty(), "mod_c errors: {:?}", errors_only(&mod_c));
+    let mod_c = prelude_module("mod_c", 3.0);
 
     // User module: references foo (resolved via last-wins to mod_c)
     let user_parsed = reify_syntax::parse(
