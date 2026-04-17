@@ -119,6 +119,7 @@ pub(crate) fn compile_geometry_call(
             return compile_boolean_op(
                 name,
                 args,
+                expr.span,
                 scope,
                 enum_defs,
                 functions,
@@ -193,10 +194,13 @@ pub(crate) fn compile_geometry_call(
         // --- Primitives ---
         "box" => {
             if compiled_args.len() != 3 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "box() expects 3 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "box() expects 3 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -211,10 +215,13 @@ pub(crate) fn compile_geometry_call(
         }
         "cylinder" => {
             if compiled_args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "cylinder() expects 2 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "cylinder() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -228,10 +235,13 @@ pub(crate) fn compile_geometry_call(
         }
         "sphere" => {
             if compiled_args.len() != 1 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "sphere() expects 1 argument, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "sphere() expects 1 argument, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             Some(vec![CompiledGeometryOp::Primitive {
@@ -246,10 +256,13 @@ pub(crate) fn compile_geometry_call(
         // linear_pattern(target, dx, dy, dz, count, spacing)
         "linear_pattern" => {
             if compiled_args.len() != 6 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "linear_pattern() expects 6 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "linear_pattern() expects 6 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -272,10 +285,13 @@ pub(crate) fn compile_geometry_call(
         // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
         "circular_pattern" => {
             if compiled_args.len() != 9 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "circular_pattern() expects 9 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "circular_pattern() expects 9 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -301,10 +317,13 @@ pub(crate) fn compile_geometry_call(
         // mirror(target, ox, oy, oz, nx, ny, nz)
         "mirror" => {
             if compiled_args.len() != 7 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "mirror() expects 7 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "mirror() expects 7 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();

@@ -1,0 +1,250 @@
+//! Tests for source-span labels on geometry arg-count diagnostics (task 487).
+//!
+//! Each arg-count error for the in-scope geometry functions (box, cylinder,
+//! sphere, linear_pattern, circular_pattern, mirror, union (+ siblings),
+//! shell, thicken, draft) must attach a `DiagnosticLabel` with a non-empty
+//! `SourceSpan`. Pattern mirrors the assertions in
+//! `diagnostic_coverage_checkpoint.rs`.
+//!
+//! shell/thicken/draft tests serve as regression guards — labels are already
+//! attached via `compile_modify_op`; these tests lock in that behavior.
+
+use reify_test_support::{compile_source, errors_only};
+
+/// Compile `source`, locate the first error whose message contains `needle`,
+/// and assert it carries at least one diagnostic label with a non-empty span.
+///
+/// Every test in this file follows the same three-step pattern (find error →
+/// assert label present → assert span non-empty), so centralizing it here
+/// keeps the individual tests one-liners and makes adding future regressions
+/// trivial.
+#[track_caller]
+fn assert_arg_count_label(source: &str, needle: &str) {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains(needle))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected '{}' error, got: {:?}",
+                needle,
+                errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        !first.labels.is_empty(),
+        "expected at least one label on '{}' diagnostic",
+        needle
+    );
+    assert!(
+        !first.labels[0].span.is_empty(),
+        "expected non-empty span on '{}' label",
+        needle
+    );
+}
+
+// ── box() ──────────────────────────────────────────────────────────────
+
+#[test]
+fn box_arg_count_diagnostic_has_span_label() {
+    // box() expects 3 arguments — passing only 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let shape = box(10mm, 20mm)
+            }
+        "#,
+        "box() expects 3 arguments",
+    );
+}
+
+// ── cylinder() ─────────────────────────────────────────────────────────
+
+#[test]
+fn cylinder_arg_count_diagnostic_has_span_label() {
+    // cylinder() expects 2 arguments — passing only 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = cylinder(10mm)
+            }
+        "#,
+        "cylinder() expects 2 arguments",
+    );
+}
+
+// ── sphere() ───────────────────────────────────────────────────────────
+
+#[test]
+fn sphere_arg_count_diagnostic_has_span_label() {
+    // sphere() expects 1 argument — passing 0 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let s = sphere()
+            }
+        "#,
+        "sphere() expects 1 argument",
+    );
+}
+
+// ── linear_pattern() ───────────────────────────────────────────────────
+
+#[test]
+fn linear_pattern_arg_count_diagnostic_has_span_label() {
+    // linear_pattern() expects 6 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let p = linear_pattern(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "linear_pattern() expects 6 arguments",
+    );
+}
+
+// ── circular_pattern() ─────────────────────────────────────────────────
+
+#[test]
+fn circular_pattern_arg_count_diagnostic_has_span_label() {
+    // circular_pattern() expects 9 arguments — passing 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let p = circular_pattern(box(10mm, 10mm, 10mm), 1.0)
+            }
+        "#,
+        "circular_pattern() expects 9 arguments",
+    );
+}
+
+// ── mirror() ───────────────────────────────────────────────────────────
+
+#[test]
+fn mirror_arg_count_diagnostic_has_span_label() {
+    // mirror() expects 7 arguments — passing 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let m = mirror(box(10mm, 10mm, 10mm), 1.0)
+            }
+        "#,
+        "mirror() expects 7 arguments",
+    );
+}
+
+// ── union() / intersection() / difference() ────────────────────────────
+
+#[test]
+fn union_arg_count_diagnostic_has_span_label() {
+    // union() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let u = union(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "union() expects 2 arguments",
+    );
+}
+
+#[test]
+fn intersection_arg_count_diagnostic_has_span_label() {
+    // intersection() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let i = intersection(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "intersection() expects 2 arguments",
+    );
+}
+
+#[test]
+fn difference_arg_count_diagnostic_has_span_label() {
+    // difference() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let d = difference(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "difference() expects 2 arguments",
+    );
+}
+
+// ── union_all() / intersection_all() ───────────────────────────────────
+
+#[test]
+fn union_all_arg_count_diagnostic_has_span_label() {
+    // union_all() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let u = union_all(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "union_all() expects at least 2 arguments",
+    );
+}
+
+#[test]
+fn intersection_all_arg_count_diagnostic_has_span_label() {
+    // intersection_all() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let i = intersection_all(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "intersection_all() expects at least 2 arguments",
+    );
+}
+
+// ── shell() / thicken() / draft() — regression guards ──────────────────
+//
+// These ops already attach labels via `compile_modify_op`; the tests below
+// lock in that behavior so a future refactor cannot silently strip the
+// labels without tripping a test.
+
+#[test]
+fn shell_arg_count_diagnostic_has_span_label() {
+    // shell() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let s = shell(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "shell() expects at least 2 arguments",
+    );
+}
+
+#[test]
+fn thicken_arg_count_diagnostic_has_span_label() {
+    // thicken() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let t = thicken(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "thicken() expects 2 arguments",
+    );
+}
+
+#[test]
+fn draft_arg_count_diagnostic_has_span_label() {
+    // draft() expects 3 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let d = draft(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "draft() expects 3 arguments",
+    );
+}

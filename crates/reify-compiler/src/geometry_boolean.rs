@@ -8,6 +8,7 @@ use super::*;
 pub(crate) fn compile_boolean_op(
     name: &str,
     args: &[reify_syntax::Expr],
+    expr_span: SourceSpan,
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
@@ -19,11 +20,14 @@ pub(crate) fn compile_boolean_op(
     match name {
         "union" | "intersection" | "difference" => {
             if args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "{}() expects 2 arguments, got {}",
-                    name,
-                    args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "{}() expects 2 arguments, got {}",
+                        name,
+                        args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
                 return None;
             }
             let bool_op = match name {
@@ -96,11 +100,14 @@ pub(crate) fn compile_boolean_op(
         }
         "union_all" | "intersection_all" => {
             if args.len() < 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "{}() expects at least 2 arguments, got {}",
-                    name,
-                    args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "{}() expects at least 2 arguments, got {}",
+                        name,
+                        args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
                 return None;
             }
             let bool_op = match name {
