@@ -40673,11 +40673,11 @@
         "description": "In `crates/reify-compiler/tests/implicit_conversion_tests.rs` (lines ~662-792), the belt-and-braces release-mode pins — `error_wildcard_implicit_to_error_release_returns_true_*` and `type_compatible_param_error_release_returns_true_*` — are gated on `#[cfg(not(debug_assertions))]` and therefore only run under `cargo test --release` (or a profile with `debug-assertions = false`). Standard `cargo test` (debug profile) skips them entirely.\n\nThe release short-circuit (`if from.is_error() || to.is_error() { return true; }`) is the cascade-safety net called out as the main task-448 rationale preserver by task 1918. If someone regresses by removing that line, debug tests still pass (they only assert the panic) and release tests don't run by default — the regression ships.\n\nPick one of:\n  (a) Wire up a CI job that runs `cargo test --release -p reify-compiler` so these pins execute, and document the requirement in a README or test module header.\n  (b) Factor the guard into a private helper (e.g. `is_error_wildcard_short_circuit(from, to)`) testable without the debug_assert, so both paths run under normal `cargo test`.\n\nReview followup from task 1918 (suggestion S2 of esc-1918-13).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:38:52.438Z",
+        "updatedAt": "2026-04-17T13:49:09.028Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/type_compat.rs"
@@ -40718,14 +40718,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:47:49.588Z",
+      "lastModified": "2026-04-17T13:49:09.028Z",
       "taskCount": 1943,
       "completedCount": 1673,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T13:49:06.032Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
