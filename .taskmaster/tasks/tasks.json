@@ -39344,11 +39344,11 @@
         "description": "Two symmetric bugs in `crates/reify-compiler/src/entity.rs` around Solid-typed params defaulted to a geometry expression: the `geometry_lets` lookup-table construction and the realization-emission loop both iterate only one level into `GuardedGroupDecl.members`/`else_members` and do not recurse into nested guarded groups. `register_guarded_names` already recurses, so a nested `where A { where B { param g : Solid = cylinder(...) } }` gets its name registered in `known_geometry_lets` but no `geometry_lets` entry and no `RealizationDecl` — producing a guarded Solid param that compiles silently without geometry. Also extract the duplicated `Solid`-typed-param-with-geometry-default detection predicate (duplicated across 4 sites in entity.rs and guards.rs) into a single helper to keep the arms in sync. Add a nested-guard regression test in `crates/reify-compiler/tests/solid_param_tests.rs`.",
         "details": "## Suggestions bundled (from reviewer_comprehensive on task 1751)\n\n1. `entity.rs:1200-1260` (geometry_lets map construction) — make the collection step recursive (e.g. `collect_geometry_exprs` helper), mirroring `register_guarded_names` in guards.rs.\n2. `entity.rs:1260-1320` (realization emission loop) — extract a recursive `emit_guarded_geometry_realizations` helper that descends into nested `GuardedGroupDecl.members`/`else_members` and emits realizations at any depth.\n3. `entity.rs:339-346, 572-585`; `guards.rs:141-150, 321-333` — extract a single `is_solid_geometry_param(param, ty, functions, known)` predicate used by the pre-pass, main Param loop, `register_guarded_names`, and `compile_guarded_members`.\n4. Add nested-guard regression test in `crates/reify-compiler/tests/solid_param_tests.rs`.\n\n### memory_hints\n- search: \"Solid typed geometry param realization\"\n- search: \"register_guarded_names nested groups\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:03:20.347Z",
+        "updatedAt": "2026-04-17T04:07:49.069Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -40070,7 +40070,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T04:03:20.347Z",
+      "lastModified": "2026-04-17T04:07:49.070Z",
       "taskCount": 1910,
       "completedCount": 1641,
       "tags": [
