@@ -58,9 +58,9 @@ export interface ShortcutDef {
 }
 
 // Private definition uses `as const satisfies` to validate shape against ShortcutDef
-// while preserving literal `id` types for ShortcutId derivation below. The exported
-// SHORTCUTS is widened to `readonly ShortcutDef[]` so callers can access optional
-// fields (.disabled, .bind) without TS2339 narrowing errors at iteration sites.
+// while preserving literal `id` types for ShortcutId derivation below. SHORTCUTS is
+// exported as `readonly (ShortcutDef & { id: ShortcutId })[]`: the intersection narrows
+// `.id` to the literal union while keeping optional fields (.disabled, .bind) accessible.
 const _SHORTCUTS_DEF = [
   // shift: false on Ctrl-only bindings prevents them from firing on Ctrl+Shift+<letter>,
   // which produces an uppercase key that the case-insensitive comparison would otherwise
@@ -86,14 +86,7 @@ const _SHORTCUTS_DEF = [
  */
 export type ShortcutId = typeof _SHORTCUTS_DEF[number]['id'];
 
-export const SHORTCUTS: readonly ShortcutDef[] = _SHORTCUTS_DEF;
-
-/**
- * All shortcut IDs as a literal-typed readonly array.
- * Use this when you need to iterate over ShortcutId values without an `as ShortcutId`
- * cast — SHORTCUTS is widened to `readonly ShortcutDef[]` so its `.id` field is `string`.
- */
-export const SHORTCUT_IDS: readonly ShortcutId[] = _SHORTCUTS_DEF.map((s) => s.id);
+export const SHORTCUTS: readonly (ShortcutDef & { id: ShortcutId })[] = _SHORTCUTS_DEF;
 
 /**
  * Look up a shortcut definition by id.
