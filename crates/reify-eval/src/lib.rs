@@ -3494,5 +3494,53 @@ mod tests {
             "Value::Matrix should be rejected by Type::Real (negative kind-check path)"
         );
     }
+
+    // ── execute_realization_ops unit tests ────────────────────────────────────
+
+    /// Happy path: all operations compile and execute successfully.
+    /// Returns `false` (no failure), appends exactly one handle, emits no diagnostics.
+    #[test]
+    fn execute_realization_ops_happy_path_returns_false_and_appends_handle() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CompiledExpr, Type};
+
+        let mm_lit = |v: f64| {
+            CompiledExpr::literal(
+                reify_test_support::mm(v),
+                Type::length(),
+            )
+        };
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let had_failure = Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+        );
+
+        assert!(!had_failure, "expected no failure for valid ops");
+        assert_eq!(step_handles.len(), 1, "expected one handle appended");
+        assert!(diagnostics.is_empty(), "expected no diagnostics");
+    }
 }
 
