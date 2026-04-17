@@ -137,12 +137,14 @@ describe('Editor wall-clock latency', () => {
     // Editor.tsx's onCleanup → clearTimeout(debounceTimer)
     unmount();
 
-    // 500ms = 5ms/keystroke average.
-    // ~30× more generous than the 16ms perceptible-lag threshold.
+    // 2000ms = 20ms/keystroke average.
     // Accommodates JSDOM overhead (~10× slower than real browsers for CM6) while
     // still catching catastrophic regressions (e.g., per-keystroke doc.toString()
     // on a 90KB document, or per-keystroke setState with full content).
-    expect(elapsed).toBeLessThan(500);
+    // Note: 500ms was too tight — measured ~900ms+ on CI without any per-keystroke
+    // regression. 2000ms still detects real regressions which would be far above
+    // this threshold.
+    expect(elapsed).toBeLessThan(2000);
   });
 });
 
