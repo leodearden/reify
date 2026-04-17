@@ -166,10 +166,10 @@ fn dimensional_op_no_operator_strings_in_diagnostics() {
     }
 }
 
-// ── Test (d): Named with args — collect_type_expr_names behavior ──────────────
+// ── Test (d): Unresolved Named alias stays as None ────────────────────────────
 
 #[test]
-fn named_with_type_args_unresolved_resolves_to_none_no_operator_leak() {
+fn unresolved_named_alias_resolves_to_none() {
     // Named("UnresolvedBox", [Named("UnresolvedT")]) — both are unresolved names.
     // The compiler silently resolves to None (type aliases with unknown RHS are not
     // an error at the alias-declaration level). Any diagnostics that ARE emitted
@@ -198,4 +198,231 @@ fn named_with_type_args_unresolved_resolves_to_none_no_operator_leak() {
             diag.message
         );
     }
+}
+
+// ── Diagnostic-rejection tests: DimensionalOp in unexpected positions ─────────
+//
+// Each test below verifies that feeding a DimensionalOp into a position where
+// only Named types are valid produces exactly one error diagnostic with the
+// label "unexpected dimensional expression ..." and does not silently swallow
+// the bad input.
+
+fn module_with_structure_param(type_expr: TypeExpr) -> ParsedModule {
+    ParsedModule {
+        path: ModulePath::single("test"),
+        declarations: vec![Declaration::Structure(StructureDef {
+            name: "TestStruct".into(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![MemberDecl::Param(ParamDecl {
+                name: "p".into(),
+                doc: None,
+                type_expr: Some(type_expr),
+                default: None,
+                where_clause: None,
+                annotations: vec![],
+                span: dummy_span(),
+                content_hash: dummy_hash("p"),
+            })],
+            span: dummy_span(),
+            content_hash: dummy_hash("TestStruct"),
+            pragmas: vec![],
+            annotations: vec![],
+        })],
+        errors: vec![],
+        content_hash: dummy_hash("test_module_struct"),
+        pragmas: vec![],
+    }
+}
+
+fn module_with_trait_param(type_expr: TypeExpr) -> ParsedModule {
+    ParsedModule {
+        path: ModulePath::single("test"),
+        declarations: vec![Declaration::Trait(TraitDecl {
+            name: "TestTrait".into(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            members: vec![MemberDecl::Param(ParamDecl {
+                name: "p".into(),
+                doc: None,
+                type_expr: Some(type_expr),
+                default: None,
+                where_clause: None,
+                annotations: vec![],
+                span: dummy_span(),
+                content_hash: dummy_hash("p"),
+            })],
+            span: dummy_span(),
+            content_hash: dummy_hash("TestTrait"),
+            pragmas: vec![],
+            annotations: vec![],
+        })],
+        errors: vec![],
+        content_hash: dummy_hash("test_module_trait"),
+        pragmas: vec![],
+    }
+}
+
+fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
+    ParsedModule {
+        path: ModulePath::single("test"),
+        declarations: vec![Declaration::Field(FieldDef {
+            name: "test_field".into(),
+            is_pub: false,
+            domain_type,
+            codomain_type: named("Scalar"),
+            source: FieldSource::Analytical {
+                expr: Expr {
+                    kind: ExprKind::Lambda {
+                        params: vec![LambdaParam {
+                            name: "p".into(),
+                            type_expr: None,
+                            span: dummy_span(),
+                        }],
+                        body: Box::new(Expr {
+                            kind: ExprKind::NumberLiteral(1.0),
+                            span: dummy_span(),
+                        }),
+                    },
+                    span: dummy_span(),
+                },
+            },
+            span: dummy_span(),
+            content_hash: dummy_hash("test_field"),
+            annotations: vec![],
+        })],
+        errors: vec![],
+        content_hash: dummy_hash("test_module_field"),
+        pragmas: vec![],
+    }
+}
+
+fn module_with_trait_bound_type_arg(type_arg: TypeExpr) -> ParsedModule {
+    // A module that declares a parameterized trait `Container<T>` and then a
+    // structure that uses it with a DimensionalOp as the type argument.
+    // The trait must be known to the compiler (present in the same compilation
+    // unit) with a type param, otherwise the type_args mapping code is never
+    // reached and the diagnostic we're testing would never fire.
+    let trait_decl = TraitDecl {
+        name: "Container".into(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![TypeParamDecl {
+            name: "T".into(),
+            bounds: vec![],
+            default: None,
+            span: dummy_span(),
+        }],
+        refinements: vec![],
+        members: vec![],
+        span: dummy_span(),
+        content_hash: dummy_hash("Container"),
+        pragmas: vec![],
+        annotations: vec![],
+    };
+    let structure = StructureDef {
+        name: "TestStruct".into(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![TraitBoundRef {
+            name: "Container".into(),
+            type_args: vec![type_arg],
+            span: dummy_span(),
+        }],
+        members: vec![],
+        span: dummy_span(),
+        content_hash: dummy_hash("TestStruct"),
+        pragmas: vec![],
+        annotations: vec![],
+    };
+    ParsedModule {
+        path: ModulePath::single("test"),
+        declarations: vec![
+            Declaration::Trait(trait_decl),
+            Declaration::Structure(structure),
+        ],
+        errors: vec![],
+        content_hash: dummy_hash("test_module_bound"),
+        pragmas: vec![],
+    }
+}
+
+/// Helper: assert that exactly one error diagnostic with the given substring was emitted.
+fn assert_one_error_containing(compiled: &reify_compiler::CompiledModule, substr: &str) {
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error diagnostic containing '{substr}', got none"
+    );
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains(substr) || d.labels.iter().any(|l| l.message.contains(substr)))
+        .collect();
+    assert!(
+        !matching.is_empty(),
+        "expected a diagnostic containing '{substr}', got: {errors:?}"
+    );
+}
+
+/// A DimensionalOp as an entity param type should produce a diagnostic, not
+/// silently fall back to Type::Real with no feedback.
+#[test]
+fn dim_op_in_entity_param_emits_diagnostic() {
+    let te = dim_op(DimOp::Mul, named("Force"), named("Length"));
+    let parsed = module_with_structure_param(te);
+    let compiled = reify_compiler::compile(&parsed);
+    assert_one_error_containing(&compiled, "unresolved type");
+}
+
+/// A DimensionalOp as a trait param type should produce a diagnostic.
+#[test]
+fn dim_op_in_trait_param_emits_diagnostic() {
+    let te = dim_op(DimOp::Div, named("Force"), named("Area"));
+    let parsed = module_with_trait_param(te);
+    let compiled = reify_compiler::compile(&parsed);
+    assert_one_error_containing(&compiled, "unexpected dimensional expression");
+}
+
+/// A DimensionalOp as a field's domain_type should produce exactly ONE error
+/// diagnostic (no second confusing diagnostic from resolve_field_type_name).
+#[test]
+fn dim_op_in_field_domain_emits_exactly_one_diagnostic() {
+    let te = dim_op(DimOp::Mul, named("Force"), named("Length"));
+    let parsed = module_with_field_domain(te);
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error diagnostic for DimensionalOp field domain, got: {errors:?}"
+    );
+    assert!(
+        errors[0].message.contains("unresolved field type"),
+        "expected 'unresolved field type' in diagnostic message, got: {:?}",
+        errors[0].message
+    );
+}
+
+/// A DimensionalOp as a trait-bound type argument should produce a diagnostic,
+/// not silently fall back to Type::Real.
+#[test]
+fn dim_op_in_trait_bound_type_arg_emits_diagnostic() {
+    let te = dim_op(DimOp::Mul, named("Mass"), named("Acceleration"));
+    let parsed = module_with_trait_bound_type_arg(te);
+    let compiled = reify_compiler::compile(&parsed);
+    assert_one_error_containing(&compiled, "unexpected dimensional expression");
 }
