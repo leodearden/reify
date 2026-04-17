@@ -456,17 +456,41 @@ pub(crate) fn check_trait_conformance(
                     // pass (task 1834 step-9) to avoid a second compilation of the
                     // same expression.  The dispatch mirrors the pre-register
                     // branches: unannotated lets always populate the cache there,
-                    // annotated lets never do.  Explicit `match cell_type` (vs.
-                    // `unwrap_or_else`) makes that contract load-bearing — a
-                    // future refactor that changes either branch will trip the
-                    // `expect` instead of silently double-compiling.
+                    // annotated lets never do.
+                    //
+                    // Cache miss safety (task 1834 amendment —
+                    // reviewer_comprehensive robustness fix): `.expect` would
+                    // panic on user input if a future refactor ever decoupled the
+                    // pre-register guard (`!structure_members.contains_key(name)`)
+                    // from the injection guard, or if the cache key — currently a
+                    // name-only string — collided with another slot (no kind
+                    // discriminator today).  Fall back to recompiling the
+                    // expression (equivalent to old behavior) to surface any
+                    // drift as a diagnostic, not a panic.  `debug_assert!`
+                    // upholds the invariant in test/dev builds so the refactor
+                    // is caught before reaching release.
                     let compiled_expr = match cell_type {
                         Some(_) => {
                             compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
                         }
-                        None => inferred_let_exprs.remove(name).expect(
-                            "unannotated let must have been cached by the pre-register pass",
-                        ),
+                        None => {
+                            debug_assert!(
+                                inferred_let_exprs.contains_key(name),
+                                "unannotated let '{}' should have been cached by the \
+                                 pre-register pass (Pass 2) — cache miss indicates a \
+                                 drift between the pre-register guard and the injection guard",
+                                name
+                            );
+                            inferred_let_exprs.remove(name).unwrap_or_else(|| {
+                                compile_expr(
+                                    &let_decl.value,
+                                    scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                )
+                            })
+                        }
                     };
 
                     // Cross-check the expression type against the let's annotation.
