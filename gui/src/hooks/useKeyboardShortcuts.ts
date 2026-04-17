@@ -10,6 +10,7 @@ export interface KeyboardShortcutCallbacks {
   onReloadShortcut?: () => void;
   onDismissReload?: () => void;
   onToggleChatPanel?: () => void;
+  onClearSelection?: () => void;
 }
 
 /**
@@ -61,12 +62,13 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       return;
     }
 
-    // Escape — Dismiss reload prompt.
-    // Handled separately: Escape is a UI-dismiss action for a specific prompt,
-    // not a formal application shortcut shown in the KeyboardHelp overlay.
+    // Escape — Dismiss reload prompt, then clear selection.
+    // Handled separately: Escape is a UI-dismiss action, not a formal application
+    // shortcut shown in the KeyboardHelp overlay.
     if (e.key === 'Escape') {
       e.preventDefault();
       callbacks.onDismissReload?.();
+      callbacks.onClearSelection?.();
       return;
     }
   }
