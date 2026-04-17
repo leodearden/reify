@@ -1397,6 +1397,18 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
             offset, actual, expected
         );
     }
+    // "Two convergent implementations agree" invariant must also hold at the
+    // prelude sentinel (u32::MAX).  Without the sentinel short-circuit, the
+    // fast path computes line_offsets.len() + 1 (a past-last-line value) while
+    // byte_offset_to_line_col returns (1, 1).
+    let sentinel = u32::MAX as usize;
+    let fast_sentinel = offset_to_line_col_fast(source, &line_offsets, sentinel);
+    let orig_sentinel = byte_offset_to_line_col(source, sentinel);
+    assert_eq!(
+        fast_sentinel, orig_sentinel,
+        "sentinel: fast={:?} original={:?} — two convergent implementations must agree at u32::MAX",
+        fast_sentinel, orig_sentinel
+    );
 }
 
 /// offset_to_line_col_fast returns correct values at specific key offsets.
@@ -1459,6 +1471,24 @@ fn offset_to_line_col_fast_at_eof_offset() {
         actual, expected,
         "EOF offset: fast={:?} original={:?}",
         actual, expected
+    );
+}
+
+/// offset_to_line_col_fast returns (1, 1) for the prelude sentinel (u32::MAX).
+///
+/// Without the prelude-sentinel short-circuit the current fast path computes
+/// `line_offsets.len() + 1` (a past-last-line value) instead of the `(1, 1)`
+/// fallback, breaking the "two convergent implementations agree" invariant with
+/// `reify_types::byte_offset_to_line_col`.
+#[test]
+fn offset_to_line_col_fast_prelude_sentinel_returns_fallback() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let offsets = build_line_offsets(source);
+    assert_eq!(
+        offset_to_line_col_fast(source, &offsets, u32::MAX as usize),
+        (1, 1),
+        "prelude sentinel must return (1, 1), not a past-last-line value"
     );
 }
 
