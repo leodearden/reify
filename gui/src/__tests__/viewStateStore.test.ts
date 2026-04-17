@@ -781,6 +781,77 @@ describe('viewStateStore — views map and activeViewId skeleton', () => {
   });
 });
 
+describe('viewStateStore — regenerateAutoViews — populate and preserve', () => {
+  function makeSimpleTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) regenerateAutoViews(tree) populates state.views["auto:default"] and state.views["auto:all-geometry"]', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeSimpleTree());
+      expect(store.state.views['auto:default']).toBeDefined();
+      expect(store.state.views['auto:default'].id).toBe('auto:default');
+      expect(store.state.views['auto:all-geometry']).toBeDefined();
+      expect(store.state.views['auto:all-geometry'].id).toBe('auto:all-geometry');
+      dispose();
+    });
+  });
+
+  it('(b) regenerateAutoViews(tree, ["foo"]) also populates state.views["auto:purpose:foo"]', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeSimpleTree(), ['foo']);
+      expect(store.state.views['auto:purpose:foo']).toBeDefined();
+      expect(store.state.views['auto:purpose:foo'].id).toBe('auto:purpose:foo');
+      dispose();
+    });
+  });
+
+  it('(c) calling regenerateAutoViews twice removes stale auto:purpose:* entries', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeSimpleTree(), ['alpha']);
+      expect(store.state.views['auto:purpose:alpha']).toBeDefined();
+      // Second call with different purpose — alpha should be gone
+      store.regenerateAutoViews(makeSimpleTree(), ['beta']);
+      expect(store.state.views['auto:purpose:alpha']).toBeUndefined();
+      expect(store.state.views['auto:purpose:beta']).toBeDefined();
+      // default and all-geometry still present
+      expect(store.state.views['auto:default']).toBeDefined();
+      expect(store.state.views['auto:all-geometry']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('(d) a pre-existing "user:my-view" entry is preserved unchanged across regenerateAutoViews', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const userView: ViewDefinition = {
+        id: 'user:my-view',
+        name: 'My view',
+        auto: false,
+        modified: false,
+        visibility: { 'Root': 'hidden' },
+      };
+      store.seedView(userView);
+      store.regenerateAutoViews(makeSimpleTree());
+      expect(store.state.views['user:my-view']).toBeDefined();
+      expect(store.state.views['user:my-view'].visibility['Root']).toBe('hidden');
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — setTree pruning', () => {
   it('stale explicit entries for removed paths are pruned when setTree is called', () => {
     createRoot((dispose) => {
