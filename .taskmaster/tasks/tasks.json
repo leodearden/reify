@@ -9789,16 +9789,9 @@
             "crates/reify-compiler/src"
           ],
           "memory_hints": {
-            "entities": [
-              "Type::Error",
-              "reify-types",
-              "reify-expr",
-              "type inference"
-            ],
+            "entities": [],
             "queries": [
-              "Type::Error sentinel leaks through wildcard arms in type inference",
-              "task 248 review followup cascading diagnostics",
-              "infer_binop_type index access quantifier member access error propagation"
+              "resolution for: Propagate Type::Error through type inference to prevent cascading diagnostics"
             ]
           },
           "reconciliation_note": "Blocked with empty dependency array as of 2026-04-03 — may be stale block from removed dependency. Review whether block reason still applies."
@@ -40017,11 +40010,11 @@
         "description": "In crates/reify-compiler/src/type_compat.rs (lines 9-11 and 94-96), `implicitly_converts_to(Error, X) == true` and `type_compatible(Error, X) == true` make Type::Error a universal wildcard at every consumer (trait conformance, field composition, function-arg checks). This is correct for diagnostics suppression but is not pinned by any test, so a regression removing the wildcard behavior would not surface. Add direct unit tests (in type_compat.rs unit tests or implicit_conversion_tests.rs) asserting: (a) `implicitly_converts_to(Error, Real) == true`, (b) `implicitly_converts_to(Real, Error) == true`, (c) `type_compatible(Error, X) == true` for multiple X (Real, Int, Bool, List, Option, etc.). (Review followup from task 448; suggestion S4.)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:34:19.562Z"
+        "updatedAt": "2026-04-17T04:02:10.347Z"
       },
       {
         "id": "1913",
@@ -40069,7 +40062,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T04:02:08.647Z",
+      "lastModified": "2026-04-17T04:02:10.347Z",
       "taskCount": 1910,
       "completedCount": 1641,
       "tags": [
