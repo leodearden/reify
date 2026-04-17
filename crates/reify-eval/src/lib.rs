@@ -2920,47 +2920,16 @@ impl Engine {
 
             for template in &module.templates {
                 for realization in &template.realizations {
-                    let handle_start = step_handles.len();
-                    let mut had_failure = false;
-                    for op in &realization.operations {
-                        total_ops += 1;
-                        let geom_op = compile_geometry_op(
-                            op,
-                            &check_result.values,
-                            &step_handles[handle_start..],
-                            &module.functions,
-                            &self.meta_map,
-                            &mut diagnostics,
-                        );
-                        match geom_op {
-                            Some(geom_op) => match kernel.execute(&geom_op) {
-                                Ok(handle) => {
-                                    step_handles.push(handle.id);
-                                }
-                                // Kernel errors break immediately: a geometry engine failure
-                                // is often unrecoverable (e.g. corrupt state), and subsequent
-                                // ops that depend on the failed handle would fail too. Compile
-                                // errors (None branch below) are cheaper to continue past because
-                                // we can push a sentinel and still attempt independent ops.
-                                Err(e) => {
-                                    diagnostics
-                                        .push(Diagnostic::error(format!("geometry error: {}", e)));
-                                    break;
-                                }
-                            },
-                            None => {
-                                diagnostics.push(Diagnostic::error(
-                                    "failed to compile geometry operation",
-                                ));
-                                step_handles.push(GeometryHandleId::INVALID);
-                                had_failure = true;
-                            }
-                        }
-                    }
-                    // Discard intermediate handles from partially-failed realizations
-                    if had_failure || step_handles.len() - handle_start < realization.operations.len() {
-                        step_handles.truncate(handle_start);
-                    }
+                    total_ops += realization.operations.len();
+                    Engine::execute_realization_ops(
+                        kernel.as_mut(),
+                        &realization.operations,
+                        &check_result.values,
+                        &module.functions,
+                        &self.meta_map,
+                        &mut step_handles,
+                        &mut diagnostics,
+                    );
                 }
             }
 
