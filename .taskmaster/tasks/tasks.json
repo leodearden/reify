@@ -10700,7 +10700,7 @@
         "description": "The arg-count error diagnostics for box(), cylinder(), sphere(), linear_pattern(), circular_pattern(), mirror(), union(), shell(), thicken(), draft() in reify-compiler/src/lib.rs (lines 5183-5287) use Diagnostic::error(format!(...)) which creates spanless diagnostics. Other diagnostics in the same file attach labels with source spans. These should follow the same pattern.\\n\\nMemory hints: search \"Diagnostic error labels spans\", entities: Diagnostic, compile_geometry_function",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10715,7 +10715,7 @@
             "crates/reify-compiler/tests/geometry_arg_count_span_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-17T04:08:58.038Z"
+        "updatedAt": "2026-04-17T05:46:20.068Z"
       },
       {
         "id": "488",
@@ -37507,11 +37507,11 @@
         "description": "In gui/src-tauri/src/engine.rs: (1) Replace the empty parent field in structural_fingerprint for template roots (line 515) with a sentinel like 'root' to avoid the double-colon ambiguity 'structure::3:hash'. (2) Add a debug_assert! or doc comment in build_template_node (lines 695-716) asserting template names are unique within a compiled module. (3) Rename or document the content_hash field in EntityIdentity for value-cell entries (line 537) — it hashes the cell ID, not its content, which is inconsistent with template-level content_hash semantics; rename to identity_hash or add a doc comment explaining the distinction. Update any affected tests in engine_tests.rs.\n\n### memory_hints\n- search: \"structural_fingerprint content_hash EntityIdentity\"\n- search: \"build_template_node template names unique\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:44:59.877Z",
+        "updatedAt": "2026-04-17T05:47:15.734Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/engine.rs",
@@ -38189,11 +38189,11 @@
         "description": "In `crates/reify-compiler/src/geometry.rs` (lines ~1161-1179), the `all_dispatch_functions_accounted_for` test's count assertion is tautological. It builds a `HashSet` from four lists and asserts `all.len() == GEOM_ARG_FUNCTIONS.len() + NO_GEOM_ARG_FUNCTIONS.len() + boolean_ops.len() + loft.len()`. Since `all` is constructed from exactly those lists, this can only fail if there are duplicates — which the `all.insert()` assert already catches two lines earlier. The count check cannot detect a function added to `compile_geometry_call` without being added to the test lists.\n\nFix: Replace the derived `expected` count with a hardcoded literal (e.g., `assert_eq!(all.len(), 33)`) with a comment explaining it must be bumped when new geometry functions are added. This makes the assertion actually fail when a new dispatch arm is added without updating the test lists.\n\n## memory_hints\n- search: \"compile_geometry_call dispatch functions cross-check\"\n- entity: \"geometry_arg_indices\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:26:06.672Z",
+        "updatedAt": "2026-04-17T05:46:13.112Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs"
@@ -39800,7 +39800,7 @@
         "description": "The DesignTree component (gui/src/panels/DesignTree.tsx) and viewStateStore (gui/src/stores/viewStateStore.ts) are fully implemented and exported from panels/index.ts and stores/index.ts respectively, and the backend get_entity_tree Tauri command is registered and working. However, App.tsx never imports DesignTree, never creates a viewStateStore instance, never subscribes to the `entity-tree-update` event, and never renders the DesignTree component. As a result the Design Tree UI is entirely non-functional end-to-end, even though the pieces are done. Task #1741 was marked done with an explicit instruction to \"Modify App.tsx — Add tab bar for Tree / Properties in right panel area; Wire up DesignTree component\", but the App.tsx wire-up was dropped during the 2026-04-16 merge that \"accepted origin/main's parallel Design Tree implementation\" (note on cancelled task #1862).\n\nRequired wiring:\n1. In App.tsx, import { DesignTree } from './panels' and { createViewStateStore } from './stores/viewStateStore'.\n2. Create a viewStateStore instance next to the other stores (engineStore, editorStore, etc.).\n3. Subscribe to the backend `entity-tree-update` event (or poll via `get_entity_tree` on relevant engine state changes) and pass the tree data to the viewStateStore / DesignTree.\n4. Add a tab bar or panel slot in the right-side panel region (alongside PropertyEditor / ConstraintPanel) and render <DesignTree tree={tree} viewStateStore={store} />.\n5. Verify the DesignTree appears in the live app (not only unit tests) and that eye-icon visibility toggling propagates back to meshManager (viewport/meshManager.ts already consults visibility).\n\nVerification:\n- Launch `npm run tauri dev` with a .ri file loaded and confirm the Design Tree renders real entity nodes.\n- Confirm eye-icon clicks hide/ghost the mesh in the viewport.\n- Re-check App.test.tsx for DesignTree integration coverage — currently App.test.tsx exists but does not cover DesignTree mounting.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -39819,7 +39819,8 @@
             "gui/src/panels",
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-17T05:46:00.716Z"
       },
       {
         "id": "1902",
@@ -40291,13 +40292,49 @@
             "gui/src/__tests__/test-utils.ts"
           ]
         }
+      },
+      {
+        "id": "1927",
+        "title": "Tighten geometry dispatch registry cross-check: reduce comment duplication and close reverse-direction gap",
+        "description": "Two review suggestions from Task 1821 on `crates/reify-compiler/src/geometry.rs` (the `all_dispatch_functions_accounted_for` test block around lines 603-755):\n\n1. **Reduce breakdown-comment duplication (lines 657-665).** The doc comment on `EXPECTED_DISPATCH_COUNT` re-enumerates every function name already in `GEOM_ARG_FUNCTIONS` / `NO_GEOM_ARG_FUNCTIONS` / boolean_ops / loft, creating a fourth place to keep in sync. The maintenance rule only mentions updating one list and the constant, so the parenthetical names will silently drift. Fix: drop the parenthetical enumerations and keep only per-category counts (e.g. `- GEOM_ARG_FUNCTIONS   14`), or delete the breakdown entirely — the lists are the single source of truth.\n\n2. **Close the reverse-direction gap (lines 748-754).** The revised assertion still only cross-validates the lists against themselves plus a hand-maintained constant. Nothing touches the actual match arms in `compile_geometry_call`, so an arm added there without a corresponding list entry remains undetected — which is the failure mode the module-level comment (lines 603-609) and the test's doc (lines 714-718) explicitly motivate catching. Fix: add a companion test that scans the source of `compile_geometry_call` via `include_str!(\"geometry.rs\")` plus a simple regex over `\"name\" =>` patterns in the match block, then cross-checks the extracted dispatch set against the four lists. This closes the gap without a procedural macro.\n\nBoth suggestions come from reviewer_comprehensive on Task 1821.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:46:18.722Z"
+      },
+      {
+        "id": "1928",
+        "title": "Log release-mode warning on duplicate template names in get_entity_tree",
+        "description": "In gui/src-tauri/src/engine.rs `get_entity_tree` (around lines 496-504), the template-name uniqueness invariant is currently enforced only via `debug_assert!`. In release builds, duplicates silently fall back to first-match behavior via `build_sub_node`'s lookup, which could produce silently inconsistent entity trees if a future refactor (macros, synthetic templates, module merging) breaks the compiler's well-formed-module guarantee.\n\nAdd a release-mode `tracing::warn!` (log-and-skip / log-and-continue) on first duplicate detection so the misbehaviour surfaces in logs rather than producing silently wrong trees. Keep the existing `debug_assert!` as well, or replace it with the runtime check.\n\nSource: reviewer_comprehensive on task 1783 (suggestion, optional graceful-degradation hardening).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:46:21.488Z"
+      },
+      {
+        "id": "1929",
+        "title": "Log release-mode warning on duplicate template names in get_entity_tree",
+        "description": "In gui/src-tauri/src/engine.rs `get_entity_tree` (around lines 496-504), the template-name uniqueness invariant is currently enforced only via `debug_assert!`. In release builds, duplicates silently fall back to first-match behavior via `build_sub_node`'s lookup, which could produce silently inconsistent entity trees if a future refactor breaks the compiler's well-formed-module guarantee. Add a release-mode `tracing::warn!` on first duplicate detection so misbehaviour surfaces in logs. Source: reviewer_comprehensive on task 1783 (optional hardening).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:47:17.533Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:44:36.156Z",
-      "taskCount": 1921,
-      "completedCount": 1651,
+      "lastModified": "2026-04-17T05:47:17.536Z",
+      "taskCount": 1924,
+      "completedCount": 1653,
       "tags": [
         "master"
       ]
