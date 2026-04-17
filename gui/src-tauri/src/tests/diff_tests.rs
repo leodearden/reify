@@ -606,3 +606,64 @@ fn diff_changed_tessellation_diagnostics_returns_some() {
     );
 }
 
+/// delta_to_events: when `changed_tessellation_diagnostics` is Some(vec),
+/// exactly one event named "tessellation-diagnostics" is produced with the vec
+/// as its JSON payload.
+#[test]
+fn delta_to_events_emits_tessellation_diagnostics_event() {
+    let diags = vec![
+        sample_diagnostic("Error", "geometry error: kernel failure"),
+        sample_diagnostic("Warning", "geometry warning: suspect shape"),
+    ];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: Some(diags.clone()),
+    };
+
+    let events = delta_to_events(&delta);
+
+    let tess_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "tessellation-diagnostics")
+        .collect();
+    assert_eq!(
+        tess_events.len(),
+        1,
+        "expected exactly one tessellation-diagnostics event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected = serde_json::to_value(&diags).expect("failed to serialize diagnostics");
+    assert_eq!(
+        tess_events[0].1, expected,
+        "tessellation-diagnostics payload must match the diagnostics vec"
+    );
+}
+
+/// delta_to_events: when `changed_tessellation_diagnostics` is None,
+/// no "tessellation-diagnostics" event is emitted.
+#[test]
+fn delta_to_events_omits_tessellation_diagnostics_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events.iter().all(|(n, _)| n != "tessellation-diagnostics"),
+        "expected no tessellation-diagnostics event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
