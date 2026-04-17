@@ -219,16 +219,23 @@ git -C "$_repo5" add .taskmaster/tasks/tasks.json
 git -C "$_repo5" commit --no-verify -m "chore(tasks): numeric ids" -q
 
 # Build a stub PATH that contains git and grep but NO python3.
-# Using symlinks avoids the problem of python3 sharing /usr/bin with git.
+# Using individual symlinks avoids the problem of python3 sharing /usr/bin with git.
 _stub5="$(mktemp -d -p "$_tmpdir")"
-ln -s "$(command -v git)"  "$_stub5/git"
-ln -s "$(command -v grep)" "$_stub5/grep"
-ln -s "$(command -v date)" "$_stub5/date"
+for _bin5 in git grep date bash sh; do
+    _loc5="$(command -v "$_bin5" 2>/dev/null || true)"
+    [ -n "$_loc5" ] && ln -sf "$_loc5" "$_stub5/$_bin5"
+done
 # Deliberately omit python3 from the stub PATH.
+#
+# Set GIT_EXEC_PATH explicitly so git can find its built-in helpers even when
+# they are not reachable via the stub PATH (e.g. /usr/lib/git-core is not
+# listed in PATH but git uses GIT_EXEC_PATH directly for sub-commands).
+_git_exec_path5="$(git --exec-path 2>/dev/null || true)"
 
 _stderr5="$_tmpdir/stderr5.txt"
 _hook5_exit=0
-(cd "$_repo5" && PATH="$_stub5" bash hooks/post-commit 2>"$_stderr5") || _hook5_exit=$?
+(cd "$_repo5" && GIT_EXEC_PATH="$_git_exec_path5" PATH="$_stub5" \
+    bash hooks/post-commit 2>"$_stderr5") || _hook5_exit=$?
 
 assert "python3-missing: hook exits non-zero" \
     test "$_hook5_exit" -ne 0
