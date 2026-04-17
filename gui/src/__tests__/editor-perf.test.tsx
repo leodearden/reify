@@ -25,7 +25,7 @@ import { EditorView } from '@codemirror/view';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
 import type { FileData } from '../types';
-import { median } from './test-utils';
+import { median, formatPerfSamples } from './test-utils';
 
 // Mock Tauri API modules before importing Editor (same pattern as Editor.test.tsx)
 vi.mock('@tauri-apps/api/core', () => ({
@@ -157,9 +157,9 @@ describe('Editor wall-clock latency', () => {
     // a 3–5× safety margin; the margin holds even under heavy parallelism
     // because the median is dominated by in-process work, not system-load tails.
     //
-    // The second argument surfaces the full sample list in the Vitest failure
-    // message so CI triage does not require a local re-run.
-    expect(median(perKeystroke), `samples=${JSON.stringify(perKeystroke)}`).toBeLessThan(15);
+    // The second argument surfaces median, min, max, and the full sample list
+    // in the Vitest failure message so CI triage does not require a local re-run.
+    expect(median(perKeystroke), formatPerfSamples(perKeystroke)).toBeLessThan(15);
   });
 });
 
