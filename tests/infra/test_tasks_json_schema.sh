@@ -81,6 +81,14 @@ cat >"$INT_DEP" <<'EOF'
 {"master":{"tasks":[{"id":"1","dependencies":[]},{"id":"2","dependencies":[1]}]}}
 EOF
 
+# (c) Valid non-empty dep: task "2" depends on existing task "1" — must pass.
+#     This guards against a bug where all deps are flagged orphan regardless of
+#     membership (regression not caught by failure-only fixtures).
+VALID_DEP="$TMPDIR_FIXTURES/valid_dep.json"
+cat >"$VALID_DEP" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]},{"id":"2","dependencies":["1"]}]}}
+EOF
+
 assert "orphan dep fails validator" \
     bash -c "! python3 '$VALIDATOR' '$ORPHAN_DEP'"
 
@@ -92,6 +100,9 @@ assert "int dep fails validator" \
 
 assert "int dep error mentions dep or type" \
     bash -c "python3 '$VALIDATOR' '$INT_DEP' 2>&1 | grep -qiE 'dep|type|str'"
+
+assert "valid non-empty dep passes validator" \
+    python3 "$VALIDATOR" "$VALID_DEP"
 
 # -- Invariant 3: no duplicate ids -------------------------------------------
 echo ""
@@ -145,6 +156,23 @@ assert "bad subtask int id passes without --check-subtasks (default-off verified
 # Enabled: bad subtask id fails WITH the flag.
 assert "bad subtask int id fails with --check-subtasks" \
     bash -c "! python3 '$VALIDATOR' --check-subtasks '$BAD_SUBTASK'"
+
+# Subtask invariant 2: orphan dep under --check-subtasks.
+# Subtask "1" references dep "999" which does not exist as a sibling or parent
+# task id.  This exercises the subtask branch of inv-2 (previously untested).
+SUBTASK_ORPHAN_DEP="$TMPDIR_FIXTURES/subtask_orphan_dep.json"
+cat >"$SUBTASK_ORPHAN_DEP" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[],"subtasks":[{"id":"1","dependencies":["999"]}]}]}}
+EOF
+
+assert "subtask orphan dep passes without --check-subtasks (default-off)" \
+    python3 "$VALIDATOR" "$SUBTASK_ORPHAN_DEP"
+
+assert "subtask orphan dep fails with --check-subtasks" \
+    bash -c "! python3 '$VALIDATOR' --check-subtasks '$SUBTASK_ORPHAN_DEP'"
+
+assert "subtask orphan dep error mentions '999' or 'orphan'" \
+    bash -c "python3 '$VALIDATOR' --check-subtasks '$SUBTASK_ORPHAN_DEP' 2>&1 | grep -qE '999|orphan'"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
