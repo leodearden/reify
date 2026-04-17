@@ -122,16 +122,20 @@ mod tests {
     fn register_if_absent_does_not_overwrite() {
         let mut scope = CompilationScope::new("TestEntity");
 
-        // Vacant case: register_if_absent should insert and return true.
+        // Vacant case: register_if_absent should insert and return None.
         let inserted = scope.register_if_absent("y", Type::Bool);
-        assert!(inserted, "register_if_absent should return true for a fresh name");
+        assert!(inserted.is_none(), "register_if_absent should return None for a fresh name");
         let (_, ty, _) = scope.names["y"].clone();
         assert_eq!(ty, Type::Bool, "fresh insert should store the given type");
 
-        // Occupied case: register_if_absent must NOT overwrite and must return false.
+        // Occupied case: register_if_absent must NOT overwrite and must return Some(rejected_ty).
         scope.register("x", Type::Real);
-        let overwritten = scope.register_if_absent("x", Type::length());
-        assert!(!overwritten, "register_if_absent should return false for an existing name");
+        let rejected = scope.register_if_absent("x", Type::length());
+        assert_eq!(
+            rejected,
+            Some(Type::length()),
+            "register_if_absent should hand back the rejected type on conflict"
+        );
         let (_, ty, _) = scope.names["x"].clone();
         assert_eq!(ty, Type::Real, "existing type must not be overwritten");
     }
