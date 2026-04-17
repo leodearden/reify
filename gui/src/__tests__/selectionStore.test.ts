@@ -274,6 +274,46 @@ describe('selectionStore', () => {
     });
   });
 
+  describe('selectEntity backward-compat alias', () => {
+    it('selectEntity(path) sets selectedEntities=[path] (same as selectSingle)', () => {
+      createRoot((dispose) => {
+        const { state, selectEntity } = createSelectionStore();
+        selectEntity('Bracket');
+        expect(state.selectedEntities).toEqual(['Bracket']);
+        dispose();
+      });
+    });
+
+    it('selectEntity(path) sets anchorEntity=path (same as selectSingle)', () => {
+      createRoot((dispose) => {
+        const { state, selectEntity } = createSelectionStore();
+        selectEntity('Bracket');
+        expect(state.anchorEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('selectEntity(null) empties selectedEntities (same as clearSelection)', () => {
+      createRoot((dispose) => {
+        const { state, selectEntity } = createSelectionStore();
+        selectEntity('Bracket');
+        selectEntity(null);
+        expect(state.selectedEntities).toEqual([]);
+        dispose();
+      });
+    });
+
+    it('selectEntity(null) clears anchorEntity (same as clearSelection)', () => {
+      createRoot((dispose) => {
+        const { state, selectEntity } = createSelectionStore();
+        selectEntity('Bracket');
+        selectEntity(null);
+        expect(state.anchorEntity).toBeNull();
+        dispose();
+      });
+    });
+  });
+
   it('selectEntity(null) clears selection', () => {
     createRoot((dispose) => {
       const { state, selectEntity } = createSelectionStore();
