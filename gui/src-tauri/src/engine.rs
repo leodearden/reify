@@ -507,7 +507,7 @@ impl EngineSession {
     ///
     /// - **Template roots** — keyed by `template.name` (e.g. `"Bracket"`).
     ///   `content_hash` = `template.content_hash.to_string()` (32-char hex).
-    ///   `structural_fingerprint` = `"{entity_kind}::{sub_count}:{children_hash}"`.
+    ///   `structural_fingerprint` = `"{entity_kind}:root:{sub_count}:{children_hash}"`.
     ///   `source_span` = `None` (TopologyTemplate has no span in the compiled IR).
     ///
     /// - **Value cells** — keyed by `"{template.name}.{cell.id.member}"`.
@@ -534,10 +534,10 @@ impl EngineSession {
             let sub_count = template.sub_components.len();
             let children_hash =
                 ContentHash::combine_all(template.sub_components.iter().map(|s| s.content_hash));
-            // The second field (parent) is intentionally empty for template roots:
+            // The second field (parent) uses the 'root' sentinel for template roots:
             // they have no containing definition.  Format: "{kind}:{parent}:{sub_count}:{hash}".
             let structural_fingerprint =
-                format!("{}:{}:{}:{}", entity_kind, "", sub_count, children_hash);
+                format!("{}:{}:{}:{}", entity_kind, "root", sub_count, children_hash);
 
             map.insert(
                 template.name.clone(),

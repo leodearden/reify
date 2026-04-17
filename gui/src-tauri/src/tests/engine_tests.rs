@@ -2419,7 +2419,7 @@ fn entity_identity_serialization_roundtrip() {
     use crate::types::{EntityIdentity, SourceSpanInfo};
     let identity = EntityIdentity {
         content_hash: "abc123def456abc123def456abc123de".to_string(),
-        structural_fingerprint: "structure::0:deadbeef00000000000000000000000".to_string(),
+        structural_fingerprint: "structure:root:0:deadbeef00000000000000000000000".to_string(),
         source_span: Some(SourceSpanInfo { start: 10, end: 50 }),
     };
     let json = serde_json::to_string(&identity).expect("serialize should succeed");
