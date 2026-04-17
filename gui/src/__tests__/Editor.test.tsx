@@ -19,7 +19,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Editor } from '../editor/Editor';
+import { Editor, EDITOR_DEBOUNCE_MS } from '../editor/Editor';
 
 const mockListen = vi.mocked(listen);
 const mockInvoke = vi.mocked(invoke);
@@ -65,6 +65,12 @@ describe('Editor mounting', () => {
     const cmContent = container.querySelector('.cm-content');
     expect(cmContent).not.toBeNull();
     expect(cmContent!.textContent).toContain('structure Bracket');
+  });
+});
+
+describe('Editor debounce constant', () => {
+  it('EDITOR_DEBOUNCE_MS is exported with value 300', () => {
+    expect(EDITOR_DEBOUNCE_MS).toBe(300);
   });
 });
 
