@@ -156,5 +156,83 @@ assert "non-master tag: numeric subtask id is normalized to string" \
 assert "master tag: unchanged by multi-tag run" \
     bash -c "[ \"\$(jq -r '.master.tasks[0].id' '$_fix6')\" = '1' ]"
 
+# ==============================================================================
+# Check 7: malformed-schema robustness — non-conforming shapes are skipped
+# ==============================================================================
+echo ""
+echo "--- Check 7: malformed-schema robustness ---"
+
+# (a) Tag value is a string (not a dict) — must not crash, must be a no-op.
+_fix7a="$_tmpdir/fix_tag_string.json"
+printf '{"bad_tag":"not-a-dict","master":{"tasks":[{"id":"1","subtasks":[]}]}}\n' > "$_fix7a"
+_fix7a_before="$_tmpdir/fix_tag_string_before.json"
+cp "$_fix7a" "$_fix7a_before"
+
+_fix7a_stderr="$_tmpdir/fix7a_stderr.txt"
+assert "malformed (a): tag value is string — exits 0" \
+    bash -c "python3 '$NORMALIZE' '$_fix7a' 2>'$_fix7a_stderr'"
+assert "malformed (a): tag value is string — no Traceback on stderr" \
+    bash -c "! grep -q 'Traceback' '$_fix7a_stderr'"
+assert "malformed (a): tag value is string — file is byte-identical to input" \
+    cmp -s "$_fix7a_before" "$_fix7a"
+
+# (b) tasks field is a dict (not a list) — must not crash, must be a no-op.
+_fix7b="$_tmpdir/fix_tasks_dict.json"
+printf '{"master":{"tasks":{"0":{"id":1}}}}\n' > "$_fix7b"
+_fix7b_before="$_tmpdir/fix_tasks_dict_before.json"
+cp "$_fix7b" "$_fix7b_before"
+
+_fix7b_stderr="$_tmpdir/fix7b_stderr.txt"
+assert "malformed (b): tasks is a dict — exits 0" \
+    bash -c "python3 '$NORMALIZE' '$_fix7b' 2>'$_fix7b_stderr'"
+assert "malformed (b): tasks is a dict — no Traceback on stderr" \
+    bash -c "! grep -q 'Traceback' '$_fix7b_stderr'"
+assert "malformed (b): tasks is a dict — file is byte-identical to input" \
+    cmp -s "$_fix7b_before" "$_fix7b"
+
+# (c) subtasks field is a dict (not a list) — must not crash, must be a no-op.
+_fix7c="$_tmpdir/fix_subtasks_dict.json"
+printf '{"master":{"tasks":[{"id":"1","subtasks":{"0":{"id":99}}}]}}\n' > "$_fix7c"
+_fix7c_before="$_tmpdir/fix_subtasks_dict_before.json"
+cp "$_fix7c" "$_fix7c_before"
+
+_fix7c_stderr="$_tmpdir/fix7c_stderr.txt"
+assert "malformed (c): subtasks is a dict — exits 0" \
+    bash -c "python3 '$NORMALIZE' '$_fix7c' 2>'$_fix7c_stderr'"
+assert "malformed (c): subtasks is a dict — no Traceback on stderr" \
+    bash -c "! grep -q 'Traceback' '$_fix7c_stderr'"
+assert "malformed (c): subtasks is a dict — file is byte-identical to input" \
+    cmp -s "$_fix7c_before" "$_fix7c"
+
+# (d) A task entry is a string (not a dict) — must not crash, must be a no-op.
+_fix7d="$_tmpdir/fix_task_string.json"
+printf '{"master":{"tasks":["not-a-dict",{"id":"2","subtasks":[]}]}}\n' > "$_fix7d"
+_fix7d_before="$_tmpdir/fix_task_string_before.json"
+cp "$_fix7d" "$_fix7d_before"
+
+_fix7d_stderr="$_tmpdir/fix7d_stderr.txt"
+assert "malformed (d): task entry is string — exits 0" \
+    bash -c "python3 '$NORMALIZE' '$_fix7d' 2>'$_fix7d_stderr'"
+assert "malformed (d): task entry is string — no Traceback on stderr" \
+    bash -c "! grep -q 'Traceback' '$_fix7d_stderr'"
+assert "malformed (d): task entry is string — file is byte-identical to input" \
+    cmp -s "$_fix7d_before" "$_fix7d"
+
+# (e) Mixed fixture: a well-formed namespace alongside a malformed one.
+# The malformed namespace is skipped; the well-formed namespace is still normalized.
+_fix7e="$_tmpdir/fix_mixed.json"
+cat > "$_fix7e" <<'FIXTURE'
+{"master":{"tasks":[{"id":5,"subtasks":[{"id":6}]}]},"bad_ns":{"tasks":{"0":"not-a-dict"}}}
+FIXTURE
+
+assert "malformed (e): mixed — exits 0" \
+    bash -c "python3 '$NORMALIZE' '$_fix7e' 2>/dev/null"
+assert "malformed (e): mixed — well-formed task id is normalized to string" \
+    bash -c "[ \"\$(jq -r '.master.tasks[0].id | type' '$_fix7e')\" = 'string' ]"
+assert "malformed (e): mixed — well-formed subtask id is normalized to string" \
+    bash -c "[ \"\$(jq -r '.master.tasks[0].subtasks[0].id | type' '$_fix7e')\" = 'string' ]"
+assert "malformed (e): mixed — malformed tasks dict is preserved byte-for-byte in JSON output" \
+    bash -c "[ \"\$(jq -r '.bad_ns.tasks | type' '$_fix7e')\" = 'object' ]"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
