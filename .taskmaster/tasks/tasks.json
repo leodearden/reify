@@ -11376,7 +11376,7 @@
         "description": "Address robustness suggestions from task #326 review:\n1. Add debug_assert in load_stdlib() that no module has error-level diagnostics — silent cache of broken modules is dangerous (stdlib_loader.rs:23-38)\n2. Compile stdlib modules sequentially with compile_with_prelude so cross-module deps work when second .ri file is added (stdlib_loader.rs:33-36)\n3. Document function shadowing semantics in eval() — user functions shadow prelude by insertion order with iter().find() first-match (lib.rs:847-854)\n4. Investigate _distance_f64 rename — confirm whether is_finite() guard was intentional validation or dead code (lib.rs:3244)\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-eval/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11397,7 +11397,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T01:09:21.688Z"
+        "updatedAt": "2026-04-17T02:19:53.703Z"
       },
       {
         "id": "516",
@@ -39355,20 +39355,10 @@
             "crates/reify-compiler/tests/solid_param_tests.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "GuardedGroupDecl",
-              "geometry_lets",
-              "RealizationDecl",
-              "Solid"
-            ],
+            "entities": [],
             "queries": [
-              "GuardedGroup nested recursion Solid geometry params entity.rs",
-              "geometry_lets map construction collection recursive",
-              "register_guarded_names nested group traversal reify",
-              "is_solid_geometry_param predicate duplication entity guards",
-              "stash-fail task 1877 revert pending cycle 21093bb7"
-            ],
-            "_causation_id": "21093bb7-4a36-4d84-9d68-8e09d49c28d3"
+              "resolution for: Fix nested-GuardedGroup recursion for Solid-typed geometry params (entity.rs)"
+            ]
           }
         }
       },
@@ -39912,7 +39902,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T02:19:11.347Z",
+      "lastModified": "2026-04-17T02:19:53.703Z",
       "taskCount": 1901,
       "completedCount": 1637,
       "tags": [
