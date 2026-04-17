@@ -1446,8 +1446,9 @@ pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
 /// Line lookup is O(log M).  Column computation is O(line_length) for codepoint
 /// counting — far cheaper than the O(M) full-source scan of the naive implementation.
 ///
-/// - If `offset == u32::MAX as usize` (the [`SourceSpan::prelude()`] sentinel), returns
-///   `(1, 1)` — matching `reify_types::byte_offset_to_line_col` so the two convergent
+/// - If `offset == `[`reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET`]` (i.e.
+///   `u32::MAX as usize`, the [`SourceSpan::prelude()`] sentinel), returns `(1, 1)` —
+///   matching `reify_types::byte_offset_to_line_col` so the two convergent
 ///   implementations agree at the sentinel (cross-validated in `engine_tests.rs`).
 ///
 /// [`SourceSpan::prelude()`]: reify_types::SourceSpan::prelude
@@ -1456,12 +1457,13 @@ pub(crate) fn offset_to_line_col_fast(
     line_offsets: &[usize],
     offset: usize,
 ) -> (usize, usize) {
-    // Prelude-sentinel early return: u32::MAX is used by SourceSpan::prelude()
-    // to mark spans that have no meaningful byte-offset in the current
-    // compilation unit (e.g. cross-prelude collision warnings).  Return (1, 1)
-    // — matching reify_types::byte_offset_to_line_col so the two convergent
+    // Prelude-sentinel early return: SourceSpan::PRELUDE_SENTINEL_OFFSET
+    // (u32::MAX as usize) is used by SourceSpan::prelude() to mark spans that
+    // have no meaningful byte-offset in the current compilation unit (e.g.
+    // cross-prelude collision warnings).  Return (1, 1) — matching
+    // reify_types::byte_offset_to_line_col so the two convergent
     // implementations agree at the sentinel.
-    if offset == u32::MAX as usize {
+    if offset == reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET {
         return (1, 1);
     }
     // Count newlines that appear *strictly before* `offset`.

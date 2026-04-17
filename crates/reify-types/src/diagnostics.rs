@@ -30,6 +30,22 @@ impl SourceSpan {
         self.start == self.end
     }
 
+    /// The raw `usize` byte-offset value that identifies the prelude sentinel.
+    ///
+    /// Equals `u32::MAX as usize` — the value you get when casting
+    /// `SourceSpan::prelude().start` or `SourceSpan::prelude().end` to `usize`.
+    /// Both `reify_types::byte_offset_to_line_col` and
+    /// `gui::engine::offset_to_line_col_fast` check for this exact value and
+    /// return `(1, 1)` without further computation.
+    ///
+    /// Prefer this constant over a bare `u32::MAX as usize` literal so the
+    /// sentinel contract is expressed in one canonical location.
+    ///
+    /// Note: `source_location::byte_offset_to_line_col` currently uses the raw
+    /// literal directly (that file is a separate module); a follow-up can migrate
+    /// it to reference this constant.
+    pub const PRELUDE_SENTINEL_OFFSET: usize = u32::MAX as usize;
+
     /// A sentinel span used for prelude-originated entries that have no
     /// meaningful byte-offset in the current compilation unit.
     ///
@@ -42,17 +58,20 @@ impl SourceSpan {
     ///
     /// - Both `reify_types::byte_offset_to_line_col` and the GUI/LSP fast path
     ///   (`gui::engine::offset_to_line_col_fast`) short-circuit the prelude
-    ///   sentinel to `(1, 1)` — the same "no user-file location" fallback used
-    ///   by `mcp_context::get_diagnostics` when no labels are present.  This
-    ///   prevents a `debug_assert` panic (debug builds) and a silent past-last-
-    ///   line mis-report (release builds).
+    ///   sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) to `(1, 1)` — the
+    ///   same "no user-file location" fallback used by `mcp_context::get_diagnostics`
+    ///   when no labels are present.  This prevents a `debug_assert` panic
+    ///   (debug builds) and a silent past-last-line mis-report (release builds).
+    /// - Ad-hoc offset converters that do **not** route through one of those
+    ///   helpers (e.g. `reify_lsp::convert::offset_to_position`) apply
+    ///   `offset.min(source.len())` clamping instead, producing an EOF-position
+    ///   rather than `(1, 1)`.  Callers using such converters must guard with
+    ///   [`SourceSpan::is_prelude`] before the offset conversion.
     /// - The provenance truth for prelude-originated entries is carried by the
     ///   label *message* (e.g. "defined in stdlib prelude"), not the span
-    ///   coordinates — callers rendering span coordinates should rely on the
-    ///   `(1, 1)` fallback rather than any "degrades to EOF" assumption.
-    /// - Callers that want explicit presentation control are still encouraged
-    ///   to check [`SourceSpan::is_prelude`] and substitute a "no user-file
-    ///   location" message rather than leaning on the numeric fallback.
+    ///   coordinates.  For explicit control over presentation, check
+    ///   [`SourceSpan::is_prelude`] and substitute a "no user-file location"
+    ///   message rather than relying on any numeric fallback.
     pub fn prelude() -> Self {
         Self {
             start: u32::MAX,
