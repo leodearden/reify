@@ -852,6 +852,108 @@ describe('viewStateStore — regenerateAutoViews — populate and preserve', () 
   });
 });
 
+describe('viewStateStore — regenerateAutoViews — active view reconciliation', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) activeViewId="auto:default", regenerateAutoViews(tree) → state.explicit equals default view visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // activeViewId defaults to 'auto:default'
+      store.regenerateAutoViews(makeTree());
+      const defaultView = store.state.views['auto:default'];
+      expect(store.state.explicit['Root']).toBe(defaultView.visibility['Root']);
+      expect(store.state.explicit['Root.geo']).toBe(defaultView.visibility['Root.geo']);
+      expect(store.state.explicit['Root.body']).toBe(defaultView.visibility['Root.body']);
+      dispose();
+    });
+  });
+
+  it('(b) after tree change removing an entity, regenerateAutoViews reapplies new default view and removed path is gone from explicit', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      // Now remove Root.body from the tree
+      const reducedTree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
+          ],
+        }),
+      ];
+      store.regenerateAutoViews(reducedTree);
+      // Root.body no longer in tree → should not be in explicit
+      expect(store.state.explicit['Root.body']).toBeUndefined();
+      expect(store.state.explicit['Root.geo']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('(c) activeViewId="auto:purpose:foo", regenerateAutoViews(tree, []) (purpose deactivated) → falls back to "auto:default"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // First populate with foo purpose active
+      store.regenerateAutoViews(makeTree(), ['foo']);
+      store.setActiveView('auto:purpose:foo');
+      expect(store.state.activeViewId).toBe('auto:purpose:foo');
+      // Now regenerate without the purpose
+      store.regenerateAutoViews(makeTree(), []);
+      // Should fall back to auto:default
+      expect(store.state.activeViewId).toBe('auto:default');
+      const defaultView = store.state.views['auto:default'];
+      expect(store.state.explicit['Root.body']).toBe(defaultView.visibility['Root.body']);
+      dispose();
+    });
+  });
+
+  it('(d) activeViewId="user:mine" — user explicit retained, new path Root.C not set in explicit', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const userView: ViewDefinition = {
+        id: 'user:mine',
+        name: 'Mine',
+        auto: false,
+        modified: false,
+        visibility: { 'Root.A': 'hidden' },
+      };
+      store.seedView(userView);
+      store.setActiveView('user:mine');
+      expect(store.state.activeViewId).toBe('user:mine');
+      // Tree with Root.A and new Root.C
+      const tree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.A', kind: 'param' }),
+            makeNode({ entity_path: 'Root.C', kind: 'param' }),
+          ],
+        }),
+      ];
+      store.regenerateAutoViews(tree);
+      // User view stays active
+      expect(store.state.activeViewId).toBe('user:mine');
+      // Existing path Root.A retains its user-view explicit state
+      expect(store.state.explicit['Root.A']).toBe('hidden');
+      // NEW path Root.C is NOT set (so defaultRuleFor handles it via walk-up)
+      expect(store.state.explicit['Root.C']).toBeUndefined();
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — setTree pruning', () => {
   it('stale explicit entries for removed paths are pruned when setTree is called', () => {
     createRoot((dispose) => {
