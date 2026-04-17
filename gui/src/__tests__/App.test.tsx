@@ -2488,3 +2488,97 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
     });
   });
 });
+
+describe('App viewport multi-selection modifier routing', () => {
+  it('selectedEntities prop is passed from App to Viewport as an array', async () => {
+    await renderAndWaitForReady();
+
+    // The prop must exist and be an array (initially empty)
+    expect(Array.isArray(capturedViewportProps.selectedEntities)).toBe(true);
+    expect(capturedViewportProps.selectedEntities).toHaveLength(0);
+  });
+
+  it('Ctrl+click on viewport toggles entity into selectedEntities without calling navigateToSource', async () => {
+    await renderAndWaitForReady();
+
+    await waitFor(() => {
+      expect(capturedViewportProps.onSelect).toBeDefined();
+    });
+
+    vi.mocked(bridge.getSourceLocation).mockClear();
+
+    // Ctrl+click on EntityA: should call toggleSelect, adding it to selectedEntities
+    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA']);
+    });
+
+    // getSourceLocation should NOT have been called for Ctrl+click
+    expect(bridge.getSourceLocation).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+click multiple entities builds selectedEntities array', async () => {
+    await renderAndWaitForReady();
+
+    await waitFor(() => {
+      expect(capturedViewportProps.onSelect).toBeDefined();
+    });
+
+    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA']);
+    });
+
+    capturedViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
+    });
+  });
+
+  it('plain click on viewport calls navigateToSource (selectSingle) replacing prior multi-selection', async () => {
+    await renderAndWaitForReady();
+
+    await waitFor(() => {
+      expect(capturedViewportProps.onSelect).toBeDefined();
+    });
+
+    // First, Ctrl+click to build a multi-selection
+    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+    capturedViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
+    });
+
+    vi.mocked(bridge.getSourceLocation).mockClear();
+
+    // Plain click on EntityC: should call navigateToSource → selectSingle → replaces selection
+    capturedViewportProps.onSelect('EntityC', { ctrl: false, shift: false });
+
+    await waitFor(() => {
+      expect(bridge.getSourceLocation).toHaveBeenCalledWith('EntityC');
+    });
+
+    // After selectSingle, selectedEntities = ['EntityC'] only
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual(['EntityC']);
+    });
+  });
+
+  it('backward compat: onSelect called with no modifiers still routes to navigateToSource', async () => {
+    await renderAndWaitForReady();
+
+    await waitFor(() => {
+      expect(capturedViewportProps.onSelect).toBeDefined();
+    });
+
+    vi.mocked(bridge.getSourceLocation).mockClear();
+
+    // Old-style call with no second arg (undefined modifiers)
+    capturedViewportProps.onSelect('EntityD');
+
+    await waitFor(() => {
+      expect(bridge.getSourceLocation).toHaveBeenCalledWith('EntityD');
+    });
+  });
+});
