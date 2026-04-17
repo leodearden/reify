@@ -82,3 +82,27 @@ fn sphere_arg_count_diagnostic_has_span_label() {
     assert!(!first.labels.is_empty(), "expected at least one label on sphere arg-count diagnostic");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span on sphere arg-count label");
 }
+
+// ── linear_pattern() ───────────────────────────────────────────────────
+
+#[test]
+fn linear_pattern_arg_count_diagnostic_has_span_label() {
+    // linear_pattern() expects 6 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let p = linear_pattern(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("linear_pattern() expects 6 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'linear_pattern() expects 6 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on linear_pattern arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on linear_pattern arg-count label");
+}
