@@ -12,9 +12,9 @@
 
 use reify_compiler::DefaultKind;
 use reify_test_support::{compile_source, errors_only};
-use reify_types::{DimensionVector, Type};
+use reify_types::{Diagnostic, DimensionVector, Type};
 
-// ── helper ────────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Compile `source`, find the named trait, and return the `cell_type` from its
 /// first `DefaultKind::Let` default.
@@ -36,6 +36,25 @@ fn extract_let_cell_type(source: &str, trait_name: &str) -> Option<Type> {
         DefaultKind::Let { cell_type, .. } => cell_type.clone(),
         other => panic!("expected DefaultKind::Let, got {:?}", other),
     }
+}
+
+/// Returns true if any diagnostic's message flags `name` as an unresolved
+/// identifier.  Tolerant of minor wording variations — the identifier may
+/// appear quoted as `'name'`, ``` `name` ```, or after a colon (`: name`) —
+/// so the test remains stable under reasonable message-churn while still
+/// pinning the specific semantic error (rather than any error containing
+/// the literal word "unresolved").
+///
+/// Diagnostic today does not carry a stable code/category field (see
+/// `crates/reify-types/src/diagnostics.rs`); if one is introduced,
+/// prefer asserting on that over this prose-level probe.
+fn diagnostic_names_unresolved(diagnostics: &[&Diagnostic], name: &str) -> bool {
+    diagnostics.iter().any(|d| {
+        d.message.contains("unresolved")
+            && (d.message.contains(&format!(": {}", name))
+                || d.message.contains(&format!("'{}'", name))
+                || d.message.contains(&format!("`{}`", name)))
+    })
 }
 
 // ── step-1 (test): DefaultKind::Let carries cell_type ────────────────────────
@@ -548,10 +567,6 @@ structure S : MutualLets {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let names_b = |msg: &str| {
-        msg.contains("unresolved")
-            && (msg.contains(": b") || msg.contains("'b'") || msg.contains("`b`"))
-    };
     assert!(
         !errors.is_empty(),
         "mutual unannotated-let limitation should surface a diagnostic today \
@@ -560,9 +575,55 @@ structure S : MutualLets {
          pass started preflighting annotations without an architectural fix"
     );
     assert!(
-        errors.iter().any(|d| names_b(&d.message)),
+        diagnostic_names_unresolved(&errors, "b"),
         "mutual unannotated-let diagnostic should surface an unresolved-identifier \
          error that names `b` (the forward reference), got: {:?}",
+        errors
+    );
+}
+
+/// Reverse-order companion to `mutual_unannotated_lets_documented_limitation`:
+/// declaring `let b = 2mm` *before* `let a = b + 1mm` compiles cleanly, because
+/// the pre-register/inference pass in `conformance.rs` walks `ctx.defaults` in
+/// declaration order and `b` is already in scope by the time `a`'s expression
+/// is compiled.
+///
+/// This test pins declaration order as the contract: the iteration order of
+/// `ctx.defaults` is established by `collect_all_requirements` (see
+/// `crates/reify-compiler/src/conformance.rs` — push order during the
+/// requirements walk), and swapping the two declarations changes the
+/// observable outcome from "unresolved `b`" to "clean compile".  If a future
+/// refactor reorders `ctx.defaults` (e.g., sorts by name for deterministic
+/// output), *both* this test AND
+/// `mutual_unannotated_lets_documented_limitation` must be re-evaluated:
+/// - Alphabetical sort → `a, b` ordering in both variants → both fail the
+///   forward-reference → the `!errors.is_empty()` assertion in the sibling
+///   test would still hold, but *this* test would flip to failure, surfacing
+///   the contract change.
+/// - Topological sort → both variants compile cleanly → flip the sibling's
+///   assertion to zero-errors; this test keeps passing.
+#[test]
+fn unannotated_lets_reverse_order_compiles_cleanly() {
+    let source = r#"
+trait ReverseOrder {
+    let b = 2mm
+    let a = b + 1mm
+}
+structure S : ReverseOrder {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        errors.is_empty(),
+        "reverse-order variant (`let b = 2mm` before `let a = b + 1mm`) should \
+         compile without errors — `b` is registered in scope by the \
+         pre-register pass before `a`'s expression is compiled.  If this \
+         starts failing, the declaration-order contract of `ctx.defaults` \
+         iteration in conformance.rs may have changed; see \
+         `mutual_unannotated_lets_documented_limitation` for the paired \
+         expectation.  Got: {:?}",
         errors
     );
 }

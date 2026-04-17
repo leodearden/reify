@@ -487,10 +487,12 @@ pub(crate) fn check_trait_conformance(
                                              and injection guards in conformance.rs",
                                             name
                                         ))
-                                        .with_label(DiagnosticLabel::new(
-                                            default.span,
-                                            "internal consistency",
-                                        )),
+                                        .with_label(
+                                            DiagnosticLabel::new(
+                                                default.span,
+                                                "internal consistency",
+                                            ),
+                                        ),
                                     );
                                     // Skip injection for this default rather than
                                     // silently recompiling (see comment block above).
