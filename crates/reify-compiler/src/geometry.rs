@@ -193,10 +193,13 @@ pub(crate) fn compile_geometry_call(
         // --- Primitives ---
         "box" => {
             if compiled_args.len() != 3 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "box() expects 3 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "box() expects 3 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
