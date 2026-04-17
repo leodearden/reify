@@ -3325,3 +3325,22 @@ fn get_containing_definition_reads_from_line_offsets_cache() {
          should return None (proves the method uses the cached table)"
     );
 }
+
+#[test]
+fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with valid bracket source");
+
+    // With a successful tessellation (MockGeometryKernel never errors),
+    // tessellation_diagnostics must be empty.
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "expected empty tessellation_diagnostics after successful tessellation, got {:?}",
+        state.tessellation_diagnostics
+    );
+}
