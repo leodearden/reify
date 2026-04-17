@@ -718,3 +718,151 @@ constraint def PrivDef {
         priv_def.predicates.len()
     );
 }
+
+// ── Test 15: name collision from two prelude modules emits shadow warning ────────
+
+/// Two imported modules each declare `pub constraint def MinThickness`; compiling
+/// a main module that imports both must emit at least one Warning-severity diagnostic
+/// mentioning "MinThickness" and both module names/paths.
+///
+/// Covers task 880 #1 (prelude shadow warning).
+#[test]
+fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
+    use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+
+    // Module a: defines pub MinThickness
+    fs::write(
+        dir.join("a.ri"),
+        "pub constraint def MinThickness {\n    param t: Length\n    t > 0mm\n}\n",
+    )
+    .unwrap();
+
+    // Module b: also defines pub MinThickness (same name, different module)
+    fs::write(
+        dir.join("b.ri"),
+        "pub constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}\n",
+    )
+    .unwrap();
+
+    // Main module: imports both a and b — should trigger shadow warning
+    fs::write(
+        dir.join("main.ri"),
+        "import a\nimport b\nstructure S {\n    param t: Length = 5mm\n    constraint MinThickness(t: t)\n}\n",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("main", &resolver);
+
+    assert!(
+        result.is_ok(),
+        "expected compilation to succeed (shadow warning, not error), got: {:?}",
+        result.unwrap_err()
+    );
+
+    let compiled_main = dag.modules.get("main").expect("compiled module 'main' not found");
+
+    // Must have at least one Warning diagnostic mentioning "MinThickness"
+    let warnings: Vec<_> = compiled_main
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .collect();
+
+    let shadow_warning = warnings.iter().any(|d| d.message.contains("MinThickness"));
+    assert!(
+        shadow_warning,
+        "expected a Warning diagnostic mentioning 'MinThickness' for the name collision, \
+         got diagnostics: {:?}",
+        compiled_main.diagnostics
+    );
+}
+
+// ── Test 16: non-pub constraint def invisible across module boundary ──────────────
+
+/// Module A defines a non-pub constraint def; module B imports A and attempts to
+/// instantiate the non-pub def — must produce an "unknown" diagnostic (the def is
+/// not exported). Module A's own structure that uses the def must compile cleanly.
+///
+/// Covers task 878 subtest "non-pub cross-module invisibility".
+#[test]
+fn non_pub_constraint_def_not_instantiable_cross_module() {
+    use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+
+    // Module a: non-pub MinThickness (no `pub`), used internally in Wall
+    fs::write(
+        dir.join("a.ri"),
+        concat!(
+            "constraint def MinThickness {\n",
+            "    param t: Length\n",
+            "    t > 0mm\n",
+            "}\n",
+            "pub structure Wall {\n",
+            "    param thickness: Length = 5mm\n",
+            "    constraint MinThickness(t: thickness)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+
+    // Module b: imports a, tries to use the non-pub MinThickness in its own structure
+    fs::write(
+        dir.join("b.ri"),
+        concat!(
+            "import a\n",
+            "structure Panel {\n",
+            "    param t: Length = 3mm\n",
+            "    constraint MinThickness(t: t)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let _result = dag.compile_module("b", &resolver);
+
+    // Module a should have no errors (internal use of non-pub def is valid)
+    let compiled_a = dag.modules.get("a").expect("compiled module 'a' not found");
+    let a_errors: Vec<_> = compiled_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        a_errors.is_empty(),
+        "module a should compile cleanly (non-pub def used internally), got errors: {:?}",
+        a_errors
+    );
+
+    // Module b should have an error: MinThickness is not visible across the boundary
+    let compiled_b = dag.modules.get("b").expect("compiled module 'b' not found");
+    let b_errors: Vec<_> = compiled_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        !b_errors.is_empty(),
+        "expected an error in module b: non-pub MinThickness should not be visible, \
+         got no errors (diagnostics: {:?})",
+        compiled_b.diagnostics
+    );
+    let has_unknown_msg = b_errors
+        .iter()
+        .any(|d| d.message.to_lowercase().contains("unknown") || d.message.contains("MinThickness"));
+    assert!(
+        has_unknown_msg,
+        "expected error mentioning 'unknown' or 'MinThickness', got: {:?}",
+        b_errors
+    );
+}
