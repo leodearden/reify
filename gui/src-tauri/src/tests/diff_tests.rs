@@ -43,6 +43,7 @@ fn diff_identical_states_returns_empty_delta() {
         values: vec![sample_value("Bracket.width", "80")],
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&state, &state);
@@ -68,12 +69,14 @@ fn diff_detects_changed_value() {
         values: vec![sample_value("Bracket.width", "80")],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
         values: vec![sample_value("Bracket.width", "120")],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -91,12 +94,14 @@ fn diff_detects_changed_constraint() {
         values: vec![],
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
         values: vec![],
         constraints: vec![sample_constraint("Bracket.0", "Violated")],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -117,6 +122,7 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
         values: vec![],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![
@@ -126,6 +132,7 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
         values: vec![],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -146,6 +153,7 @@ fn diff_handles_added_and_removed_entities() {
         ],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
@@ -155,6 +163,7 @@ fn diff_handles_added_and_removed_entities() {
         ],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -178,6 +187,7 @@ fn full_delta_contains_all_items_from_state() {
         values: vec![sample_value("Bracket.width", "80")],
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     let delta = StateDelta::full(&state);
@@ -202,6 +212,7 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
         values: vec![sample_value("Bracket.width", "80")],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
 
     // First call with None last_state → full delta
@@ -215,6 +226,7 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
         values: vec![sample_value("Bracket.width", "120")],             // changed
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let delta = compute_delta(&last_state, &state2);
     assert!(delta.changed_meshes.is_empty(), "diff: mesh unchanged");

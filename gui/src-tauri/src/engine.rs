@@ -433,6 +433,7 @@ impl EngineSession {
                     values: Vec::new(),
                     constraints: Vec::new(),
                     files: Vec::new(),
+                    tessellation_diagnostics: Vec::new(),
                 });
             }
         };
@@ -477,6 +478,7 @@ impl EngineSession {
             values,
             constraints,
             files,
+            tessellation_diagnostics: Vec::new(),
         })
     }
 
@@ -861,6 +863,7 @@ fn build_preview_gui_state(
         values: build_values(compiled, check),
         constraints: build_constraints(compiled, check),
         files: Vec::new(),
+        tessellation_diagnostics: Vec::new(),
     }
 }
 
