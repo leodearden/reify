@@ -30,6 +30,27 @@ impl SourceSpan {
         self.start == self.end
     }
 
+    /// A sentinel span used for prelude-originated entries that have no
+    /// meaningful byte-offset in the current compilation unit.
+    ///
+    /// The value `{ start: u32::MAX, end: u32::MAX }` is guaranteed to fall
+    /// outside any real source (files are bounded well below 4 GiB in
+    /// practice).  Use [`SourceSpan::is_prelude`] to detect this sentinel.
+    /// Existing renderers clamp offsets safely via `offset.min(source.len())`,
+    /// so no renderer crate needs changes.
+    pub fn prelude() -> Self {
+        Self {
+            start: u32::MAX,
+            end: u32::MAX,
+        }
+    }
+
+    /// Returns `true` if this span is the prelude sentinel produced by
+    /// [`SourceSpan::prelude`].
+    pub fn is_prelude(&self) -> bool {
+        self.start == u32::MAX && self.end == u32::MAX
+    }
+
     /// Merge two spans into one covering both.
     pub fn merge(self, other: SourceSpan) -> SourceSpan {
         SourceSpan {
