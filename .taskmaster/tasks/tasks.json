@@ -37843,15 +37843,15 @@
         "description": "The chamfer and fillet compiler arms in geometry.rs (lines ~867-909) are structurally identical, differing only in function name, ModifyKind variant, and second arg label. The same pattern exists for draft, shell, and thicken. Extract a shared helper like `compile_modify_2arg(kind, arg1_name, arg2_name, compiled_args, diagnostics, expr)` to reduce ~22 lines of near-identical code per arm.",
         "details": "## Location\n`crates/reify-compiler/src/geometry.rs` — the match arms for \"chamfer\", \"fillet\", and likely \"draft\", \"shell\", \"thicken\"\n\n## Pattern\nEach arm:\n1. Checks `compiled_args.len() != 2`\n2. Pushes an error diagnostic with the function name and span label\n3. Builds `CompiledGeometryOp::Modify { kind, target: GeomRef::Step(0), args: [(\"target\", ...), (arg2_name, ...)] }`\n\n## memory_hints\n- search: \"compile_geometry_op modify arms\"\n- search: \"Task 1715 geometry dispatch restructuring\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T06:43:53.996Z",
+        "updatedAt": "2026-04-17T06:47:15.264Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/geometry.rs",
-            "crates/reify-compiler/tests/let_scope_tests.rs"
+            "crates/reify-compiler/src/geometry_modify.rs",
+            "crates/reify-compiler/src/lib.rs"
           ]
         }
       },
@@ -40483,7 +40483,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T06:46:39.005Z",
+      "lastModified": "2026-04-17T06:47:15.267Z",
       "taskCount": 1932,
       "completedCount": 1659,
       "tags": [
