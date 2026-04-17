@@ -380,6 +380,39 @@ fn nested_guarded_solid_param_compiles_as_realization() {
     );
 }
 
+// ─── step-3: Intermediate white-box: nested guard lookup-table ───────────────
+
+/// Simpler variant using `where true { where true { ... } }` (no bool param
+/// overhead) to pin the lookup-table recursion specifically.
+///
+/// Both this test and `nested_guarded_solid_param_compiles_as_realization` fail
+/// for the same root cause: entity.rs only iterates one level deep in both the
+/// `geometry_lets` builder and the realization-emission loop.
+#[test]
+fn nested_guarded_solid_param_registered_in_geometry_lets() {
+    let source = r#"structure def X {
+    where true {
+        where true {
+            param g : Solid = cylinder(1mm, 1mm)
+        }
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "X")
+        .expect("X template not found");
+
+    // At least one RealizationDecl must be emitted.
+    assert!(
+        template.realizations.len() >= 1,
+        "expected at least 1 RealizationDecl for nested guarded \
+         `param g : Solid = cylinder(...)`, got {}",
+        template.realizations.len()
+    );
+}
+
 // ─── coverage: Solid param with non-geometry default (pin-down) ───────────────
 
 /// PIN-DOWN REGRESSION LOCK (task 1878).
