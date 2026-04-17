@@ -40622,7 +40622,9 @@
         "details": "Suggested by reviewer_comprehensive during task-448 review. Deferred (not folded) because S3 requires signature changes across every make_poison_literal caller and is larger than the trivial-fold threshold. Files: crates/reify-compiler/src/expr.rs (helper + 3+ call sites). Reviewer's exact wording preserved in escalation esc-448-218.",
         "testStrategy": "",
         "status": "blocked",
-        "dependencies": [],
+        "dependencies": [
+          "448"
+        ],
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T13:41:17.990Z"
@@ -40671,7 +40673,9 @@
       "completedCount": 1668,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T13:42:11.448Z",
+      "description": "Tasks for master context"
     }
   }
 }
