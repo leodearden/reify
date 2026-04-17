@@ -107,7 +107,7 @@ describe('Editor doc change handling', () => {
     expect(store.state.dirtyFiles).toContain(file1.path);
   });
 
-  it('calls bridge.updateSource after 300ms debounce', () => {
+  it('calls bridge.updateSource at EDITOR_DEBOUNCE_MS boundary — not before, yes after', () => {
     const store = setupStore();
     const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
     render(() => <Editor store={store} />);
@@ -119,8 +119,12 @@ describe('Editor doc change handling', () => {
     // Not called immediately
     expect(updateSpy).not.toHaveBeenCalled();
 
-    // After 300ms debounce
-    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    // Must NOT fire 1ms before the boundary
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS - 1);
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // Must fire exactly at the EDITOR_DEBOUNCE_MS boundary
+    vi.advanceTimersByTime(1);
     expect(updateSpy).toHaveBeenCalledWith(file1.path, expect.stringContaining('// comment'));
   });
 
