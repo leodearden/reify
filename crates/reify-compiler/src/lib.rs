@@ -579,11 +579,29 @@ pub(crate) fn compile_with_prelude_refs(
 
     // Build a constraint def registry so entity scopes can resolve constraint instantiations.
     // Prelude defs (pub-only, from imported modules) are seeded first; local defs override.
-    let mut constraint_def_registry: HashMap<String, &CompiledConstraintDef> = prelude
-        .iter()
-        .flat_map(|m| m.constraint_defs.iter().filter(|c| c.is_pub))
-        .map(|c| (c.name.clone(), c))
-        .collect();
+    // Shadow detection: warn when two different prelude modules export the same def name.
+    let mut constraint_def_registry: HashMap<String, &CompiledConstraintDef> = HashMap::new();
+    // Maps def name → path of the first module that contributed it (for shadow warnings).
+    let mut prelude_source: HashMap<String, String> = HashMap::new();
+    for m in prelude {
+        let module_path_str = m.path.to_string();
+        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
+            if let Some(prev_path) = prelude_source.get(&cd.name) {
+                if *prev_path != module_path_str {
+                    // Two different imported modules export the same constraint def name.
+                    // Emit a warning so authors know one import silently shadows the other.
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "constraint def '{}' imported from '{}' shadows definition from '{}'",
+                        cd.name, module_path_str, prev_path
+                    )));
+                }
+                // First-import wins: do not overwrite the existing registry entry.
+            } else {
+                prelude_source.insert(cd.name.clone(), module_path_str.clone());
+                constraint_def_registry.insert(cd.name.clone(), cd);
+            }
+        }
+    }
     // Local defs override prelude defs silently (by design: local always wins).
     for cd in &constraint_defs {
         constraint_def_registry.insert(cd.name.clone(), cd);

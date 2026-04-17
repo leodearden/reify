@@ -193,19 +193,31 @@ impl ModuleDag {
 
         // Use inner closure to guarantee in_progress cleanup on all exit paths
         let result = (|| -> Result<CompiledModule, Vec<Diagnostic>> {
-            // Recursively compile dependencies
+            // Single pass: compile each import dependency and collect its path.
+            // Merges the previous two-pass pattern (compile + collect_import_preludes)
+            // into one iteration over parsed.declarations.
+            let mut import_paths: Vec<String> = Vec::new();
             for decl in &parsed.declarations {
                 if let reify_syntax::Declaration::Import(import) = decl {
                     self.compile_module(&import.path, resolver)?;
+                    import_paths.push(import.path.clone());
                 }
             }
 
-            // NB: all recursive compile_module calls are done; self.modules is now
-            // stable for shared borrowing. Do not add any code here that mutates
-            // self before compile_with_prelude_refs returns — that would break
-            // the borrow checker (unlike compile_project, this separation is
-            // implicit and not block-scoped).
-            let preludes = collect_import_preludes(&parsed, &self.modules);
+            // Topological ordering guarantees every import was just compiled and inserted.
+            debug_assert!(
+                import_paths.iter().all(|p| self.modules.contains_key(p.as_str())),
+                "all imports must be compiled and in self.modules before prelude collection; \
+                 this invariant is guaranteed by the DFS loop above"
+            );
+
+            // Build prelude slice from the collected import paths.
+            // NB: self.modules is stable for shared borrowing here — no more mutations
+            // until after compile_with_prelude_refs returns.
+            let preludes: Vec<&CompiledModule> = import_paths
+                .iter()
+                .filter_map(|p| self.modules.get(p.as_str()))
+                .collect();
 
             // Compile this module with prelude context so imported constraint defs are visible.
             Ok(crate::compile_with_prelude_refs(&parsed, &preludes))
