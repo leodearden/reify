@@ -20,6 +20,8 @@ import { errorMessage } from '../utils/errorClassifier';
 import { isSameFile, normalizePath } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
+export const EDITOR_DEBOUNCE_MS = 300;
+
 export interface EditorProps {
   store: ReturnType<typeof createEditorStore>;
   /**
@@ -143,7 +145,7 @@ export function Editor(props: EditorProps) {
               updateSource(path, update.state.doc.toString()).catch((err: unknown) =>
                 console.error('Failed to update source:', err),
               );
-            }, 300);
+            }, EDITOR_DEBOUNCE_MS);
 
             // Send didChange to LSP (debounced)
             clearTimeout(lspDebounceTimer);
@@ -152,7 +154,7 @@ export function Editor(props: EditorProps) {
               lspClient
                 .didChange(pathToUri(path), update.state.doc.toString(), lspVersion)
                 .catch((err: unknown) => console.error('LSP didChange error:', err));
-            }, 300);
+            }, EDITOR_DEBOUNCE_MS);
           }
         }
         if (update.selectionSet) {
