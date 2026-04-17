@@ -184,7 +184,9 @@ def _validate_subtasks(
     context = f"{tag_context}: {inner}" if tag_context else inner
 
     # Invariant 3 within subtasks.
-    id_counter = collections.Counter(s["id"] for s in subtasks if "id" in s)
+    # Filter to string ids only: unhashable ids (list/dict) would raise TypeError;
+    # non-string ids are reported separately by invariant 1.
+    id_counter = collections.Counter(s["id"] for s in subtasks if isinstance(s.get("id"), str))
     for id_val, count in id_counter.items():
         if count > 1:
             errors.append(
