@@ -38189,11 +38189,11 @@
         "description": "In `crates/reify-compiler/src/geometry.rs` (lines ~1161-1179), the `all_dispatch_functions_accounted_for` test's count assertion is tautological. It builds a `HashSet` from four lists and asserts `all.len() == GEOM_ARG_FUNCTIONS.len() + NO_GEOM_ARG_FUNCTIONS.len() + boolean_ops.len() + loft.len()`. Since `all` is constructed from exactly those lists, this can only fail if there are duplicates — which the `all.insert()` assert already catches two lines earlier. The count check cannot detect a function added to `compile_geometry_call` without being added to the test lists.\n\nFix: Replace the derived `expected` count with a hardcoded literal (e.g., `assert_eq!(all.len(), 33)`) with a comment explaining it must be bumped when new geometry functions are added. This makes the assertion actually fail when a new dispatch arm is added without updating the test lists.\n\n## memory_hints\n- search: \"compile_geometry_call dispatch functions cross-check\"\n- entity: \"geometry_arg_indices\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:26:06.672Z",
+        "updatedAt": "2026-04-17T05:46:13.112Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs"
@@ -40303,19 +40303,30 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1928",
+        "title": "Log release-mode warning on duplicate template names in get_entity_tree",
+        "description": "In gui/src-tauri/src/engine.rs `get_entity_tree` (around lines 496-504), the template-name uniqueness invariant is currently enforced only via `debug_assert!`. In release builds, duplicates silently fall back to first-match behavior via `build_sub_node`'s lookup, which could produce silently inconsistent entity trees if a future refactor (macros, synthetic templates, module merging) breaks the compiler's well-formed-module guarantee.\n\nAdd a release-mode `tracing::warn!` (log-and-skip / log-and-continue) on first duplicate detection so the misbehaviour surfaces in logs rather than producing silently wrong trees. Keep the existing `debug_assert!` as well, or replace it with the runtime check.\n\nSource: reviewer_comprehensive on task 1783 (suggestion, optional graceful-degradation hardening).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:46:00.716Z",
-      "taskCount": 1921,
-      "completedCount": 1651,
+      "lastModified": "2026-04-17T05:46:13.112Z",
+      "taskCount": 1922,
+      "completedCount": 1652,
       "tags": [
         "master"
       ],
-      "created": "2026-04-17T05:46:04.949Z",
+      "created": "2026-04-17T05:46:13.657Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-17T05:46:04.965Z"
+      "updated": "2026-04-17T05:46:13.682Z"
     }
   }
 }
