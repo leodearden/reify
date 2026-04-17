@@ -2282,29 +2282,14 @@ fn get_entity_tree_has_mesh_true_when_realization_exists() {
 
 #[test]
 fn get_entity_tree_no_realization_has_mesh_false() {
-    // Build a module with a template that has no realizations
-    use reify_test_support::{CompiledModuleBuilder};
-    use reify_types::ModulePath;
-    use reify_types::Type;
-
-    let template = TopologyTemplateBuilder::new("Simple")
-        .param("Simple", "x", Type::length(), None)
-        .build();
-    let compiled = CompiledModuleBuilder::new(ModulePath::single("simple"))
-        .template(template)
-        .build();
-
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    // Use the bracket_compiled_module to verify the fixture API, then test our custom module
-    let _ = bracket_compiled_module(); // ensure fixture compiles
 
     // Load a module with no realizations via source (no geometry ops)
     session.load_from_source("structure Simple { param x: Scalar = 1mm }", "simple").expect("load");
     let tree = session.get_entity_tree();
     let root = &tree[0];
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
-    let _ = compiled; // suppress unused warning
 }
 
 // ---- Step 5: sub-component tree building tests ----
