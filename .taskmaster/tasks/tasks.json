@@ -40645,11 +40645,11 @@
         "description": "Two cleanups to the task-1918 error-wildcard tightening artifact:\n\n1. In `crates/reify-compiler/src/type_compat.rs` (~line 117), the doc comment for `type_compatible` references \"the internal call on line 139 (implicitly_converts_to(param_ty, arg_ty))\". After the debug_assert, short-circuit, identity check, and Int→Real widening branch, the actual call is now at line 142 — line-number references rot quickly. Replace with a symbolic reference such as \"the internal call to `implicitly_converts_to(param_ty, arg_ty)` at the end of this function\".\n\n2. In `crates/reify-compiler/tests/implicit_conversion_tests.rs`, the producer-side (arg-side) `type_compatible_error_wildcard_mirror_*` coverage was narrowed to just `real` and `list` during the 1918 rewrite. The prior commit pinned nine variants (real, int, bool, string, scalar, list, option, vector, matrix, error_error). Restore the full variant set (matching the established `type_compatible_error_wildcard_mirror_*` naming convention) so the legitimate producer-side anti-cascade path — which the tightened contract explicitly preserves — is pinned against the same variant set as before.\n\nReview followup from task 1918 (suggestions S1 & S3 of esc-1918-13).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:37:59.744Z"
+        "updatedAt": "2026-04-17T13:42:09.545Z"
       },
       {
         "id": "1946",
@@ -40666,7 +40666,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:41:17.990Z",
+      "lastModified": "2026-04-17T13:42:09.546Z",
       "taskCount": 1941,
       "completedCount": 1668,
       "tags": [
