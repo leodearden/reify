@@ -6861,4 +6861,69 @@ mod tests {
             "try_infer_type() on Option(Some(empty List)) should return None (inner is ambiguous)"
         );
     }
+
+    // ── doc-invariant tests ───────────────────────────────────────────────────
+
+    /// Asserts that `Value::Field.lambda`'s doc comment enumerates all four
+    /// valid content kinds and maps every `FieldSourceKind` variant to one of
+    /// them.  Fails against the current one-liner; passes once step-2 expands
+    /// the doc.
+    #[test]
+    fn value_field_lambda_doc_enumerates_all_content_kinds() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/value.rs");
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+
+        // Slice the region that covers the Field variant doc block and the
+        // lambda field doc — from the Field variant's leading doc line up to
+        // (but not including) the next "Lambda {" variant declaration.
+        let start_sentinel = "Field value: a typed domain->codomain mapping";
+        let end_sentinel = "    Lambda {";
+        let start = source
+            .find(start_sentinel)
+            .unwrap_or_else(|| panic!("sentinel not found in value.rs: {start_sentinel:?}"));
+        let end_offset = source[start..]
+            .find(end_sentinel)
+            .unwrap_or_else(|| panic!("sentinel not found in value.rs after Field: {end_sentinel:?}"));
+        let region = &source[start..start + end_offset];
+
+        // (a) Must mention all four valid content types for the lambda field.
+        assert!(
+            region.contains("Value::Lambda"),
+            "Value::Field.lambda doc must mention Value::Lambda; region:\n{region}"
+        );
+        assert!(
+            region.contains("Value::Undef"),
+            "Value::Field.lambda doc must mention Value::Undef; region:\n{region}"
+        );
+        assert!(
+            region.contains("Value::Field"),
+            "Value::Field.lambda doc must mention Value::Field; region:\n{region}"
+        );
+        assert!(
+            region.contains("Value::List"),
+            "Value::Field.lambda doc must mention Value::List; region:\n{region}"
+        );
+
+        // (b) Must map each FieldSourceKind variant to its content kind.
+        for variant in &[
+            "Analytical",
+            "Composed",
+            "Sampled",
+            "Imported",
+            "Gradient",
+            "Divergence",
+            "Curl",
+            "Laplacian",
+            "VonMises",
+            "PrincipalStresses",
+            "MaxShear",
+            "SafetyFactor",
+        ] {
+            assert!(
+                region.contains(variant),
+                "Value::Field.lambda doc must mention FieldSourceKind::{variant}; region:\n{region}"
+            );
+        }
+    }
 }
