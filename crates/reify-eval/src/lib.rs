@@ -3662,5 +3662,62 @@ mod tests {
             diagnostics
         );
     }
+
+    /// Kernel error: ops compile successfully but `kernel.execute()` returns `Err`.
+    /// Returns `true` (rollback occurred), truncates `step_handles` to `handle_start`,
+    /// emits exactly 1 geometry-error diagnostic.
+    #[test]
+    fn execute_realization_ops_kernel_error_returns_true_and_truncates_handles() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::FailingMockGeometryKernel;
+        use reify_types::{CompiledExpr, Type};
+
+        let mm_lit = |v: f64| {
+            CompiledExpr::literal(reify_test_support::mm(v), Type::length())
+        };
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let mut kernel = FailingMockGeometryKernel;
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let had_failure = Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+        );
+
+        assert!(had_failure, "expected failure from kernel error");
+        assert!(
+            step_handles.is_empty(),
+            "handles should be truncated back to handle_start (0)"
+        );
+        let geometry_errors = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .count();
+        assert_eq!(
+            geometry_errors,
+            1,
+            "expected exactly 1 geometry-error diagnostic, got {}: {:?}",
+            geometry_errors,
+            diagnostics
+        );
+    }
 }
 
