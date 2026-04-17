@@ -40069,11 +40069,11 @@
         "description": "In crates/reify-types/src/ty.rs (lines 208-214), `is_error()` only matches the top-level `Type::Error` sentinel. Compound types like `Type::List(Box<Type::Error>)`, `Type::Option(Box<Type::Error>)`, or `Type::Map(_, Box<Type::Error>)` are not recognized as poisoned, so e.g. `[self.unsupported, 1.0][0] + 5.0` may still cascade because the list literal's inferred element type is Type::Error but the list type itself is `List<Error>` — the IndexAccess guard at expr.rs:1157 only checks `compiled_obj.result_type.is_error()`. Options: (a) add `contains_error()` recursive check and use at consumer sites, or (b) document top-level-only boundary on `is_error` and add a regression test asserting current nested-error cascade behavior so the next person knows where the line is. (Review followup from task 448; suggestion S6.)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:45:56.366Z",
+        "updatedAt": "2026-04-17T12:46:10.375Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs",
@@ -40216,11 +40216,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, the \"unknown member on self\" branch (~lines 731-737) now returns `CompiledExpr::literal(Value::Undef, Type::Error)` to activate the anti-cascade guard (task-448 / task-1912). However, other diagnostic-producing sites in `compile_expr_guarded` may still return `CompiledExpr::literal(Value::Undef, Type::Real)` alongside a `diagnostics.push(Diagnostic::error(...))`. Asymmetric producer coverage means cascades will still fire whenever those other producers run. Action: grep `crates/reify-compiler/src/expr.rs` for `Value::Undef, Type::Real` pairs adjacent to `Diagnostic::error` pushes, and either (a) convert each producer to emit `Type::Error`, or (b) document in the module header which producers intentionally keep `Type::Real` and why. Related: task 448 (parent anti-cascade work), task 936 (trait conformance sentinel). Review followup from task 1912; suggestion S5.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:59.761Z",
+        "updatedAt": "2026-04-17T12:46:13.836Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -40526,7 +40526,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T12:46:06.670Z",
+      "lastModified": "2026-04-17T12:46:13.838Z",
       "taskCount": 1932,
       "completedCount": 1659,
       "tags": [
