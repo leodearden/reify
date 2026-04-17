@@ -311,6 +311,44 @@ structure S : HasX {
     );
 }
 
+/// Pins the Int→Real widening carve-out that justifies `type_compatible`
+/// (rather than `implicitly_converts_to`) at the annotation cross-check site
+/// in `conformance.rs` — see the in-code comment near that call (~line 508-518).
+///
+/// Rationale: whole-number literals like `5.0` / `42` are parsed as `Int`
+/// (documented parser quirk, `reify-parser/src/literals.rs`). Without the
+/// widening carve-out, `let x : Real = 42` would emit a spurious type-mismatch
+/// diagnostic even though Int values are usable wherever Real is expected.
+///
+/// The neighbouring mismatch test (`annotated_let_expr_type_mismatch_emits_diagnostic`)
+/// relies on both the parser quirk AND the Length/Real cross-dimension
+/// incompatibility to trigger; it does not exercise the widening relation.
+/// The happy-path test (`annotated_let_injected_cell_uses_annotation_type`)
+/// uses `5mm` (already Scalar<Length>) which similarly bypasses widening.
+///
+/// Without this test, a future refactor that swapped `type_compatible` for
+/// `implicitly_converts_to` at the cross-check site would silently start
+/// rejecting `let x : Real = 42` and no existing test would catch it.
+#[test]
+fn annotated_let_int_literal_widens_to_real() {
+    let source = r#"
+trait HasX {
+    let x : Real = 42
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors — `let x : Real = 42` must widen Int to Real at the \
+         annotation cross-check site (`type_compatible`, not `implicitly_converts_to`). \
+         Got: {:?}",
+        errors
+    );
+}
+
 // ── task 1834 step-2: injected let uses annotation type, not expr type ───────
 
 /// Trait with `let x : Length = 5mm` injected into structure `S : HasX`.
