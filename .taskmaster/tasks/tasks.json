@@ -40078,11 +40078,11 @@
         "description": "In crates/reify-types/src/ty.rs (lines 208-214), `is_error()` only matches the top-level `Type::Error` sentinel. Compound types like `Type::List(Box<Type::Error>)`, `Type::Option(Box<Type::Error>)`, or `Type::Map(_, Box<Type::Error>)` are not recognized as poisoned, so e.g. `[self.unsupported, 1.0][0] + 5.0` may still cascade because the list literal's inferred element type is Type::Error but the list type itself is `List<Error>` — the IndexAccess guard at expr.rs:1157 only checks `compiled_obj.result_type.is_error()`. Options: (a) add `contains_error()` recursive check and use at consumer sites, or (b) document top-level-only boundary on `is_error` and add a regression test asserting current nested-error cascade behavior so the next person knows where the line is. (Review followup from task 448; suggestion S6.)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:10.375Z",
+        "updatedAt": "2026-04-17T13:22:45.497Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs",
@@ -40612,9 +40612,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:22:28.096Z",
+      "lastModified": "2026-04-17T13:22:45.497Z",
       "taskCount": 1937,
-      "completedCount": 1665,
+      "completedCount": 1666,
       "tags": [
         "master"
       ]
