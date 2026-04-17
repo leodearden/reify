@@ -105,3 +105,42 @@ structure S {
         expr.result_type,
     );
 }
+
+// ── step-9: quantifier over error-typed collection ───────────────────────────
+
+#[test]
+fn quantifier_over_error_typed_collection_yields_type_error_element() {
+    // `self.unsupported` triggers the stub producer (Type::Error post-step-12),
+    // and is used as the quantifier's collection. With the step-10 guard in
+    // place, the quantifier's inferred elem_type must be Type::Error rather
+    // than the `_ => Type::Real` fallback at expr.rs:1445-1448.
+    //
+    // The Quantifier expression's own result_type is always Bool, so we cannot
+    // observe elem_type directly from the top-level node. Instead we inspect
+    // the predicate: the bound variable `x` is inserted into the nested scope
+    // with `elem_type`, so a reference to `x` inside the predicate carries
+    // that type as its result_type. Finding a Type::Error node inside the
+    // predicate demonstrates the quantifier propagated Type::Error.
+    let source = r#"
+structure S {
+    let broken = exists x in self.unsupported: x > 0
+}
+"#;
+    let module = compile_source(source);
+    let expr = get_let_expr(&module, "broken");
+    let CompiledExprKind::Quantifier { predicate, .. } = &expr.kind else {
+        panic!("expected Quantifier at top of let-expr, got {:?}", expr.kind);
+    };
+    // The predicate is `x > 0` — a BinOp(Gt). Its left operand is the
+    // variable reference `x`, which should carry the element type.
+    let CompiledExprKind::BinOp { left, .. } = &predicate.kind else {
+        panic!("expected BinOp predicate, got {:?}", predicate.kind);
+    };
+    assert_eq!(
+        left.result_type,
+        Type::Error,
+        "expected quantifier-bound variable `x` to have Type::Error element \
+         type (inherited from self.unsupported), got {:?}",
+        left.result_type,
+    );
+}
