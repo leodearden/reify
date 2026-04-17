@@ -8736,11 +8736,11 @@
         "description": "In `collect_all_requirements` (crates/reify-compiler/src/lib.rs:4546-4558), the depth-limit check fires BEFORE the visited-set check. This means:\n\n1. When depth > MAX_TRAIT_DEPTH, the trait is NOT inserted into `state.visited`\n2. If the same deep trait is reachable via multiple paths (diamond pattern), each path emits its own \"too deep\" diagnostic — duplicate errors\n\nFix: Swap the two guards so the visited check comes first. Insert `trait_name` into `state.visited` before the depth check. This ensures duplicate paths silently skip already-processed traits.\n\n```rust\n// BEFORE (current):\nif depth > MAX_TRAIT_DEPTH { ... return; }\nif !state.visited.insert(trait_name.to_string()) { return; }\n\n// AFTER (fixed):\nif !state.visited.insert(trait_name.to_string()) { return; }\nif depth > MAX_TRAIT_DEPTH { ... return; }\n```\n\nmemory_hints: search \"collect_all_requirements depth MAX_TRAIT_DEPTH visited\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T01:49:14.574Z",
+        "updatedAt": "2026-04-17T05:19:12.420Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -21216,7 +21216,7 @@
         "testStrategy": "Ensure that the .catch() block correctly handles RangeError and that the bounds check prevents out-of-bounds access.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Add .catch() to handle RangeError",
             "description": "Implement a .catch() block in the requestDefinition promise chain to handle stale document RangeError.",
             "dependencies": [],
@@ -21226,7 +21226,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add bounds check after isConnected guard",
             "description": "Implement a bounds check `if (line+1 > view.state.doc.lines) return;` after the isConnected guard.",
             "dependencies": [],
@@ -33775,7 +33775,7 @@
         "testStrategy": "1. Verify the existence of make_analytical_field. 2. Test run_dim_metadata_test to ensure it correctly uses make_analytical_field with the new source parameter. 3. Validate memory_hints integration by checking execution context behavior.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Verify existence of make_analytical_field",
             "description": "Check if make_analytical_field is implemented in the codebase.",
             "dependencies": [],
@@ -33786,7 +33786,7 @@
             "updatedAt": "2026-04-13T23:43:38.636Z"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add memory_hints for execution context",
             "description": "Integrate memory_hints to improve execution context handling.",
             "dependencies": [],
@@ -35331,7 +35331,7 @@
         "testStrategy": "Ensure that the 'Fillet' needle is correctly restored by running tests that check for missing geometry arguments. Verify the generalized assert_rejected_at_compile by testing both scenarios: with None and Some(f) options, ensuring correct behavior in each case.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Restore 'Fillet' needle",
             "description": "Add 'Fillet' back to warning_needles in build_modify_missing_arg_no_kernel_error and update the doc comment.",
             "dependencies": [],
@@ -35341,7 +35341,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Generalize assert_rejected_at_compile",
             "description": "Modify the helper to accept Option for primitive check.",
             "dependencies": [],
@@ -38299,7 +38299,7 @@
         "testStrategy": "1. Verify that the updated comment in Editor.test.tsx:163 accurately describes the behavior by reviewing the code logic. 2. Ensure the waitFor pattern in App.test.tsx:~1340 is correctly implemented by running the test and confirming it passes consistently.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Update misleading comment in Editor.test.tsx",
             "description": "Change the comment at Editor.test.tsx:163 to correctly describe the debounce timer mechanism.",
             "dependencies": [],
@@ -38309,7 +38309,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add defensive waitFor in App.test.tsx",
             "description": "Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340.",
             "dependencies": [],
@@ -39928,12 +39928,13 @@
         "description": "Re-apply the two-pass pre-register split in conformance.rs that resolves forward references through annotated lets across kinds (Param + unannotated Let). The split was implemented and verified under task 1834 (commit aa4ef1245) but reverted (commit ccb87a247) because it legitimately obsoletes an out-of-scope \"known design limitation\" test in crates/reify-compiler/tests/trait_merge_tests.rs — a file outside task 1834's locked modules. This follow-up bundles the re-application with a coordinated update to that test.\n\nMemory hints: search \"task 1834 two-pass pre-register conformance\"; entities: DefaultKind, compile_traits, Type.",
         "details": "Scope:\n1. Re-apply the two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` — see reverted commit aa4ef1245 for the exact patch. Pass 1 registers every annotated default (Param + Let with `cell_type = Some(ty)`); Pass 2 compiles unannotated-let expressions against the fully-populated annotated scope and registers the inferred type. The remaining mutual-unannotated limitation stays documented by `mutual_unannotated_lets_documented_limitation`.\n\n2. Add regression guard `unannotated_let_resolves_forward_reference_to_annotated_let` to `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` — scenario: `let a = b + 1mm` followed by `let b : Length = 2mm` must compile without \"unresolved name: b\" diagnostic.\n\n3. Update `cross_kind_pre_registration_order_sensitivity_reversed_order_produces_error` in `crates/reify-compiler/tests/trait_merge_tests.rs:1094` — flip the assertion from `!errors.is_empty()` (expects error) to clean compilation. Rename accordingly (e.g. drop `_produces_error` suffix, rename to reflect that cross-kind order-sensitivity is resolved when one trait provides annotated Param and another provides unannotated Let). Update the accompanying doc comment that describes this as a \"known design limitation\" — it is now a resolved limitation. The test was introduced in commit adbb43007 as an intentional document-via-test of the single-pass scope ordering.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive suggestion 1 (behavior_regression) on task 1834 amendment round 2. Reverted in ccb87a247 due to scope rule (trait_merge_tests.rs outside 1834's locked modules). Implementation was already validated on task 1834's worktree before revert.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1834"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:19:12.124Z"
       },
       {
         "id": "1908",
@@ -40227,7 +40228,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:19:06.811Z",
+      "lastModified": "2026-04-17T05:19:12.420Z",
       "taskCount": 1919,
       "completedCount": 1646,
       "tags": [
