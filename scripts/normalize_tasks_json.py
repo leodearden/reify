@@ -4,7 +4,8 @@
 The Taskmaster CLI serializes new IDs as JSON integers.  This script converts
 every ``id`` field under ``.master.tasks[]`` and ``.master.tasks[].subtasks[]``
 to a digit-string (e.g. ``5`` -> ``"5"``).  Already-string IDs are untouched.
-Fields outside ``id`` are preserved byte-identically.
+Non-id fields retain their values; the file is re-serialized with indent=2
+so formatting is normalized to match Taskmaster CLI output.
 
 Usage:
     python3 normalize_tasks_json.py <path-to-tasks.json>

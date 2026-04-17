@@ -29,14 +29,25 @@ fi
 # (4) Exit early if this commit didn't touch tasks.json.
 # --root is required so that root (first) commits are compared against the
 # empty tree rather than producing no output (which would cause a false exit).
-if ! git diff-tree --root -r --no-commit-id --name-only HEAD | grep -qF '.taskmaster/tasks/tasks.json'; then
+# -m is required so that merge commits are diffed against each parent; without
+# it, git diff-tree emits no output for merges and normalization would be
+# silently skipped on a merge that introduces numeric IDs.
+if ! git diff-tree -m --root -r --no-commit-id --name-only HEAD | grep -qF '.taskmaster/tasks/tasks.json'; then
     exit 0
 fi
 
-# (5) Run the normalizer.  On script error, do NOT block the commit — just exit.
-python3 "$ROOT/scripts/normalize_tasks_json.py" "$TASKS_JSON" || exit 0
+# (5) Run the normalizer.  On script error, do NOT block the commit — emit a
+# warning and exit so the user is notified rather than failing silently.
+python3 "$ROOT/scripts/normalize_tasks_json.py" "$TASKS_JSON" || {
+    echo "post-commit: normalize_tasks_json.py failed; skipping normalization" >&2
+    exit 0
+}
 
 # (6) If the file changed on disk vs HEAD, stage it and amend.
+# --no-verify mirrors the original auto-commit (which also uses --no-verify)
+# so the amendment is consistent with the commit being amended; pre-commit
+# hooks are intentionally skipped here because the only change is int→str ID
+# normalization, which cannot violate any structural invariant.
 if ! git diff --quiet -- "$TASKS_JSON"; then
     git add -- "$TASKS_JSON"
     _REIFY_TASKS_NORMALIZE_AMEND=1 git commit --amend --no-edit --no-verify -q

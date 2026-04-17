@@ -83,6 +83,12 @@ JSON
 git -C "$_repo1" add .taskmaster/tasks/tasks.json
 git -C "$_repo1" commit --no-verify -m "chore(tasks): auto-commit after set_task_status(966=pending)" -q
 
+# Guard: verify the subtasks array is non-empty so a missing/empty stream
+# cannot cause the grep-based assertions below to pass trivially.
+assert "hook: HEAD tasks.json has at least one subtask (stream non-empty guard)" \
+    bash -c "[ \"\$(git -C '$_repo1' show HEAD:.taskmaster/tasks/tasks.json \
+             | jq '[.master.tasks[].subtasks[]] | length')\" -gt 0 ]"
+
 assert "hook: numeric subtask ids are string in HEAD after auto-commit" \
     bash -c "! git -C '$_repo1' show HEAD:.taskmaster/tasks/tasks.json | jq -r '.master.tasks[].subtasks[].id | type' | grep -q 'number'"
 
