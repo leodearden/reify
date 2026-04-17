@@ -40573,6 +40573,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T13:11:39.141Z"
+      },
+      {
+        "id": "1941",
+        "title": "Add chained-modifier test for chamfer(shell(body, t), d) end-to-end resolution",
+        "description": "The new `chamfer_let_bound_target_ops` / `fillet_let_bound_target_ops` tests in crates/reify-compiler/tests/let_scope_tests.rs:975-1018 cover the happy path (let-bound cylinder target resolves to Step(0)) but do not exercise an inline (non-let) geometry arg or a chained modifier. Add a test compiling `let result = chamfer(shell(body, 0.5mm), 2mm)` and assert the op sequence `[Cylinder, Modify(Shell, 0), Modify(Chamfer, 1)]` to cover nested modifier resolution and verify chamfer/fillet participate correctly in recursive geometry resolution (sub_ops extension). Follow-up from task 1823 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -40582,7 +40593,10 @@
       "completedCount": 1663,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T13:12:05.123Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-17T13:12:05.196Z"
     }
   }
 }
