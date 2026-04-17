@@ -39951,13 +39951,13 @@
         "description": "Re-apply the two-pass pre-register split in conformance.rs that resolves forward references through annotated lets across kinds (Param + unannotated Let). The split was implemented and verified under task 1834 (commit aa4ef1245) but reverted (commit ccb87a247) because it legitimately obsoletes an out-of-scope \"known design limitation\" test in crates/reify-compiler/tests/trait_merge_tests.rs — a file outside task 1834's locked modules. This follow-up bundles the re-application with a coordinated update to that test.\n\nMemory hints: search \"task 1834 two-pass pre-register conformance\"; entities: DefaultKind, compile_traits, Type.",
         "details": "Scope:\n1. Re-apply the two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` — see reverted commit aa4ef1245 for the exact patch. Pass 1 registers every annotated default (Param + Let with `cell_type = Some(ty)`); Pass 2 compiles unannotated-let expressions against the fully-populated annotated scope and registers the inferred type. The remaining mutual-unannotated limitation stays documented by `mutual_unannotated_lets_documented_limitation`.\n\n2. Add regression guard `unannotated_let_resolves_forward_reference_to_annotated_let` to `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` — scenario: `let a = b + 1mm` followed by `let b : Length = 2mm` must compile without \"unresolved name: b\" diagnostic.\n\n3. Update `cross_kind_pre_registration_order_sensitivity_reversed_order_produces_error` in `crates/reify-compiler/tests/trait_merge_tests.rs:1094` — flip the assertion from `!errors.is_empty()` (expects error) to clean compilation. Rename accordingly (e.g. drop `_produces_error` suffix, rename to reflect that cross-kind order-sensitivity is resolved when one trait provides annotated Param and another provides unannotated Let). Update the accompanying doc comment that describes this as a \"known design limitation\" — it is now a resolved limitation. The test was introduced in commit adbb43007 as an intentional document-via-test of the single-pass scope ordering.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive suggestion 1 (behavior_regression) on task 1834 amendment round 2. Reverted in ccb87a247 due to scope rule (trait_merge_tests.rs outside 1834's locked modules). Implementation was already validated on task 1834's worktree before revert.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1834"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:06.670Z",
+        "updatedAt": "2026-04-17T13:55:04.409Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -40757,23 +40757,21 @@
         "description": "The two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` (task 1834/1907) suppresses duplicate Let-cell injection only when an *unannotated* Let loses to a Param/annotated-Let in Pass 1 (via `pass2_skipped`). The symmetric case — an annotated Let whose name was already claimed in Pass 1 by a Param registered earlier in the same Pass 1 loop — still causes the injection loop to emit both a Param cell and an annotated-Let cell for the same `(entity, member)` pair.\n\nThe `cross_kind_pre_registration_preserves_first_type` test (updated in commit 7a7c7127d) pins 1 cell in the Param + unannotated-Let case, but a Param + annotated-Let case is not covered by any test and still produces 2 cells. Pre-existing behavior, but inconsistent with the design comment at ~197-215 that frames the split as restoring symmetry.\n\nMemory hints: search \"task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells\"; entities: DefaultKind, AvailableDefaultKind.",
         "details": "Two options (reviewer proposed both):\n\nOption A (symmetric fix) — Extend Pass 1's Occupied path to mark annotated-Let conflicts in a new `pass1_skipped: HashSet<String>` set consumed by the injection loop the same way `pass2_skipped` is. This makes the two arms (Pass 1 / Pass 2) behaviorally identical: first-seen wins, and the loser's cell injection is suppressed regardless of kind.\n\nOption B (documented asymmetry) — Explicitly call out in the design comment at ~197-215 that annotated-Let + Param name collisions still emit duplicate cells. Add a follow-up task link. Pin current behavior with a test so future refactors don't silently flip it.\n\nRecommendation: Option A. The injection loop already reads `pass2_skipped`; adding a parallel `pass1_skipped` consumed at the same checkpoint is a small surgical change and removes a reviewer-accessible surprise. Option B effectively documents \"we know this is inconsistent\" and adds no mechanical guarantee.\n\nAdd test in `crates/reify-compiler/tests/trait_merge_tests.rs` mirroring `cross_kind_pre_registration_preserves_first_type` but using annotated-Let + Param (both with explicit types). Assert exactly 1 cell for the shared name (whichever default Pass 1 sees first wins).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 3).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T13:55:03.346Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:54:31.407Z",
-      "taskCount": 1946,
-      "completedCount": 1673,
+      "lastModified": "2026-04-17T13:55:04.410Z",
+      "taskCount": 1947,
+      "completedCount": 1674,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T13:54:49.349Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-17T13:54:49.428Z"
+      ]
     }
   }
 }
