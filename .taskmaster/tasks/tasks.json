@@ -40010,11 +40010,11 @@
         "description": "In crates/reify-compiler/src/type_compat.rs (lines 9-11 and 94-96), `implicitly_converts_to(Error, X) == true` and `type_compatible(Error, X) == true` make Type::Error a universal wildcard at every consumer (trait conformance, field composition, function-arg checks). This is correct for diagnostics suppression but is not pinned by any test, so a regression removing the wildcard behavior would not surface. Add direct unit tests (in type_compat.rs unit tests or implicit_conversion_tests.rs) asserting: (a) `implicitly_converts_to(Error, Real) == true`, (b) `implicitly_converts_to(Real, Error) == true`, (c) `type_compatible(Error, X) == true` for multiple X (Real, Int, Bool, List, Option, etc.). (Review followup from task 448; suggestion S4.)",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:02:10.347Z",
+        "updatedAt": "2026-04-17T04:08:22.487Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -40070,7 +40070,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T04:07:50.283Z",
+      "lastModified": "2026-04-17T04:08:22.489Z",
       "taskCount": 1910,
       "completedCount": 1641,
       "tags": [
