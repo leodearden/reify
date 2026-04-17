@@ -667,7 +667,10 @@ fn purpose_compiled_and_activatable() {
     // Deriving from mfg_ready.constraints.len() guards against silent drifts if the
     // purpose body is updated — both the test and the .ri source stay in sync automatically.
     // (See examples/integration_full_v01.ri: mfg_ready uses literal placeholder constraints;
-    // adding subject-referencing constraints is tracked as a follow-up task.)
+    // replacing them with reflective `forall p in subject.geometric_params: determined(p)`
+    // is tracked as task #1904 — three missing pieces: StructureRef member-access compilation
+    // in expr.rs, filter-kind branches in traits.rs resolved_queries loop, and forall runtime
+    // expansion via ResolvedSchemaQuery.resolved_ids in reify-eval activate_purpose.)
     let expected_extra = mfg_ready.constraints.len();
     assert!(
         expected_extra > 0,
