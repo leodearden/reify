@@ -442,6 +442,103 @@ describe('DesignTree — modifier click routing', () => {
   });
 });
 
+describe('DesignTree — range select', () => {
+  // Tree: Root.A, Root.B, Root.C, Root.D as siblings (all visible, none expanded yet)
+  function makeFlatTree() {
+    return [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+      makeNode({ entity_path: 'Root.D' }),
+    ];
+  }
+
+  it('Shift+click with anchorEntity calls onRangeSelect with the slice (A→C)', () => {
+    const nodes = makeFlatTree();
+    const store = makeStore(nodes);
+    const onSelect = vi.fn();
+    const onRangeSelect = vi.fn();
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        anchorEntity="Root.A"
+        onSelect={onSelect}
+        onRangeSelect={onRangeSelect}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
+    expect(onRangeSelect).toHaveBeenCalledOnce();
+    expect(onRangeSelect).toHaveBeenCalledWith(['Root.A', 'Root.B', 'Root.C']);
+    // onSelect must NOT be called when onRangeSelect is used
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('Shift+click with no anchorEntity falls back to onSelect(path, { shift: true })', () => {
+    const nodes = makeFlatTree();
+    const store = makeStore(nodes);
+    const onSelect = vi.fn();
+    const onRangeSelect = vi.fn();
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        onSelect={onSelect}
+        onRangeSelect={onRangeSelect}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onSelect).toHaveBeenCalledWith('Root.C', { ctrl: false, shift: true });
+    expect(onRangeSelect).not.toHaveBeenCalled();
+  });
+
+  it('range respects expansion: collapsed children are NOT included', () => {
+    // Root.B has children b1,b2 but Root.B is NOT expanded → b1,b2 excluded
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({
+        entity_path: 'Root.B',
+        children: [
+          makeNode({ entity_path: 'Root.B.b1' }),
+          makeNode({ entity_path: 'Root.B.b2' }),
+        ],
+      }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    const onRangeSelect = vi.fn();
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        anchorEntity="Root.A"
+        onRangeSelect={onRangeSelect}
+      />
+    ));
+    // Root.B is not expanded → Range A→C is [Root.A, Root.B, Root.C]
+    fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
+    expect(onRangeSelect).toHaveBeenCalledWith(['Root.A', 'Root.B', 'Root.C']);
+  });
+
+  it('range order is ascending (visible flat order) regardless of click direction (C→A)', () => {
+    const nodes = makeFlatTree();
+    const store = makeStore(nodes);
+    const onRangeSelect = vi.fn();
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        anchorEntity="Root.C"
+        onRangeSelect={onRangeSelect}
+      />
+    ));
+    // Clicking A with anchor=C should still yield ascending order [A, B, C]
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'), { shiftKey: true });
+    expect(onRangeSelect).toHaveBeenCalledWith(['Root.A', 'Root.B', 'Root.C']);
+  });
+});
+
 describe('DesignTree — keyboard shortcuts', () => {
   it('pressing H with selected entity sets hidden+cascade', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
