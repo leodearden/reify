@@ -332,10 +332,10 @@ structure S {
         !errors.is_empty(),
         "expected at least one error for unknown arg 'c'"
     );
-    // Error should mention 'c' (the unknown arg name) or 'unknown'
+    // Error should mention 'c' (the unknown arg name) or 'unknown' — use phrase-level check.
     let found = errors
         .iter()
-        .any(|d| d.message.contains('c') || d.message.to_lowercase().contains("unknown"));
+        .any(|d| d.message.contains("'c'") || d.message.to_lowercase().contains("unknown"));
     assert!(
         found,
         "expected error mentioning unknown arg 'c', got: {:?}",
@@ -350,8 +350,10 @@ structure S {
 /// arg provided, one for the required param that was never bound).
 /// The grammar requires ≥1 named arg, so zero args isn't valid syntax;
 /// this test covers the equivalent scenario with misnamed args.
+/// (Renamed from `wrong_arg_count_zero`: the grammar forbids zero args,
+/// so this is really the misnamed-single-arg case.)
 #[test]
-fn wrong_arg_count_zero() {
+fn misnamed_single_arg_produces_two_errors() {
     let source = r#"
 constraint def RequiredOne {
     param x: Length
@@ -370,12 +372,13 @@ structure S {
         "expected >=2 errors (unknown 'y' + missing 'x'), got: {:?}",
         errors
     );
+    // Use phrase-level assertions to avoid single-char false positives.
     let has_unknown_y = errors
         .iter()
-        .any(|d| d.message.contains('y') || d.message.to_lowercase().contains("unknown"));
+        .any(|d| d.message.contains("'y'") || d.message.to_lowercase().contains("unknown"));
     let has_missing_x = errors
         .iter()
-        .any(|d| d.message.contains('x') || d.message.to_lowercase().contains("missing"));
+        .any(|d| d.message.contains("'x'") || d.message.to_lowercase().contains("missing"));
     assert!(
         has_unknown_y,
         "expected error about unknown arg 'y', got: {:?}",
@@ -410,10 +413,10 @@ structure S {
         !errors.is_empty(),
         "expected at least one error for missing required param 'b'"
     );
-    // Error should name the missing param 'b'
+    // Error should name the missing param 'b' — use phrase-level check to avoid false positives.
     let found = errors
         .iter()
-        .any(|d| d.message.contains('b') || d.message.to_lowercase().contains("missing"));
+        .any(|d| d.message.contains("'b'") || d.message.to_lowercase().contains("missing"));
     assert!(
         found,
         "expected error mentioning missing param 'b', got: {:?}",
@@ -477,13 +480,9 @@ structure S {
 fn cross_module_constraint_def_import() {
     use std::fs;
 
-    // Create a unique temp directory for this test
-    let dir = std::env::temp_dir()
-        .join("reify_constraint_def_test")
-        .join("cross_module")
-        .join(format!("{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    // RAII temp directory — no PID-based path racing under parallel `cargo test`.
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a: defines a pub constraint def
     fs::write(
@@ -503,7 +502,7 @@ fn cross_module_constraint_def_import() {
     let mut dag = ModuleDag::new();
     let result = dag.compile_module("b", &resolver);
 
-    let _ = fs::remove_dir_all(&dir);
+    // _tmp drops here, cleaning up the temp directory automatically.
 
     assert!(
         result.is_ok(),
