@@ -48,6 +48,7 @@ describe('bridge commands', () => {
       values: [],
       constraints: [],
       files: [],
+      tessellation_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(mockState);
 
