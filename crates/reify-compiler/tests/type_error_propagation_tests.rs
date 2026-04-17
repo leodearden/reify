@@ -82,3 +82,26 @@ structure S {
         expr.result_type,
     );
 }
+
+// ── step-7: index access on error-typed object ───────────────────────────────
+
+#[test]
+fn index_access_on_error_typed_object_yields_type_error() {
+    // `self.unsupported` triggers the stub producer (Type::Error post-step-12),
+    // then `[0]` indexing hits the IndexAccess arm (expr.rs:1109-1134). With
+    // the step-8 guard, the result_type must be Type::Error rather than the
+    // `_ => Type::Real` fall-through at line 1132.
+    let source = r#"
+structure S {
+    let broken = self.unsupported[0]
+}
+"#;
+    let module = compile_source(source);
+    let expr = get_let_expr(&module, "broken");
+    assert_eq!(
+        expr.result_type,
+        Type::Error,
+        "expected indexing a Type::Error object to propagate Type::Error, got {:?}",
+        expr.result_type,
+    );
+}
