@@ -727,6 +727,55 @@ structure def S : A {
     let _ = errors_only(&module);
 }
 
+// ── Task 403: Depth / visited guard ordering in collect_all_requirements ──────
+
+/// A 130-level linear trait refinement chain (deeper than MAX_TRAIT_DEPTH=128)
+/// should complete compilation without a stack overflow and emit exactly ONE
+/// "trait refinement chain too deep" diagnostic.
+///
+/// Guards: (1) compilation returns (no panic/SO), (2) exactly one "too deep"
+/// error, (3) that error's first label has a non-empty span.
+///
+/// Exercises conformance.rs `collect_all_requirements` depth guard.
+#[test]
+fn trait_refinement_chain_too_deep_single_path() {
+    // Build a 130-level linear chain: T0, T1 : T0, T2 : T1, ..., T130 : T129
+    let mut src = String::new();
+    src.push_str("trait T0 { }\n");
+    for i in 1..=130 {
+        src.push_str(&format!("trait T{} : T{} {{ }}\n", i, i - 1));
+    }
+    // Structure bound to the deepest trait
+    src.push_str("structure def S : T130 { }\n");
+
+    // Must not panic / stack-overflow
+    let module = compile_source(&src);
+
+    let errors = errors_only(&module);
+    let too_deep: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("trait refinement chain too deep"))
+        .collect();
+
+    assert_eq!(
+        too_deep.len(),
+        1,
+        "expected exactly one 'trait refinement chain too deep' diagnostic, got {}: {:?}",
+        too_deep.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let diag = too_deep[0];
+    assert!(
+        !diag.labels.is_empty(),
+        "expected at least one label on the 'too deep' diagnostic"
+    );
+    assert!(
+        !diag.labels[0].span.is_empty(),
+        "expected a non-empty span on the 'too deep' diagnostic label"
+    );
+}
+
 /// Two entity definitions with the same name should produce
 /// "duplicate entity definition" diagnostic (from lib.rs pass 1).
 ///
