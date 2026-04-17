@@ -2508,7 +2508,7 @@ fn get_entity_identity_map_content_hash_is_hex_string() {
 ///
 /// For a root template:
 /// - type = "structure" or "occurrence"
-/// - parent = "" (empty — no parent)
+/// - parent = "root" (sentinel for root templates — no containing definition)
 /// - child_count = number of sub-components (Bracket has 0)
 /// - hash = non-empty hex string from children content hashes
 #[test]
@@ -2532,7 +2532,7 @@ fn get_entity_identity_map_root_structural_fingerprint_format() {
         fp
     );
     assert_eq!(parts[0], "structure", "first part is entity kind");
-    assert_eq!(parts[1], "", "parent of root template is empty string");
+    assert_eq!(parts[1], "root", "parent of root template is 'root' sentinel");
     let child_count: usize = parts[2]
         .parse()
         .expect("third part (child_count) must be a non-negative integer");
