@@ -222,3 +222,49 @@ fn difference_arg_count_diagnostic_has_span_label() {
     assert!(!first.labels.is_empty(), "expected at least one label on difference arg-count diagnostic");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span on difference arg-count label");
 }
+
+// ── union_all() / intersection_all() ───────────────────────────────────
+
+#[test]
+fn union_all_arg_count_diagnostic_has_span_label() {
+    // union_all() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let u = union_all(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("union_all() expects at least 2 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'union_all() expects at least 2 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on union_all arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on union_all arg-count label");
+}
+
+#[test]
+fn intersection_all_arg_count_diagnostic_has_span_label() {
+    // intersection_all() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let i = intersection_all(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("intersection_all() expects at least 2 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'intersection_all() expects at least 2 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on intersection_all arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on intersection_all arg-count label");
+}
