@@ -90,6 +90,14 @@ export function createSelectionStore() {
     }
   }
 
+  function clearSelection() {
+    batch(() => {
+      setState('selectedEntities', []);
+      setState('selectedEntity', null);
+      setState('anchorEntity', null);
+    });
+  }
+
   function rangeSelect(paths: string[]) {
     const deduped = Array.from(new Set(paths));
     batch(() => {
@@ -143,5 +151,5 @@ export function createSelectionStore() {
     });
   }
 
-  return { state, selectSingle, toggleSelect, rangeSelect, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
+  return { state, selectSingle, toggleSelect, rangeSelect, clearSelection, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
 }
