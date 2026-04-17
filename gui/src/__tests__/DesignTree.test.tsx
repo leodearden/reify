@@ -306,6 +306,79 @@ describe('DesignTree — context menu', () => {
   });
 });
 
+describe('DesignTree — multi-selection highlight', () => {
+  it('rows in selectedEntities get data-selected="true"', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).toBe('true');
+  });
+
+  it('rows NOT in selectedEntities do not have data-selected="true"', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    expect(screen.getByTestId('tree-row-Root.C').getAttribute('data-selected')).not.toBe('true');
+  });
+
+  it('backward-compat: selectedEntity (legacy) marks that single row selected', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity="Root.A"
+      />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).not.toBe('true');
+  });
+
+  it('selectedEntities takes precedence over selectedEntity when both provided', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity="Root.A"
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    // Both should be selected because selectedEntities overrides
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).toBe('true');
+  });
+});
+
 describe('DesignTree — keyboard shortcuts', () => {
   it('pressing H with selected entity sets hidden+cascade', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
