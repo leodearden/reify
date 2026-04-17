@@ -11,7 +11,7 @@ interface Props {
   viewStateStore: ReturnType<typeof createViewStateStore>;
   selectedEntity?: string | null;
   selectedEntities?: readonly string[];
-  onSelect?: (path: string) => void;
+  onSelect?: (path: string, modifiers: { ctrl: boolean; shift: boolean }) => void;
 }
 
 interface MenuState {
@@ -119,7 +119,7 @@ const DesignTree: Component<Props> = (props) => {
           data-testid={`tree-row-${node.entity_path}`}
           data-selected={effectiveSelected().has(node.entity_path) ? 'true' : undefined}
           onContextMenu={(e) => openMenu(node.entity_path, e)}
-          onClick={() => props.onSelect?.(node.entity_path)}
+          onClick={(e) => props.onSelect?.(node.entity_path, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
         >
           <Show when={node.children.length > 0} fallback={<span class={styles.chevronPlaceholder} />}>
             <button
