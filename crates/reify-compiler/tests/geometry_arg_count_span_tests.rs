@@ -1,0 +1,36 @@
+//! Tests for source-span labels on geometry arg-count diagnostics (task 487).
+//!
+//! Each arg-count error for the in-scope geometry functions (box, cylinder,
+//! sphere, linear_pattern, circular_pattern, mirror, union (+ siblings),
+//! shell, thicken, draft) must attach a `DiagnosticLabel` with a non-empty
+//! `SourceSpan` covering the full call expression. Pattern mirrors the
+//! assertions in `diagnostic_coverage_checkpoint.rs`.
+//!
+//! shell/thicken/draft tests serve as regression guards — labels are already
+//! attached via `compile_modify_op`; these tests lock in that behavior.
+
+use reify_test_support::{compile_source, errors_only};
+
+// ── box() ──────────────────────────────────────────────────────────────
+
+#[test]
+fn box_arg_count_diagnostic_has_span_label() {
+    // box() expects 3 arguments — passing only 2 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let shape = box(10mm, 20mm)
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("box() expects 3 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'box() expects 3 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on box arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on box arg-count label");
+}
