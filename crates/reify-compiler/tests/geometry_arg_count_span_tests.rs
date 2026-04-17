@@ -154,3 +154,71 @@ fn mirror_arg_count_diagnostic_has_span_label() {
     assert!(!first.labels.is_empty(), "expected at least one label on mirror arg-count diagnostic");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span on mirror arg-count label");
 }
+
+// ── union() / intersection() / difference() ────────────────────────────
+
+#[test]
+fn union_arg_count_diagnostic_has_span_label() {
+    // union() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let u = union(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("union() expects 2 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'union() expects 2 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on union arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on union arg-count label");
+}
+
+#[test]
+fn intersection_arg_count_diagnostic_has_span_label() {
+    // intersection() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let i = intersection(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("intersection() expects 2 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'intersection() expects 2 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on intersection arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on intersection arg-count label");
+}
+
+#[test]
+fn difference_arg_count_diagnostic_has_span_label() {
+    // difference() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let d = difference(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("difference() expects 2 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'difference() expects 2 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on difference arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on difference arg-count label");
+}
