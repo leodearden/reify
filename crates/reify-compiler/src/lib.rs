@@ -107,7 +107,7 @@ fn compile_constraint_def(
         params,
         predicates: c.predicates.clone(),
         span: c.span,
-        content_hash: c.content_hash.clone(),
+        content_hash: c.content_hash,
         pragmas: c.pragmas.clone(),
         annotations,
         annotations_optimized_target,
