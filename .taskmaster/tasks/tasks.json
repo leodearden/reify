@@ -21192,7 +21192,7 @@
         "testStrategy": "Ensure that the .catch() block correctly handles RangeError and that the bounds check prevents out-of-bounds access.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Add .catch() to handle RangeError",
             "description": "Implement a .catch() block in the requestDefinition promise chain to handle stale document RangeError.",
             "dependencies": [],
@@ -21202,7 +21202,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add bounds check after isConnected guard",
             "description": "Implement a bounds check `if (line+1 > view.state.doc.lines) return;` after the isConnected guard.",
             "dependencies": [],
@@ -33751,7 +33751,7 @@
         "testStrategy": "1. Verify the existence of make_analytical_field. 2. Test run_dim_metadata_test to ensure it correctly uses make_analytical_field with the new source parameter. 3. Validate memory_hints integration by checking execution context behavior.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Verify existence of make_analytical_field",
             "description": "Check if make_analytical_field is implemented in the codebase.",
             "dependencies": [],
@@ -33762,7 +33762,7 @@
             "updatedAt": "2026-04-13T23:43:38.636Z"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add memory_hints for execution context",
             "description": "Integrate memory_hints to improve execution context handling.",
             "dependencies": [],
@@ -35307,7 +35307,7 @@
         "testStrategy": "Ensure that the 'Fillet' needle is correctly restored by running tests that check for missing geometry arguments. Verify the generalized assert_rejected_at_compile by testing both scenarios: with None and Some(f) options, ensuring correct behavior in each case.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Restore 'Fillet' needle",
             "description": "Add 'Fillet' back to warning_needles in build_modify_missing_arg_no_kernel_error and update the doc comment.",
             "dependencies": [],
@@ -35317,7 +35317,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Generalize assert_rejected_at_compile",
             "description": "Modify the helper to accept Option for primitive check.",
             "dependencies": [],
@@ -38254,7 +38254,7 @@
         "testStrategy": "1. Verify that the updated comment in Editor.test.tsx:163 accurately describes the behavior by reviewing the code logic. 2. Ensure the waitFor pattern in App.test.tsx:~1340 is correctly implemented by running the test and confirming it passes consistently.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Update misleading comment in Editor.test.tsx",
             "description": "Change the comment at Editor.test.tsx:163 to correctly describe the debounce timer mechanism.",
             "dependencies": [],
@@ -38264,7 +38264,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add defensive waitFor in App.test.tsx",
             "description": "Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340.",
             "dependencies": [],
@@ -39362,11 +39362,11 @@
         "description": "`openMenu` attaches a fresh `document.addEventListener('click', ..., { once: true })` every time the menu opens. Right-clicking a second row (contextmenu, not click) leaves the prior listener registered; the next left click runs two closures. The `onCleanup(() => setMenu(null))` does not remove the document listener, leaking it on unmount before any click.",
         "details": "Scope: gui/src/panels/DesignTree.tsx:42-51\n\nEither (a) track the current listener in a local variable and remove it before attaching a new one and inside `onCleanup`, or (b) install a single long-lived document listener that no-ops when `menu()` is null. Additionally add Escape-key dismissal for the menu.\n\nAdd a test that opens the menu on row A, then on row B (via contextmenu), then issues a click, and asserts setMenu was called only once (or asserts no stale listener exists).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T23:13:29.031Z",
+        "updatedAt": "2026-04-17T00:21:54.157Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -39697,9 +39697,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T00:12:47.271Z",
+      "lastModified": "2026-04-17T00:21:54.157Z",
       "taskCount": 1895,
-      "completedCount": 1627,
+      "completedCount": 1628,
       "tags": [
         "master"
       ]
