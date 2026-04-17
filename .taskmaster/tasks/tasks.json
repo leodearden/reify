@@ -40084,11 +40084,11 @@
         "description": "The auto-commit pipeline that writes .taskmaster/tasks/tasks.json is emitting JSON numeric IDs for both top-level tasks and subtasks, but tests/infra/test_tasks_json_id_types.sh (added by task 1887) requires JSON string IDs. This breaks post-rebase verify for every task rebased onto current main, causing repeated retry loops (e.g. esc-1754-139, esc-1754-143, esc-1754-157 all failed with identical \"Failures: tests failed\" for this reason, with the failing branch not touching tasks.json at all). Root cause is in the task-write path: either the Taskmaster CLI, the TaskInterceptor, or the chore(tasks) auto-commit script is serializing numeric IDs. Fix at the write path so IDs are always stringified, not a one-shot file rewrite (which the pipeline would regress on next write). Verify by running `bash tests/infra/test_tasks_json_id_types.sh` after any task-status change — it must pass.\n\nmemory_hints: search \"taskmaster auto-commit pipeline string IDs\", search \"test_tasks_json_id_types task 1887\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:55:25.133Z"
+        "updatedAt": "2026-04-17T05:03:24.655Z"
       },
       {
         "id": "1916",
@@ -40138,9 +40138,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:03:08.936Z",
+      "lastModified": "2026-04-17T05:03:24.656Z",
       "taskCount": 1912,
-      "completedCount": 1644,
+      "completedCount": 1645,
       "tags": [
         "master"
       ]
