@@ -40811,7 +40811,21 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:55:03.346Z"
+        "updatedAt": "2026-04-17T13:55:03.346Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "DefaultKind",
+              "AvailableDefaultKind"
+            ],
+            "queries": [
+              "task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells cross_kind_pre_registration",
+              "conformance.rs Pass1 Pass2 symmetry annotated-Let Param name collision duplicate injection",
+              "task 1834 1907 cross_kind_pre_registration_preserves_first_type test"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
+        }
       },
       {
         "id": "1953",
