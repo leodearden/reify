@@ -40783,7 +40783,14 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "recovery": "wp-a-2026-04-18",
+          "original_id_was": "1959",
+          "source_escalation": "esc-1959-52",
+          "audit_target_task": "1901",
+          "spawned_from_review_of": "1744"
+        }
       }
     ],
     "metadata": {
