@@ -40759,7 +40759,21 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:54:31.407Z"
+        "updatedAt": "2026-04-17T13:54:31.407Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "Value::Field",
+              "detect_single_point_param"
+            ],
+            "queries": [
+              "detect_single_point_param private function rustdoc intra-doc cross-crate link Value Field",
+              "reify-expr calculus.rs private pub(crate) visibility pub re-export",
+              "task 1002 doc reference fix value.rs calculus.rs"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
+        }
       },
       {
         "id": "1951",
