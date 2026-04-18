@@ -40734,7 +40734,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:53:43.737Z"
+        "updatedAt": "2026-04-17T13:53:43.737Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "FieldSourceKind"
+            ],
+            "queries": [
+              "FieldSourceKind Gradient Divergence Curl Laplacian VonMises doc-invariant test enum_variant_doc_region",
+              "field_source_kind_gradient_doc_describes_provenance_only test lambda slot sample handler central-difference forbidden tokens",
+              "task 1002 derived field variant doc cleanup FieldSourceKind"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
+        }
       },
       {
         "id": "1950",
