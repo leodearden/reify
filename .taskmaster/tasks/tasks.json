@@ -40785,7 +40785,21 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:54:30.904Z"
+        "updatedAt": "2026-04-17T13:54:30.904Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "DefaultKind",
+              "AvailableDefaultKind"
+            ],
+            "queries": [
+              "task 1907 pass2_skipped available_defaults phantom Let entry Type::Real spurious mismatch diagnostic",
+              "conformance.rs available_defaults builder pass2_skipped Let requirement kind mismatch",
+              "task 1834 1907 two-pass pre-register conformance Let Param collision"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
+        }
       },
       {
         "id": "1952",
