@@ -40762,6 +40762,39 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T13:55:03.346Z"
+      },
+      {
+        "id": "1953",
+        "title": "Tighten handleSave errorSpy assertion to match sibling-test pattern",
+        "description": "Replace the substring `some(...)` check in gui/src/__tests__/App.test.tsx (around lines 2448-2453) with the sibling-test pattern used at lines 1283-1286 and 1323-1326:\n\n```\nexpect(errorSpy).not.toHaveBeenCalledWith('Save failed:', expect.any(Error));\n```\n\nThis is both stricter (asserts exact call shape rather than substring match on a stringified arg) and more intention-revealing (explicitly names the forbidden logging path). It matches the convention already established by the setParameter and re-evaluate sibling tests in the same file.\n\nContext: Task 1892 narrowed the original `expect(errorSpy).not.toHaveBeenCalled()` to tolerate incidental console.error noise, but chose a substring-match approach. Reviewer_comprehensive flagged two concerns:\n1. test_coverage_weakening: substring match tolerates other Save-path regressions whose log strings don't contain the exact tokens\n2. assertion_precision: relies on `String(err)` producing 'Error: disk full' — fragile if handleSave ever logs a different format\n\nAdditionally, leave a code comment at the incidental-noise source (or at the assertion) so future readers know why a targeted assertion is preferred over `not.toHaveBeenCalled()`.\n\nNote: handleSave in gui/src/App.tsx currently does not call console.error at all (only `showToast(\\`Save failed: ...\\`, 'error')`), so the targeted assertion would pass trivially today and serve purely as a regression guard — which matches the sibling-test intent.\n\nSource: Task 1793 review (reviewer_comprehensive), re-surfaced during Task 1892 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "1954",
+        "title": "Tighten handleSave errorSpy assertion to match sibling-test pattern",
+        "description": "Replace the substring `some(...)` check in gui/src/__tests__/App.test.tsx (around lines 2448-2453) with the sibling-test pattern used at lines 1283-1286 and 1323-1326:\n\n```\nexpect(errorSpy).not.toHaveBeenCalledWith('Save failed:', expect.any(Error));\n```\n\nThis is both stricter (asserts exact call shape rather than substring match on a stringified arg) and more intention-revealing (explicitly names the forbidden logging path). It matches the convention already established by the setParameter and re-evaluate sibling tests in the same file.\n\nContext: Task 1892 narrowed the original `expect(errorSpy).not.toHaveBeenCalled()` to tolerate incidental console.error noise, but chose a substring-match approach. Reviewer_comprehensive flagged two concerns:\n1. test_coverage_weakening: substring match tolerates other Save-path regressions whose log strings don't contain the exact tokens\n2. assertion_precision: relies on `String(err)` producing 'Error: disk full' — fragile if handleSave ever logs a different format\n\nAdditionally, leave a code comment at the assertion explaining why this targeted shape is preferred over `not.toHaveBeenCalled()`.\n\nNote: handleSave in gui/src/App.tsx currently does not call console.error at all (only `showToast`), so the targeted assertion passes trivially today and serves purely as a regression guard — matching the sibling-test intent.\n\nSource: Task 1793 review (reviewer_comprehensive), re-surfaced during Task 1892 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "1955",
+        "title": "Tighten handleSave errorSpy assertion to match sibling-test pattern",
+        "description": "Replace the substring `some(...)` check in gui/src/__tests__/App.test.tsx (around lines 2448-2453) with the sibling-test pattern used at lines 1283-1286 and 1323-1326:\n\n```\nexpect(errorSpy).not.toHaveBeenCalledWith('Save failed:', expect.any(Error));\n```\n\nThis is both stricter (asserts exact call shape rather than substring match on a stringified arg) and more intention-revealing (explicitly names the forbidden logging path). It matches the convention already established by the setParameter and re-evaluate sibling tests in the same file.\n\nContext: Task 1892 narrowed the original `expect(errorSpy).not.toHaveBeenCalled()` to tolerate incidental console.error noise, but chose a substring-match approach. Reviewer_comprehensive flagged two concerns:\n1. test_coverage_weakening: substring match tolerates other Save-path regressions whose log strings don't contain the exact tokens\n2. assertion_precision: relies on `String(err)` producing 'Error: disk full' — fragile if handleSave ever logs a different format\n\nAdditionally, leave a code comment at the assertion explaining why this targeted shape is preferred over `not.toHaveBeenCalled()`.\n\nNote: handleSave in gui/src/App.tsx currently does not call console.error at all (only `showToast`), so the targeted assertion passes trivially today and serves purely as a regression guard — matching the sibling-test intent.\n\nSource: Task 1793 review (reviewer_comprehensive), re-surfaced during Task 1892 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -40771,7 +40804,10 @@
       "completedCount": 1674,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T14:19:00.618Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-17T14:20:18.532Z"
     }
   }
 }
