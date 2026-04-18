@@ -36619,11 +36619,18 @@
             "gui/src/viewport/selection.ts"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "selectionStore",
+              "DesignTree"
+            ],
             "queries": [
-              "resolution for: Multi-selection in Design Tree and viewport"
+              "selectionStore selected entity selectedEntities Set multi-selection",
+              "selection.ts raycasting wireframe viewport Ctrl+click toggleSelect",
+              "update_selection Tauri command list multi-entity backend sync",
+              "viewStateStore designTreeStore expand-set multi-selection dependency"
             ]
-          }
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
         },
         "updatedAt": "2026-04-17T12:46:02.268Z"
       },
