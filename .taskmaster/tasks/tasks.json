@@ -37561,7 +37561,16 @@
         "metadata": {
           "modules": [
             "gui/src-tauri/src/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "get_entity_tree_no_realization_has_mesh_false get_entity_tree_sub_component_produces_nested_node dead builder fixtures",
+              "CompiledModuleBuilder TopologyTemplateBuilder test cleanup engine_tests.rs",
+              "build_template_node focused test reify-compiler tests"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
         }
       },
       {
@@ -40796,14 +40805,14 @@
     "metadata": {
       "version": "1.0.0",
       "lastModified": "2026-04-17T13:55:04.410Z",
-      "taskCount": 1947,
+      "taskCount": 1949,
       "completedCount": 1674,
       "tags": [
         "master"
       ],
       "created": "2026-04-17T14:19:00.618Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-18T20:23:58.696Z"
+      "updated": "2026-04-18T20:24:51.599Z"
     }
   }
 }
