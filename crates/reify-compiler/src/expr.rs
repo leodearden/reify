@@ -7,6 +7,37 @@ use super::*;
 /// Also used by the general method-call path to infer result types for collection methods.
 const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "values"];
 
+/// Construct a `Type::Error` poison literal, asserting in debug builds that
+/// the diagnostics buffer already contains at least one error-severity entry.
+///
+/// Anti-cascade contract (task-448, amendment-round-2 S1): every producer of
+/// a standalone `Type::Error` *literal node* must be paired with a root-cause
+/// `Severity::Error` diagnostic — either pushed immediately by the caller, or
+/// emitted earlier by a recursive sub-expression compile. Routing every
+/// poison *literal emission* through this helper makes "silent poison leak"
+/// bugs (poison without a diagnostic) caught in tests rather than silently
+/// degrading downstream compatibility checks. Inline `Type::Error` used as a
+/// compound node's type *field* (e.g. IndexAccess result_type, quantifier
+/// elem_type) is not covered by this helper — those sites rely on their
+/// compiled sub-expression already having pushed the diagnostic.
+///
+/// Note: this only enforces "AT LEAST one error somewhere in `diagnostics`",
+/// not "EXACTLY this poison was paired with EXACTLY that diagnostic" — the
+/// latter would require span tracking that the helper has no access to.
+/// The weaker invariant still catches the most common bug class (returning
+/// `Type::Error` from a path that forgot to call `diagnostics.push`).
+fn make_poison_literal(diagnostics: &[Diagnostic]) -> CompiledExpr {
+    debug_assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.severity == reify_types::Severity::Error),
+        "Type::Error literal produced without a paired error diagnostic — \
+         anti-cascade contract violation (task-448). Diagnostics buffer: {:?}",
+        diagnostics,
+    );
+    CompiledExpr::literal(Value::Undef, Type::Error)
+}
+
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
@@ -734,7 +765,10 @@ pub(crate) fn compile_expr_guarded(
                             // Anti-cascade (task-448): emit Type::Error so
                             // downstream operand-level guards can short-circuit
                             // rather than cascading type-mismatch diagnostics.
-                            return CompiledExpr::literal(Value::Undef, Type::Error);
+                            // Routed through `make_poison_literal` to enforce
+                            // the poison↔diagnostic pairing invariant
+                            // (amendment-round-2 S1).
+                            return make_poison_literal(diagnostics);
                         }
                     }
                 }
@@ -977,13 +1011,15 @@ pub(crate) fn compile_expr_guarded(
                 // Anti-cascade guard (task-448): if the object is already
                 // poisoned, propagate Type::Error rather than falling back
                 // to Type::Real / List<Real>.
+                //
+                // Amendment-round-2 S4: emit a poison literal (uniform with
+                // the other Type::Error producers in this file) instead of a
+                // dead `MethodCall` node, so any downstream pass that
+                // pattern-matches on `MethodCall` (rather than just
+                // `result_type`) cannot accidentally try to evaluate this
+                // already-poisoned aggregation.
                 if compiled_obj.result_type.is_error() {
-                    return CompiledExpr::method_call(
-                        compiled_obj,
-                        member.clone(),
-                        vec![],
-                        Type::Error,
-                    );
+                    return make_poison_literal(diagnostics);
                 }
                 // Infer result type from method and object type
                 let result_type = match member.as_str() {
@@ -1007,9 +1043,12 @@ pub(crate) fn compile_expr_guarded(
                 // Anti-cascade (task-448 amend): if the object is already
                 // poisoned, do NOT emit a second "not yet supported" diagnostic
                 // on top of the root-cause error. Short-circuit to Type::Error
-                // silently — the original producer already reported the issue.
+                // silently — the original producer (in the recursive compile
+                // of `object`) already reported the issue, so the
+                // `make_poison_literal` debug_assert is satisfied by that
+                // upstream diagnostic (amendment-round-2 S1).
                 if compiled_obj.result_type.is_error() {
-                    return CompiledExpr::literal(Value::Undef, Type::Error);
+                    return make_poison_literal(diagnostics);
                 }
                 diagnostics.push(
                     Diagnostic::error(format!("member access not yet supported: .{}", member))
@@ -1019,7 +1058,7 @@ pub(crate) fn compile_expr_guarded(
                 // operand-level guards (infer_binop_type, index access,
                 // aggregation, quantifier) can short-circuit and avoid
                 // cascade diagnostics on top of this stub.
-                CompiledExpr::literal(Value::Undef, Type::Error)
+                make_poison_literal(diagnostics)
             }
         }
         reify_syntax::ExprKind::ListLiteral(elements) => {

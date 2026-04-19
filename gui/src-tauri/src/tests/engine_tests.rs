@@ -9,7 +9,7 @@ use reify_types::ExportFormat;
 
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
-use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder, bracket_compiled_module};
+use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder};
 
 use crate::engine::{EngineSession, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
@@ -2282,69 +2282,29 @@ fn get_entity_tree_has_mesh_true_when_realization_exists() {
 
 #[test]
 fn get_entity_tree_no_realization_has_mesh_false() {
-    // Build a module with a template that has no realizations
-    use reify_test_support::{CompiledModuleBuilder};
-    use reify_types::ModulePath;
-    use reify_types::Type;
-
-    let template = TopologyTemplateBuilder::new("Simple")
-        .param("Simple", "x", Type::length(), None)
-        .build();
-    let compiled = CompiledModuleBuilder::new(ModulePath::single("simple"))
-        .template(template)
-        .build();
-
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    // Use the bracket_compiled_module to verify the fixture API, then test our custom module
-    let _ = bracket_compiled_module(); // ensure fixture compiles
 
     // Load a module with no realizations via source (no geometry ops)
     session.load_from_source("structure Simple { param x: Scalar = 1mm }", "simple").expect("load");
     let tree = session.get_entity_tree();
     let root = &tree[0];
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
-    let _ = compiled; // suppress unused warning
+    // TODO: extend with direct CompiledModule injection when EngineSession supports it
 }
 
 // ---- Step 5: sub-component tree building tests ----
 
 #[test]
 fn get_entity_tree_sub_component_produces_nested_node() {
-    // Build: Assembly { sub bolt: Bolt }  + Bolt { param mass: Mass }
-    use reify_test_support::vcid;
-    use reify_types::{ModulePath, Type, DimensionVector};
-
-    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
-
-    let bolt_template = TopologyTemplateBuilder::new("Bolt")
-        .param("Bolt", "mass", mass_type.clone(), None)
-        .build();
-
-    let assembly_template = TopologyTemplateBuilder::new("Assembly")
-        .sub_component("bolt", "Bolt", vec![])
-        .build();
-
-    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(assembly_template)
-        .template(bolt_template)
-        .build();
-
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    // Use the direct compiled-module path: load bracket to ensure session can accept modules
-    // then check tree via get_entity_tree() on a manually compiled module
-    // We can't inject a CompiledModule directly, so we validate via source parsing
-    // instead. Source: Assembly with a bolt sub.
     session.load_from_source(
         r#"structure Bolt { param mass: Scalar = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
         "test",
     ).expect("load");
-
-    let _ = compiled; // ensure builder API compiles
-    let _ = vcid("Bolt", "mass"); // ensure vcid compiles
 
     let tree = session.get_entity_tree();
 

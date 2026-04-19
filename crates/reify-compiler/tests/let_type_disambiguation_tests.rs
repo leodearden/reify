@@ -496,6 +496,132 @@ trait B {
     );
 }
 
+// ── task 1834 amendment: two-pass pre-register restores annotated forward refs ──
+
+/// Regression guard for the two-pass pre-register split
+/// (reviewer_comprehensive behavior_regression fix): an *unannotated* let
+/// whose expression forward-references an *annotated* member from the same
+/// trait-bound set must compile cleanly — the annotated type is registered
+/// by Pass 1 before any expression is compiled in Pass 2.
+///
+/// Before the split, the pre-register loop walked `ctx.defaults` in source
+/// order and compiled unannotated-let expressions inline, so `let a = b + 1mm`
+/// appearing before `let b : Length = 2mm` produced a spurious
+/// `unresolved name: b` diagnostic — a silent regression vs. the pre-1834
+/// code, which registered every annotated type up front.  The two-pass
+/// structure (annotated-first, then unannotated-with-compile) restores the
+/// old tolerance without re-introducing the `Type::Real` fallback.
+///
+/// Flip-guard for the sibling limitation test: this scenario is `mixed`
+/// (one annotated, one unannotated).  The purely-unannotated mutual case
+/// stays documented in `mutual_unannotated_lets_documented_limitation`
+/// below — only a topological ordering pass would resolve that one.
+#[test]
+fn unannotated_let_resolves_forward_reference_to_annotated_let() {
+    let source = r#"
+trait MixedLets {
+    let a = b + 1mm
+    let b : Length = 2mm
+}
+structure S : MixedLets {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "an unannotated let (`a = b + 1mm`) forward-referencing an *annotated* \
+         let (`b : Length = 2mm`) must resolve cleanly via the two-pass \
+         pre-register pass — Pass 1 registers `b : Length` before Pass 2 \
+         compiles `a`'s expression.  A single-pass implementation would emit \
+         `unresolved name: b` here; got: {:?}",
+        errors
+    );
+
+    // The injected cell for `a` must have its inferred Length type, confirming
+    // Pass 2's `compile_expr` saw `b : Length` in scope and typed `b + 1mm`
+    // correctly.
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("expected value_cell 'a' injected from trait MixedLets");
+    assert_eq!(
+        a_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "cell for `a` must have inferred type Length (Pass 2 saw `b : Length` \
+         in scope via Pass 1's annotated-first registration)"
+    );
+}
+
+/// Regression guard for the Param arm of Pass 1 in the two-pass pre-register
+/// split: an *unannotated* let whose expression forward-references an
+/// *annotated param* from the same trait-bound set must compile cleanly.
+///
+/// This completes the matrix started by
+/// `unannotated_let_resolves_forward_reference_to_annotated_let` above:
+///   - that sibling tests the `DefaultKind::Let { cell_type: Some(…) }` arm of
+///     Pass 1 (annotated Let registers in Pass 1).
+///   - this test exercises the `DefaultKind::Param` arm: `param x : Length = 2mm`
+///     is registered by Pass 1 exactly as annotated Lets are, so Pass 2 sees
+///     `x : Length` in scope when it compiles `let a = x + 1mm`.
+///
+/// Declaration order is inverted (`let a …` before `param x …`) so that a
+/// single-pass implementation that walked `ctx.defaults` in source order would
+/// fail to resolve `x` when compiling `a`'s expression.  The two-pass split
+/// resolves this because Pass 1 registers all Param types before any unannotated
+/// Let expression is compiled in Pass 2.
+#[test]
+fn unannotated_let_resolves_forward_reference_to_annotated_param() {
+    let source = r#"
+trait WithParam {
+    let a = x + 1mm
+    param x : Length = 2mm
+}
+structure S : WithParam {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "an unannotated let (`a = x + 1mm`) forward-referencing an *annotated param* \
+         (`param x : Length = 2mm`) must resolve cleanly via the two-pass \
+         pre-register pass — Pass 1 registers `x : Length` (Param arm) before \
+         Pass 2 compiles `a`'s expression.  Got: {:?}",
+        errors
+    );
+
+    // The injected cell for `a` must carry the inferred Length type, confirming
+    // Pass 2's `compile_expr` saw `x : Length` in scope and typed `x + 1mm`
+    // as Length (not Real, which would indicate Pass 1 missed the Param arm).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("expected value_cell 'a' injected from trait WithParam");
+    assert_eq!(
+        a_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "cell for `a` must have inferred type Length (Pass 2 saw `x : Length` \
+         in scope via Pass 1's Param-arm registration)"
+    );
+}
+
 // ── task 1834 step-6: unannotated let expression type flows into scope/cell ──
 
 /// Trait T has an unannotated `let x = 5mm` and a co-trait constraint

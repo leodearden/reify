@@ -7,18 +7,28 @@ drift after Task 1866's string-ID normalization migration:
   1. Every task `id` is a string matching ``^\d+$`` (not an int, not a slug).
   2. Every entry in a task's `dependencies[]` is a string **and** references an
      existing task id (no orphan deps, no int deps).
-  3. No duplicate `id` values across ``master.tasks[]``.
+  3. No duplicate `id` values within any tag's ``tasks[]``; tags are independent
+     namespaces (so the same id may appear in ``master`` and in a sibling tag).
 
-A fourth invariant (subtask IDs and deps) is implemented but **off by default**
-(``--check-subtasks`` flag).  It is disabled because upstream ``tm-core``
-currently serializes subtask IDs as numbers; enabling it now would make every
-auto-commit fail.  A follow-up task (partner of Task 1888) will flip the default
-once subtask normalization lands in tm-core.
+A fourth invariant (subtask IDs and deps) is also enforced **by default**
+(``--check-subtasks``, on since Task 1989).  The upstream serializer guard in
+``normalize_tasks_json.py`` coerces numeric subtask ``id`` fields to strings
+on every commit; it does **not** touch ``dependencies[]`` entries, but tm-core
+emits deps as strings in practice, so enabling both subtask invariants by
+default is safe.  Use ``--no-check-subtasks`` as an explicit escape hatch if
+upstream ever regresses.
+
+Top-level key convention:
+Tag namespaces are top-level keys whose names do **not** start with ``_``.
+Any non-tag metadata must be underscore-prefixed (e.g. ``_meta``, a future
+``_schemaVersion``) so the validator silently skips it.  This keeps the
+validator forward-compatible with new ``tm-core`` metadata keys without
+requiring a code change or emitting noisy warnings.
 
 Usage::
 
     python3 scripts/validate_tasks_json.py .taskmaster/tasks/tasks.json
-    python3 scripts/validate_tasks_json.py --check-subtasks .taskmaster/tasks/tasks.json
+    python3 scripts/validate_tasks_json.py --no-check-subtasks .taskmaster/tasks/tasks.json
 
 Exit 0 on success, 1 if any invariant is violated (all violations printed to
 stderr before exit so a single run gives the full picture).
@@ -38,12 +48,15 @@ def main() -> None:
     parser.add_argument("path", help="Path to tasks.json")
     parser.add_argument(
         "--check-subtasks",
-        action="store_true",
-        default=False,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "Also apply invariants to subtask arrays.  Off by default because "
-            "tm-core currently emits numeric subtask IDs.  Enable once upstream "
-            "normalization lands (partner task to Task 1888)."
+            "Apply invariants to subtask arrays (default: on).  The upstream "
+            "normalize_tasks_json.py coerces numeric subtask `id` fields to "
+            "strings on every commit but does not touch `dependencies[]` "
+            "entries; tm-core emits deps as strings in practice, so this guard "
+            "is safe to keep enabled.  Use --no-check-subtasks as an escape "
+            "hatch if upstream ever regresses."
         ),
     )
     args = parser.parse_args()

@@ -36,30 +36,46 @@ pub enum FieldSourceKind {
     Sampled,
     Composed,
     Imported,
-    /// A field produced by `gradient()` — its lambda slot stores the original
-    /// field and the sample handler dispatches to central-difference evaluation.
+    /// A field produced by the language-level `gradient()` operator, yielding
+    /// the gradient of a parent scalar (or vector) field.  The stored `lambda`
+    /// in the associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     Gradient,
-    /// A field produced by `divergence()` — its lambda slot stores the original
-    /// vector field and the sample handler dispatches to numerical-divergence evaluation.
+    /// A field produced by the language-level `divergence()` operator, yielding
+    /// the divergence of a parent vector field.  The stored `lambda` in the
+    /// associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     Divergence,
-    /// A field produced by `curl()` — its lambda slot stores the original
-    /// vector field and the sample handler dispatches to numerical-curl evaluation.
+    /// A field produced by the language-level `curl()` operator, yielding
+    /// the curl of a parent vector field.  The stored `lambda` in the
+    /// associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     Curl,
-    /// A field produced by `laplacian()` — its lambda slot stores the original
-    /// scalar field and the sample handler dispatches to numerical-laplacian evaluation.
+    /// A field produced by the language-level `laplacian()` operator, yielding
+    /// the Laplacian of a parent scalar field.  The stored `lambda` in the
+    /// associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     Laplacian,
-    /// A field produced by `von_mises()` — lambda slot stores the original tensor
-    /// field; sample handler applies pointwise von Mises stress computation.
+    /// A field produced by the language-level `von_mises()` operator, yielding
+    /// the von Mises stress of a parent tensor field.  The stored `lambda` in
+    /// the associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     VonMises,
-    /// A field produced by `principal_stresses()` — lambda slot stores the original
-    /// tensor field; sample handler applies pointwise eigenvalue computation.
+    /// A field produced by the language-level `principal_stresses()` operator,
+    /// yielding the principal stresses of a parent tensor field.  The stored
+    /// `lambda` in the associated `Value::Field` holds the original source
+    /// field; see `Value::Field.lambda` for the storage-layout contract.
     PrincipalStresses,
-    /// A field produced by `max_shear()` — lambda slot stores the original tensor
-    /// field; sample handler applies pointwise max shear computation.
+    /// A field produced by the language-level `max_shear()` operator, yielding
+    /// the maximum shear stress of a parent tensor field.  The stored `lambda`
+    /// in the associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     MaxShear,
-    /// A field produced by `safety_factor()` — lambda slot stores a
-    /// `Value::List([original_field, yield_val])`; sample handler unpacks both
-    /// and applies pointwise safety-factor computation.
+    /// A field produced by the language-level `safety_factor()` operator,
+    /// yielding the safety factor of a parent tensor field with respect to a
+    /// yield value.  The stored `lambda` in the associated `Value::Field` is a
+    /// `Value::List` containing `[original_field, yield_val]`; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     SafetyFactor,
 }
 
@@ -169,11 +185,37 @@ pub enum Value {
     /// Optional value: Some(value) or None.
     Option(Option<Box<Value>>),
     /// Field value: a typed domain->codomain mapping with stored lambda/data.
+    ///
+    /// The `lambda` field stores one of four value kinds depending on `source`;
+    /// see the `lambda` field doc for the full mapping.
+    ///
+    /// # Calling convention for `lambda`
+    ///
+    /// When `lambda` is a `Value::Lambda`, callers may invoke it with either:
+    ///
+    /// * **(i) `n` scalar arguments** of the domain's component type, where
+    ///   `n` is the domain dimensionality derived from `domain_type`
+    ///   (e.g. `Point { n, scalar }` → `n`; `Real` / `Scalar { .. }` → 1), or
+    /// * **(ii) a single `Value::Point` argument** holding all `n` coordinates.
+    ///
+    /// Convention (ii) — the `single_point_param` path — applies when and only
+    /// when `lambda.params.len() == 1 && n > 1`; otherwise convention (i)
+    /// applies.  The source of `n` is `domain_type`.
+    ///
+    /// See `reify_expr::calculus::detect_single_point_param` for the reference
+    /// implementation of this heuristic; keep this doc in sync with that function.
     Field {
         domain_type: crate::ty::Type,
         codomain_type: crate::ty::Type,
         source: FieldSourceKind,
-        /// The callable lambda for analytical/composed fields, or Undef for sampled/imported.
+        /// The value stored for this field; valid contents depend on `source`:
+        ///
+        /// | `source` variant(s)                                                         | stored value         |
+        /// |-----------------------------------------------------------------------------|----------------------|
+        /// | `Analytical`, `Composed`                                                    | `Value::Lambda`      |
+        /// | `Sampled`, `Imported`                                                       | `Value::Undef`       |
+        /// | `Gradient`, `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear` | `Value::Field` (the original source field) |
+        /// | `SafetyFactor`                                                              | `Value::List` containing `[original_field, yield_val]` |
         lambda: Box<Value>,
     },
     /// Lambda closure: captures environment values and body expression.
@@ -6860,5 +6902,261 @@ mod tests {
             None,
             "try_infer_type() on Option(Some(empty List)) should return None (inner is ambiguous)"
         );
+    }
+
+    // ── doc-invariant tests ───────────────────────────────────────────────────
+
+    /// Returns the slice of `source` between `start_sentinel` (inclusive) and
+    /// `end_sentinel` (exclusive).  Panics with a descriptive message if either
+    /// sentinel is not found.
+    fn doc_region<'s>(source: &'s str, start_sentinel: &str, end_sentinel: &str) -> &'s str {
+        let start = source
+            .find(start_sentinel)
+            .unwrap_or_else(|| panic!("start sentinel not found in value.rs: {start_sentinel:?}"));
+        let end_offset = source[start..]
+            .find(end_sentinel)
+            .unwrap_or_else(|| {
+                panic!(
+                    "end sentinel not found in value.rs after {start_sentinel:?}: {end_sentinel:?}"
+                )
+            });
+        &source[start..start + end_offset]
+    }
+
+    /// Returns the source text of `value.rs` for use by doc-invariant tests.
+    fn value_rs_source() -> String {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/value.rs");
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
+    }
+
+    /// Returns the contiguous `///`-prefixed doc block that immediately
+    /// precedes `variant_line` inside the definition of `enum enum_name`.
+    ///
+    /// Strategy: find `enum {enum_name} {` to anchor inside the real enum
+    /// definition (not test source), then scan forward for `variant_line`,
+    /// then walk backwards line-by-line collecting every line whose trimmed
+    /// form starts with `///`, and return them joined in document order.
+    ///
+    /// Panics with a descriptive message if the enum or variant is not found.
+    fn enum_variant_doc_region(source: &str, enum_name: &str, variant_line: &str) -> String {
+        let enum_header = format!("enum {enum_name} {{");
+        let enum_start = source.find(&enum_header).unwrap_or_else(|| {
+            panic!("enum definition not found in value.rs: {enum_header:?}")
+        });
+
+        let after_enum = &source[enum_start..];
+        let variant_offset = after_enum.find(variant_line).unwrap_or_else(|| {
+            panic!(
+                "variant line {variant_line:?} not found in enum {enum_name} in value.rs"
+            )
+        });
+
+        // Absolute byte offset of the variant line's start in source.
+        let variant_abs = enum_start + variant_offset;
+
+        // Walk backwards over lines, collecting contiguous `///`-prefixed ones.
+        let before_variant = &source[..variant_abs];
+        let mut doc_lines: Vec<&str> = Vec::new();
+        for line in before_variant.lines().rev() {
+            if line.trim_start().starts_with("///") {
+                doc_lines.push(line);
+            } else {
+                break;
+            }
+        }
+        doc_lines.reverse();
+        doc_lines.join("\n")
+    }
+
+    /// Asserts that `FieldSourceKind::Gradient`'s doc describes provenance
+    /// only, without leaking reify-expr implementation details ("lambda slot",
+    /// "sample handler", "central-difference").
+    #[test]
+    fn field_source_kind_gradient_doc_describes_provenance_only() {
+        let source = value_rs_source();
+
+        let region = enum_variant_doc_region(&source, "FieldSourceKind", "    Gradient,\n");
+
+        // Locator self-checks: ensure we got a real doc block.
+        assert!(!region.is_empty(), "Gradient doc region must not be empty");
+        assert!(
+            region.trim_start().starts_with("///"),
+            "Gradient doc region must start with ///; got:\n{region}"
+        );
+
+        // (a) Must NOT mention reify-expr implementation internals.
+        assert!(
+            !region.contains("lambda slot"),
+            "Gradient doc must not mention 'lambda slot' (impl detail); region:\n{region}"
+        );
+        assert!(
+            !region.contains("sample handler"),
+            "Gradient doc must not mention 'sample handler' (impl detail); region:\n{region}"
+        );
+        assert!(
+            !region.contains("central-difference"),
+            "Gradient doc must not mention 'central-difference' (impl detail); region:\n{region}"
+        );
+
+        // (b) Must describe provenance — produced by the `gradient()` operator.
+        assert!(
+            region.contains("gradient()"),
+            "Gradient doc must mention gradient() as provenance; region:\n{region}"
+        );
+    }
+
+    /// Asserts that the `Value::Field` variant's doc block documents the
+    /// `single_point_param` calling-convention contract (params.len() == 1 &&
+    /// n > 1 → callers pass a single `Value::Point`).  Fails against the
+    /// current doc; passes once step-6 expands it.
+    #[test]
+    fn value_field_doc_documents_single_point_param_contract() {
+        let source = value_rs_source();
+
+        // Slice the region from the Field variant's leading doc line up to
+        // (but not including) the next "    Lambda {" variant declaration.
+        let region = doc_region(
+            &source,
+            "Field value: a typed domain->codomain mapping",
+            "    Lambda {",
+        );
+
+        // (a) Must name the heuristic so readers grepping for it land here.
+        assert!(
+            region.contains("single_point_param"),
+            "Value::Field doc must mention 'single_point_param'; region:\n{region}"
+        );
+
+        // (b) Must state the contract: 1 param + n > 1 → Value::Point arg.
+        assert!(
+            region.contains("Value::Point"),
+            "Value::Field doc must mention 'Value::Point' in the calling convention; region:\n{region}"
+        );
+        assert!(
+            region.contains("n > 1"),
+            "Value::Field doc must state the 'n > 1' condition; region:\n{region}"
+        );
+
+        // (c) Must name domain_type as the source of n.
+        assert!(
+            region.contains("domain_type"),
+            "Value::Field doc must name 'domain_type' as the source of n; region:\n{region}"
+        );
+    }
+
+    /// Verifies that `enum_variant_doc_region` returns the real
+    /// `FieldSourceKind::Gradient` doc block: non-empty, starts with `///`,
+    /// and contains no test-body tokens.
+    #[test]
+    fn gradient_doc_region_locator_self_check() {
+        let source = value_rs_source();
+
+        let region = enum_variant_doc_region(&source, "FieldSourceKind", "    Gradient,\n");
+
+        // (a) The region must not be empty.
+        assert!(!region.is_empty(), "Gradient doc region must not be empty");
+
+        // (b) The region must begin with a doc-comment line (///), not test source.
+        assert!(
+            region.trim_start().starts_with("///"),
+            "Gradient doc region must start with ///; got:\n{region}"
+        );
+
+        // (c) Must not contain test-body tokens.
+        for forbidden in &[
+            "fn field_source_kind_gradient_doc",
+            "assert!",
+            "let source",
+            "let region",
+        ] {
+            assert!(
+                !region.contains(forbidden),
+                "Gradient doc region contains test-only token {forbidden:?}; \
+                 locator matched test source instead of the real doc.\n\
+                 Region:\n{region}"
+            );
+        }
+    }
+
+    /// Asserts that `Value::Field.lambda`'s doc comment enumerates all four
+    /// valid content kinds and maps every `FieldSourceKind` variant to one of
+    /// them.  Fails against the current one-liner; passes once step-2 expands
+    /// the doc.
+    #[test]
+    fn value_field_lambda_doc_enumerates_all_content_kinds() {
+        let source = value_rs_source();
+
+        // Slice the region that covers the Field variant doc block and the
+        // lambda field doc — from the Field variant's leading doc line up to
+        // (but not including) the next "Lambda {" variant declaration.
+        let region = doc_region(
+            &source,
+            "Field value: a typed domain->codomain mapping",
+            "    Lambda {",
+        );
+
+        // (a) Must mention all four valid content types for the lambda field.
+        assert!(
+            region.contains("Value::Lambda"),
+            "Value::Field.lambda doc must mention Value::Lambda; region:\n{region}"
+        );
+        assert!(
+            region.contains("Value::Undef"),
+            "Value::Field.lambda doc must mention Value::Undef; region:\n{region}"
+        );
+        assert!(
+            region.contains("Value::Field"),
+            "Value::Field.lambda doc must mention Value::Field; region:\n{region}"
+        );
+        assert!(
+            region.contains("Value::List"),
+            "Value::Field.lambda doc must mention Value::List; region:\n{region}"
+        );
+
+        // (b) Must map each FieldSourceKind variant to its content kind.
+        //
+        // The exhaustive match below is never called at runtime; it exists so
+        // the compiler enforces that this list is updated whenever a new
+        // FieldSourceKind variant is added.  Adding a variant without updating
+        // the match produces a "non-exhaustive patterns" compile error, which
+        // serves as a reminder to extend the doc table as well.
+        #[allow(dead_code)]
+        fn _exhaustive_guard(k: FieldSourceKind) {
+            match k {
+                FieldSourceKind::Analytical
+                | FieldSourceKind::Composed
+                | FieldSourceKind::Sampled
+                | FieldSourceKind::Imported
+                | FieldSourceKind::Gradient
+                | FieldSourceKind::Divergence
+                | FieldSourceKind::Curl
+                | FieldSourceKind::Laplacian
+                | FieldSourceKind::VonMises
+                | FieldSourceKind::PrincipalStresses
+                | FieldSourceKind::MaxShear
+                | FieldSourceKind::SafetyFactor => {}
+            }
+        }
+        let variants = [
+            "Analytical",
+            "Composed",
+            "Sampled",
+            "Imported",
+            "Gradient",
+            "Divergence",
+            "Curl",
+            "Laplacian",
+            "VonMises",
+            "PrincipalStresses",
+            "MaxShear",
+            "SafetyFactor",
+        ];
+        for variant in &variants {
+            assert!(
+                region.contains(variant),
+                "Value::Field.lambda doc must mention FieldSourceKind::{variant}; region:\n{region}"
+            );
+        }
     }
 }

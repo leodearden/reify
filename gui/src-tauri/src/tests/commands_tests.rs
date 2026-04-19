@@ -7,10 +7,14 @@ use reify_test_support::{MockGeometryKernel, bracket_source};
 use crate::commands::AppState;
 use crate::engine::EngineSession;
 
-fn make_loaded_session() -> EngineSession {
+fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+fn make_loaded_session() -> EngineSession {
+    let mut session = make_session();
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -39,11 +43,34 @@ fn app_state_selection_is_accessible() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
             selected_entity: Some("Bracket".to_string()),
+            selected_entities: vec![],
             hovered_entity: None,
         })),
     };
     let sel = state.selection.read().unwrap();
     assert_eq!(sel.selected_entity, Some("Bracket".to_string()));
+}
+
+#[test]
+fn app_state_selection_multi() {
+    let session = make_loaded_session();
+    let state = AppState {
+        engine: Arc::new(Mutex::new(session)),
+        last_state: Mutex::new(None),
+        watcher: Mutex::new(None),
+        sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(SelectionInfo {
+            selected_entity: Some("A".to_string()),
+            selected_entities: vec!["A".to_string(), "B".to_string()],
+            hovered_entity: None,
+        })),
+    };
+    let sel = state.selection.read().unwrap();
+    assert_eq!(sel.selected_entity, Some("A".to_string()));
+    assert_eq!(
+        sel.selected_entities,
+        vec!["A".to_string(), "B".to_string()]
+    );
 }
 
 #[test]
@@ -122,17 +149,18 @@ fn export_writes_file() {
 /// Uses the standard technique: spawn a thread that panics while holding the lock,
 /// then join it. After the join the mutex is in a poisoned state.
 fn make_poisoned_engine() -> Arc<Mutex<EngineSession>> {
-    let session = EngineSession::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    );
+    let session = make_session();
     let engine = Arc::new(Mutex::new(session));
     let engine_clone = Arc::clone(&engine);
-    let _ = std::thread::spawn(move || {
+    let join_result = std::thread::spawn(move || {
         let _guard = engine_clone.lock().unwrap();
         panic!("poison the mutex");
     })
     .join();
+    assert!(
+        join_result.is_err(),
+        "thread should have panicked to poison the mutex"
+    );
     engine
 }
 
@@ -186,6 +214,36 @@ fn get_entity_identity_map_impl_returns_ok_on_healthy_mutex() {
     assert!(result.is_ok(), "expected Ok on healthy mutex");
     let map = result.unwrap();
     assert!(!map.is_empty(), "entity identity map should be non-empty for a loaded module");
+}
+
+#[test]
+fn get_entity_tree_impl_returns_ok_empty_when_no_module_loaded() {
+    use crate::commands::get_entity_tree_impl;
+
+    let session = make_session();
+    let engine = Mutex::new(session);
+
+    let result = get_entity_tree_impl(&engine);
+    assert!(result.is_ok(), "expected Ok with no module loaded, got {:?}", result);
+    assert!(
+        result.unwrap().is_empty(),
+        "entity tree should be empty when no module is loaded"
+    );
+}
+
+#[test]
+fn get_entity_identity_map_impl_returns_ok_empty_when_no_module_loaded() {
+    use crate::commands::get_entity_identity_map_impl;
+
+    let session = make_session();
+    let engine = Mutex::new(session);
+
+    let result = get_entity_identity_map_impl(&engine);
+    assert!(result.is_ok(), "expected Ok with no module loaded, got {:?}", result);
+    assert!(
+        result.unwrap().is_empty(),
+        "entity identity map should be empty when no module is loaded"
+    );
 }
 
 #[test]

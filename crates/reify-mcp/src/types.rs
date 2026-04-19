@@ -82,6 +82,11 @@ pub struct EvalStatusInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SelectionInfo {
     pub selected_entity: Option<String>,
+    /// Full multi-selection list; empty when nothing is selected.
+    /// The `#[serde(default)]` ensures backward-compat deserialization
+    /// from clients that send the old shape without this field.
+    #[serde(default)]
+    pub selected_entities: Vec<String>,
     pub hovered_entity: Option<String>,
 }
 

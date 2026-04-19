@@ -171,11 +171,12 @@ pub(crate) fn check_trait_conformance(
     }
 
     // Cache of compiled expressions for unannotated let defaults, keyed by
-    // default name.  Populated by the pre-register pass below and drained by
-    // the injection loop (task 1834 step-9) to avoid double-compilation of
-    // the same expression.  Also consumed by the `available_defaults` builder
-    // (task 1834 step-8) so unannotated let defaults contribute their *inferred*
-    // type to requirement-matching, instead of the previous `Type::Real` fallback.
+    // default name.  Populated by Pass 2 below and drained by the injection
+    // loop (task 1834 step-9) to avoid double-compilation of the same
+    // expression.  Also consumed by the `available_defaults` builder
+    // (task 1834 step-8) so unannotated let defaults contribute their
+    // *inferred* type to requirement-matching, instead of the previous
+    // `Type::Real` fallback.
     //
     // INVARIANTS that make the name-only key safe (no `AvailableDefaultKind`
     // discriminator, unlike `available_defaults` below):
@@ -193,39 +194,63 @@ pub(crate) fn check_trait_conformance(
     // `(String, AvailableDefaultKind)` to match `available_defaults` for
     // symmetry and explicit kind discrimination.
     //
-    // DESIGN LIMITATION (acknowledged simplification): type inference for
-    // unannotated lets proceeds in `ctx.defaults` iteration order.  Two
-    // unannotated lets that forward-reference each other — e.g., `let a = b + 1mm`
-    // where `let b = 5mm` is *also* unannotated and appears *after* `a` in
-    // iteration order — will fail inference for the forward-referencing
-    // binding (`b` is not in scope when `a`'s expression is compiled), yielding
-    // a diagnostic from `compile_expr`.  Adding an annotation to the
-    // *forward-referencing* binding (the one that needs its referent in scope)
-    // unblocks the case, because the annotated branch above skips `compile_expr`
-    // in the pre-register pass — by the time the injection loop compiles that
-    // binding's expression, the referent has already been registered.
-    // Annotating only the *forward-referenced* binding does NOT help here,
-    // because the pre-register pass walks `ctx.defaults` in iteration order and
-    // the forward-referencing binding's `compile_expr` still fires before the
-    // referenced binding's match arm runs.  A two-pass variant — first register
-    // all annotated defaults/params, then compile unannotated-let expressions —
-    // would make either-side annotation sufficient, but is out of scope for
-    // task 1834 ("documenting as intentional simplification").
-    let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
-
-    // Pre-register default member names in scope so their expressions can
-    // reference each other (e.g., constraint x > 0 references param x from same trait).
-    // register_if_absent provides the no-overwrite guarantee: first-seen type wins,
-    // and the method itself is safe against cross-kind overwrites without a call-site guard.
+    // TWO-PASS PRE-REGISTER DESIGN (task 1834 amendment — reviewer_comprehensive
+    // behavior_regression fix):
+    //   Pass 1 — register every *annotated* default (Param + Let with
+    //     `Some(cell_type)`) into the scope.  No expression compilation
+    //     happens here, so ordering within `ctx.defaults` does not matter
+    //     for the annotated types made visible to Pass 2.
+    //   Pass 2 — for each *unannotated* Let (`cell_type: None`), compile
+    //     the expression against the fully-populated annotated scope from
+    //     Pass 1, cache the compiled_expr in `inferred_let_exprs`, and
+    //     register the inferred `result_type`.
     //
-    // Two branches for Let defaults:
-    //   - annotated (cell_type: Some(ty))   → register the annotation directly,
-    //   - unannotated (cell_type: None)     → compile the expression in the
-    //     partial scope, register the inferred `result_type`, and cache the
-    //     compiled_expr in `inferred_let_exprs` for the injection loop.
-    //
-    // This pass runs BEFORE `available_defaults` is built so unannotated-let
+    // The split restores the pre-1834 tolerance for forward references to
+    // any *annotated* member: before this amendment, Pass 1+2 were a single
+    // pass that walked `ctx.defaults` in source order, so an unannotated
+    // `let a = b + 1mm` appearing before `let b : Length = 2mm` would compile
+    // against a scope that did not yet contain `b` — a silent regression
+    // vs. the pre-1834 code, which registered every annotated type up front.
+    // Both passes run BEFORE `available_defaults` is built so Pass 2's
     // inference results feed the requirement-matching lookup below.
+    //
+    // DESIGN LIMITATION (acknowledged simplification): Pass 2 still walks
+    // `ctx.defaults` in source order.  Two *unannotated* lets that
+    // forward-reference each other — e.g., `let a = b + 1mm` where
+    // `let b = 5mm` is *also* unannotated — will fail inference for the
+    // forward-referencing binding (`b` is not in scope when `a`'s
+    // expression is compiled), yielding an `unresolved name` diagnostic.
+    // Annotating *either* binding unblocks the case because annotated
+    // types are registered by Pass 1.  A topological ordering pass over
+    // unannotated lets would remove the limitation entirely but is out of
+    // scope for task 1834 ("documenting as intentional simplification").
+    let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+    // Unannotated-let defaults whose scope slot was already claimed by an annotated
+    // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
+    // insert so the injection loop does not emit a duplicate Let cell alongside the
+    // Param/annotated-Let cell that will already be injected for the same name.
+    // The injection loop uses this set to distinguish a deliberate skip from drift.
+    let mut pass2_skipped: HashSet<String> = HashSet::new();
+
+    // Shared conflict logger for `register_if_absent` Occupied returns.  Captures
+    // `&structure.name` from the enclosing scope so both Pass 1 and Pass 2 call
+    // sites stay structurally identical — no drift risk if the message or fields
+    // ever change.
+    let log_conflict = |name: &str, ignored_ty: Type| {
+        tracing::debug!(
+            target: "reify_compiler::conformance",
+            name = %name,
+            entity = %structure.name,
+            ignored_ty = ?ignored_ty,
+            "trait-merge conflict: second default with same name ignored; first-seen type wins"
+        );
+    };
+
+    // Pass 1: register all *annotated* defaults (Param, Let-with-annotation).
+    // Unannotated lets and constraints are deferred to Pass 2 / injection.
+    // register_if_absent provides the no-overwrite guarantee: first-seen type
+    // wins, and the method itself is safe against cross-kind overwrites
+    // without a call-site guard.
     for default in &ctx.defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
@@ -236,20 +261,8 @@ pub(crate) fn check_trait_conformance(
                     cell_type: Some(annotation_ty),
                     ..
                 } => annotation_ty.clone(),
-                DefaultKind::Let {
-                    cell_type: None,
-                    let_decl,
-                } => {
-                    // Unannotated let: infer the type from the expression,
-                    // compiled in the partial scope visible so far (structure
-                    // members + already-registered defaults).  Cache the
-                    // compiled_expr so the injection loop can reuse it.
-                    let compiled_expr =
-                        compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
-                    let inferred_ty = compiled_expr.result_type.clone();
-                    inferred_let_exprs.insert(name.clone(), compiled_expr);
-                    inferred_ty
-                }
+                // Deferred to Pass 2 — needs Pass 1's scope to compile against.
+                DefaultKind::Let { cell_type: None, .. } => continue,
                 DefaultKind::Constraint(_) => continue,
             };
             // First-seen type wins. `ty` is moved into `register_if_absent`; on
@@ -257,13 +270,41 @@ pub(crate) fn check_trait_conformance(
             // `Some(ignored_ty)` for the debug emission, so no clone is needed on
             // the hot Vacant insertion path.
             if let Some(ignored_ty) = scope.register_if_absent(name, ty) {
-                tracing::debug!(
-                    target: "reify_compiler::conformance",
-                    name = %name,
-                    entity = %structure.name,
-                    ignored_ty = ?ignored_ty,
-                    "trait-merge conflict: second default with same name ignored; first-seen type wins"
-                );
+                log_conflict(name, ignored_ty);
+            }
+        }
+    }
+
+    // Pass 2: compile each *unannotated* Let's expression against the
+    // fully-populated annotated scope from Pass 1 and register its inferred
+    // type.  When `register_if_absent` finds the scope slot already claimed
+    // (Pass 1 registered an annotated Param or Let), the compiled expression
+    // is discarded and the name is recorded in `pass2_skipped` so the
+    // injection loop skips Let-cell injection — preventing a duplicate
+    // (entity, member) cell alongside the annotated-type injection.  When the
+    // slot is vacant, the expression is cached in `inferred_let_exprs` for
+    // reuse by the injection loop (avoids double compilation) and by
+    // `available_defaults` (so requirement-matching uses the inferred type
+    // instead of the old `Type::Real` fallback).
+    for default in &ctx.defaults {
+        if let Some(name) = &default.name
+            && !structure_members.contains_key(name)
+            && let DefaultKind::Let {
+                cell_type: None,
+                let_decl,
+            } = &default.kind
+        {
+            let compiled_expr =
+                compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
+            let inferred_ty = compiled_expr.result_type.clone();
+            if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {
+                log_conflict(name, ignored_ty);
+                // Scope slot already claimed by an annotated type (Pass 1).
+                // Record in pass2_skipped so the injection loop skips Let-cell
+                // injection for this name and avoids duplicate (entity, member) cells.
+                pass2_skipped.insert(name.to_string());
+            } else {
+                inferred_let_exprs.insert(name.clone(), compiled_expr);
             }
         }
     }
@@ -280,9 +321,17 @@ pub(crate) fn check_trait_conformance(
     //
     // For unannotated let defaults (`cell_type: None`), the advertised type comes from
     // `inferred_let_exprs` populated by the pre-register pass above — see task 1834 step-8.
-    // The final `Type::Real` fallback is reached only when inference itself failed
-    // (the expression errored out and left no cached result), and matches the pre-fix
-    // behavior as a safety net for that pathological case.
+    //
+    // Names in `pass2_skipped` are explicitly excluded from the Let arm (Option B,
+    // task 1951): those are names where Pass 1 claimed the scope slot with an annotated
+    // Param or Let, so the injection loop (lines ~520-527) already `continue`s past
+    // them — no Let cell is ever injected for such a name. Advertising a phantom
+    // `(name, Let)` entry would break the invariant "only one default satisfies a
+    // given (name, kind)": a `RequirementKind::Let` lookup against the phantom entry
+    // would kind-match and emit a spurious "requirement expects <T>, available default
+    // has Real" type-mismatch instead of the clearer "missing required member" diagnostic.
+    // Excluding pass2_skipped names makes the advertisement builder symmetric with the
+    // injection loop.
     let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx
         .defaults
         .iter()
@@ -293,6 +342,13 @@ pub(crate) fn check_trait_conformance(
                     (AvailableDefaultKind::Param, cell_type.clone())
                 }
                 DefaultKind::Let { cell_type, .. } => {
+                    // Do not advertise a phantom Let entry for names that Pass 2
+                    // recorded in pass2_skipped: the injection loop will not emit
+                    // a Let cell for those names, so advertising one here would
+                    // violate the "one default per (name, kind)" invariant.
+                    if pass2_skipped.contains(name) {
+                        return None;
+                    }
                     let resolved = cell_type.clone().unwrap_or_else(|| {
                         inferred_let_exprs
                             .get(name)
@@ -449,38 +505,47 @@ pub(crate) fn check_trait_conformance(
                     // Reuse the compiled_expr cached by the pre-register/inference
                     // pass (task 1834 step-9) to avoid a second compilation of the
                     // same expression.  The dispatch mirrors the pre-register
-                    // branches: unannotated lets always populate the cache there,
-                    // annotated lets never do.
+                    // branches: unannotated lets populate the cache unless Pass 2
+                    // found the scope slot already claimed (recorded in `pass2_skipped`);
+                    // annotated lets never use the cache.
                     //
-                    // Cache miss handling (task 1834 reviewer_comprehensive
-                    // robustness fix): a cache miss on the `None` arm means the
-                    // pre-register pass did not compile this expression, which
-                    // would only happen if a future refactor decoupled the
-                    // pre-register guard (`!structure_members.contains_key(name)`)
-                    // from the injection guard or changed the cache key (today
-                    // name-only, keyed on the invariants documented beside the
-                    // cache declaration above).  Emit a single
-                    // internal-consistency diagnostic and skip injection rather
-                    // than silently recompiling — a recompile would risk
-                    // duplicating diagnostics that the pre-register pass already
-                    // pushed for the same AST node if the invariants ever drift
-                    // such that both passes run for one name.  `debug_assert!`
-                    // still trips in dev/test so the drift is caught early.
+                    // Cache miss handling: two reasons a `None` arm miss can occur:
+                    //   (a) Deliberate skip (`pass2_skipped.contains(name)`): Pass 2
+                    //       found an annotated type claiming the scope slot and did not
+                    //       cache the expression.  Silent `continue` — the Param/
+                    //       annotated-Let default will inject its own cell for this name.
+                    //   (b) Unexpected drift: a refactor decoupled the pre-register
+                    //       guard from the injection guard or changed the cache key.
+                    //       `debug_assert!(false, …)` fires in dev/test; the error
+                    //       diagnostic fires in release rather than silently recompiling
+                    //       (which would risk duplicating diagnostics already pushed by
+                    //       Pass 2 for the same AST node).
                     let compiled_expr = match cell_type {
                         Some(_) => {
                             compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
                         }
                         None => {
-                            debug_assert!(
-                                inferred_let_exprs.contains_key(name),
-                                "unannotated let '{}' should have been cached by the \
-                                 pre-register pass (Pass 2) — cache miss indicates a \
-                                 drift between the pre-register guard and the injection guard",
-                                name
-                            );
                             match inferred_let_exprs.remove(name) {
                                 Some(ce) => ce,
                                 None => {
+                                    if pass2_skipped.contains(name) {
+                                        // Deliberate skip: Pass 2 found an annotated
+                                        // type already occupying the scope slot and
+                                        // did not cache this expression (see `pass2_skipped`
+                                        // above).  The Param/annotated-Let default will
+                                        // inject its own cell; skip Let injection here
+                                        // to prevent duplicate (entity, member) cells.
+                                        continue;
+                                    }
+                                    // Unexpected: pre-register guard and injection guard
+                                    // have diverged, or the cache key changed.
+                                    debug_assert!(
+                                        false,
+                                        "unannotated let '{}' has no cached compiled expression \
+                                         and is not in pass2_skipped — drift between the \
+                                         pre-register guard and the injection guard in conformance.rs",
+                                        name
+                                    );
                                     diagnostics.push(
                                         Diagnostic::error(format!(
                                             "internal error: compiled expression for unannotated \
@@ -496,8 +561,6 @@ pub(crate) fn check_trait_conformance(
                                             ),
                                         ),
                                     );
-                                    // Skip injection for this default rather than
-                                    // silently recompiling (see comment block above).
                                     continue;
                                 }
                             }
@@ -824,5 +887,231 @@ pub(crate) fn collect_all_requirements(
                 .insert(key, (default_type, trait_name.to_string()));
             ctx.defaults.push(default.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unit test for the Option B fix (task 1951).
+    ///
+    /// This test exercises the code path the integration-level
+    /// `phantom_let_advertisement_contract_for_future_parser_extension` test in
+    /// `trait_merge_tests.rs` CANNOT reach: it hand-builds a `RequirementKind::Let`
+    /// requirement (not parseable from reify source today — see
+    /// `let_type_disambiguation_tests.rs:470-497` and esc-1951-6) and verifies that
+    /// the Option B guard in `available_defaults` suppresses the phantom
+    /// `(name, Let) -> Type::Real` entry for names recorded in `pass2_skipped`.
+    ///
+    /// ## Scenario
+    ///
+    /// - **TraitX**: requires `let x : Length` (hand-built `RequirementKind::Let` — not
+    ///   parser-reachable today)
+    /// - **TraitY**: provides `param x : Length` — Pass 1 claims the scope slot for "x"
+    /// - **TraitZ**: provides `let x = 5.5` (unannotated; `cell_type: None`) — Pass 2
+    ///   sees the slot already claimed and records "x" in `pass2_skipped`
+    /// - **Structure S : TraitX + TraitY + TraitZ { }** — no member override
+    ///
+    /// ## Expected behavior (post-fix)
+    ///
+    /// The `pass2_skipped.contains(name)` guard in the `DefaultKind::Let` arm of
+    /// `available_defaults` returns `None` before reaching the `Type::Real` fallback.
+    /// The `RequirementKind::Let` lookup for "x" finds no entry → the `None` arm fires →
+    /// correct "missing required member" diagnostic (not the spurious "available default
+    /// has Real" phantom type-mismatch).
+    ///
+    /// ## Pre-fix behavior (should NOT happen after fix)
+    ///
+    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::Real`.
+    /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
+    /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
+    ///
+    /// This test **FAILS on the unpatched code** and **PASSES after the Option B fix**.
+    #[test]
+    fn option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name() {
+        // --- Build CompiledTrait fixtures ---
+
+        // TraitX: requires `let x : Length` (hand-built — not parser-reachable)
+        let trait_x = CompiledTrait {
+            name: "TraitX".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "x".to_string(),
+                kind: RequirementKind::Let(Type::length()),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // TraitY: `param x : Length` — no default expression needed.
+        // Pass 1 registers "x" → Type::length() in the scope.
+        let trait_y = CompiledTrait {
+            name: "TraitY".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Param {
+                    cell_type: Type::length(),
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "x".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None, // no default expression
+                        where_clause: None,
+                        annotations: vec![],
+                        span: SourceSpan::empty(0),
+                        content_hash: ContentHash(0),
+                    },
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // TraitZ: `let x = 5.5` (unannotated; cell_type: None).
+        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" already in scope,
+        // and records "x" in pass2_skipped (no inferred_let_exprs cache entry).
+        let trait_z = CompiledTrait {
+            name: "TraitZ".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: None,
+                    let_decl: reify_syntax::LetDecl {
+                        name: "x".to_string(),
+                        doc: None,
+                        is_pub: false,
+                        type_expr: None,
+                        value: reify_syntax::Expr {
+                            kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                            span: SourceSpan::empty(0),
+                        },
+                        where_clause: None,
+                        annotations: vec![],
+                        span: SourceSpan::empty(0),
+                        content_hash: ContentHash(0),
+                    },
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // Structure S : TraitX + TraitY + TraitZ { } — no member overrides
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![
+                reify_syntax::TraitBoundRef {
+                    name: "TraitX".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+                reify_syntax::TraitBoundRef {
+                    name: "TraitY".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+                reify_syntax::TraitBoundRef {
+                    name: "TraitZ".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+            ],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let trait_registry: HashMap<String, &CompiledTrait> = [
+            ("TraitX".to_string(), &trait_x),
+            ("TraitY".to_string(), &trait_y),
+            ("TraitZ".to_string(), &trait_z),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let enum_defs: &[reify_types::EnumDef] = &[];
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // --- Assertion 1: no phantom type-mismatch diagnostic ---
+        // Pre-fix: `available_defaults` had `("x", Let) -> Real`; the
+        // RequirementKind::Let lookup found it, `implicitly_converts_to(Real, Length)` was
+        // false, and a spurious "requirement expects …, available default has Real"
+        // diagnostic was emitted.
+        // Post-fix: no phantom entry → this filter collects nothing.
+        let phantom_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("available default")
+                    && d.message.contains("Real")
+                    && d.message.contains('x')
+            })
+            .collect();
+        assert!(
+            phantom_diags.is_empty(),
+            "Option B fix violated: phantom `(x, Let) -> Type::Real` advertisement caused \
+             a spurious type-mismatch diagnostic. Expected no phantom diagnostic. Got: {:?}",
+            phantom_diags
+        );
+
+        // --- Assertion 2: correct "missing required member" diagnostic IS present ---
+        // With the phantom entry absent, the None arm of the available_defaults lookup
+        // fires and emits the correct "missing required member" diagnostic.
+        let missing_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("missing required member") && d.message.contains("x")
+            })
+            .collect();
+        assert_eq!(
+            missing_diags.len(),
+            1,
+            "Expected exactly one 'missing required member' diagnostic for 'x' (Option B fix). \
+             Got: {:?}",
+            diagnostics
+        );
     }
 }

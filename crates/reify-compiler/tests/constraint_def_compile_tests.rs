@@ -4,6 +4,7 @@
 //! Complements the existing constraint_inst_tests.rs from task 198.
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
+use reify_compiler::{CompiledConstraintDef, CompiledConstraintParam};
 use reify_test_support::{compile_source, compile_template};
 use reify_types::*;
 
@@ -196,6 +197,25 @@ structure S {
         }
         other => panic!("expected BinOp, got {:?}", other),
     }
+
+    // Second constraint: x <= hi → d <= 100mm
+    // Left operand should be ValueRef(S.d), op should be Le
+    match &tmpl.constraints[1].expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(*op, BinOp::Le, "second constraint should be Le (<=)");
+            match &left.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.member, "d",
+                        "left of second constraint should be ValueRef(d), got {}",
+                        id.member
+                    );
+                }
+                other => panic!("left of second constraint should be ValueRef, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp for second constraint, got {:?}", other),
+    }
 }
 
 // ── Test 5: multiple defs in same module coexist ─────────────────────────────
@@ -332,10 +352,10 @@ structure S {
         !errors.is_empty(),
         "expected at least one error for unknown arg 'c'"
     );
-    // Error should mention 'c' (the unknown arg name) or 'unknown'
+    // Error should mention 'c' (the unknown arg name) or 'unknown' — use phrase-level check.
     let found = errors
         .iter()
-        .any(|d| d.message.contains('c') || d.message.to_lowercase().contains("unknown"));
+        .any(|d| d.message.contains("'c'") || d.message.to_lowercase().contains("unknown"));
     assert!(
         found,
         "expected error mentioning unknown arg 'c', got: {:?}",
@@ -350,8 +370,10 @@ structure S {
 /// arg provided, one for the required param that was never bound).
 /// The grammar requires ≥1 named arg, so zero args isn't valid syntax;
 /// this test covers the equivalent scenario with misnamed args.
+/// (Renamed from `wrong_arg_count_zero`: the grammar forbids zero args,
+/// so this is really the misnamed-single-arg case.)
 #[test]
-fn wrong_arg_count_zero() {
+fn misnamed_single_arg_produces_two_errors() {
     let source = r#"
 constraint def RequiredOne {
     param x: Length
@@ -370,12 +392,13 @@ structure S {
         "expected >=2 errors (unknown 'y' + missing 'x'), got: {:?}",
         errors
     );
+    // Use phrase-level assertions to avoid single-char false positives.
     let has_unknown_y = errors
         .iter()
-        .any(|d| d.message.contains('y') || d.message.to_lowercase().contains("unknown"));
+        .any(|d| d.message.contains("'y'") || d.message.to_lowercase().contains("unknown"));
     let has_missing_x = errors
         .iter()
-        .any(|d| d.message.contains('x') || d.message.to_lowercase().contains("missing"));
+        .any(|d| d.message.contains("'x'") || d.message.to_lowercase().contains("missing"));
     assert!(
         has_unknown_y,
         "expected error about unknown arg 'y', got: {:?}",
@@ -410,10 +433,10 @@ structure S {
         !errors.is_empty(),
         "expected at least one error for missing required param 'b'"
     );
-    // Error should name the missing param 'b'
+    // Error should name the missing param 'b' — use phrase-level check to avoid false positives.
     let found = errors
         .iter()
-        .any(|d| d.message.contains('b') || d.message.to_lowercase().contains("missing"));
+        .any(|d| d.message.contains("'b'") || d.message.to_lowercase().contains("missing"));
     assert!(
         found,
         "expected error mentioning missing param 'b', got: {:?}",
@@ -477,13 +500,9 @@ structure S {
 fn cross_module_constraint_def_import() {
     use std::fs;
 
-    // Create a unique temp directory for this test
-    let dir = std::env::temp_dir()
-        .join("reify_constraint_def_test")
-        .join("cross_module")
-        .join(format!("{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    // RAII temp directory — no PID-based path racing under parallel `cargo test`.
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a: defines a pub constraint def
     fs::write(
@@ -503,7 +522,7 @@ fn cross_module_constraint_def_import() {
     let mut dag = ModuleDag::new();
     let result = dag.compile_module("b", &resolver);
 
-    let _ = fs::remove_dir_all(&dir);
+    // _tmp drops here, cleaning up the temp directory automatically.
 
     assert!(
         result.is_ok(),
@@ -585,16 +604,18 @@ fn pub_constraint_def_parsed() {
     );
 }
 
-// ── Test 13 (BONUS): type mismatch — Bool where Length expected ───────────────
+// ── Test 13: type mismatch — Bool where Length expected (ignored pending task 875) ───
 
-/// Documents current behavior when a Bool literal is passed where a Length param
-/// is expected. The compiler currently defers type checking to compile_expr, so
-/// this test verifies that *some* diagnostic is produced (from compile_expr).
+/// Documents the expected behavior once param-level type checking is implemented:
+/// passing a Bool literal where a Length param is expected must produce at least one
+/// error-level diagnostic mentioning "type" or "mismatch".
 ///
-/// If no diagnostic is produced, that indicates a known gap: constraint instantiation
-/// does not perform param-level type checking. The test is marked to flag this case
-/// so it can be addressed in a follow-up task.
+/// Currently ignored because the compiler defers type checking to compile_expr and
+/// does not yet detect Bool-for-Length mismatches at the constraint instantiation
+/// level. Remove the `#[ignore]` attribute once param-level type checking (task 875)
+/// is implemented — the test will then pass without modification.
 #[test]
+#[ignore = "type-check gap: Bool passed where Length expected is not yet rejected (see task 875)"]
 fn type_mismatch_bool_for_length() {
     let source = r#"
 constraint def MinWall {
@@ -606,26 +627,330 @@ structure S {
 }
 "#;
     let module = compile_source(source);
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        !errors.is_empty(),
+        "expected an error-level diagnostic for Bool-for-Length type mismatch, \
+         got no diagnostics at all"
+    );
+    let has_type_or_mismatch = errors
+        .iter()
+        .any(|d| {
+            d.message.to_lowercase().contains("type")
+                || d.message.to_lowercase().contains("mismatch")
+        });
+    assert!(
+        has_type_or_mismatch,
+        "expected error mentioning 'type' or 'mismatch' for Bool-for-Length mismatch, \
+         got: {:?}",
+        errors
+    );
+}
 
-    // Document current behavior: we check whether a diagnostic is produced.
-    // If compile_expr catches the type error (Bool != Length), we get at least one error.
-    // If no diagnostic is produced, the test still passes but we print a note.
-    if module.diagnostics.is_empty() {
-        // Known gap: no diagnostic produced for Bool-for-Length type mismatch.
-        // This is acceptable current behavior — constraint instantiation defers type
-        // checking to compile_expr, which may not catch all type mismatches.
-        // Follow-up task: add param-level type checking in the constraint instantiation path.
-        eprintln!(
-            "NOTE: no diagnostic produced for Bool-for-Length type mismatch in constraint arg. \
-             This is a known gap — see task 199 design notes."
-        );
-    } else {
-        // A diagnostic was produced — verify it's an error.
-        let errors = error_diags(&module.diagnostics);
-        assert!(
-            !errors.is_empty(),
-            "expected error-level diagnostic for Bool-for-Length mismatch, got only: {:?}",
-            module.diagnostics
-        );
-    }
+// ── Test 14: constraint_defs field reflects all local definitions (pub + non-pub) ──
+
+/// Verify that `CompiledModule.constraint_defs` contains ALL local constraint defs —
+/// both pub and non-pub — with correct names, `is_pub` flags, param names, and
+/// predicate counts.
+///
+/// Covers task 878 subtest "field contents" (name/params/predicates surfaced)
+/// and "non-pub visibility (local)" (non-pub defs remain reachable inside the
+/// owning module's compiled output).
+#[test]
+fn module_constraint_defs_field_contents_reflect_definitions() {
+    let source = r#"
+pub constraint def PubDef {
+    param t: Length
+    t > 0mm
+}
+constraint def PrivDef {
+    param x: Length
+    param y: Length
+    x > y
+}
+"#;
+    let module = compile_source(source);
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    // Both defs (pub and non-pub) should be present in constraint_defs.
+    assert_eq!(
+        module.constraint_defs.len(),
+        2,
+        "expected 2 constraint defs (1 pub + 1 non-pub), got {}",
+        module.constraint_defs.len()
+    );
+
+    // --- PubDef assertions (is_pub = true, 1 param 't', 1 predicate) ---
+    let pub_def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "PubDef")
+        .expect("expected 'PubDef' in module.constraint_defs");
+
+    assert!(pub_def.is_pub, "PubDef should have is_pub = true");
+
+    assert_eq!(
+        pub_def.params.len(),
+        1,
+        "PubDef should have 1 param, got {}",
+        pub_def.params.len()
+    );
+
+    // Verify CompiledConstraintParam is the concrete type in the params Vec.
+    let pub_param: &CompiledConstraintParam = &pub_def.params[0];
+    assert_eq!(
+        pub_param.name, "t",
+        "PubDef param[0] should be named 't', got '{}'",
+        pub_param.name
+    );
+
+    assert_eq!(
+        pub_def.predicates.len(),
+        1,
+        "PubDef should have 1 predicate, got {}",
+        pub_def.predicates.len()
+    );
+
+    // --- PrivDef assertions (is_pub = false, 2 params, 1 predicate) ---
+    let priv_def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "PrivDef")
+        .expect("expected 'PrivDef' in module.constraint_defs");
+
+    assert!(!priv_def.is_pub, "PrivDef should have is_pub = false");
+
+    assert_eq!(
+        priv_def.params.len(),
+        2,
+        "PrivDef should have 2 params, got {}",
+        priv_def.params.len()
+    );
+
+    assert_eq!(
+        priv_def.predicates.len(),
+        1,
+        "PrivDef should have 1 predicate, got {}",
+        priv_def.predicates.len()
+    );
+}
+
+// ── Test 15: name collision from two prelude modules emits shadow warning ────────
+
+/// Two imported modules each declare `pub constraint def MinThickness`; compiling
+/// a main module that imports both must emit a Warning-severity diagnostic mentioning
+/// "MinThickness" and both module paths.  The warning must be *directional*: it names
+/// the first-imported module (the winner, 'a') before the later-imported module (the
+/// loser, 'b'), and includes the phrase "first-imported" or "wins".  A structural
+/// check distinguishes the two modules: module 'a' has 1 predicate; module 'b' has 2.
+/// Exactly 1 compiled constraint in S proves module 'a' (first-import) won the registry.
+///
+/// Covers task 880 #1 (prelude shadow warning) and reviewer blocker on direction.
+#[test]
+fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
+    use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+
+    // Module a: defines pub MinThickness — ONE predicate (t > 0mm).
+    fs::write(
+        dir.join("a.ri"),
+        "pub constraint def MinThickness {\n    param t: Length\n    t > 0mm\n}\n",
+    )
+    .unwrap();
+
+    // Module b: also defines pub MinThickness — TWO predicates so we can tell which
+    // module's def won by counting compiled constraints (a wins → 1, b wins → 2).
+    fs::write(
+        dir.join("b.ri"),
+        "pub constraint def MinThickness {\n    param t: Length\n    t > 1mm\n    t < 1000mm\n}\n",
+    )
+    .unwrap();
+
+    // Main module: imports both a and b — should trigger shadow warning
+    fs::write(
+        dir.join("main.ri"),
+        "import a\nimport b\nstructure S {\n    param t: Length = 5mm\n    constraint MinThickness(t: t)\n}\n",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("main", &resolver);
+
+    assert!(
+        result.is_ok(),
+        "expected compilation to succeed (shadow warning, not error), got: {:?}",
+        result.unwrap_err()
+    );
+
+    let compiled_main = dag.modules.get("main").expect("compiled module 'main' not found");
+
+    // No Error-level diagnostics: collision is a warning, not a hard failure.
+    let errors: Vec<_> = compiled_main
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors (shadow collision is a warning), got errors: {:?}",
+        errors
+    );
+
+    // The shadow warning must name both module paths AND be directional: the winner
+    // ('a', first-imported) must appear before the loser ('b') in the message.
+    let shadow_warnings: Vec<_> = compiled_main
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Warning
+                && d.message.contains("MinThickness")
+                && d.message.contains("from 'a'")
+                && d.message.contains("from 'b'")
+        })
+        .collect();
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly one shadow warning mentioning MinThickness and both module paths \
+         (with 'from' prefix), got: {:?}",
+        compiled_main.diagnostics
+    );
+
+    // Directional check: winner ('a', first-imported) must be named BEFORE loser ('b').
+    let msg = &shadow_warnings[0].message;
+    let pos_a = msg
+        .find("from 'a'")
+        .expect("shadow warning should contain \"from 'a'\"");
+    let pos_b = msg
+        .find("from 'b'")
+        .expect("shadow warning should contain \"from 'b'\"");
+    assert!(
+        pos_a < pos_b,
+        "expected winner ('a') to appear before loser ('b') in shadow warning, got: {:?}",
+        msg
+    );
+
+    // Semantic-clarity check: message must include "first-imported" or "wins" so users
+    // understand which definition is retained without having to guess.
+    assert!(
+        msg.contains("first-imported") || msg.contains("wins"),
+        "shadow warning should contain 'first-imported' or 'wins' to clarify semantics, \
+         got: {:?}",
+        msg
+    );
+
+    // Structural first-import-wins check: 'a' has 1 predicate, 'b' has 2.
+    // constraints.len() == 1 proves module 'a' won; 2 would mean 'b' incorrectly won.
+    assert_eq!(
+        compiled_main.templates.len(),
+        1,
+        "expected one structure template (S), got: {:?}",
+        compiled_main.templates
+    );
+    let s_template = &compiled_main.templates[0];
+    assert_eq!(
+        s_template.constraints.len(),
+        1,
+        "expected 1 compiled constraint in S (module 'a' wins with 1 predicate; \
+         2 would indicate module 'b' incorrectly won), got: {:?}",
+        s_template.constraints
+    );
+    let c = &s_template.constraints[0];
+    assert!(
+        c.label.as_deref().is_some_and(|l| l.starts_with("MinThickness")),
+        "expected constraint label starting with 'MinThickness', got: {:?}",
+        c.label
+    );
+}
+
+// ── Test 16: non-pub constraint def invisible across module boundary ──────────────
+
+/// Module A defines a non-pub constraint def; module B imports A and attempts to
+/// instantiate the non-pub def — must produce an "unknown" diagnostic (the def is
+/// not exported). Module A's own structure that uses the def must compile cleanly.
+///
+/// Covers task 878 subtest "non-pub cross-module invisibility".
+#[test]
+fn non_pub_constraint_def_not_instantiable_cross_module() {
+    use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+
+    // Module a: non-pub MinThickness (no `pub`), used internally in Wall
+    fs::write(
+        dir.join("a.ri"),
+        concat!(
+            "constraint def MinThickness {\n",
+            "    param t: Length\n",
+            "    t > 0mm\n",
+            "}\n",
+            "pub structure Wall {\n",
+            "    param thickness: Length = 5mm\n",
+            "    constraint MinThickness(t: thickness)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+
+    // Module b: imports a, tries to use the non-pub MinThickness in its own structure
+    fs::write(
+        dir.join("b.ri"),
+        concat!(
+            "import a\n",
+            "structure Panel {\n",
+            "    param t: Length = 3mm\n",
+            "    constraint MinThickness(t: t)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let _result = dag.compile_module("b", &resolver);
+
+    // Module a should have no errors (internal use of non-pub def is valid)
+    let compiled_a = dag.modules.get("a").expect("compiled module 'a' not found");
+    let a_errors: Vec<_> = compiled_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        a_errors.is_empty(),
+        "module a should compile cleanly (non-pub def used internally), got errors: {:?}",
+        a_errors
+    );
+
+    // Module b should have an error: MinThickness is not visible across the boundary
+    let compiled_b = dag.modules.get("b").expect("compiled module 'b' not found");
+    let b_errors: Vec<_> = compiled_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        !b_errors.is_empty(),
+        "expected an error in module b: non-pub MinThickness should not be visible, \
+         got no errors (diagnostics: {:?})",
+        compiled_b.diagnostics
+    );
+    // The error must specifically say "unknown constraint definition" — not merely
+    // mention "unknown" or the def name in an unrelated error. This proves the
+    // resolution path (not an incidental type error or name mention) was triggered.
+    let has_unknown_msg = b_errors
+        .iter()
+        .any(|d| d.message.contains("unknown constraint definition"));
+    assert!(
+        has_unknown_msg,
+        "expected error containing 'unknown constraint definition', got: {:?}",
+        b_errors
+    );
 }

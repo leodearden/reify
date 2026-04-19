@@ -341,3 +341,55 @@ fn guarded_constraint_inactive() {
         inactive_constraints
     );
 }
+
+// ── Test 11: where-guarded active constraint is checked and satisfied ──────────
+
+/// ActiveWall has a where-guarded constraint with guard=true (enabled=true).
+/// Exactly one Satisfied constraint result for MinThickness[0] should be present.
+///
+/// Covers task 878 subtest "active guard": verifies that the `where enabled` guard
+/// with `enabled=true` flows through end-to-end and the constraint is both applied
+/// and satisfied.
+#[test]
+fn guarded_constraint_active_is_checked_and_satisfied() {
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+    let mut engine = make_simple_engine();
+    let check_result = engine.check(&compiled);
+
+    // ActiveWall must exist as a template
+    let has_active = compiled.templates.iter().any(|t| t.name == "ActiveWall");
+    assert!(has_active, "expected ActiveWall template");
+
+    // Filter constraint results to just ActiveWall
+    let active_constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "ActiveWall")
+        .collect();
+
+    // Should have exactly 1 constraint result for ActiveWall (guard=true → constraint fires)
+    assert_eq!(
+        active_constraints.len(),
+        1,
+        "expected exactly 1 constraint result for ActiveWall (enabled=true), got {}",
+        active_constraints.len()
+    );
+
+    // The result should be MinThickness[0] and should be Satisfied
+    // (thickness=5mm satisfies MinThickness: t > 1mm)
+    let result = &active_constraints[0];
+    let label = result.label.as_deref().unwrap_or("(no label)");
+    assert!(
+        label.starts_with("MinThickness"),
+        "expected label starting with 'MinThickness', got '{label}'"
+    );
+    assert_eq!(
+        result.satisfaction,
+        Satisfaction::Satisfied,
+        "ActiveWall MinThickness[0] should be Satisfied (thickness=5mm > 1mm), got {:?}",
+        result.satisfaction
+    );
+}

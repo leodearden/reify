@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRoot } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
+import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { EntityTreeNode } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -738,6 +739,221 @@ describe('viewStateStore — source comments', () => {
   });
 });
 
+describe('viewStateStore — views map and activeViewId skeleton', () => {
+  it('(a) on creation state.views === {} and state.activeViewId === "auto:default"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      expect(store.state.views).toEqual({});
+      expect(store.state.activeViewId).toBe('auto:default');
+      dispose();
+    });
+  });
+
+  it('(b) setActiveView("auto:default") when view absent is a no-op — does not crash, does not touch explicit', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree([makeNode({ entity_path: 'Root' })]);
+      store.setVisibility('Root', 'ghost', false);
+      // No views seeded — setActiveView should not throw and should not clear explicit
+      store.setActiveView('auto:default');
+      expect(store.state.explicit['Root']).toBe('ghost');
+      dispose();
+    });
+  });
+
+  it('(c) after manually seeding state.views, setActiveView(id) copies visibility into state.explicit and updates activeViewId', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const testView: ViewDefinition = {
+        id: 'auto:default',
+        name: 'Default',
+        auto: true,
+        modified: false,
+        visibility: { 'Root': 'show', 'Root.geo': 'hidden' },
+      };
+      store.seedView(testView);
+      store.setActiveView('auto:default');
+      expect(store.state.activeViewId).toBe('auto:default');
+      expect(store.state.explicit['Root']).toBe('show');
+      expect(store.state.explicit['Root.geo']).toBe('hidden');
+      dispose();
+    });
+  });
+});
+
+describe('viewStateStore — regenerateAutoViews — populate and preserve', () => {
+  function makeSimpleTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) regenerateAutoViews(tree) populates state.views["auto:default"] and state.views["auto:all-geometry"]', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeSimpleTree());
+      expect(store.state.views['auto:default']).toBeDefined();
+      expect(store.state.views['auto:default'].id).toBe('auto:default');
+      expect(store.state.views['auto:all-geometry']).toBeDefined();
+      expect(store.state.views['auto:all-geometry'].id).toBe('auto:all-geometry');
+      dispose();
+    });
+  });
+
+  it('(b) regenerateAutoViews(tree, ["foo"]) also populates state.views["auto:purpose:foo"]', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeSimpleTree(), ['foo']);
+      expect(store.state.views['auto:purpose:foo']).toBeDefined();
+      expect(store.state.views['auto:purpose:foo'].id).toBe('auto:purpose:foo');
+      dispose();
+    });
+  });
+
+  it('(c) calling regenerateAutoViews twice removes stale auto:purpose:* entries', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeSimpleTree(), ['alpha']);
+      expect(store.state.views['auto:purpose:alpha']).toBeDefined();
+      // Second call with different purpose — alpha should be gone
+      store.regenerateAutoViews(makeSimpleTree(), ['beta']);
+      expect(store.state.views['auto:purpose:alpha']).toBeUndefined();
+      expect(store.state.views['auto:purpose:beta']).toBeDefined();
+      // default and all-geometry still present
+      expect(store.state.views['auto:default']).toBeDefined();
+      expect(store.state.views['auto:all-geometry']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('(d) a pre-existing "user:my-view" entry is preserved unchanged across regenerateAutoViews', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const userView: ViewDefinition = {
+        id: 'user:my-view',
+        name: 'My view',
+        auto: false,
+        modified: false,
+        visibility: { 'Root': 'hidden' },
+      };
+      store.seedView(userView);
+      store.regenerateAutoViews(makeSimpleTree());
+      expect(store.state.views['user:my-view']).toBeDefined();
+      expect(store.state.views['user:my-view'].visibility['Root']).toBe('hidden');
+      dispose();
+    });
+  });
+});
+
+describe('viewStateStore — regenerateAutoViews — active view reconciliation', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) activeViewId="auto:default", regenerateAutoViews(tree) → state.explicit equals default view visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // activeViewId defaults to 'auto:default'
+      store.regenerateAutoViews(makeTree());
+      const defaultView = store.state.views['auto:default'];
+      expect(store.state.explicit['Root']).toBe(defaultView.visibility['Root']);
+      expect(store.state.explicit['Root.geo']).toBe(defaultView.visibility['Root.geo']);
+      expect(store.state.explicit['Root.body']).toBe(defaultView.visibility['Root.body']);
+      dispose();
+    });
+  });
+
+  it('(b) after tree change removing an entity, regenerateAutoViews reapplies new default view and removed path is gone from explicit', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      // Now remove Root.body from the tree
+      const reducedTree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
+          ],
+        }),
+      ];
+      store.regenerateAutoViews(reducedTree);
+      // Root.body no longer in tree → should not be in explicit
+      expect(store.state.explicit['Root.body']).toBeUndefined();
+      expect(store.state.explicit['Root.geo']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('(c) activeViewId="auto:purpose:foo", regenerateAutoViews(tree, []) (purpose deactivated) → falls back to "auto:default"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // First populate with foo purpose active
+      store.regenerateAutoViews(makeTree(), ['foo']);
+      store.setActiveView('auto:purpose:foo');
+      expect(store.state.activeViewId).toBe('auto:purpose:foo');
+      // Now regenerate without the purpose
+      store.regenerateAutoViews(makeTree(), []);
+      // Should fall back to auto:default
+      expect(store.state.activeViewId).toBe('auto:default');
+      const defaultView = store.state.views['auto:default'];
+      expect(store.state.explicit['Root.body']).toBe(defaultView.visibility['Root.body']);
+      dispose();
+    });
+  });
+
+  it('(d) activeViewId="user:mine" — user explicit retained, new path Root.C not set in explicit', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const userView: ViewDefinition = {
+        id: 'user:mine',
+        name: 'Mine',
+        auto: false,
+        modified: false,
+        visibility: { 'Root.A': 'hidden' },
+      };
+      store.seedView(userView);
+      store.setActiveView('user:mine');
+      expect(store.state.activeViewId).toBe('user:mine');
+      // Tree with Root.A and new Root.C
+      const tree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.A', kind: 'param' }),
+            makeNode({ entity_path: 'Root.C', kind: 'param' }),
+          ],
+        }),
+      ];
+      store.regenerateAutoViews(tree);
+      // User view stays active
+      expect(store.state.activeViewId).toBe('user:mine');
+      // Existing path Root.A retains its user-view explicit state
+      expect(store.state.explicit['Root.A']).toBe('hidden');
+      // NEW path Root.C is NOT set (so defaultRuleFor handles it via walk-up)
+      expect(store.state.explicit['Root.C']).toBeUndefined();
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — setTree pruning', () => {
   it('stale explicit entries for removed paths are pruned when setTree is called', () => {
     createRoot((dispose) => {
@@ -779,6 +995,216 @@ describe('viewStateStore — setTree pruning', () => {
       // Re-introduced A should have no explicit state (fresh inherit).
       expect(store.state.explicit['Root.A']).toBeUndefined();
       expect(store.getEffectiveVisibility('Root.A')).toBe('show');
+
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// defaultRuleFor parity with defaultVisibilityFor (no flicker between views)
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no flicker between views)', () => {
+  /**
+   * These tests must FAIL before step-16 because viewStateStore.defaultRuleFor
+   * only hides 'Solid' lets while autoViewGenerator.defaultVisibilityFor also
+   * hides 'Surface' and 'Curve' lets.  After step-16 they will pass because
+   * defaultRuleFor delegates to defaultVisibilityFor.
+   */
+
+  it('(a) let node with type_name="Surface3D" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const leaf = 'Root.surf';
+      store.setTree([
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Surface3D' }),
+          ],
+        }),
+      ]);
+      // No explicit entry — falls through to defaultRuleFor.
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(b) let node with type_name="Curve3D" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const leaf = 'Root.crv';
+      store.setTree([
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Curve3D' }),
+          ],
+        }),
+      ]);
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(c) let node with type_name="SolidBody" and no explicit entry → still "hidden" (regression guard)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const leaf = 'Root.solid';
+      store.setTree([
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'SolidBody' }),
+          ],
+        }),
+      ]);
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(d) no flicker when switching from auto:default to a sparse user view for a let-Surface node', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const leaf = 'Root.surf';
+      const tree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'MySurface' }),
+          ],
+        }),
+      ];
+      store.setTree(tree);
+
+      // Seed an auto:default view that explicitly marks the leaf as 'hidden'.
+      const defaultView: ViewDefinition = {
+        id: 'auto:default',
+        name: 'Default',
+        auto: true,
+        modified: false,
+        visibility: { Root: 'show', [leaf]: 'hidden' },
+      };
+      store.seedView(defaultView);
+      store.setActiveView('auto:default');
+      // explicit is now { Root: 'show', [leaf]: 'hidden' } → 'hidden'
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+
+      // Now switch to a sparse user view with NO entry for the leaf.
+      const userView: ViewDefinition = {
+        id: 'user:sparse',
+        name: 'Sparse',
+        auto: false,
+        modified: false,
+        visibility: {}, // intentionally no entry for leaf
+      };
+      store.seedView(userView);
+      store.setActiveView('user:sparse');
+      // explicit is now {} → falls through to defaultRuleFor.
+      // After step-16: defaultRuleFor('let', 'MySurface') → 'hidden' (same as above, no flicker).
+      // Before step-16: defaultRuleFor only hides 'Solid' → returns 'show' (flicker!).
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// regenerateAutoViews — internal setTree contract
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — regenerateAutoViews — internal setTree contract', () => {
+  it('regenerateAutoViews without a prior setTree call still populates nodeByPath so getEffectiveVisibility works', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // Do NOT call setTree first — regenerateAutoViews should handle it internally.
+      const tree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
+            makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+          ],
+        }),
+      ];
+      store.regenerateAutoViews(tree);
+      // Internal maps populated — walk-up and default-rule both work.
+      expect(store.getEffectiveVisibility('Root.geo')).toBe('show');
+      expect(store.getEffectiveVisibility('Root.body')).toBe('hidden');
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration sanity: generator↔store wiring
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — auto view generators — integration sanity', () => {
+  /**
+   * Realistic tree: Assembly (structure)
+   *   └─ Physical (structure)
+   *        ├─ geometry  (param, trait_geometry=true)  → Default: show
+   *        ├─ body1     (let, SolidBody)               → Default: hidden
+   *        └─ body2     (let, SolidExtrude)            → Default: hidden
+   */
+  function makeRealisticTree() {
+    return [
+      makeNode({
+        entity_path: 'Assembly',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Assembly.Physical',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Assembly.Physical.geometry', kind: 'param', trait_geometry: true }),
+              makeNode({ entity_path: 'Assembly.Physical.body1', kind: 'let', type_name: 'SolidBody' }),
+              makeNode({ entity_path: 'Assembly.Physical.body2', kind: 'let', type_name: 'SolidExtrude' }),
+            ],
+          }),
+        ],
+      }),
+    ];
+  }
+
+  it('end-to-end: geometry shows + intermediates hidden under auto:default; all show under auto:all-geometry; auto:default restores hidden', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const tree = makeRealisticTree();
+
+      // Wire both tree and views together as production code would.
+      store.setTree(tree);
+      store.regenerateAutoViews(tree);
+
+      // (i) geometry param shows under auto:default
+      expect(store.getAllEffective()['Assembly.Physical.geometry']).toBe('show');
+
+      // (ii) let-Solid intermediates are hidden under auto:default
+      expect(store.getAllEffective()['Assembly.Physical.body1']).toBe('hidden');
+      expect(store.getAllEffective()['Assembly.Physical.body2']).toBe('hidden');
+
+      // (iii) after setActiveView('auto:all-geometry') intermediates become visible
+      store.setActiveView('auto:all-geometry');
+      expect(store.state.activeViewId).toBe('auto:all-geometry');
+      expect(store.getAllEffective()['Assembly.Physical.geometry']).toBe('show');
+      expect(store.getAllEffective()['Assembly.Physical.body1']).toBe('show');
+      expect(store.getAllEffective()['Assembly.Physical.body2']).toBe('show');
+
+      // (iv) setActiveView('auto:default') restores intermediates to hidden
+      store.setActiveView('auto:default');
+      expect(store.state.activeViewId).toBe('auto:default');
+      expect(store.getAllEffective()['Assembly.Physical.geometry']).toBe('show');
+      expect(store.getAllEffective()['Assembly.Physical.body1']).toBe('hidden');
+      expect(store.getAllEffective()['Assembly.Physical.body2']).toBe('hidden');
 
       dispose();
     });

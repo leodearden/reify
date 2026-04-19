@@ -57,6 +57,103 @@ use reify_types::{
     UnOp, Value, ValueCellId,
 };
 
+/// Format a constraint-def shadow-warning message for a name collision between two prelude modules.
+///
+/// `winner` is the first-imported module path string (whose definition is retained),
+/// `loser` is the later-imported module path string (whose definition is silently discarded).
+///
+/// Exposed as `pub` so tests can build the expected string without duplicating the format
+/// literal — a change to this function propagates to both production code and any test that
+/// calls it, making the coupling explicit rather than hiding it behind substring assertions.
+pub fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> String {
+    format!(
+        "constraint def '{}' from '{}' shadows '{}' from '{}' \
+         (first-imported definition wins)",
+        name, winner, name, loser
+    )
+}
+
+/// Compile a single `constraint def` declaration into a [`CompiledConstraintDef`].
+///
+/// Runs annotation/pragma lowering and validation exactly once per declaration,
+/// resolves param types where possible, and caches the `@optimized` target so
+/// instantiation sites can read it without re-scanning annotations.
+fn compile_constraint_def(
+    c: &reify_syntax::ConstraintDef,
+    alias_registry: &TypeAliasRegistry,
+    enum_defs: &[reify_types::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledConstraintDef {
+    // Extract @optimized target from raw syntax annotations BEFORE lowering so the
+    // raw-annotation extractor sees the original parse tree.
+    let annotations_optimized_target = crate::annotations::optimized_target(&c.annotations);
+
+    // Lower and validate annotations/pragmas (emits diagnostics for unknown/misplaced items).
+    let annotations = lower_annotations(&c.annotations, diagnostics);
+    validate_annotations(&annotations, "constraint_def", diagnostics);
+    validate_pragmas(&c.pragmas, "constraint_def", diagnostics);
+
+    // Convert syntax TypeParamDecls to compiled TypeParams.
+    let type_params = convert_type_params(&c.type_params);
+
+    // Build a set of type parameter names so param type resolution can accept them.
+    let type_param_names: std::collections::HashSet<String> =
+        type_params.iter().map(|tp| tp.name.clone()).collect();
+
+    // Compile each param: resolve the cell type for its diagnostic side-effect (catches
+    // typoed param types at def-compile time), then keep only the name/default/span.
+    // The resolved type is not stored because entity.rs only reads `param.name` and
+    // `param.default` at instantiation time; storing it would be dead weight.
+    let params: Vec<CompiledConstraintParam> = c
+        .params
+        .iter()
+        .map(|param| {
+            // Resolve the param type: if resolution returns None for a Named type that is
+            // neither a builtin nor a declared type parameter, the name is unknown — emit
+            // an error so the user sees the typo at def-compile time rather than silently
+            // accepting it and getting a confusing error at the instantiation site.
+            if let Some(te) = &param.type_expr
+                && resolve_type_expr_with_aliases(
+                    te,
+                    &type_param_names,
+                    alias_registry,
+                    diagnostics,
+                )
+                .is_none()
+                && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
+                && !type_param_names.contains(name.as_str())
+                && !enum_defs.iter().any(|e| e.name == *name)
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "unknown type '{}' in param '{}' of constraint def '{}'",
+                        name, param.name, c.name
+                    ))
+                    .with_label(DiagnosticLabel::new(te.span, "unknown type")),
+                );
+            }
+            CompiledConstraintParam {
+                name: param.name.clone(),
+                default: param.default.clone(),
+                span: param.span,
+            }
+        })
+        .collect();
+
+    CompiledConstraintDef {
+        name: c.name.clone(),
+        is_pub: c.is_pub,
+        type_params,
+        params,
+        predicates: c.predicates.clone(),
+        span: c.span,
+        content_hash: c.content_hash,
+        pragmas: c.pragmas.clone(),
+        annotations,
+        annotations_optimized_target,
+    }
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
@@ -506,39 +603,52 @@ pub(crate) fn compile_with_prelude_refs(
     let field_registry: HashMap<String, &CompiledField> =
         fields.iter().map(|f| (f.name.clone(), f)).collect();
 
-    // Collect owned clones of pub constraint defs from prelude modules.
-    // These must outlive the registry borrow below.
-    let prelude_constraint_defs: Vec<reify_syntax::ConstraintDef> = prelude
-        .iter()
-        .flat_map(|m| m.constraint_defs.iter().filter(|c| c.is_pub).cloned())
-        .collect();
-
-    // Build a constraint def registry so entity scopes can resolve constraint instantiations.
-    // Prelude defs (from imported modules) are seeded first; module-local defs override them.
-    let mut constraint_def_registry: HashMap<String, &reify_syntax::ConstraintDef> =
-        prelude_constraint_defs
-            .iter()
-            .map(|c| (c.name.clone(), c))
-            .collect();
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Constraint(c) = decl {
-            constraint_def_registry.insert(c.name.clone(), c);
-        }
-    }
-
-    // Collect constraint defs from the current module so they can be propagated
-    // to downstream modules that import this one.
-    let constraint_defs: Vec<reify_syntax::ConstraintDef> = parsed
+    // Compile all local constraint defs in a single pass.
+    // Results are used both to populate the module output and to seed the registry.
+    let constraint_defs: Vec<CompiledConstraintDef> = parsed
         .declarations
         .iter()
         .filter_map(|d| {
             if let reify_syntax::Declaration::Constraint(c) = d {
-                Some(c.clone())
+                Some(compile_constraint_def(c, &alias_registry, &resolution_enums, &mut diagnostics))
             } else {
                 None
             }
         })
         .collect();
+
+    // Build a constraint def registry so entity scopes can resolve constraint instantiations.
+    // Prelude defs (pub-only, from imported modules) are seeded first; local defs override.
+    // Shadow detection: warn when two different prelude modules export the same def name.
+    let mut constraint_def_registry: HashMap<String, &CompiledConstraintDef> = HashMap::new();
+    // Maps def name → path of the first module that contributed it (for shadow warnings).
+    let mut prelude_source: HashMap<String, String> = HashMap::new();
+    for m in prelude {
+        let module_path_str = m.path.to_string();
+        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
+            if let Some(prev_path) = prelude_source.get(&cd.name) {
+                if *prev_path != module_path_str {
+                    // Two different imported modules export the same constraint def name.
+                    // The first-imported module wins; emit a warning that names the winner
+                    // (prev_path) before the loser (module_path_str) so users know which
+                    // import is retained and which is silently discarded.
+                    diagnostics.push(Diagnostic::warning(format_shadow_warning(
+                        &cd.name,
+                        prev_path,
+                        &module_path_str,
+                    )));
+                }
+                // First-import wins: do not overwrite the existing registry entry.
+            } else {
+                prelude_source.insert(cd.name.clone(), module_path_str.clone());
+                constraint_def_registry.insert(cd.name.clone(), cd);
+            }
+        }
+    }
+    // Local defs override prelude defs silently (by design: local always wins).
+    for cd in &constraint_defs {
+        constraint_def_registry.insert(cd.name.clone(), cd);
+    }
 
     let mut pending_bound_checks: Vec<PendingBoundCheck> = Vec::new();
 
@@ -624,13 +734,9 @@ pub(crate) fn compile_with_prelude_refs(
             reify_syntax::Declaration::Purpose(_) => {
                 // Compiled in dedicated purpose pass below.
             }
-            reify_syntax::Declaration::Constraint(c) => {
-                // Constraint definitions: lowering/compilation not yet implemented.
-                // However, validate annotations and pragmas so that unknown or
-                // misplaced annotations are reported the same as for other decls.
-                let lowered_anns = lower_annotations(&c.annotations, &mut diagnostics);
-                validate_annotations(&lowered_anns, "constraint_def", &mut diagnostics);
-                validate_pragmas(&c.pragmas, "constraint_def", &mut diagnostics);
+            reify_syntax::Declaration::Constraint(_) => {
+                // Already compiled by the constraint_defs pre-pass above;
+                // annotation/pragma validation ran there too.
             }
             reify_syntax::Declaration::Unit(_) => {
                 // Already compiled in unit pre-pass above.

@@ -9781,11 +9781,11 @@
         "description": "Add Type::is_error() predicate. Add early-return guards in infer_binop_type, index access type inference (~line 1360), quantifier element type inference (~line 1572), and member access type inference (~line 1300) to propagate Type::Error instead of falling through to _ => Type::Real wildcards. This completes the anti-cascade contract stated in Type::Error's doc comment. (Review followup from task 248)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:12:28.644Z",
+        "updatedAt": "2026-04-17T13:45:05.216Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -11381,7 +11381,7 @@
         "description": "Address robustness suggestions from task #326 review:\n1. Add debug_assert in load_stdlib() that no module has error-level diagnostics — silent cache of broken modules is dangerous (stdlib_loader.rs:23-38)\n2. Compile stdlib modules sequentially with compile_with_prelude so cross-module deps work when second .ri file is added (stdlib_loader.rs:33-36)\n3. Document function shadowing semantics in eval() — user functions shadow prelude by insertion order with iter().find() first-match (lib.rs:847-854)\n4. Investigate _distance_f64 rename — confirm whether is_finite() guard was intentional validation or dead code (lib.rs:3244)\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-eval/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11405,7 +11405,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T02:23:20.635Z"
+        "updatedAt": "2026-04-19T17:50:40.403Z"
       },
       {
         "id": "516",
@@ -19241,11 +19241,11 @@
         "description": "Consolidates CompiledConstraintDef struct introduction, visibility-semantics fix, alloc/iter cleanup, tempfile-based cross-module test isolation, missing coverage (non-pub/field/second-predicate/active-guard), test-name polish, and name-collision diagnostic with module_dag invariant doc.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 872 plus 7 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 872: Introduce CompiledConstraintDef to eliminate AST nodes from CompiledModule\n\n\nReplace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure\n\n### Absorbed from task 873: Fix constraint_defs visibility semantics and doc comment\nEither filter constraint_defs to only pub defs at collection time (lib.rs:3812-3822) so non-pub defs never appear in the compiled artifact, or explicitly document that the field contains all local defs and callers must apply is_pub filtering themselves. Update the doc comment from 'Stored so downstream modules can reference them' to accurately describe visibility behavior: only is_pub==true defs are propagated to downstream modules.\n\nmemory_hints: search \"constraint_defs is_pub visibility\" for prior context on pub visibility implementation\n\n### Absorbed from task 874: Eliminate redundant allocations and iterations in constraint def compilation\nThree performance improvements: (1) module_dag.rs:168-178 — change compile_with_prelude to accept &[&[ConstraintDef]] or equivalent instead of &[CompiledModule] to avoid full module clones; (2) module_dag.rs:161-178 — merge the two Declaration::Import iteration passes into one that both compiles dependencies and collects prelude defs; (3) lib.rs:3804-3822 — merge the two Declaration::Constraint passes in compile_with_prelude into one that simultaneously inserts into the registry and pushes to the output vec.\n\nmemory_hints: search \"compile_with_prelude constraint def compilation\" for implementation context\n\n### Absorbed from task 875: Fix non-asserting test 13 (type_mismatch_bool_for_length)\nTest 13 in constraint_def_compile_tests.rs (line ~607-641) always passes regardless of compiler behavior — it branches on diagnostics.is_empty() and passes in both branches. Mark it #[ignore = \"known gap: param-level type checking not implemented\"] and add a failing assertion inside (e.g. assert!(!errors.is_empty(), ...)), so when type checking is implemented the test is explicitly re-enabled rather than silently passing.\n\nmemory_hints: search \"type_mismatch_bool_for_length constraint def test\" for context\n\n### Absorbed from task 877: Fix cross-module test temp dir: use tempfile::TempDir for thread safety\nIn constraint_def_compile_tests.rs (lines ~469-520), replace the PID-based temp dir path with tempfile::TempDir::new() which generates a unique path per call and cleans up automatically on drop. This fixes thread-isolation race conditions where parallel test runs in the same process derive the same path. Consider extracting the write-files-to-temp-dir pattern into a reify-test-support::fixtures helper for reuse by other cross-module tests.\n\nmemory_hints: search \"tempfile TempDir test temp directory\" for established convention\n\n### Absorbed from task 878: Add missing test coverage: non-pub visibility, field contents, second predicate, active guard\nFour additive tests across two files: (1) constraint_def_compile_tests.rs — add test that a non-pub constraint def in module A is NOT instantiable in module B (guards the is_pub filter at lib.rs:3792); (2) same file — add test asserting module.constraint_defs.len(), each entry's .name and .is_pub after compile_module; (3) same file, test 4 (named_args_different_order, line 173) — add assertions for tmpl.constraints[1]: op==Le, left==ValueRef(d), right==100mm literal; (4) m9_constraint_def.rs — add guarded_constraint_active test filtering constraint_results for ActiveWall, asserting exactly 1 Satisfied result labeled MinThickness[0].\n\nmemory_hints: search \"constraint def compile test coverage\" for context\n\n### Absorbed from task 879: Fix misleading test name and strengthen single-char error assertions\nTwo improvements: (1) Rename wrong_arg_count_zero (line 368) to wrong_arg_name_single or misnamed_single_arg_produces_two_errors to accurately describe the scenario; (2) In tests 7, 8, and 9 (lines ~350, ~387, ~430), replace single-char char-literal contains checks (contains('c'), contains('y'), contains('b')) with multi-char quoted strings like \"'c'\" or \"arg 'c'\" to prevent false-positives on any English word containing those characters.\n\nmemory_hints: search \"constraint def compile test error assertions\" for context\n\n### Absorbed from task 880: Emit diagnostic on constraint def name collision and document module_dag invariant\nTwo improvements: (1) lib.rs:3799-3803 — Before inserting a prelude def into constraint_def_registry, check if the name is already present from a different module; if so, emit a warning-level diagnostic (e.g. 'constraint def X from module b shadows import from module a') so the ambiguity is visible rather than silently discarding the first definition. (2) module_dag.rs:167 — Add a debug_assert or explanatory comment before the preludes collection pass making explicit that all imports were compiled successfully above (via early-return ?) and are therefore guaranteed to be present in self.modules.\n\nmemory_hints: search \"constraint def registry name collision shadow\" for context\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:58.459Z",
+        "updatedAt": "2026-04-19T07:16:06.514Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -20555,7 +20555,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:02:23.299Z",
+        "updatedAt": "2026-04-19T17:40:45.089Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -22107,7 +22107,7 @@
         "description": "compute_gradient stores the original field via Box::new(field_val.clone()), deep-cloning the entire captured environment per gradient(). With repeated gradient() calls on the same field this is O(env_size). The lambda field's contract is also documented as 'lambda or Undef' but FieldSourceKind::Gradient now stores a Field there — making the variant a hidden encoding protocol.\n\n## What\n1. Update the doc comment on Value::Field.lambda in crates/reify-types/src/value.rs:51 to describe all three valid contents: Value::Lambda (Analytical/Composed), Value::Undef (Sampled/Imported), or Value::Field (Gradient — the original field).\n2. Update the FieldSourceKind::Gradient doc comment to describe provenance only — drop references to 'lambda slot' and 'sample handler' that leak reify-expr internals into reify-types.\n3. Consider switching Value::Field's lambda from Box<Value> to Arc<Value> so gradient wrapping becomes a refcount bump rather than a deep clone of captured environment. This is cross-crate and may need its own subtask.\n4. Document the single_point_param calling-convention contract on Value::Field so it isn't an undocumented heuristic.\n\nSource: review escalation esc-281-66, suggestions about Field.lambda.",
         "details": "<info added on 2026-04-16T21:23:23.404Z>\nWhen assigning this task, verify whether Task 1629 has completed. If Task 1629 is complete, treat item 3 as already done and focus this task on items 1, 2, and 4 only.\n</info added on 2026-04-16T21:23:23.404Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -22134,19 +22134,13 @@
             "gui/src-tauri/src/tests"
           ],
           "memory_hints": {
-            "entities": [
-              "Value",
-              "reify-types",
-              "FieldSourceKind"
-            ],
+            "entities": [],
             "queries": [
-              "Value::Field lambda doc comment FieldSourceKind Gradient doc update",
-              "single_point_param calling convention contract documentation",
-              "task 1629 Box Arc Value::Field lambda completion status"
+              "resolution for: Gradient: typed-doc + Arc lambda for hot-path field clones"
             ]
           }
         },
-        "updatedAt": "2026-04-17T12:57:00.226Z"
+        "updatedAt": "2026-04-19T06:21:55.218Z"
       },
       {
         "id": "1003",
@@ -29336,7 +29330,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:52:57.898Z",
+        "updatedAt": "2026-04-19T06:10:22.742Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -34202,7 +34196,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:56:56.863Z",
+        "updatedAt": "2026-04-19T17:50:37.942Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -34210,6 +34204,7 @@
             "crates/reify-eval/tests/m8_m11_regression_checkpoint.rs",
             "crates/reify-expr/src/analysis.rs",
             "crates/reify-expr/src/calculus.rs",
+            "crates/reify-expr/src/lib.rs",
             "crates/reify-expr/tests/field_analysis_tests.rs",
             "crates/reify-expr/tests/field_calculus_tests.rs",
             "crates/reify-expr/tests/field_eval_tests.rs",
@@ -36585,7 +36580,7 @@
         "description": "Extend the single-selection model to multi-selection. Ctrl+click toggles entities in/out of selection set, Shift+click range-selects in the tree. Multi-selection syncs between tree and viewport. Bulk visibility operations apply to all selected entities. Escape clears selection.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 10 (Multi-Selection) and 4.3 (Interaction — Ctrl/Shift click).\n\n### Implementation\n\n1. **Extend `selectionStore.ts`**\n   - Change from `selectedEntity: string | null` to `selectedEntities: Set<string>`\n   - Add `anchorEntity: string | null` for Shift+click range calculation\n   - `selectSingle(path)`: clear set, add path, set anchor\n   - `toggleSelect(path)`: add/remove from set (Ctrl+click)\n   - `rangeSelect(path)`: select all visible tree nodes between anchor and target (Shift+click)\n   - `clearSelection()`: empty set\n   - `selectAll()`: add all visible tree nodes\n   - Backward-compatible: `primarySelected` getter returns first/most-recent item for PropertyEditor focus\n\n2. **Update `panels/DesignTree.tsx`**\n   - Click: `selectSingle`\n   - Ctrl+click: `toggleSelect`\n   - Shift+click: `rangeSelect` (requires knowing visible node order — flatten expanded tree)\n   - Ctrl+A: `selectAll` (when tree panel has focus)\n   - Escape: `clearSelection`\n   - Visual: selected nodes get highlight background; multi-selected nodes all highlighted\n   - Eye icon click with multi-selection: apply visibility change to all selected nodes\n\n3. **Update `viewport/selection.ts`**\n   - Click: `selectSingle` (existing behavior, now via store method)\n   - Ctrl+click: `toggleSelect` (add/remove mesh's entity from selection set)\n   - Multi-selected entities all get wireframe overlay\n   - Ghost entities remain non-selectable\n\n4. **Update backend `selectionStore` sync**\n   - `update_selection` Tauri command may need to accept a list instead of single entity\n   - Or batch multiple calls — depends on how MCP tools consume selection\n\n5. **Keyboard shortcuts**\n   - Escape: clear selection (global)\n   - Ctrl+A: select all (when tree focused)\n\n### Requirements covered\nMS-1, MS-2, MS-3, MS-4, MS-5, MS-6, T-10, T-11, T-12\n\n### memory_hints\n- search: \"selectionStore selected entity\"\n- search: \"selection.ts raycasting wireframe\"\n- search: \"update_selection Tauri command\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1741"
         ],
@@ -36600,32 +36595,18 @@
             "gui/src/__tests__/viewport/selection.test.ts"
           ],
           "modules": [
-            "crates/reify-mcp/src/types.rs",
-            "crates/reify-mcp/tests/read_tools_tests.rs",
-            "gui/src-tauri/src/main.rs",
-            "gui/src-tauri/src/tests",
-            "gui/src/App.tsx",
-            "gui/src/__tests__/App.test.tsx",
             "gui/src/__tests__/DesignTree.test.tsx",
-            "gui/src/__tests__/selectionStore.test.ts",
-            "gui/src/__tests__/useKeyboardShortcuts.test.ts",
-            "gui/src/__tests__/viewport",
-            "gui/src/debug/bridge.ts",
-            "gui/src/debug/types.ts",
-            "gui/src/hooks/useKeyboardShortcuts.ts",
-            "gui/src/panels/DesignTree.tsx",
-            "gui/src/stores/selectionStore.ts",
-            "gui/src/viewport/Viewport.tsx",
-            "gui/src/viewport/selection.ts"
+            "gui/src/panels/DesignTree.tsx"
           ],
           "memory_hints": {
             "entities": [],
             "queries": [
               "resolution for: Multi-selection in Design Tree and viewport"
             ]
-          }
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
         },
-        "updatedAt": "2026-04-17T12:46:02.268Z"
+        "updatedAt": "2026-04-19T17:54:46.456Z"
       },
       {
         "id": "1745",
@@ -36633,7 +36614,7 @@
         "description": "Implement automatic view generation. The \"Default\" auto view applies Physical-trait-aware visibility rules (show geometry param, hide other solids). The \"All geometry\" auto view shows everything. Purpose-linked auto views are generated when purposes are active, showing entities relevant to that purpose. Auto views update dynamically as the design changes.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 5.4 (Default Rules) and 6.1 (Auto Views).\n\n### Implementation\n\n1. **Auto view generator** (`stores/autoViewGenerator.ts`)\n   - `generateDefaultView(tree: EntityTree) -> ViewDefinition`:\n     - Walk tree; for each node:\n       - If node.traitGeometry: visibility = show\n       - Else if node.kind == \"let\" && node.typeName in {Solid, Surface, Curve}: visibility = hidden\n       - Else if node.kind == \"structure\" || node.kind == \"sub\": visibility = show (container)\n     - Name: \"Default\", auto: true\n   - `generateAllGeometryView(tree: EntityTree) -> ViewDefinition`:\n     - All geometric nodes: visibility = show\n     - Name: \"All geometry\", auto: true\n   - `generatePurposeViews(tree: EntityTree, activePurposes: string[]) -> ViewDefinition[]`:\n     - Heuristic: for each active purpose, generate a view emphasizing relevant entities\n     - e.g., `manufacturing_ready` → show final geometry + material-related params, ghost intermediates\n     - This is v0.1 heuristic — can be refined later\n     - Name: purpose name, auto: true\n\n2. **Extend `viewStateStore.ts`**\n   - `views: Map<string, ViewDefinition>` — all views (auto + user)\n   - `activeViewId: string` — currently applied view\n   - `regenerateAutoViews(tree)`: called on every tree rebuild; regenerates auto views, preserves user views\n   - Auto view IDs prefixed with `auto:` (e.g., `auto:default`, `auto:all-geometry`)\n   - User view IDs prefixed with `user:` (e.g., `user:my-assembly-view`)\n\n3. **Wire into evaluation cycle**\n   - When engine emits new state → rebuild designTreeStore → regenerateAutoViews → reconcile active view\n   - If active view is auto: apply regenerated version\n   - If active view is user: keep user state, apply default rules only for NEW entities\n\n4. **Backend support**\n   - `get_entity_tree` response must include `traitGeometry` flag per node\n   - Engine must expose which purposes are currently active (may already be available via evaluation state)\n\n### Requirements covered\nVM-1, VM-2, VM-3 (heuristic)\n\n### memory_hints\n- search: \"Physical trait geometry param\"\n- search: \"purpose declarations active\"\n- search: \"designTreeStore entity tree\"\n<info added on 2026-04-17T12:50:35.239Z>\nReopen the task and proceed with the implementation as originally planned. Ensure the following:\n\n1. Implement the `autoViewGenerator.ts` file to include the functions `generateDefaultView`, `generateAllGeometryView`, and `generatePurposeViews` as specified in the task details.\n2. Extend `viewStateStore.ts` to include `ViewDefinition`, `activeViewId`, and `regenerateAutoViews` functionality.\n3. Verify that the `traitGeometry` flag is utilized as expected, given its presence in the `EntityTreeNode`.\n4. Ensure that the backend surface work is minimal, focusing on the integration of active purposes.\n5. Update the test strategy to include tests for the new functionalities in `viewStateStore.ts`, creating `viewStateStore.test.ts` if necessary.\n6. Address the dependency on Task 1746 by ensuring the necessary infrastructure is in place.\n</info added on 2026-04-17T12:50:35.239Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1743"
         ],
@@ -36654,7 +36635,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T13:25:04.787Z"
+        "updatedAt": "2026-04-19T06:44:25.783Z"
       },
       {
         "id": "1746",
@@ -36662,7 +36643,7 @@
         "description": "Implement user-created named views, the view selector dropdown UI, and the copy-on-write mechanism for auto views. Users can create, rename, delete, and duplicate views. Modifying an auto view creates a COW copy that becomes a user view, preserving the original auto view.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 6.2 (Named Views), 6.3 (Copy-on-Write), 6.4 (View Selector Interaction).\n\n### Implementation\n\n1. **View selector dropdown** (`panels/ViewSelector.tsx`)\n   - Dropdown at top of Design Tree panel, above the tree\n   - Shows active view name with a chevron\n   - Dropdown content:\n     - Auto views section (gear icon prefix, sorted by name)\n     - Separator\n     - User views section (diamond icon prefix, sorted by name)\n     - Separator\n     - \"+ New view\" action\n     - \"Manage views...\" action (opens modal)\n   - Active view indicated with checkmark\n   - Click to switch active view\n\n2. **View CRUD operations** (in `viewStateStore.ts`)\n   - `createView(name: string)`: create empty user view with default rules\n   - `renameView(viewId: string, newName: string)`: rename (user views only)\n   - `deleteView(viewId: string)`: delete (user views only, cannot delete auto)\n   - `duplicateView(viewId: string, newName: string)`: deep copy with new ID\n   - `switchView(viewId: string)`: set as active, recompute effective visibility\n\n3. **Copy-on-write mechanism**\n   - When user modifies visibility while an auto view is active:\n     1. Clone the auto view's current state\n     2. Create a new user view named \"{auto_name} (modified)\"\n     3. Apply the user's change to the clone\n     4. Switch active view to the clone\n     5. Original auto view continues to auto-update\n   - Detection: any `setVisibility` call while `activeView.auto == true` triggers COW\n   - The COW view gets `auto: false, modified: true` so the UI can show \"(modified)\" badge\n\n4. **View management modal** (`panels/ViewManageModal.tsx`)\n   - List all views with actions: rename, delete, duplicate\n   - Auto views: duplicate only (no rename/delete)\n   - User views: all actions\n   - Drag to reorder user views (ordering is cosmetic only)\n\n5. **Keyboard shortcut**\n   - Number keys 1-9: quick-switch to first 9 views in the selector\n\n### Requirements covered\nVM-4, VM-5, VM-6, VM-7, VM-8, VM-9, VM-10\n\n### memory_hints\n- search: \"viewStateStore views\"\n- search: \"auto view generator\"\n- search: \"SolidJS dropdown modal\"",
         "testStrategy": "",
-        "status": "done",
+        "status": "pending",
         "dependencies": [
           "1745"
         ],
@@ -36698,7 +36679,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T12:51:07.756Z"
+        "updatedAt": "2026-04-19T17:53:31.383Z"
       },
       {
         "id": "1747",
@@ -36729,9 +36710,15 @@
             "gui/src/viewport/Viewport.tsx",
             "gui/src/viewport/index.ts",
             "gui/src/viewport/selection.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Viewport-view decoupling and viewport store"
+            ]
+          }
         },
-        "updatedAt": "2026-04-17T13:01:49.576Z"
+        "updatedAt": "2026-04-19T08:01:22.129Z"
       },
       {
         "id": "1748",
@@ -36785,9 +36772,15 @@
             "gui/src/stores",
             "gui/src/utils",
             "gui/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: View persistence: localStorage + sidecar file + fuzzy path matching"
+            ]
+          }
         },
-        "updatedAt": "2026-04-17T13:25:03.129Z"
+        "updatedAt": "2026-04-19T08:01:22.881Z"
       },
       {
         "id": "1750",
@@ -37211,11 +37204,11 @@
         "description": "The Ctrl+O keyboard shortcut to open a file does not work when the CodeMirror editor has focus. The shortcut likely gets captured by CodeMirror before it reaches the app-level handler.",
         "details": "memory_hints: search \"Ctrl+O open file keyboard shortcut CodeMirror\"\n\nThe shortcut is registered via `useKeyboardShortcuts` in App.tsx, but CodeMirror may intercept the keydown event before it bubbles up. Fix by either:\n1. Adding Ctrl+O to the CodeMirror keymap that delegates to the app handler\n2. Using a higher-priority event listener (capture phase)\n3. Using Tauri's global shortcut API\n\nFiles: gui/src/App.tsx (useKeyboardShortcuts, onOpen), gui/src/editor/Editor.tsx (keymap)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:23:17.651Z",
+        "updatedAt": "2026-04-19T17:40:50.313Z",
         "metadata": {
           "modules": [
             "gui/src/App.tsx",
@@ -37553,15 +37546,24 @@
         "description": "In gui/src-tauri/src/tests/engine_tests.rs: (1) In get_entity_tree_no_realization_has_mesh_false (lines 2254-2278), remove the TopologyTemplateBuilder/CompiledModuleBuilder setup and the bracket_compiled_module() call — they are suppressed with let _ = ... and contribute nothing to the test assertions. (2) In get_entity_tree_sub_component_produces_nested_node (lines 2283-2318), remove the bolt_template/assembly_template/compiled builder code and the let _ = vcid(...) line for the same reason. If builder-based coverage is desired, add a separate focused test using build_template_node directly.\n\n### memory_hints\n- search: \"get_entity_tree_no_realization_has_mesh_false get_entity_tree_sub_component_produces_nested_node\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:43:53.235Z",
+        "updatedAt": "2026-04-19T06:43:49.176Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "get_entity_tree_no_realization_has_mesh_false get_entity_tree_sub_component_produces_nested_node dead builder fixtures",
+              "CompiledModuleBuilder TopologyTemplateBuilder test cleanup engine_tests.rs",
+              "build_template_node focused test reify-compiler tests"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
         }
       },
       {
@@ -37662,11 +37664,11 @@
         "description": "Three test quality improvements in gui/src-tauri/src/tests/commands_tests.rs from task 1781 review:\n\n1. **Extract shared session helper (code_duplication)**: `make_poisoned_engine()` (lines 124-137) duplicates the `EngineSession::new(Box::new(SimpleConstraintChecker), Some(Box::new(MockGeometryKernel::new())))` construction from `make_loaded_session()` (lines 10-18). Extract a `make_session()` helper that both call, with `make_loaded_session()` adding the `.load_from_source()` step.\n\n2. **Add no-module-loaded edge case tests (test_coverage)**: The healthy-path tests for `get_entity_tree_impl` and `get_entity_identity_map_impl` only test with a loaded session. Add tests that create an `EngineSession` without loading a module and assert that the result is `Ok(empty vec/map)`. This verifies the empty-collection path works correctly after the `unwrap_or_default()` removal.\n\n3. **Assert poison join result (robustness)**: In `make_poisoned_engine()` line 131-135, change `let _ = std::thread::spawn(...).join();` to assert the join result is Err, e.g.: `let join_result = std::thread::spawn(...).join(); assert!(join_result.is_err(), \"thread should have panicked to poison the mutex\");` for clearer failure diagnostics.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:45:34.629Z",
+        "updatedAt": "2026-04-19T17:46:27.357Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/tests"
@@ -38825,11 +38827,11 @@
         "description": "The shortcuts.test.ts suite verifies that every shortcut with a non-empty display key has a `bind` field, but there is no test verifying the reverse direction: that every shortcut with a `bind` field that should have a callback actually has a corresponding entry in ID_TO_CALLBACK (in useKeyboardShortcuts.ts). If someone adds a new shortcut with a `bind` but forgets to wire it up in ID_TO_CALLBACK, the key press silently does nothing.\n\nAdd a test (in useKeyboardShortcuts.test.ts or shortcuts.test.ts) that asserts: the set of shortcut IDs with `bind` fields, minus the known no-callback IDs (undo, redo, fitToView), equals the set of IDs in ID_TO_CALLBACK. This ensures new bound shortcuts are always wired up.\n\nmemory_hints: search \"ID_TO_CALLBACK ShortcutId bind useKeyboardShortcuts\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T02:49:26.100Z",
+        "updatedAt": "2026-04-19T17:40:57.232Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/useKeyboardShortcuts.test.ts",
@@ -39083,11 +39085,11 @@
         "description": "Follow-up from Task 1815 review. The current shortcuts.ts pattern widens SHORTCUTS to `readonly ShortcutDef[]` and exposes a parallel `SHORTCUT_IDS: readonly ShortcutId[]` export to let callers iterate ids without an `as ShortcutId` cast. This leaves inconsistencies:\n\n1. Change the SHORTCUTS export from `readonly ShortcutDef[]` to `readonly (ShortcutDef & { id: ShortcutId })[]` in gui/src/shortcuts.ts (currently line 99). This preserves literal-id narrowing on `.id` while still permitting structural access to optional fields (`.disabled`, `.bind`) that was the original motivation for widening.\n2. Drop the `SHORTCUT_IDS` export (gui/src/shortcuts.ts:101-106) — it is redundant once `s.id` is already `ShortcutId`.\n3. Remove the `shortcut.id as ShortcutId` cast at gui/src/hooks/useKeyboardShortcuts.ts:57 and the accompanying \"ShortcutId cast is safe\" comment at :56.\n4. In gui/src/__tests__/shortcuts.test.ts:99-107, replace the SHORTCUT_IDS-based filter with a direct iteration over SHORTCUTS:\n     `for (const s of SHORTCUTS.filter(sh => !sh.disabled && sh.key)) { const entry = getShortcut(s.id); ... }`\n   The `as ShortcutId` cast is unnecessary once SHORTCUTS' id is already narrowed; the redundant `.find()` nested inside a `.filter()` is eliminated.\n5. Update the import in shortcuts.test.ts to stop importing SHORTCUT_IDS.\n\nVerify: `bun run test` in gui/ passes; `bun run build` (or `tsc --noEmit`) confirms no regressions from tightened types.\n\nScope: gui/src/shortcuts.ts, gui/src/hooks/useKeyboardShortcuts.ts, gui/src/__tests__/shortcuts.test.ts.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:09:53.183Z",
+        "updatedAt": "2026-04-19T06:50:23.334Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/shortcuts.test.ts",
@@ -39295,11 +39297,11 @@
         "description": "Allow param types to reference traits (e.g. `param material : Material`), so that structures can declare dependencies on trait-satisfying values. Currently `resolve_type_name` rejects trait names used as types (\"unresolved type: Material\"). Required for `examples/m5_geometry_flange.ri` to use the intended syntax instead of the `param material : String = \"steel\"` stand-in.",
         "details": "## Scope\nSpawned from task 1751 esc-1751-2. The architect plan for 1751 substituted `param material : String` because trait-typed params are not implementable in the current compiler.\n\n## Problem\n- `resolve_type_name` (crates/reify-compiler/src/type_resolution.rs) only resolves concrete types; trait names are not accepted.\n- `Material` is defined as a trait in `crates/reify-compiler/stdlib/materials_mechanical.ri:8`.\n\n## Approach options\n- Structural subtyping / existential types — significant design change.\n- Limited nominal trait-typed param (accept only concrete structs satisfying the trait at instantiation).\n- Conformance check at instantiation with the passed value's struct.\n\n## Acceptance\n- `param material : Material` type-checks when callers pass a struct that conforms to `Material`.\n- `examples/m5_geometry_flange.ri` can be updated to use the trait-typed form.\n\n## Dependencies\nCoordinates with task ~follow-up on \"Material as first-class type\" (spawned below).\n\n### memory_hints\n- search: \"resolve_type_name Material trait\"\n- search: \"trait conformance param type annotation\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:10:51.773Z",
+        "updatedAt": "2026-04-19T17:40:51.637Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -39486,7 +39488,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:26:05.307Z",
+        "updatedAt": "2026-04-19T17:40:45.466Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -39628,11 +39630,11 @@
         "description": "In gui/src/__tests__/App.test.tsx around line 2429, the save error-path test uses `expect(errorSpy).not.toHaveBeenCalled()`, a strict global check. If any unrelated async code (engine subscriptions, toast rendering, etc.) logs to console.error during the test, the assertion fails in a way that looks like a regression in save-error handling but is actually unrelated noise.\n\nReplace with a targeted check that preserves the test's intent (\"errors route through showToast, not console\") while being robust:\n\n  expect(\n    errorSpy.mock.calls.flat().some(\n      (arg) => String(arg).includes('Save failed') || String(arg).includes('disk full')\n    )\n  ).toBe(false);\n\nThis asserts the specific error message was not logged to console while tolerating incidental console.error from unrelated paths.\n\nFrom task 1793 review (reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:23:21.664Z",
+        "updatedAt": "2026-04-19T06:04:21.476Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -39751,11 +39753,11 @@
         "description": "The 300ms debounce interval is hardcoded in Editor.tsx (lines 146, 155) and duplicated across four assertions in gui/src/__tests__/editor-perf.test.tsx (lines ~95, 107, 149, 179). If the debounce is ever tuned, the tests will break in multiple places and the error messages will not point to the root cause. Fix: export a named constant `EDITOR_DEBOUNCE_MS = 300` from gui/src/editor/Editor.tsx, import it in the test file, and use it in all setTimeout call sites and test assertions.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:59.090Z",
+        "updatedAt": "2026-04-19T17:44:08.570Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/Editor.test.tsx",
@@ -39821,7 +39823,7 @@
         "description": "The DesignTree component (gui/src/panels/DesignTree.tsx) and viewStateStore (gui/src/stores/viewStateStore.ts) are fully implemented and exported from panels/index.ts and stores/index.ts respectively, and the backend get_entity_tree Tauri command is registered and working. However, App.tsx never imports DesignTree, never creates a viewStateStore instance, never subscribes to the `entity-tree-update` event, and never renders the DesignTree component. As a result the Design Tree UI is entirely non-functional end-to-end, even though the pieces are done. Task #1741 was marked done with an explicit instruction to \"Modify App.tsx — Add tab bar for Tree / Properties in right panel area; Wire up DesignTree component\", but the App.tsx wire-up was dropped during the 2026-04-16 merge that \"accepted origin/main's parallel Design Tree implementation\" (note on cancelled task #1862).\n\nRequired wiring:\n1. In App.tsx, import { DesignTree } from './panels' and { createViewStateStore } from './stores/viewStateStore'.\n2. Create a viewStateStore instance next to the other stores (engineStore, editorStore, etc.).\n3. Subscribe to the backend `entity-tree-update` event (or poll via `get_entity_tree` on relevant engine state changes) and pass the tree data to the viewStateStore / DesignTree.\n4. Add a tab bar or panel slot in the right-side panel region (alongside PropertyEditor / ConstraintPanel) and render <DesignTree tree={tree} viewStateStore={store} />.\n5. Verify the DesignTree appears in the live app (not only unit tests) and that eye-icon visibility toggling propagates back to meshManager (viewport/meshManager.ts already consults visibility).\n\nVerification:\n- Launch `npm run tauri dev` with a .ri file loaded and confirm the Design Tree renders real entity nodes.\n- Confirm eye-icon clicks hide/ghost the mesh in the viewport.\n- Re-check App.test.tsx for DesignTree integration coverage — currently App.test.tsx exists but does not cover DesignTree mounting.",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -39847,7 +39849,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T05:56:15.065Z"
+        "updatedAt": "2026-04-19T05:39:03.288Z"
       },
       {
         "id": "1902",
@@ -39951,13 +39953,13 @@
         "description": "Re-apply the two-pass pre-register split in conformance.rs that resolves forward references through annotated lets across kinds (Param + unannotated Let). The split was implemented and verified under task 1834 (commit aa4ef1245) but reverted (commit ccb87a247) because it legitimately obsoletes an out-of-scope \"known design limitation\" test in crates/reify-compiler/tests/trait_merge_tests.rs — a file outside task 1834's locked modules. This follow-up bundles the re-application with a coordinated update to that test.\n\nMemory hints: search \"task 1834 two-pass pre-register conformance\"; entities: DefaultKind, compile_traits, Type.",
         "details": "Scope:\n1. Re-apply the two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` — see reverted commit aa4ef1245 for the exact patch. Pass 1 registers every annotated default (Param + Let with `cell_type = Some(ty)`); Pass 2 compiles unannotated-let expressions against the fully-populated annotated scope and registers the inferred type. The remaining mutual-unannotated limitation stays documented by `mutual_unannotated_lets_documented_limitation`.\n\n2. Add regression guard `unannotated_let_resolves_forward_reference_to_annotated_let` to `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` — scenario: `let a = b + 1mm` followed by `let b : Length = 2mm` must compile without \"unresolved name: b\" diagnostic.\n\n3. Update `cross_kind_pre_registration_order_sensitivity_reversed_order_produces_error` in `crates/reify-compiler/tests/trait_merge_tests.rs:1094` — flip the assertion from `!errors.is_empty()` (expects error) to clean compilation. Rename accordingly (e.g. drop `_produces_error` suffix, rename to reflect that cross-kind order-sensitivity is resolved when one trait provides annotated Param and another provides unannotated Let). Update the accompanying doc comment that describes this as a \"known design limitation\" — it is now a resolved limitation. The test was introduced in commit adbb43007 as an intentional document-via-test of the single-pass scope ordering.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive suggestion 1 (behavior_regression) on task 1834 amendment round 2. Reverted in ccb87a247 due to scope rule (trait_merge_tests.rs outside 1834's locked modules). Implementation was already validated on task 1834's worktree before revert.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1834"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:06.670Z",
+        "updatedAt": "2026-04-17T13:55:04.409Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -39972,11 +39974,11 @@
         "description": "Post-merge polish for the tessellation-diagnostics wiring added in task 1764. Covers performance, API-contract consistency, and doc clarification in engine.rs and diff.rs.",
         "details": "From reviewer_comprehensive suggestions on task 1764:\n\n1. **Avoid cloning source on every diagnostic-producing tessellation** (engine.rs:433-438).\n   - `resolve_source()` result is currently `.map(|(f, s)| (f.to_owned(), s.to_owned()))`, cloning the entire source file each time diagnostics are produced.\n   - `diagnostics_to_info` only needs `&str`. Rework to keep borrows, only allocating the fallback `(\"<unknown>\", \"\")` strings when `resolve_source()` returns `None`.\n   - Suggested form: `let (file_path, source): (&str, &str) = self.resolve_source().unwrap_or((\"<unknown>\", \"\")); let unresolved = file_path == \"<unknown>\";`\n\n2. **Derive Serialize on Severity to centralize PascalCase formatting** (engine.rs:1370-1383, diagnostics_to_info).\n   - The change from lowercase (`Severity`'s Display impl) to PascalCase (hand-rolled match in `diagnostics_to_info`) is an observable wire-format break for MCP `get_diagnostics` consumers.\n   - Preferred: derive `Serialize` on `Severity` with `#[serde(rename_all = \"PascalCase\")]` (or equivalent) and use that everywhere instead of duplicating the mapping. Keeps `DiagnosticInfo.severity` string and other serialized Severity sites in lock-step.\n   - Alternative (if derive is infeasible): add a release/migration note documenting the PascalCase change.\n\n3. **Align log and wire format for diagnostic severity** (engine.rs:427).\n   - `warn!(severity = ?diag.severity, ...)` uses Debug format while the emitted wire `DiagnosticInfo.severity` uses the PascalCase match. They happen to look similar today but will drift.\n   - Use `%diag.severity` (Display) or the same mapping used by `diagnostics_to_info` so log and wire formats stay pinned together.\n\n4. **Clarify StateDelta::full tessellation_diagnostics asymmetry comment** (diff.rs:33-49).\n   - Current comment (line ~41) only explains why the initial full-emission collapses empty→None. It does not mention that `diff_gui_state` still emits `Some(vec![])` when clearing a previously non-empty list.\n   - Expand comment to: \"Initial full emission: skip when empty (the frontend default is already []). Subsequent diffs (diff_gui_state) still emit Some(vec![]) when clearing a previously non-empty list so subscribers can clear their view.\"\n\nVerification: run `cargo test -p gui` (or the workspace equivalent) to ensure MCP and GUI tests still pass; also spot-check any serde tests that cover Severity/DiagnosticInfo serialization.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:24:31.367Z",
+        "updatedAt": "2026-04-19T17:46:30.379Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -40183,7 +40185,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:23.544Z",
+        "updatedAt": "2026-04-19T17:41:00.290Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/type_compat.rs",
@@ -40197,11 +40199,11 @@
         "description": "In crates/reify-compiler/tests/implicit_conversion_tests.rs at line 816, `type_compatible_error_wildcard_error_error` asserts `type_compatible(Type::Error, Type::Error) == true`. This case is also satisfied by the identity arm (`param_ty == arg_ty`), so it does NOT discriminate between guard-present and guard-removed — a future refactor could delete the wildcard guard and this test would still pass. The sibling test `error_wildcard_implicit_error_to_error` (line ~617) was fixed in commit 2b2be6f0b to include an explanatory comment making its non-pinning status explicit; apply the same annotation (or delete the test outright) to `type_compatible_error_wildcard_error_error`. The actual guard-pinning tests for this path are `type_compatible_error_wildcard_real` and `type_compatible_error_wildcard_mirror_real`. Review followup from task 1912; suggestion S3.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:59.542Z",
+        "updatedAt": "2026-04-19T06:27:05.316Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/implicit_conversion_tests.rs"
@@ -40214,11 +40216,11 @@
         "description": "In crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 17-42), the `find_node` helper walks `CompiledExprKind` recursively but falls through to `_ => None` for many variants (Quantifier, ListLiteral, StructLiteral, tuple-like nodes, etc.). Current callers only search predicate subtrees so this is not a correctness bug today, but it is a maintainability trap: if a future regression produces a nested `Type::Error` inside an unhandled variant, `find_node` would silently return `None` and turn a real regression into a green test. Either (a) enumerate all CompiledExprKind variants exhaustively (no `_ => None`) so the compiler nags when new variants are added, or (b) panic/log in `cfg(test)` on unhandled kinds so silent miss is impossible. Review followup from task 1912; suggestion S4.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:14:41.168Z",
+        "updatedAt": "2026-04-19T07:16:06.610Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40235,7 +40237,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:13.836Z",
+        "updatedAt": "2026-04-19T17:40:52.698Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -40340,11 +40342,11 @@
         "description": "Two review suggestions from Task 1821 on `crates/reify-compiler/src/geometry.rs` (the `all_dispatch_functions_accounted_for` test block around lines 603-755):\n\n1. **Reduce breakdown-comment duplication (lines 657-665).** The doc comment on `EXPECTED_DISPATCH_COUNT` re-enumerates every function name already in `GEOM_ARG_FUNCTIONS` / `NO_GEOM_ARG_FUNCTIONS` / boolean_ops / loft, creating a fourth place to keep in sync. The maintenance rule only mentions updating one list and the constant, so the parenthetical names will silently drift. Fix: drop the parenthetical enumerations and keep only per-category counts (e.g. `- GEOM_ARG_FUNCTIONS   14`), or delete the breakdown entirely — the lists are the single source of truth.\n\n2. **Close the reverse-direction gap (lines 748-754).** The revised assertion still only cross-validates the lists against themselves plus a hand-maintained constant. Nothing touches the actual match arms in `compile_geometry_call`, so an arm added there without a corresponding list entry remains undetected — which is the failure mode the module-level comment (lines 603-609) and the test's doc (lines 714-718) explicitly motivate catching. Fix: add a companion test that scans the source of `compile_geometry_call` via `include_str!(\"geometry.rs\")` plus a simple regex over `\"name\" =>` patterns in the match block, then cross-checks the extracted dispatch set against the four lists. This closes the gap without a procedural macro.\n\nBoth suggestions come from reviewer_comprehensive on Task 1821.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:00.194Z",
+        "updatedAt": "2026-04-19T17:41:02.015Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs"
@@ -40451,11 +40453,11 @@
         "description": "The new 'Editor debounce constant' describe block in gui/src/__tests__/Editor.test.tsx:71-89 overlaps with the existing 'calls bridge.updateSource after 300ms debounce' test at line 110 — both dispatch an edit and assert updateSource fires after the debounce. The unique value of the new test is the (EDITOR_DEBOUNCE_MS-1)ms negative-boundary assertion. Fold the negative-boundary assertion into the existing test and remove the duplicate describe block, OR keep the new test and delete/retitle the older one. Also update the older test's title and inline '// After 300ms debounce' comment to reference EDITOR_DEBOUNCE_MS for consistency.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T06:29:53.543Z",
+        "updatedAt": "2026-04-19T06:04:21.909Z",
         "metadata": {
           "files": [
             "gui/src/__tests__/Editor.test.tsx"
@@ -40487,7 +40489,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:00.615Z",
+        "updatedAt": "2026-04-19T17:40:45.924Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40522,11 +40524,11 @@
         "description": "Follow-up to task 448 review. `implicitly_converts_to` and `type_compatible` in crates/reify-compiler/src/type_compat.rs (lines 9-11, 94-96) return `true` unconditionally when either side is `Type::Error`. Correct for anti-cascade, but these predicates are also consumed by trait-conformance and field-composition checks — a structure with a Type::Error-poisoned field will silently satisfy any trait signature. Safe today because the producer diagnostic exists, but if that diagnostic is ever downgraded/suppressed, conformance could silently go green with no visible error.\n\nAdd integration test: compile a structure with a poisoned field (e.g. `x: self.unknown_member`) implementing a trait expecting a specific field type, and assert: (1) conformance isn't reported as clean success, OR (2) the diagnostic buffer contains a Severity::Error whenever conformance succeeds on a Type::Error operand. Pin the invariant so future changes to the wildcard can't silently hide trait-conformance regressions.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:43:42.211Z",
+        "updatedAt": "2026-04-17T13:47:15.292Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/trait_conformance_tests.rs",
@@ -40535,7 +40537,13 @@
           "modules": [
             "crates/reify-compiler/tests",
             "crates/reify-compiler/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add conformance regression test for Type::Error wildcard in type_compat"
+            ]
+          }
         }
       },
       {
@@ -40574,11 +40582,11 @@
         "description": "The renamed test `compile_modify_op_chamfer_non_geometry_target_fallback` (crates/reify-compiler/src/lib.rs:2395) compiles at the top level with step_offset=0, so asserting `GeomRef::Step(0)` is indistinguishable from the old bug-preserving behavior. Add a companion test that places `chamfer(scalar_param, dist)` in a context where step_offset > 0 (e.g. nested inside a boolean op / let chain after prior ops in the same realization) and assert the target is `GeomRef::Step(step_offset)`, not `Step(0)`. This will catch a future regression where geom_ref fell back to `Step(0)` unconditionally. Follow-up from task 1823 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:11:39.141Z",
+        "updatedAt": "2026-04-19T06:04:22.166Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/lib.rs"
@@ -40591,11 +40599,25 @@
         "description": "The new `chamfer_let_bound_target_ops` / `fillet_let_bound_target_ops` tests in crates/reify-compiler/tests/let_scope_tests.rs:975-1018 cover the happy path (let-bound cylinder target resolves to Step(0)) but do not exercise an inline (non-let) geometry arg or a chained modifier. Add a test compiling `let result = chamfer(shell(body, 0.5mm), 2mm)` and assert the op sequence `[Cylinder, Modify(Shell, 0), Modify(Chamfer, 1)]` to cover nested modifier resolution and verify chamfer/fillet participate correctly in recursive geometry resolution (sub_ops extension). Follow-up from task 1823 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:12:17.126Z"
+        "updatedAt": "2026-04-19T06:08:40.693Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/let_scope_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add chained-modifier test for chamfer(shell(body, t), d) end-to-end resolution"
+            ]
+          }
+        }
       },
       {
         "id": "1942",
@@ -40603,11 +40625,11 @@
         "description": "Review follow-up from Task 1938. After the multi-tag iteration landed in scripts/validate_tasks_json.py, three loose ends remain:\n\n1. Module docstring (scripts/validate_tasks_json.py line ~10) still says invariant 3 is \"No duplicate `id` values across `master.tasks[]`\". Update to reflect that invariants apply per-tag and tags are independent namespaces (e.g., \"No duplicate `id` values within any tag's `tasks[]`; tags are independent namespaces.\").\n\n2. Module docstring should also describe the top-level convention used by the loop at scripts/validate_tasks_json.py:64-66 — tags are top-level keys whose names do not start with `_`; any non-tag metadata must be underscore-prefixed. Alternative: replace the loose prefix check with an explicit allow-list of known metadata keys. Prefer documenting the underscore convention since it matches the existing code and will not noisily warn if tm-core adds an `_schemaVersion`-style key; but explicitly call out in the docstring why non-tag metadata must be underscored so future maintainers understand the invariant.\n\n3. Add test coverage in tests/infra/test_tasks_json_schema.sh (around lines 177-219 where unexpected-key WARN tests live) for two untested behavioral promises:\n   - A `_meta` (underscore-prefixed) sibling of `master` should produce exit 0 and NO \"WARN\" on stderr (i.e. underscore keys are silently skipped).\n   - The same task id (e.g. `\"1\"`) appearing in both `master` and a sibling tag (e.g. `feature-x`) must NOT be flagged as a duplicate (tags are independent namespaces — the positive counterpart of the existing cross-tag-orphan-dep test).\n\nFiles:\n- scripts/validate_tasks_json.py\n- tests/infra/test_tasks_json_schema.sh\n\nMemory hints: search for \"validate_tasks_json multi-tag\", get_task 1938 for the originating merged change. Relates to sibling task 1939 (malformed-schema hardening) — that task covers type-assertion gaps, not docstring/coverage gaps, so these are independent.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:13:02.822Z",
+        "updatedAt": "2026-04-19T06:12:15.914Z",
         "metadata": {
           "modules": [
             "scripts/validate_tasks_json.py",
@@ -40635,11 +40657,21 @@
         "description": "Three post-merge review suggestions on the task 1926 work (median-per-keystroke guard). All small, local, and touch only the editor-perf test and its shared test-utils helper.\n\n1) gui/src/__tests__/editor-perf.test.tsx:162 — enrich the Vitest second-arg failure message so CI triage doesn't require mentally computing the median from the raw sample list. Replace the current `samples=${JSON.stringify(perKeystroke)}` with something like:\n   `` `median=${median(perKeystroke).toFixed(2)}ms min=${Math.min(...perKeystroke).toFixed(2)} max=${Math.max(...perKeystroke).toFixed(2)} samples=${JSON.stringify(perKeystroke.map(v => +v.toFixed(2)))}` ``\n\n2) gui/src/__tests__/test-utils.ts:26 — `median()` currently rejects NaN but silently accepts ±Infinity. For an even-length array containing Infinity in a middle position the result is `(Infinity + x)/2 = Infinity`, which would fail a `toBeLessThan` with a misleading message (same NaN-propagation rationale the docstring already calls out). Replace `values.some(Number.isNaN)` with `values.some(v => !Number.isFinite(v))` and update the error text and docstring. Add a matching unit test in test-utils.test.ts for ±Infinity inputs.\n\n3) gui/src/__tests__/editor-perf.test.tsx:149 — wrap the measurement loop in `try { ... } finally { unmount(); }` so the 300ms debounce cleanup runs regardless of in-loop failures. Low-risk but makes the cleanup invariant explicit.\n\nSource: review of task 1926 (esc-1926-9).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:35:44.974Z"
+        "updatedAt": "2026-04-19T06:04:22.573Z",
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/editor-perf.test.tsx",
+            "gui/src/__tests__/test-utils.ts",
+            "gui/src/__tests__/test-utils.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": "1945",
@@ -40658,7 +40690,15 @@
             "queries": [
               "resolution for: Fix stale line-number doc reference and restore arg-side variant coverage in type_compat tests"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/type_compat.rs",
+            "crates/reify-compiler/tests/implicit_conversion_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
@@ -40667,11 +40707,24 @@
         "description": "In `crates/reify-compiler/tests/implicit_conversion_tests.rs` (lines ~662-792), the belt-and-braces release-mode pins — `error_wildcard_implicit_to_error_release_returns_true_*` and `type_compatible_param_error_release_returns_true_*` — are gated on `#[cfg(not(debug_assertions))]` and therefore only run under `cargo test --release` (or a profile with `debug-assertions = false`). Standard `cargo test` (debug profile) skips them entirely.\n\nThe release short-circuit (`if from.is_error() || to.is_error() { return true; }`) is the cascade-safety net called out as the main task-448 rationale preserver by task 1918. If someone regresses by removing that line, debug tests still pass (they only assert the panic) and release tests don't run by default — the regression ships.\n\nPick one of:\n  (a) Wire up a CI job that runs `cargo test --release -p reify-compiler` so these pins execute, and document the requirement in a README or test module header.\n  (b) Factor the guard into a private helper (e.g. `is_error_wildcard_short_circuit(from, to)`) testable without the debug_assert, so both paths run under normal `cargo test`.\n\nReview followup from task 1918 (suggestion S2 of esc-1918-13).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
+        "status": "done",
+        "dependencies": [
+          "1918"
+        ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:38:52.438Z"
+        "updatedAt": "2026-04-19T06:09:27.238Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/type_compat.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Ensure release-mode belt-and-braces tests for Type::Error wildcard actually execute in CI"
+            ]
+          }
+        }
       },
       {
         "id": "1947",
@@ -40679,11 +40732,19 @@
         "description": "Follow-up to task 1936 review. Two related improvements to crates/reify-compiler/tests/trait_conformance_type_error_tests.rs:\n\n1. DRY / code_reuse (lines 74-103, 143-157): The three-assertion invariant block (errors non-empty, no \"type mismatch for trait\" cascade, at least one \"unknown member\") is duplicated verbatim between Scenario A (`poisoned_structure_let_preserves_root_cause_error`) and Scenario B (`poisoned_trait_default_preserves_root_cause_error`) — ~30 lines repeated. Extract a private helper `fn assert_poisoned_conformance_invariant(module: &CompiledModule)` that filters errors and runs the three assertions. Each test becomes `source + helper call`; invariant message text lives in one place.\n\n2. Test robustness (lines 86, 145): The cascade-suppression assertion (b) currently filters `module.diagnostics` by `Severity::Error` before searching for \"type mismatch for trait\". If a future refactor ever downgrades the conformance-layer cascade to `Severity::Warning` (e.g. during a deprecation period), the test silently passes even though the cascade reappeared — the opposite of the invariant. Fix: for check (b) only, search `module.diagnostics` across all severities for the \"type mismatch for trait\" substring. Keep checks (a) and (c) on the pre-filtered `errors` vector since they intentionally pin severity.\n\nAcceptance:\n- Single helper contains all three assertion messages; both scenarios call it.\n- Check (b) examines diagnostics regardless of severity; checks (a) and (c) remain severity-pinned.\n- All tests in `cargo test -p reify-compiler --test trait_conformance_type_error_tests` still pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:43:35.362Z"
+        "updatedAt": "2026-04-19T06:54:05.371Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1948",
@@ -40691,18 +40752,916 @@
         "description": "Two review follow-ups from task 1930:\n\n(1) Code reuse: Replace the raw `u32::MAX as usize` literal at `crates/reify-types/src/source_location.rs:45` with `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (both symbols live in the same `reify-types` crate, so the migration is trivial). Update the companion test `byte_offset_to_line_col_prelude_sentinel_returns_fallback` to reference the constant. Drop the \"a follow-up can migrate it to reference this constant\" caveat from the `PRELUDE_SENTINEL_OFFSET` rustdoc at `crates/reify-types/src/diagnostics.rs:44-46` once done.\n\n(2) Test quality: In `offset_to_line_col_fast_matches_original_every_offset` (`gui/src-tauri/src/tests/engine_tests.rs:1397-1411`), the sentinel convergence assertion `fast_sentinel == orig_sentinel` is effectively `(1,1) == (1,1)` by construction — a regression that broke both functions identically (e.g. someone changed both early-return values) would still pass. Strengthen by also asserting the literal `assert_eq!(fast_sentinel, (1, 1))` so the expected value is pinned in the convergence test too.\n\nAcceptance:\n- `source_location.rs` imports/uses `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (no remaining `u32::MAX as usize` literal at the sentinel check).\n- Caveat removed from `PRELUDE_SENTINEL_OFFSET` rustdoc.\n- Convergence test pins the literal `(1, 1)` for the sentinel in addition to the cross-check.\n- `cargo test -p reify-types` and GUI engine tests green.",
         "details": "",
         "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T13:47:02.921Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/diagnostics.rs",
+            "crates/reify-types/src/source_location.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
+      },
+      {
+        "id": "1949",
+        "title": "Extend doc-invariant test to all seven derived FieldSourceKind variants",
+        "description": "The `field_source_kind_gradient_doc_describes_provenance_only` test in crates/reify-types/src/value.rs (~line 6976) enforces the \"no impl-detail leakage\" rule only for `FieldSourceKind::Gradient`. The same doc cleanup was applied in task 1002 to `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear`, and `SafetyFactor`, but none of those variants have a regression guard. A future author rewording any of those docs could silently reintroduce `lambda slot` / `sample handler` / `central-difference` language.",
+        "details": "Parameterize (or loop) the Gradient doc-invariant test over all seven derived-field variants: Gradient, Divergence, Curl, Laplacian, VonMises, PrincipalStresses, MaxShear, SafetyFactor. For each variant assert (a) the doc block omits the forbidden impl tokens (\"lambda slot\", \"sample handler\", \"central-difference\") and (b) mentions the variant's operator name (e.g. `gradient()`, `divergence()`, `curl()`, `laplacian()`, `von_mises()`, `principal_stresses()`, `max_shear()`, `safety_factor()`).\n\nThe `enum_variant_doc_region` helper already supports locating any variant; pass `\"FieldSourceKind\"` and the per-variant line (e.g. `\"    Divergence,\\n\"`). Only the variants table and per-variant operator name strings need to be added.\n\nSource: review escalation esc-1002-30, suggestion 1.",
+        "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:43:42.843Z"
+        "updatedAt": "2026-04-19T17:50:41.295Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "FieldSourceKind"
+            ],
+            "queries": [
+              "FieldSourceKind Gradient Divergence Curl Laplacian VonMises doc-invariant test enum_variant_doc_region",
+              "field_source_kind_gradient_doc_describes_provenance_only test lambda slot sample handler central-difference forbidden tokens",
+              "task 1002 derived field variant doc cleanup FieldSourceKind"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96",
+          "files": [
+            "crates/reify-types/src/value.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src"
+          ]
+        }
+      },
+      {
+        "id": "1950",
+        "title": "Fix or soften intra-doc reference to private detect_single_point_param",
+        "description": "`Value::Field`'s doc in crates/reify-types/src/value.rs:205 references `reify_expr::calculus::detect_single_point_param`, but that function is a private `fn` (not `pub fn`) in crates/reify-expr/src/calculus.rs:526. Readers outside reify-expr cannot jump to it from rustdoc, and any intra-doc link would not resolve.",
+        "details": "Pick one of:\n1. Make `detect_single_point_param` `pub(crate)` plus a `#[doc(hidden)] pub` re-export so the rustdoc link resolves across crates, or\n2. Soften the cross-reference in value.rs:205 to clarify it's an internal helper — e.g. \"See the private `detect_single_point_param` helper in `crates/reify-expr/src/calculus.rs` for the reference implementation of this heuristic; keep this doc in sync with that function.\"\n\nOption 2 is lower-risk and preserves encapsulation; option 1 enables navigation at the cost of widening the surface.\n\nSource: review escalation esc-1002-30, suggestion 2.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T06:04:22.939Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "Value::Field",
+              "detect_single_point_param"
+            ],
+            "queries": [
+              "detect_single_point_param private function rustdoc intra-doc cross-crate link Value Field",
+              "reify-expr calculus.rs private pub(crate) visibility pub re-export",
+              "task 1002 doc reference fix value.rs calculus.rs"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96",
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/calculus.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-expr/src"
+          ]
+        }
+      },
+      {
+        "id": "1951",
+        "title": "conformance.rs: fix pass2_skipped phantom `(name, Let) -> Type::Real` advertisement",
+        "description": "In `crates/reify-compiler/src/conformance.rs` the `available_defaults` map still emits a `(name, Let) -> Type::Real` entry when Pass 2 recorded the name in `pass2_skipped` (an annotated Param/Let won the slot). The rationale comment at ~324-330 asserts \"the requirement is structurally unsatisfied anyway (kind mismatch)\" — but a Let requirement looking up `(name, Let)` gets a kind MATCH and will emit a spurious `requirement expects <T>, available default has Real` type-mismatch when \"missing required member\" would be clearer.\n\nScenario: trait X requires `let x : Length`; trait Y provides `param x : Length`; trait Z provides unannotated `let x = 5.0`. The Let from Z survives `collect_all_requirements` dedup, Pass 2 skips registering it because Y's Param claimed the slot, and the requirement in X is evaluated against a phantom `Let -> Real` advertisement.\n\nMemory hints: search \"task 1907 pass2_skipped available_defaults phantom Let entry\"; entities: DefaultKind, AvailableDefaultKind, Type.",
+        "details": "Two viable fixes (reviewer proposed both):\n\nOption A — In Pass 2's conflict branch (`if let Some(ignored_ty)` arm), still insert the compiled expression into `inferred_let_exprs` (or a parallel map) so `available_defaults` can advertise the inferred type for the `(name, Let)` slot. This preserves the Let requirement-matching path even when Pass 1 won the scope slot.\n\nOption B — In the `available_defaults` builder, skip emitting the `(name, Let)` entry entirely when `pass2_skipped.contains(name)` — since no Let cell is actually injected, advertising one is misleading. Update the rationale comment at ~324-330 to reflect this.\n\nOption B is simpler and keeps the invariant \"only one default satisfies a given (name, kind)\"; Option A preserves the old shape but requires reasoning about why the skipped expression is still useful. Prefer Option B unless the Let-requirement-survives-slot-claim behavior is intentional.\n\nAdd regression test in `crates/reify-compiler/tests/trait_merge_tests.rs` covering the 3-trait scenario: structure bound to traits X (requires `let x : Length`), Y (provides `param x : Length`), Z (provides unannotated `let x = 5.0`). Assert ONE diagnostic (\"missing required Let member `x`\" or \"kind mismatch\" or the chosen wording) — NOT a secondary \"available default has Real\" type-mismatch.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 1). Complements but distinct from task 1914 item 1 (compile_expr error-cascade), which addresses the Type::Real fallback when inference FAILS; this task addresses the fallback when Pass 2 deliberately DISCARDS the inferred expression.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:46.202Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "DefaultKind",
+              "AvailableDefaultKind"
+            ],
+            "queries": [
+              "task 1907 pass2_skipped available_defaults phantom Let entry Type::Real spurious mismatch diagnostic",
+              "conformance.rs available_defaults builder pass2_skipped Let requirement kind mismatch",
+              "task 1834 1907 two-pass pre-register conformance Let Param collision"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96",
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1952",
+        "title": "conformance.rs: restore Pass 1 ↔ Pass 2 symmetry for annotated-Let + Param cell-injection collisions",
+        "description": "The two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` (task 1834/1907) suppresses duplicate Let-cell injection only when an *unannotated* Let loses to a Param/annotated-Let in Pass 1 (via `pass2_skipped`). The symmetric case — an annotated Let whose name was already claimed in Pass 1 by a Param registered earlier in the same Pass 1 loop — still causes the injection loop to emit both a Param cell and an annotated-Let cell for the same `(entity, member)` pair.\n\nThe `cross_kind_pre_registration_preserves_first_type` test (updated in commit 7a7c7127d) pins 1 cell in the Param + unannotated-Let case, but a Param + annotated-Let case is not covered by any test and still produces 2 cells. Pre-existing behavior, but inconsistent with the design comment at ~197-215 that frames the split as restoring symmetry.\n\nMemory hints: search \"task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells\"; entities: DefaultKind, AvailableDefaultKind.",
+        "details": "Two options (reviewer proposed both):\n\nOption A (symmetric fix) — Extend Pass 1's Occupied path to mark annotated-Let conflicts in a new `pass1_skipped: HashSet<String>` set consumed by the injection loop the same way `pass2_skipped` is. This makes the two arms (Pass 1 / Pass 2) behaviorally identical: first-seen wins, and the loser's cell injection is suppressed regardless of kind.\n\nOption B (documented asymmetry) — Explicitly call out in the design comment at ~197-215 that annotated-Let + Param name collisions still emit duplicate cells. Add a follow-up task link. Pin current behavior with a test so future refactors don't silently flip it.\n\nRecommendation: Option A. The injection loop already reads `pass2_skipped`; adding a parallel `pass1_skipped` consumed at the same checkpoint is a small surgical change and removes a reviewer-accessible surprise. Option B effectively documents \"we know this is inconsistent\" and adds no mechanical guarantee.\n\nAdd test in `crates/reify-compiler/tests/trait_merge_tests.rs` mirroring `cross_kind_pre_registration_preserves_first_type` but using annotated-Let + Param (both with explicit types). Assert exactly 1 cell for the shared name (whichever default Pass 1 sees first wins).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 3).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T06:04:23.148Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "DefaultKind",
+              "AvailableDefaultKind"
+            ],
+            "queries": [
+              "task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells cross_kind_pre_registration",
+              "conformance.rs Pass1 Pass2 symmetry annotated-Let Param name collision duplicate injection",
+              "task 1834 1907 cross_kind_pre_registration_preserves_first_type test"
+            ]
+          },
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96",
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1953",
+        "title": "Tighten handleSave errorSpy assertion to match sibling-test pattern",
+        "description": "Replace the substring `some(...)` check in gui/src/__tests__/App.test.tsx (around lines 2448-2453) with the sibling-test pattern used at lines 1283-1286 and 1323-1326:\n\n```\nexpect(errorSpy).not.toHaveBeenCalledWith('Save failed:', expect.any(Error));\n```\n\nThis is both stricter (asserts exact call shape rather than substring match on a stringified arg) and more intention-revealing (explicitly names the forbidden logging path). It matches the convention already established by the setParameter and re-evaluate sibling tests in the same file.\n\nContext: Task 1892 narrowed the original `expect(errorSpy).not.toHaveBeenCalled()` to tolerate incidental console.error noise, but chose a substring-match approach. Reviewer_comprehensive flagged two concerns:\n1. test_coverage_weakening: substring match tolerates other Save-path regressions whose log strings don't contain the exact tokens\n2. assertion_precision: relies on `String(err)` producing 'Error: disk full' — fragile if handleSave ever logs a different format\n\nAdditionally, leave a code comment at the incidental-noise source (or at the assertion) so future readers know why a targeted assertion is preferred over `not.toHaveBeenCalled()`.\n\nNote: handleSave in gui/src/App.tsx currently does not call console.error at all (only `showToast(\\`Save failed: ...\\`, 'error')`), so the targeted assertion would pass trivially today and serve purely as a regression guard — which matches the sibling-test intent.\n\nSource: Task 1793 review (reviewer_comprehensive), re-surfaced during Task 1892 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/App.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
+      },
+      {
+        "id": "1956",
+        "title": "WP-A RECOVERY: Audit task 1901 DesignTree wiring and restore missing multi-selection bindings (from lost task 1959)",
+        "description": "Recovery audit task. Task 1959 was silently overwritten on 2026-04-17 during a fused-memory DB-lock storm (escalation esc-1959-52). Its original purpose was to act on a task-1744 review finding that DesignTree was still not instantiated in App.tsx as of 2026-04-17, despite task 1901 having been marked done earlier. This task (a) audits whether the 1901 wiring actually landed and (b) if not, restores it with the multi-selection bindings that were added by task 1744.",
+        "details": "Origin: preserved content from the overwritten task 1959 — see /home/leo/src/dark-factory/data/backups/2026-04-18-wp-a/esc-1959-52.json for the full original spec.\n\n## Audit step\n1. Run `grep -R \"DesignTree\" gui/src/App.tsx` in /home/leo/src/reify.\n2. If DesignTree IS imported and rendered in App.tsx with selection state wired — mark this task done and re-verify task 1901 completion evidence.\n3. If DesignTree is NOT imported in App.tsx (the state task 1744 review observed) — proceed with implementation below.\n\n## Implementation scope (if audit finds wiring missing)\nRender <DesignTree> in gui/src/App.tsx inside the panel area, connected to:\n- tree from the current design-tree source\n- viewStateStore (existing binding)\n- selectedEntity (primary selection)\n- selectedEntities + anchorEntity from selectionStore state\n- onSelect(path, mods): mods.ctrl → selectionStore.toggleSelect(path); mods.shift → selectionStore.rangeSelect(path); else → existing handleViewportSelect(path, mods)\n- onRangeSelect(paths) → selectionStore.rangeSelect variant\n- onSelectAll(paths) → selectionStore.selectAll(paths)\n\n## Prerequisite (may need to be a separate task)\nOriginal 1959 spec included a prerequisite: \"Plumb entity-tree bridge + engineStore.entityTree to feed DesignTree\"\n- gui/src/bridge.ts — add getEntityTree() invoke wrapper around Tauri get_entity_tree command (backend: gui/src-tauri/src/main.rs:233, commands.rs:106; returns Vec<EntityTreeNode>)\n- gui/src/stores/engineStore.ts — add entityTree: EntityTreeNode[] state + setEntityTree mutation; call bridgeGetEntityTree() inside initFromState and after mesh/value/constraint mutations\n- tests for the bridge wrapper and engineStore field+refresh\nIf present state shows engineStore.state.entityTree already populated, skip this.\n\n## Acceptance\n- Audit outcome documented (wired or not).\n- If wiring missing: user can click, Ctrl+click, Shift+click, Ctrl+A inside rendered DesignTree with selection highlight + viewport sync.\n- App.test.tsx continues to pass; add smoke test for DesignTree render + click → selectionStore update.\n\n## Context\nFrom review of task 1744 (reviewer_comprehensive): \"grep for DesignTree outside test files shows only the panels/index.ts export. App.tsx does not instantiate it.\" Task 1901 had been marked done but is suspected incomplete or reverted.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1901"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "metadata": {
+          "recovery": "wp-a-2026-04-18",
+          "original_id_was": "1959",
+          "source_escalation": "esc-1959-52",
+          "audit_target_task": "1901",
+          "spawned_from_review_of": "1744",
+          "files": [
+            "gui/src/App.tsx",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/DesignTree.test.tsx"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/panels",
+            "gui/src/__tests__"
+          ]
+        }
+      },
+      {
+        "id": "1957",
+        "title": "viewStateStore: atomic regenerateAutoViews and user-view explicit write-back",
+        "description": "regenerateAutoViews performs two sequential setState calls (setTree prunes explicit, then a second produce() block replaces explicit for auto:* active views). Each setState triggers reactive subscribers independently, exposing an intermediate state and wasting the initial prune. Separately, for user:* active views, edits made via setVisibility are written to state.explicit but never mirrored back into state.views[activeViewId].visibility, so the view's stored visibility drifts from the live edits — a later \"restore view\"/\"export view\" feature would surprise the user.",
+        "details": "## Scope\n\ngui/src/stores/viewStateStore.ts\n\n### 1. Atomicity (lines 264-330)\n\nFold the setTree pruning into the same produce() pass as the view regeneration, OR skip the explicit-prune inside setTree when called from regenerateAutoViews (since explicit is replaced moments later on the auto:* branch anyway). Rebuild nodeByPath/parentByPath in the same step. Goal: one setState, one reactive notification.\n\n### 2. User-view write-back (lines 305-322)\n\nPick and document one semantic:\n- (a) `ViewDefinition.visibility` is a seed/template; live state lives only in `state.explicit`. Add a doc comment on ViewDefinition and seedView explaining this.\n- (b) Mirror setVisibility edits back into `state.views[activeViewId].visibility` when active view is `user:*` (and possibly stamp `modified=true` on auto views — see Task XXXX for `modified` cleanup).\n\nPrefer (b) so user views remain self-contained, but either is acceptable as long as it's documented.\n\n### Tests\n\nAdd a regression test that calls setVisibility while a user:* view is active, then asserts that either (a) state.views[activeViewId].visibility is unchanged and the store doc says so, or (b) state.views[activeViewId].visibility reflects the edit.\n\n### memory_hints\n- search: \"viewStateStore regenerateAutoViews\"\n- search: \"ViewDefinition visibility explicit\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T06:45:04.259Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/viewStateStore.test.ts",
+            "gui/src/stores/viewStateStore.ts"
+          ]
+        }
+      },
+      {
+        "id": "1958",
+        "title": "autoViewGenerator: replace substring type-name matching with anchored checks",
+        "description": "Geometry and material detection in autoViewGenerator.ts uses bare `type_name.includes('Solid' | 'Surface' | 'Curve' | 'Material')`. Any type whose name happens to contain those tokens (e.g. a hypothetical 'MySolidarity', 'MaterialReference') will be misclassified. This is the sole distinction between 'hidden' and 'show' in the default view, so misclassification silently hides (or unhides) geometry.",
+        "details": "## Scope\n\ngui/src/stores/autoViewGenerator.ts\n\n### Changes\n\n- `isLetGeometryType` (lines 38-46): replace `type_name.includes('Solid' | 'Surface' | 'Curve')` with anchored matching. Options:\n  - Equality against a known-type enum / set: `GEOMETRY_TYPES = new Set(['Solid', 'Surface', 'Curve'])` with `GEOMETRY_TYPES.has(type_name)`.\n  - If generics/wrappers must be tolerated (e.g. `Option<Solid>`), use a regex anchored on word boundaries or parse the type_name.\n\n- `manufacturingReadyVisibilityFor` (lines 130-144): same fix for `'Material'` check.\n\n### Tests\n\ngui/src/__tests__ — add regression tests with node `type_name` values that contain the substrings but should NOT match (e.g. 'Solidarity', 'MaterialReference', 'SurfaceTreatment', 'CurveBall'). Assert they render via defaultVisibilityFor / manufacturingReadyVisibilityFor as non-geometry / non-material.\n\n### memory_hints\n- search: \"autoViewGenerator type name geometry\"\n- search: \"EntityTreeNode type_name\"",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:53.567Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/autoViewGenerator.test.ts",
+            "gui/src/__tests__/viewStateStore.test.ts",
+            "gui/src/stores/autoViewGenerator.ts"
+          ]
+        }
+      },
+      {
+        "id": "1959",
+        "title": "viewStateStore: clean up dead `modified` field, mark seedView @internal, strip step-16 test comments",
+        "description": "Cleanup batch for artifacts left after Task 1745's migration:\n\n1. `ViewDefinition.modified` is declared and set to false at every construction site but never read. Shipping unused fields invites callers to start setting them inconsistently before a consumer lands.\n2. `seedView` is on the public store interface but is only called from tests — UI callers could bypass the reconciliation that regenerateAutoViews does.\n3. Tests in viewStateStore.test.ts reference \"step-16\" migration context in comments that become archaeology once shipped. Separately, there's no regression test for the documented `resetToInherit` + `setActiveView` null-destruction semantics.",
+        "details": "## Scope\n\n- gui/src/stores/autoViewGenerator.ts:20 and 94-180\n- gui/src/stores/viewStateStore.ts:212-216\n- gui/src/__tests__/viewStateStore.test.ts:921-985\n\n### 1. `ViewDefinition.modified`\n\nDecision: drop it from ViewDefinition until the edit-preservation feature lands. Remove the field from the type and all constructor sites in autoViewGenerator.ts. Update the related doc comment in regenerateAutoViews (lines 258-262) that references the future use.\n\n(Alternative: if the sibling task for user-view write-back decides to stamp `modified=true` for edits, keep the field and add the consumer instead. Coordinate with that task.)\n\n### 2. `seedView` visibility\n\nEither (a) use seedView inside regenerateAutoViews so it has a real production consumer, or (b) remove it from the returned object and expose a test-only helper. Minimum: add a `/** @internal */` JSDoc tag.\n\n### 3. Test hygiene\n\n- Strip \"step-16\" migration comments from viewStateStore.test.ts:921-985 now that the migration is complete.\n- Add a regression test: call resetToInherit(path), setActiveView(otherId), and assert that the prior explicit-null marker is destroyed and the view's own visibility map fully replaces state.explicit (matches the documented setActiveView null-destruction semantics).\n\n### memory_hints\n- search: \"ViewDefinition modified field\"\n- search: \"seedView regenerateAutoViews\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T06:46:51.239Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/autoViewGenerator.test.ts",
+            "gui/src/__tests__/viewStateStore.test.ts",
+            "gui/src/stores/autoViewGenerator.ts",
+            "gui/src/stores/viewStateStore.ts"
+          ]
+        }
+      },
+      {
+        "id": "1960",
+        "title": "viewStateStore.setActiveView: signal failure on missing view id",
+        "description": "setActiveView silently returns when viewId is not in state.views. UI buttons and restored session state cannot distinguish \"view didn't exist\" from \"view activated\" — e.g. a persisted activeViewId for an auto:purpose:* view that no longer exists after a purpose was deactivated will look like a broken click.",
+        "details": "## Scope\n\ngui/src/stores/viewStateStore.ts:233-241\n\n### Change\n\nPick one; prefer (c):\n- (a) Return a boolean indicating success; callers surface a toast/log if false.\n- (b) Log a dev-mode warning via the project's logger when viewId is missing.\n- (c) Fall back to `auto:default` on missing viewId, matching the reconciliation behavior already in regenerateAutoViews (lines 298-303, 310-313, 324-328). This keeps the UI consistent across both entry paths.\n\nIf (c), update the docstring; if (a) or (b), update call sites.\n\n### Tests\n\ngui/src/__tests__/viewStateStore.test.ts — add a test that calls setActiveView with a non-existent id and asserts the chosen semantics (returned false / warning emitted / fell back to auto:default).\n\n### memory_hints\n- search: \"setActiveView viewStateStore\"\n- search: \"activeViewId reconciliation\"",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T06:57:29.625Z"
+      },
+      {
+        "id": "1961",
+        "title": "Tighten should_panic substring in helper_flags_cascade_at_warning_severity",
+        "description": "Follow-up to task 1947 review. In crates/reify-compiler/tests/trait_conformance_type_error_tests.rs:154, the regression test `helper_flags_cascade_at_warning_severity` uses `#[should_panic(expected = \"type mismatch for trait\")]`. That substring appears in multiple places that could satisfy the predicate spuriously: (1) in check (b)'s assertion prose (\"unexpected 'type mismatch for trait' cascade\"), (2) in the `{:?}` dump of `module.diagnostics` that check (b) appends, and (3) potentially in the `errors: {:?}` dump of check (c) if the errors vector ever held such a message. If a regression caused check (a) or (c) to panic first with a diagnostics-quoting message, the should_panic would accidentally pass — obscuring which check actually caught the cascade.\n\nFix: change the expected substring to something distinctive to check (b)'s own prose, e.g. `expected = \"unexpected 'type mismatch for trait' cascade\"`. That phrase appears only in check (b)'s assertion message, so a regression in (a)/(c) ordering cannot satisfy the predicate.\n\nAcceptance:\n- should_panic expected substring is unique to check (b)'s prose.\n- `cargo test -p reify-compiler --test trait_conformance_type_error_tests` passes.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        },
+        "updatedAt": "2026-04-19T17:41:05.852Z"
+      },
+      {
+        "id": "1962",
+        "title": "Tighten should_panic substring in helper_flags_cascade_at_warning_severity",
+        "description": "Follow-up to task 1947 review. In crates/reify-compiler/tests/trait_conformance_type_error_tests.rs:154, `#[should_panic(expected = \"type mismatch for trait\")]` uses a substring that appears in multiple places (check (b) prose, dumped `module.diagnostics`, potentially `errors: {:?}`), so a regression causing check (a) or (c) to panic first with diagnostics-quoting output could spuriously satisfy the predicate. Fix: change expected substring to something unique to check (b)'s own prose, e.g. `expected = \"unexpected 'type mismatch for trait' cascade\"`. Acceptance: expected substring is unique to check (b); `cargo test -p reify-compiler --test trait_conformance_type_error_tests` passes.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1963",
+        "title": "Wire \"Save views\" button into ViewSelector dropdown",
+        "description": "Add the \"Save views\" action into the ViewSelector dropdown (next to \"Manage views...\") that invokes the sidecar-write primitive shipped by Task 1749. Blocked until Task 1746 actually ships ViewSelector.tsx / ViewManageModal.tsx.",
+        "details": "Task 1749 shipped the persistence primitives (`gui/src/utils/sidecarPersistence.ts` + `read_view_sidecar`/`write_view_sidecar` Tauri commands) with a public API but could not wire the UI because `gui/src/panels/ViewSelector.tsx` was absent at the time. Once 1746's UI work lands for real, add a \"Save views\" button to the selector dropdown that calls the sidecar writer with the current `PersistentViewState`. Confirm visible user feedback (toast) on success/failure.\n\n### memory_hints\n- search: \"sidecarPersistence write_view_sidecar\"\n- search: \"ViewSelector dropdown Manage views\"",
+        "testStrategy": "",
+        "status": "cancelled",
+        "dependencies": [
+          "1746",
+          "1749"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:19:42.391Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Wire \"Save views\" button into ViewSelector dropdown"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1964",
+        "title": "constraint_def cleanup: demote format_shadow_warning to fn and drop redundant type-param guard",
+        "description": "Two small cleanups in crates/reify-compiler/src/lib.rs flagged during task 872 review: (1) format_shadow_warning is pub with a rationale (\"so tests can build the expected string without duplicating the format literal\") but no test actually calls it — the shadow-warning test uses substring matches. Demote to `fn` (crate-private) and drop the pub justification from the doc; if a test ever needs it, promote with `#[cfg(test)] pub(crate)`. (2) In compile_constraint_def, the param-type check has `resolve_type_expr_with_aliases(...).is_none() && ... && !type_param_names.contains(name.as_str())`. resolve_type_expr_with_aliases internally returns Some(Type::TypeParam(..)) when the name is a type param, so the explicit `!type_param_names.contains(...)` clause is dead — drop it.</description>\n<parameter name=\"details\">Locations: crates/reify-compiler/src/lib.rs lines ~60-73 (format_shadow_warning) and ~116-124 (param-type check).\n\nmemory_hints: search \"format_shadow_warning constraint def shadow\" for task 872 review context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:15:16.372Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1965",
+        "title": "Wire viewportStore camera state into view persistence round-trip",
+        "description": "Hook the viewportStore camera state into the `viewportCameras` field of the PersistentViewState that Task 1749 persists. Blocked until Task 1747 actually ships viewportStore.ts.",
+        "details": "Task 1749 persists `viewportCameras: Record<string, CameraState>` round-trip but with no consumer — the field is inert until a viewportStore exists to publish/consume camera state. Once 1747 lands viewportStore.ts, wire:\n  - load-path: on file open, after sidecar/localStorage load, call `viewportStore.restoreCameras(persistedState.viewportCameras)`\n  - save-path: when viewportStore publishes a camera change, echo it into the view-persistence snapshot so the debounced saver picks it up\n\n### memory_hints\n- search: \"viewportStore camera state\"\n- search: \"viewPersistence debounced save\"",
+        "testStrategy": "",
+        "status": "cancelled",
+        "dependencies": [
+          "1747",
+          "1749"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T08:01:23.646Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Wire viewportStore camera state into view persistence round-trip"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1966",
+        "title": "Broaden or reword constraint-def param \"unknown type\" diagnostic to avoid false positives on struct/entity/trait names",
+        "description": "The new \"unknown type\" diagnostic in compile_constraint_def (crates/reify-compiler/src/lib.rs ~113-132) only whitelists builtins (via resolve_type_expr_with_aliases), type parameters, aliases, and enums. It does NOT recognize structure/entity/trait names in scope. If a user writes `constraint def Foo { param s: MyStructure ... }`, they now get an error at def-compile time even though previously the raw ConstraintDef was just cloned into the registry and no such check ran.\n\nOptions: (a) broaden the whitelist to also accept structure/entity/trait names in scope; (b) keep the current strictness but reword the error to explicitly list acceptable categories (\"expected a builtin scalar, type param, alias, or enum\") so users see the restriction isn't arbitrary. Pick one and add a regression test.",
+        "details": "Analogue precedent: compile_function has the same blind spot. If (a) is chosen, consider whether compile_function should be updated in parallel.\n\nmemory_hints: search \"constraint def unknown type param diagnostic\" for task 872 review context; search \"compile_function unknown type\" for the analogue.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:18:31.977Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1967",
+        "title": "Wire view persistence load-on-open and debounced-save into App.tsx orchestration",
+        "description": "Connect Task 1749's persistence primitives to the app reactive graph: load sidecar (priority) or localStorage on file open before auto view generation; run the 500ms debounced saver after any viewStateStore change. Requires 1746/1747 UI producers to be real before it's useful end-to-end.",
+        "details": "Task 1749 ships `viewPersistence.ts` (localStorage + debounced saver), `sidecarPersistence.ts` (priority loader), `fuzzyPathMatcher.ts`, and `viewReconciliation.ts`. The orchestration glue — load on file open, re-evaluate entity tree through `viewReconciliation.partition()`, subscribe debounced saver to viewStateStore — lives at the App.tsx layer and was deferred because the UI producers (1746/1747) were not actually present on the base branch.\n\n### Steps\n1. On file open (after entity tree is built), call the priority loader; if present, feed into viewStateStore.hydrate(persistedState).\n2. Before auto view generation, gate on whether hydration occurred; if yes, skip fresh defaults and instead reconcile against the new entity tree.\n3. Subscribe the debounced localStorage saver to viewStateStore changes.\n4. On entity tree rebuild, call viewReconciliation to partition kept / new / missing, moving missing-path explicit entries into staleExplicit.\n5. Run fuzzy recovery and surface non-blocking notification for rename matches.\n\n### memory_hints\n- search: \"App.tsx file open entity tree\"\n- search: \"viewStateStore subscribe\"\n- search: \"viewPersistence priority loader\"",
+        "testStrategy": "",
+        "status": "cancelled",
+        "dependencies": [
+          "1746",
+          "1747",
+          "1749"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T08:01:24.356Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Wire view persistence load-on-open and debounced-save into App.tsx orchestration"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1968",
+        "title": "Fix Lambda-body test fixture and deduplicate compound-variant coverage in type_error_propagation_tests",
+        "description": "Two review follow-ups from task 1920's new find_node tests (crates/reify-compiler/tests/type_error_propagation_tests.rs).\n\n(S1) Lambda body fixture does not test what it claims. At line ~451, `CompiledExpr::lambda(vec![], vec![], error_leaf(), vec![], Type::Error)` gives the outer Lambda node itself `result_type: Type::Error`. The `find_node` function applies `pred(expr)` to the outer node *before* entering its `match`, so this test passes whether the Lambda arm recurses into `body` or not — defeating the table's purpose of asserting each arm visits the correct children. Fix: change the last argument to `Type::Bool` so only the body carries `Type::Error`. Every other row in the table correctly gives the outer node a non-Error type (SetLiteral uses Type::Set, MapLiteral uses Type::Map, Quantifier uses Bool, etc.) — Lambda is the sole hole.\n\n(S2) Duplication between `find_node_traverses_previously_unhandled_kinds` (lines 332-384) and `find_node_compound_variant_coverage` (lines 386-509). The smoke test covers ListLiteral, OptionSome, and Quantifier(collection); the table-driven test already covers every compound variant (and can trivially add those three rows). Two tests asserting substantially the same invariant doubles maintenance when variants change. Fix: either fold ListLiteral / OptionSome / Quantifier-collection rows into the table and delete the smoke test, or drop those rows from the table and keep the smoke test. One source of truth.\n\nBoth fixes are localized to the one test file and require no production code changes.\n\nReview followup from task 1920; suggestions S1 and S2 from reviewer_comprehensive.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:16:05.765Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1969",
+        "title": "Refactor make_poison_literal to take Diagnostic and push internally (esc-1921-36 S1)",
+        "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed `Diagnostic` and push it internally, removing the `let n = diagnostics.len()` book-keeping at every call site (~25 sites). Enforces the \"push paired with poison\" invariant by construction rather than discipline. Alternative: a `#[must_use]` `PoisonBuilder` wrapper. Apply equivalently to `make_poison_type` (added in task 1921 S3). Source: review suggestion S1 in esc-1921-36 (reviewer_comprehensive, api_ergonomics).",
+        "details": "Files: crates/reify-compiler/src/expr.rs. Risk: large mechanical refactor across ~25 call sites; ensure all expr_error_sentinel_tests + type_error_propagation_tests still pass. memory_hints: search \"task-1921 poison policy\"; entity \"make_poison_literal\".",
+        "testStrategy": "",
+        "status": "deferred",
+        "dependencies": [
+          "1921"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:17:56.122Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Refactor make_poison_literal to take Diagnostic and push internally (esc-1921-36 S1)"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1970",
+        "title": "Wire view persistence follow-ups: Save-views button, viewport camera, App.tsx orchestration",
+        "description": "Umbrella follow-up for Task 1749's deferred wiring. 1749 ships the persistence primitives (viewPersistence, sidecarPersistence, fuzzyPathMatcher, viewReconciliation + Tauri read/write_view_sidecar) but three integration hooks were deferred because upstream UI/viewport code (1746/1747) is not actually present on the base branch despite being marked done.",
+        "details": "Three sub-wirings, each blocked on real landing of 1746/1747:\n\n1. **Save-views button** — add into ViewSelector dropdown (next to \"Manage views...\"), calls write_view_sidecar with current PersistentViewState. Blocked on 1746's ViewSelector.tsx being real.\n\n2. **Viewport camera round-trip** — on load, feed PersistentViewState.viewportCameras into viewportStore.restoreCameras; on viewportStore camera change, echo into the persistence snapshot so the debounced saver picks it up. Blocked on 1747's viewportStore.ts being real.\n\n3. **App.tsx orchestration** — on file open, call the priority loader (sidecar > localStorage) before auto view generation; feed into viewStateStore.hydrate; subscribe debounced saver to viewStateStore; on entity tree rebuild, run viewReconciliation.partition() and fuzzy recovery.\n\nSee memory observation at esc-1749-22 for the full 1746/1747 gap context.\n\n### memory_hints\n- search: \"sidecarPersistence write_view_sidecar\"\n- search: \"viewportStore camera state\"\n- search: \"App.tsx file open entity tree\"",
+        "testStrategy": "",
+        "status": "cancelled",
+        "dependencies": [
+          "1746",
+          "1747",
+          "1749"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T08:01:24.756Z"
+      },
+      {
+        "id": "1971",
+        "title": "Harden cross-module compile tests: create stdlib subdir so resolver tolerance is not load-bearing",
+        "description": "Several cross-module tests in crates/reify-compiler/tests/constraint_def_compile_tests.rs (cross_module_constraint_def_import ~499 and cross_module_constraint_def_name_collision_emits_shadow_warning ~615) call `ModuleResolver::new(&dir, dir.join(\"stdlib\"))` without creating the stdlib subdirectory — the tests rely on the resolver silently tolerating a missing stdlib path. If the resolver ever becomes strict about stdlib existence, all such tests break together. Add `fs::create_dir_all(dir.join(\"stdlib\")).unwrap();` in each affected test (or factor into a shared fixtures helper — see task 877's tempfile helper extraction idea).",
+        "details": "memory_hints: search \"cross-module constraint def test tempfile stdlib\" for context; look for other tests using ModuleResolver::new with a non-existent stdlib path.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:54.183Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1972",
+        "title": "Add public constructors for UserFunctionCall and Match CompiledExprKind variants",
+        "description": "Review follow-up from task 1920; suggestion S3 from reviewer_comprehensive (non-blocking).\n\nContext: task 1920's new `find_node_compound_variant_coverage` test in crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 400-419) has in-test raw struct-literal helpers `make_user_fn_call` and `make_match` because no public constructor exists for `CompiledExprKind::UserFunctionCall` or `CompiledExprKind::Match`. The other 10+ variants in the table use `CompiledExpr::list_literal`, `set_literal`, `map_literal`, `lambda`, `quantifier`, `range_constructor`, `ad_hoc_selector`, `option_some`, `literal`.\n\nThe ad-hoc helpers fabricate content-hash bytes (`ContentHash::of(&[0xf0])`, `0xf1`) which risks drifting from the real per-variant tag bytes used by the production constructors (7/8/9/10/12/13/14/15/16/18/19). Today `0xf0`/`0xf1` don't collide, but the risk grows as variants are added.\n\nFix: add `CompiledExpr::user_function_call(...)` and `CompiledExpr::match_expr(...)` constructors in `crates/reify-types/src/expr.rs` following the pattern of the existing per-variant constructors (with next-available tag bytes). Then update the test to use them and delete the ad-hoc helpers.\n\nNon-blocking — current in-test helpers work — but removes a small correctness hazard and matches the convention already established for other variants.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:55.321Z",
+        "metadata": {
+          "files": [
+            "crates/reify-types/src/expr.rs",
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1973",
+        "title": "Move get_let_expr / get_let_expr_in / assert_no_type_cascade to reify_test_support (esc-1921-36 S2)",
+        "description": "Move the test introspection helpers `get_let_expr` / `get_let_expr_in` (and likely `assert_no_type_cascade`) from crates/reify-compiler/tests/expr_error_sentinel_tests.rs and crates/reify-compiler/tests/type_error_propagation_tests.rs into the existing `reify-test-support` crate (likely `helpers.rs`). Both integration-test binaries currently duplicate ~35 lines with a TODO acknowledging the duplication. Source: review suggestion S2 in esc-1921-36 (reviewer_comprehensive, code_duplication).",
+        "details": "Files: crates/reify-test-support/src/helpers.rs (or new helper module), crates/reify-compiler/tests/expr_error_sentinel_tests.rs, crates/reify-compiler/tests/type_error_propagation_tests.rs. Risk: low; mechanical move + import update. Run `cargo test -p reify-compiler` to verify.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1921"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:46:27.898Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Move get_let_expr / get_let_expr_in / assert_no_type_cascade to reify_test_support (esc-1921-36 S2)"
+            ]
+          },
+          "files": [
+            "crates/reify-test-support/src/helpers.rs",
+            "crates/reify-compiler/tests/expr_error_sentinel_tests.rs",
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1974",
+        "title": "Fix Lambda-body test fixture and deduplicate compound-variant coverage in type_error_propagation_tests",
+        "description": "Two review follow-ups from task 1920's new find_node tests (crates/reify-compiler/tests/type_error_propagation_tests.rs).\n\n(S1) Lambda body fixture does not test what it claims. At line ~451, `CompiledExpr::lambda(vec![], vec![], error_leaf(), vec![], Type::Error)` gives the outer Lambda node itself `result_type: Type::Error`. The `find_node` function applies `pred(expr)` to the outer node before entering its match, so this test passes whether the Lambda arm recurses into `body` or not. Fix: change the last argument to `Type::Bool` so only the body carries `Type::Error`.\n\n(S2) Duplication between `find_node_traverses_previously_unhandled_kinds` (lines 332-384) and `find_node_compound_variant_coverage` (lines 386-509). The smoke test covers ListLiteral, OptionSome, and Quantifier(collection); the table-driven test already covers every compound variant. Fix: either fold those rows into the table and delete the smoke test, or drop them from the table and keep the smoke test. One source of truth.\n\nReview followup from task 1920; suggestions S1 and S2 from reviewer_comprehensive.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:46.698Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1975",
+        "title": "Broaden or reword constraint-def param \"unknown type\" diagnostic to avoid false positives on struct/entity/trait names",
+        "description": "The new \"unknown type\" diagnostic in compile_constraint_def (crates/reify-compiler/src/lib.rs ~113-132) only whitelists builtins (via resolve_type_expr_with_aliases), type parameters, aliases, and enums. It does NOT recognize structure/entity/trait names in scope. If a user writes `constraint def Foo { param s: MyStructure ... }`, they now get an error at def-compile time even though previously the raw ConstraintDef was cloned into the registry with no such check.\n\nOptions: (a) broaden the whitelist to also accept structure/entity/trait names in scope; (b) keep current strictness but reword the error to list acceptable categories (\"expected a builtin scalar, type param, alias, or enum\") so users see the restriction isn't arbitrary. Pick one and add a regression test. compile_function has the same blind spot — consider updating it in parallel if (a) is chosen.\n\nmemory_hints: search \"constraint def unknown type param diagnostic\" for task 872 review context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:46.791Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/functions.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1976",
+        "title": "conformance.rs: tighten pass2_skipped Let-advertisement guard + add annotated-Let coverage",
+        "description": "Three coupled improvements to the Option B fix landed in task 1951 (`crates/reify-compiler/src/conformance.rs` ~344-351 and the in-crate unit test ~932-1115).\n\n1. **Over-broad guard (robustness)** — conformance.rs:344-351. The current guard `if pass2_skipped.contains(name) { return None; }` fires on the WHOLE `DefaultKind::Let` arm regardless of `cell_type`. If two traits both provide a Let default for the same name — one annotated (Pass 1 registers it as a real cell) and one unannotated (Pass 2 records the name in `pass2_skipped`) — the guard drops BOTH from `available_defaults`. Meanwhile the injection loop at ~520-527 still emits a cell for the annotated Let, so the advertisement map is asymmetric with injection in the OPPOSITE direction the comment claims. A future `RequirementKind::Let` lookup against that name would emit a bogus \"missing required member\" instead of matching the legitimately injected annotated Let. Latent (RequirementKind::Let is not parser-reachable today, same reason esc-1951-6 and the unit test had to hand-build one), but a regression waiting for the parser extension.\n\n   Fix: tighten to `if cell_type.is_none() && pass2_skipped.contains(name) { return None; }`. That preserves Option B for the unannotated skipped Let while keeping any sibling annotated-Let advertisement intact, matching what the injection loop actually does. Update the rationale comment at ~324-334 to reflect the narrower scope.\n\n2. **Missing annotated-Let coverage (test_coverage)** — conformance.rs:932-1115 unit test. The current test covers the pass2_skipped-triggered-by-Param case but not pass2_skipped-triggered-by-annotated-Let. That latter case (Trait A: `let x : Length = 1mm`, Trait B: `let x = 5.0`) is exactly where the over-broad guard above would silently drop a legitimate annotated-Let advertisement. Add a second sub-case (or sibling test) where Pass 1 registers an annotated Let, Pass 2 records pass2_skipped from an unannotated Let with the same name, and a hand-built `RequirementKind::Let` requirement of the matching type is satisfied (no \"missing required member\" diagnostic emitted).\n\n3. **Single-letter substring match in test (test_quality)** — conformance.rs:1095-1105. The filter `d.message.contains('x')` matches incidental `x` letters in diagnostic prose (\"expr\", \"exists\", \"expect\", \"syntax\", \"mismatch\", etc.). Tighten to a delimited match — diagnostics quote member names as `'{}'`, so use `d.message.contains(\"'x'\")` or `d.message.contains(\"member 'x'\")`. Apply on both the phantom-diagnostic filter and the missing-member filter.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestions 1 + 3 + 4). Distinct from task 1952 (Pass 1 ↔ Pass 2 cell-injection symmetry — that's about the injection loop; this is about the advertisement builder) and from task 1914 #3 (shared advertised-type helper — the helper extraction would touch the same region; coordinate sequencing if both land).\n\nMemory hints: search \"task 1951 pass2_skipped phantom Let advertisement Option B\"; entities: DefaultKind, AvailableDefaultKind, RequirementKind.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:46.884Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
+      },
+      {
+        "id": "1977",
+        "title": "Refactor make_poison_literal to take Diagnostic and push internally (esc-1921-36 S1)",
+        "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed Diagnostic and push internally, removing pre_push_len bookkeeping at ~25 call sites. Apply equivalently to make_poison_type. Source: review suggestion S1 in esc-1921-36 (api_ergonomics).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:46.988Z"
+      },
+      {
+        "id": "1978",
+        "title": "Fix Lambda-body fixture and dedupe find_node coverage tests (task 1920 followup)",
+        "description": "S1: Lambda-body row in find_node_compound_variant_coverage uses Type::Error as the outer lambda's result_type so the test passes even if the Lambda match arm is broken. Change last arg to Type::Bool. S2: find_node_traverses_previously_unhandled_kinds and find_node_compound_variant_coverage overlap on ListLiteral/OptionSome/Quantifier — consolidate into one source of truth. File: crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 330-509). Review followup from task 1920, suggestions S1+S2.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T17:40:47.101Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1979",
+        "title": "Delete tautological phantom_let_advertisement_contract_for_future_parser_extension test",
+        "description": "Delete the `phantom_let_advertisement_contract_for_future_parser_extension` integration test in `crates/reify-compiler/tests/trait_merge_tests.rs` (~1404-1522, ~120 lines).\n\nThe test is explicitly self-documented as non-distinguishing: \"all three assertions pass unconditionally today\" and \"cannot distinguish the patched binary from the unpatched one\". The behavioral assertions are tautologies against the current code — it provides zero regression coverage for the Option B fix landed in task 1951 (the in-crate unit test `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name` in conformance.rs is what actually gates the behavior).\n\nAssertion 3 in particular is a pure wording pin on a diagnostic that is never emitted in the reachable universe, so it will continue to pass even if the Option B guard is deleted. Meanwhile the test locks in source-level details (trait/member/type names, compile-cleanly expectations) that can break for unrelated reasons.\n\nAction:\n- Delete the test function (and any test-only imports it solely uses).\n- Leave a short breadcrumb comment in `conformance.rs` near the pass2_skipped guard pointing to the in-crate unit test, so a future contributor extending the parser to make `RequirementKind::Let` reachable knows where the behavioral coverage lives.\n- When `RequirementKind::Let` becomes parser-reachable, write the regression test then in the reachable form (likely follow-up to esc-1951-6 / task 1951's design_concern escalation).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestion 2).\n\nMemory hints: search \"task 1951 forward-compat placeholder phantom Let advertisement test\"; the test was added in commit 7351ae1c0 (worktree 1951 branch).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/trait_merge_tests.rs",
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests",
+            "crates/reify-compiler/src"
+          ]
+        }
+      },
+      {
+        "id": "1980",
+        "title": "Move test introspection helpers to reify_test_support (esc-1921-36 S2)",
+        "description": "Move get_let_expr / get_let_expr_in / assert_no_type_cascade from crates/reify-compiler/tests/expr_error_sentinel_tests.rs and type_error_propagation_tests.rs into the existing reify-test-support crate (likely helpers.rs) to deduplicate ~35 lines. Source: review suggestion S2 in esc-1921-36 (code_duplication).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/helpers.rs",
+            "crates/reify-compiler/tests/expr_error_sentinel_tests.rs",
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1981",
+        "title": "Fix Lambda-body fixture and dedupe find_node coverage tests (task 1920 followup)",
+        "description": "S1: Lambda-body row uses Type::Error as outer lambda result_type so test passes even if Lambda arm is broken; change last arg to Type::Bool. S2: find_node_traverses_previously_unhandled_kinds and find_node_compound_variant_coverage overlap on ListLiteral/OptionSome/Quantifier; consolidate. File: crates/reify-compiler/tests/type_error_propagation_tests.rs. From task 1920 review, S1+S2.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1982",
+        "title": "conformance.rs: tighten pass2_skipped Let-advertisement guard + add annotated-Let coverage",
+        "description": "Three coupled improvements to the Option B fix landed in task 1951 (`crates/reify-compiler/src/conformance.rs` ~344-351 and the in-crate unit test ~932-1115).\n\n1. **Over-broad guard (robustness)** — conformance.rs:344-351. The current guard `if pass2_skipped.contains(name) { return None; }` fires on the WHOLE `DefaultKind::Let` arm regardless of `cell_type`. If two traits both provide a Let default for the same name — one annotated (Pass 1 registers a real cell) and one unannotated (Pass 2 records the name in `pass2_skipped`) — the guard drops BOTH from `available_defaults`. Meanwhile the injection loop at ~520-527 still emits a cell for the annotated Let, so the advertisement map becomes asymmetric with injection in the OPPOSITE direction the comment claims. A future `RequirementKind::Let` lookup against that name would emit a bogus \"missing required member\" instead of matching the legitimately injected annotated Let. Latent (RequirementKind::Let is not parser-reachable today, same reason esc-1951-6 and the unit test had to hand-build one), but a regression waiting for the parser extension.\n\n   Fix: `if cell_type.is_none() && pass2_skipped.contains(name) { return None; }`. Update the rationale comment at ~324-334 to reflect the narrower scope.\n\n2. **Missing annotated-Let coverage (test_coverage)** — conformance.rs:932-1115 unit test currently only covers pass2_skipped-triggered-by-Param. Add a sub-case (or sibling test) where Pass 1 registers an annotated Let, Pass 2 records pass2_skipped from an unannotated Let with the same name, and a hand-built `RequirementKind::Let` requirement of the matching type is satisfied (no \"missing required member\" diagnostic). This surfaces the bug from #1.\n\n3. **Single-letter substring match in test (test_quality)** — conformance.rs:1095-1105. `d.message.contains('x')` matches incidental `x` letters in diagnostic prose. Tighten to `d.message.contains(\"'x'\")` or `\"member 'x'\"` on both filters.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestions 1 + 3 + 4). Distinct from task 1952 (cell-injection symmetry) and task 1914 #3 (shared advertised-type helper extraction — coordinate sequencing).\n\nMemory hints: search \"task 1951 pass2_skipped phantom Let advertisement Option B\"; entities: DefaultKind, AvailableDefaultKind, RequirementKind.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
+      },
+      {
+        "id": "1983",
+        "title": "Harden cross-module constraint-def tests: create stdlib subdir so resolver tolerance isn't load-bearing",
+        "description": "Cross-module tests in crates/reify-compiler/tests/constraint_def_compile_tests.rs (cross_module_constraint_def_import ~499 and cross_module_constraint_def_name_collision_emits_shadow_warning ~615) call `ModuleResolver::new(&dir, dir.join(\"stdlib\"))` without creating the stdlib subdirectory — they rely on the resolver silently tolerating a missing stdlib path. If the resolver ever becomes strict, all such tests break silently together. Add `fs::create_dir_all(dir.join(\"stdlib\")).unwrap();` in each affected test (or factor into a shared fixtures helper — see task 877's tempfile helper extraction idea).\n\nmemory_hints: search \"cross-module constraint def test tempfile stdlib\" for context; grep for other tests using ModuleResolver::new with a non-existent stdlib path.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1984",
+        "title": "Fix Lambda-body fixture and dedupe find_node tests (1920 followup)",
+        "description": "Task 1920 followup S1+S2. File: crates/reify-compiler/tests/type_error_propagation_tests.rs. S1: Lambda-body row uses Type::Error as outer lambda result_type so test passes trivially; change to Type::Bool. S2: two tests overlap on ListLiteral/OptionSome/Quantifier; consolidate.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "1985",
+        "title": "conformance.rs: tighten pass2_skipped Let-advertisement guard + annotated-Let coverage + delimited substring",
+        "description": "Three coupled improvements to task 1951's Option B fix in `crates/reify-compiler/src/conformance.rs`.\n\n1. Over-broad guard (robustness, line ~344-351): The guard `if pass2_skipped.contains(name) { return None; }` fires on the WHOLE `DefaultKind::Let` arm regardless of `cell_type`. If two traits both provide a Let default for the same name (one annotated, one unannotated), it drops BOTH from `available_defaults` while the injection loop still emits the annotated cell — asymmetric in the OPPOSITE direction the comment claims. Fix: `if cell_type.is_none() && pass2_skipped.contains(name) { return None; }`. Update rationale comment ~324-334. Latent today (RequirementKind::Let not parser-reachable) but a regression waiting for the parser extension.\n\n2. Missing annotated-Let test coverage (line ~932-1115 unit test): Add a sub-case where Pass 1 registers an annotated Let, Pass 2 records pass2_skipped from an unannotated Let with the same name, and a hand-built `RequirementKind::Let` requirement is satisfied (no missing-member diagnostic). Surfaces the bug from #1.\n\n3. Single-letter substring (test_quality, line ~1095-1105): `d.message.contains('x')` matches incidental letters in diagnostic prose. Tighten to `contains(\"'x'\")` or `contains(\"member 'x'\")` on both filters.\n\nVerify: `cargo test -p reify-compiler`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestions 1+3+4). Distinct from task 1952 (cell-injection symmetry) and task 1914 #3 (shared advertised-type helper).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
+      },
+      {
+        "id": "1986",
+        "title": "conformance: tighten pass2_skipped Let guard + annotated-Let test + delimited substring",
+        "description": "Three improvements to task 1951 fix in crates/reify-compiler/src/conformance.rs.\n\n(1) Tighten guard at ~344-351 to `if cell_type.is_none() && pass2_skipped.contains(name)` so legitimate annotated-Let advertisements are not dropped when an unannotated sibling lands in pass2_skipped. Latent (RequirementKind::Let unreachable from parser today) but symmetric with the injection loop. Update comment ~324-334.\n\n(2) Add unit-test sub-case at ~932-1115 for pass2_skipped triggered by annotated-Let (Trait A: `let x : Length = 1mm`, Trait B: `let x = 5.0`). Hand-build RequirementKind::Let; assert no missing-member diagnostic. Surfaces #1.\n\n(3) Tighten test filters at ~1095-1105: replace `.contains('x')` with `.contains(\"'x'\")` or `.contains(\"member 'x'\")` on both phantom and missing-member filters.\n\nOrigin: esc-1951-20 suggestions 1+3+4 from reviewer_comprehensive. Distinct from task 1952 (injection symmetry) and 1914 (shared helper).\n\nVerify: `cargo test -p reify-compiler`; clippy; fmt.",
+        "details": "",
+        "testStrategy": "",
+        "status": "cancelled",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        },
+        "updatedAt": "2026-04-19T17:50:12.038Z"
+      },
+      {
+        "id": "1987",
+        "title": "Add gui/dist/ to .gitignore and remove committed build artifacts",
+        "description": "Reviewer flagged that gui/dist/ bundle artifacts (content-hashed index-*.js/css/html) are committed to the repo. Every rebuild produces new hashed filenames, so stale cruft accumulates, history bloats, and diffs become unreviewable. gui/dist/ is not in .gitignore.",
+        "details": "Confirmed: `git ls-files gui/dist/` lists 4 tracked files (index-B2FX6bgf.css, index-BzOqUXNy.js, index-EEPNKkzg.js, index.html). .gitignore already ignores gui/sidecar/dist/ but not gui/dist/.\n\nSteps:\n1. Add `gui/dist/` to .gitignore (alongside existing gui/sidecar/dist/ entry).\n2. `git rm -r --cached gui/dist/` to untrack the 4 files.\n3. Verify Tauri packaging does not require committed builds; if it does, pin to a single non-hashed output path or use git-lfs — do not track content-hashed bundles.\n\nSource: reviewer_comprehensive on task 1768 review.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            ".gitignore"
+          ],
+          "modules": [
+            "gui/dist"
+          ]
+        },
+        "updatedAt": "2026-04-19T17:41:06.898Z"
+      },
+      {
+        "id": "1988",
+        "title": "conformance: tighten pass2_skipped Let advertisement guard (esc-1951-20 s1+s3+s4)",
+        "description": "Tighten guard at conformance.rs:344-351 to `cell_type.is_none() && pass2_skipped.contains(name)` so annotated-Let advertisements aren't dropped. Add unit-test sub-case for pass2_skipped triggered by annotated-Let. Replace `.contains('x')` with `.contains(\"'x'\")` in test filters at ~1095-1105.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
+      },
+      {
+        "id": "1989",
+        "title": "Normalize subtask IDs to strings in tasks.json writer/interceptor",
+        "description": "Reviewer flagged that a recent change converted 10 subtask `id` fields from numeric to string, making tasks.json internally consistent (1918 string-id occurrences, 0 remaining bare numerics). But no schema/serializer guard was added to prevent the mixed-type state from recurring the next time Taskmaster or a hand edit writes a subtask.",
+        "details": "Root cause not addressed: 5 parents acquired numeric subtask IDs at some point, and the current fix is a one-shot data cleanup.\n\nSteps:\n1. Locate the Taskmaster interceptor / tasks.json writer (likely in fused-memory or a reify hook).\n2. Add a normalization step that coerces subtask `id` to string on write.\n3. Alternatively, if a schema file (JSON schema) exists, tighten subtask.id type to `string` and add a CI check that validates tasks.json.\n4. Add a regression test that writes a subtask with a numeric-style id and asserts the serialized form is a string.\n\nmemory_hints: search \"tasks.json Taskmaster interceptor subtask id writer\", search \"tasks.json post-commit normalizer hook\".\n\nSource: reviewer_comprehensive on task 1768 review.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "hooks/post-commit"
+          ],
+          "modules": [
+            "hooks"
+          ]
+        },
+        "updatedAt": "2026-04-19T17:41:10.655Z"
+      },
+      {
+        "id": "1990",
+        "title": "Delete tautological phantom_let_advertisement_contract_for_future_parser_extension test (esc-1951-20 s2)",
+        "description": "Delete the `phantom_let_advertisement_contract_for_future_parser_extension` integration test in `crates/reify-compiler/tests/trait_merge_tests.rs` (~1404-1522, ~120 lines).\n\nThe test is self-documented as non-distinguishing: \"all three assertions pass unconditionally today\" and \"cannot distinguish the patched binary from the unpatched one\". Behavioral assertions are tautologies against the current code — zero regression coverage for the Option B fix landed in task 1951. The in-crate unit test `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name` in conformance.rs is what gates the behavior.\n\nAssertion 3 is a pure wording pin on a diagnostic never emitted in the reachable universe, so it will continue to pass even if the Option B guard is deleted. Meanwhile the test locks in source-level details (trait/member/type names, compile-cleanly expectations) that can break for unrelated reasons.\n\nAction:\n- Delete the test function and any test-only imports it solely uses.\n- Leave a short breadcrumb comment in conformance.rs near the pass2_skipped guard pointing at the in-crate unit test.\n- When `RequirementKind::Let` becomes parser-reachable (see esc-1951-6 / task 1951's design_concern), write the regression test then in the reachable form.\n\nVerify: `cargo test -p reify-compiler`; clippy; fmt.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestion 2). Test added in commit 7351ae1c0 on the task/1951 branch.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/trait_merge_tests.rs",
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests",
+            "crates/reify-compiler/src"
+          ]
+        }
+      },
+      {
+        "id": "1991",
+        "title": "Add gui/dist/ to .gitignore and untrack committed build artifacts",
+        "description": "Reviewer flagged that gui/dist/ bundle artifacts (content-hashed index-*.js/css/html) are committed to the repo. gui/dist/ is not in .gitignore; rebuilds produce new hashed filenames so stale cruft accumulates and diffs become unreviewable.",
+        "details": "Confirmed: `git ls-files gui/dist/` lists 4 tracked files (index-B2FX6bgf.css, index-BzOqUXNy.js, index-EEPNKkzg.js, index.html). .gitignore already ignores gui/sidecar/dist/ but not gui/dist/.\n\nSteps:\n1. Add `gui/dist/` to .gitignore alongside the existing gui/sidecar/dist/ entry.\n2. `git rm -r --cached gui/dist/` to untrack the 4 files.\n3. Confirm Tauri packaging does not require committed builds; if it does, pin a single non-hashed output path or use git-lfs — do not track content-hashed bundles.\n\nSource: reviewer_comprehensive on task 1768 review.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            ".gitignore"
+          ],
+          "modules": [
+            "gui/dist"
+          ]
+        }
+      },
+      {
+        "id": "1992",
+        "title": "Serialize OCCT-touching tests with a file lock to prevent cross-worktree deadlocks",
+        "description": "OCCT's kernel is not thread-safe beyond STEP export (documented in memory: `feedback_occt_thread_safety.md`). When the orchestrator runs multiple tasks concurrently, each worktree runs its own `cargo test --workspace` — this produces multiple OCCT test processes executing in parallel, which has been observed to deadlock: three cargo test runs sat at 0% CPU for ~10 hours on 2026-04-19.",
+        "details": "## Observed incident — 2026-04-19\n\nThree concurrent `cargo test --workspace --release` invocations (one per active task's worktree) entered 0% CPU state and never progressed. Each worktree had its own `target/` dir, so this wasn't cargo's own build-lock contention. The most likely culprit is OCCT kernel thread-safety: cross-process OCCT calls through shared system resources (filesystem temp files, OCCT's own global state in the C++ library) can serialize or deadlock when multiple test processes hit them simultaneously.\n\n## What exists today\n\n- `feedback_occt_thread_safety.md`: \"OCCT kernel not thread-safe beyond STEP export, M4 needs dedicated kernel thread\"\n- The kernel is accessed via `crates/reify-kernel-occt/` with FFI bindings to the C++ library.\n\n## Proposed fix\n\n### Option A — file-lock gate around OCCT test binaries (cheap, recommended)\n\nWrap `cargo test` for OCCT-touching crates with a flock on a file in `/tmp`:\n\n```\nflock /tmp/reify-occt.lock cargo test -p reify-kernel-occt ...\n```\n\nThis serializes OCCT test execution across all concurrent worktrees without changing any test code. Add a helper (e.g. `scripts/cargo-test-occt-gated.sh`) and have the orchestrator's test_command route OCCT-touching tests through it.\n\n### Option B — `#[serial]` attribute via the `serial_test` crate (in-process only)\n\nInside a single cargo test process, marks OCCT tests as serial so Rust's test harness runs them one at a time. Does not address cross-process concurrency — multiple `cargo test` runs in parallel would still collide. Useful as defence-in-depth alongside Option A.\n\n### Option C — dedicated kernel thread (M4 long-term plan)\n\nFunnel all OCCT calls through a single dedicated thread per process. Does not address cross-process concurrency; multiple processes would each have their own kernel thread and still collide. Slower to implement but right for in-GUI concurrency.\n\n## Recommendation\n\nShip Option A first — it directly addresses the observed cross-worktree deadlock with a 5-line shell wrapper. Option C remains the right long-term answer for in-process concurrency. Option B is defensive.\n\n## Failing tests to write\n\n- Repro test: spawn two background `cargo test -p reify-kernel-occt` invocations (in two copies of the repo or two worktrees), verify both complete within a bounded time when the flock gate is active, deadlock-or-timeout when it isn't.\n- Assertion that the flock gate path covers all OCCT-touching crates (`reify-kernel-occt`, `reify-eval` when geometry tests run, `reify-compiler` geometry integration tests).\n\n## Module tags\n\ncrates/reify-kernel-occt, crates/reify-eval, crates/reify-compiler, scripts\n\n## Memory hints\n\n- search: \"OCCT thread safety\" \"kernel thread\"\n- entity: feedback_occt_thread_safety.md\n- Related: orchestrator verify timeouts (orchestrator.yaml, 2026-04-19) catch hangs but waste budget; this task prevents the hangs themselves.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-kernel-occt/tests/common/mod.rs",
+            "scripts/run-tests.sh"
+          ],
+          "modules": [
+            "crates/reify-kernel-occt",
+            "scripts"
+          ]
+        },
+        "updatedAt": "2026-04-19T17:40:49.634Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:43:53.236Z",
-      "taskCount": 1943,
-      "completedCount": 1672,
+      "lastModified": "2026-04-19T17:54:46.456Z",
+      "taskCount": 1985,
+      "completedCount": 1688,
       "tags": [
         "master"
       ]

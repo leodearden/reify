@@ -1045,6 +1045,26 @@ describe('Editor cleanup race condition (RC-05)', () => {
   });
 });
 
+describe('Editor open (Ctrl+O)', () => {
+  it('Ctrl+O keydown dispatched on editor contentDOM calls props.onOpen', () => {
+    const store = setupStore();
+    const onOpen = vi.fn();
+    render(() => <Editor store={store} onOpen={onOpen} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'o',
+      code: 'KeyO',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Editor theme integration', () => {
   it('mounts .cm-editor element successfully with reify theme', () => {
     const store = setupStore();

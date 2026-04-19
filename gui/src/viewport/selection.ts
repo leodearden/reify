@@ -16,19 +16,24 @@ import { THEME_TOKENS } from '../theme';
 // Patch Mesh prototype for BVH-accelerated raycasting
 Mesh.prototype.raycast = acceleratedRaycast;
 
+export interface SelectionModifiers {
+  ctrl: boolean;
+  shift: boolean;
+}
+
 export interface SelectionOptions {
   scene: Scene;
   camera: PerspectiveCamera;
   domElement: HTMLElement;
   getMeshes: () => Map<string, Mesh>;
   onHover: (path: string | null) => void;
-  onSelect: (path: string | null) => void;
+  onSelect: (path: string | null, modifiers: SelectionModifiers) => void;
   controls?: { target: { copy: (v: any) => void } };
 }
 
 export interface SelectionContext {
   setHovered: (path: string | null) => void;
-  setSelected: (path: string | null) => void;
+  setSelected: (paths: Iterable<string> | string | null) => void;
   refreshSelected: () => void;
   fitToView: () => void;
   flyToEntity: (entityPath: string) => void;
@@ -49,7 +54,6 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   (raycaster as any).firstHitOnly = true;
   const ndc = new Vector2();
   let previousHoveredPath: string | null = null;
-  let currentWireframe: LineSegments | null = null;
   let cachedRect: DOMRect | null = null;
 
   function getRect(): DOMRect {
@@ -83,6 +87,8 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   let pendingMoveEvent: MouseEvent | null = null;
   let hoverRafPending = false;
   let hoverRafId = 0;
+  let refreshRafPending = false;
+  let refreshRafId = 0;
 
   function processHover(): void {
     hoverRafPending = false;
@@ -115,7 +121,9 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     pointerDownPos = null;
     if (distance < CLICK_THRESHOLD) {
       const entityPath = raycast(me);
-      onSelect(entityPath);
+      // Read modifiers from the pointerup event (up-time state, since click-intent is confirmed on up)
+      const modifiers: SelectionModifiers = { ctrl: me.ctrlKey, shift: me.shiftKey };
+      onSelect(entityPath, modifiers);
     }
   }
 
@@ -153,37 +161,76 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     }
   }
 
-  function removeWireframe(): void {
-    if (currentWireframe) {
-      scene.remove(currentWireframe);
-      currentWireframe.geometry.dispose();
-      (currentWireframe.material as LineBasicMaterial).dispose();
-      currentWireframe = null;
+  /** Map from entity path → its wireframe LineSegments currently in the scene. */
+  const wireframes = new Map<string, LineSegments>();
+
+  function removeWireframeFor(path: string): void {
+    const wf = wireframes.get(path);
+    if (wf) {
+      scene.remove(wf);
+      wf.geometry.dispose();
+      (wf.material as LineBasicMaterial).dispose();
+      wireframes.delete(path);
     }
   }
 
-  let currentSelectedPath: string | null = null;
-
-  function setSelected(path: string | null): void {
-    // Remove existing wireframe
-    removeWireframe();
-    currentSelectedPath = path;
-
-    if (path === null) return;
-
+  function addWireframeFor(path: string): void {
     const mesh = getMeshes().get(path);
     if (!mesh) return;
-
-    // Create wireframe overlay
     const wireGeom = new EdgesGeometry(mesh.geometry);
     const wireMat = new LineBasicMaterial({ color: HIGHLIGHT_COLOR });
-    currentWireframe = new LineSegments(wireGeom, wireMat);
-    scene.add(currentWireframe);
+    const wf = new LineSegments(wireGeom, wireMat);
+    scene.add(wf);
+    wireframes.set(path, wf);
+  }
+
+  function setSelected(paths: Iterable<string> | string | null): void {
+    // Normalize input to a Set<string>
+    let targetSet: Set<string>;
+    if (paths === null) {
+      targetSet = new Set();
+    } else if (typeof paths === 'string') {
+      targetSet = new Set([paths]);
+    } else {
+      targetSet = new Set(paths);
+    }
+
+    // Remove wireframes for paths no longer in target
+    for (const path of Array.from(wireframes.keys())) {
+      if (!targetSet.has(path)) {
+        removeWireframeFor(path);
+      }
+    }
+
+    // Add wireframes for new paths
+    for (const path of targetSet) {
+      if (!wireframes.has(path)) {
+        addWireframeFor(path);
+      }
+    }
   }
 
   function refreshSelected(): void {
-    if (currentSelectedPath === null) return;
-    setSelected(currentSelectedPath);
+    if (wireframes.size === 0) return;
+    // Coalesce rapid calls (e.g. from meshManager sync ticks) into a single
+    // rebuild per animation frame so we don't churn GPU buffers on every tick
+    // when N entities are selected.
+    if (!refreshRafPending) {
+      refreshRafPending = true;
+      refreshRafId = requestAnimationFrame(() => {
+        refreshRafPending = false;
+        refreshRafId = 0;
+        if (isDisposed) return;
+        // Rebuild all active wireframes (e.g. after geometry update)
+        const paths = Array.from(wireframes.keys());
+        for (const path of paths) {
+          removeWireframeFor(path);
+        }
+        for (const path of paths) {
+          addWireframeFor(path);
+        }
+      });
+    }
   }
 
   function fitToView(): void {
@@ -257,11 +304,19 @@ export function createSelection(options: SelectionOptions): SelectionContext {
       hoverRafPending = false;
       hoverRafId = 0;
     }
+    if (refreshRafPending) {
+      cancelAnimationFrame(refreshRafId);
+      refreshRafPending = false;
+      refreshRafId = 0;
+    }
     domElement.removeEventListener('pointermove', handlePointerMove);
     domElement.removeEventListener('pointerdown', handlePointerDown);
     domElement.removeEventListener('pointerup', handlePointerUp);
     pointerDownPos = null;
-    removeWireframe();
+    // Remove all active wireframes
+    for (const path of Array.from(wireframes.keys())) {
+      removeWireframeFor(path);
+    }
   }
 
   return { setHovered, setSelected, refreshSelected, fitToView, flyToEntity, invalidateRect, dispose };

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRoot } from 'solid-js';
-import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import { useKeyboardShortcuts, ID_TO_CALLBACK } from '../hooks/useKeyboardShortcuts';
+import { SHORTCUTS, type ShortcutId } from '../shortcuts';
 
 describe('useKeyboardShortcuts', () => {
   let dispose: () => void;
@@ -46,6 +47,31 @@ describe('useKeyboardShortcuts', () => {
       new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, bubbles: true }),
     );
     expect(onExportDialog).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatching Ctrl+O when target is a contenteditable element does NOT call onOpen', () => {
+    // JSDOM does not fully implement `isContentEditable` for programmatically created
+    // contenteditable divs (contentEditable = 'true' does not flip isContentEditable
+    // in JSDOM's non-rendering context). Use Object.defineProperty to simulate what
+    // a real browser returns so this test exercises the hook's isContentEditable guard.
+    const onOpen = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onOpen });
+      return d;
+    });
+
+    const div = document.createElement('div');
+    div.contentEditable = 'true';
+    Object.defineProperty(div, 'isContentEditable', { get: () => true, configurable: true });
+    document.body.appendChild(div);
+    try {
+      div.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, bubbles: true }),
+      );
+      expect(onOpen).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(div);
+    }
   });
 
   it('dispatching Ctrl+O when target is an <input> does NOT call onOpen', () => {
@@ -253,6 +279,97 @@ describe('useKeyboardShortcuts', () => {
       expect(onSave).not.toHaveBeenCalled();
     } finally {
       document.body.removeChild(input);
+    }
+  });
+
+  it('dispatching Escape with onClearSelection provided invokes it', () => {
+    const onClearSelection = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onClearSelection });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape invokes onDismissReload first then onClearSelection in sequence', () => {
+    const callOrder: string[] = [];
+    const onDismissReload = vi.fn(() => callOrder.push('dismiss'));
+    const onClearSelection = vi.fn(() => callOrder.push('clear'));
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onDismissReload, onClearSelection });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(onDismissReload).toHaveBeenCalledTimes(1);
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual(['dismiss', 'clear']);
+  });
+
+  it('Escape in an input element does NOT invoke onClearSelection', () => {
+    const onClearSelection = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onClearSelection });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+      expect(onClearSelection).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('Escape in a textarea element does NOT invoke onClearSelection', () => {
+    const onClearSelection = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onClearSelection });
+      return d;
+    });
+
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    try {
+      textarea.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+      expect(onClearSelection).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  });
+});
+
+describe('ID_TO_CALLBACK wiring invariant', () => {
+  it('every shortcut with a bind — minus known no-callback IDs — has an ID_TO_CALLBACK entry', () => {
+    // Derive expected set directly from SHORTCUTS: every shortcut with a bind
+    // that is not disabled. This way the test self-updates when shortcuts gain
+    // or lose their `disabled` flag rather than requiring a parallel list.
+    // Shortcuts with no `bind` at all (e.g. fitToView) are excluded by the
+    // first predicate.
+    const expected = SHORTCUTS
+      .filter((s) => s.bind !== undefined && !s.disabled)
+      .map((s) => s.id)
+      .sort();
+    const actual = Object.keys(ID_TO_CALLBACK).sort();
+    expect(actual).toEqual(expected);
+  });
+
+  it('every ID_TO_CALLBACK key is a shortcut with a bind', () => {
+    for (const id of Object.keys(ID_TO_CALLBACK) as ShortcutId[]) {
+      const shortcut = SHORTCUTS.find((s) => s.id === id);
+      expect(shortcut?.bind, `shortcut "${id}" should have a bind field`).toBeDefined();
     }
   });
 });

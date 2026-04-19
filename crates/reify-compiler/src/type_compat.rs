@@ -330,9 +330,12 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 }
 
 #[cfg(test)]
-mod infer_binop_type_error_tests {
+mod tests {
     //! Anti-cascade guard tests (task-448): `Type::Error` operands must
     //! propagate `Type::Error`, not fall back to any op-specific result type.
+    //!
+    //! Renamed from `infer_binop_type_error_tests` per amendment-round-2 S5
+    //! to match the codebase-standard `mod tests` convention.
     use super::*;
 
     #[test]
@@ -358,5 +361,80 @@ mod infer_binop_type_error_tests {
             infer_binop_type(BinOp::Lt, &Type::Error, &Type::Int),
             Type::Error,
         );
+    }
+
+    /// Exhaustive BinOp coverage (amendment-round-2 S3): every variant of
+    /// `BinOp` must propagate `Type::Error` when either operand is poisoned.
+    /// This pins down the anti-cascade contract for the full enum, not just
+    /// the three representatives spot-checked above. Update this list (and
+    /// the inner match in `infer_binop_type`) together if a new BinOp arm
+    /// is added.
+    #[test]
+    fn every_binop_variant_propagates_error_from_either_operand() {
+        // Compile-time exhaustiveness guard: adding a new BinOp variant to
+        // the enum is a build error here until the `ops` list below is also
+        // updated. Keeps the test's enumeration honest as the enum grows.
+        #[allow(dead_code)]
+        fn _exhaustive_binop_check(op: BinOp) {
+            match op {
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::Pow
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or => {}
+            }
+        }
+        // (op, expected_non_error_result_for_(Real, Real))_label — the second
+        // tuple element is just a documentation aid for the reviewer; we
+        // never assert on it. We only assert that, with at least one operand
+        // poisoned, the result is Type::Error.
+        let ops: &[(BinOp, &str)] = &[
+            (BinOp::Add, "arithmetic: left.clone()"),
+            (BinOp::Sub, "arithmetic: left.clone()"),
+            (BinOp::Mul, "arithmetic: scalar/widening rules"),
+            (BinOp::Div, "arithmetic: scalar/widening rules"),
+            (BinOp::Mod, "arithmetic: left.clone()"),
+            (BinOp::Pow, "arithmetic: left.clone()"),
+            (BinOp::Eq, "comparison: Bool"),
+            (BinOp::Ne, "comparison: Bool"),
+            (BinOp::Lt, "comparison: Bool"),
+            (BinOp::Le, "comparison: Bool"),
+            (BinOp::Gt, "comparison: Bool"),
+            (BinOp::Ge, "comparison: Bool"),
+            (BinOp::And, "logical: Bool"),
+            (BinOp::Or, "logical: Bool"),
+        ];
+        for (op, label) in ops {
+            assert_eq!(
+                infer_binop_type(*op, &Type::Error, &Type::Real),
+                Type::Error,
+                "BinOp::{:?} ({}) failed to propagate Type::Error from LEFT operand",
+                op,
+                label,
+            );
+            assert_eq!(
+                infer_binop_type(*op, &Type::Real, &Type::Error),
+                Type::Error,
+                "BinOp::{:?} ({}) failed to propagate Type::Error from RIGHT operand",
+                op,
+                label,
+            );
+            assert_eq!(
+                infer_binop_type(*op, &Type::Error, &Type::Error),
+                Type::Error,
+                "BinOp::{:?} ({}) failed to propagate Type::Error when BOTH operands poisoned",
+                op,
+                label,
+            );
+        }
     }
 }

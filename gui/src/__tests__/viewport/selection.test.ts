@@ -498,7 +498,7 @@ describe('createSelection', () => {
         clientY: 300,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith('A');
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
     });
 
     it('calls onSelect with null on click miss', () => {
@@ -517,7 +517,7 @@ describe('createSelection', () => {
         clientY: 300,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith(null);
+      expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
     });
 
     it('uses raycaster with same NDC computation as hover', () => {
@@ -1087,7 +1087,7 @@ describe('createSelection', () => {
 
       // Click should raycast immediately without rAF
       expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
-      expect(onSelect).toHaveBeenCalledWith('A');
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
     });
 
     it('dispose cancels outstanding rAF', () => {
@@ -1143,7 +1143,7 @@ describe('createSelection', () => {
         clientY: 300,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith('A');
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
     });
 
     it('pointerdown + pointerup with >5px movement does NOT fire onSelect', () => {
@@ -1185,7 +1185,7 @@ describe('createSelection', () => {
         clientY: 303,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith('A');
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
     });
 
     it('onSelect receives null when pointerup raycast misses', () => {
@@ -1205,7 +1205,7 @@ describe('createSelection', () => {
         clientY: 300,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith(null);
+      expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
     });
 
     it('after dispose, pointerup does not fire onSelect', () => {
@@ -1305,6 +1305,192 @@ describe('createSelection', () => {
     });
   });
 
+  describe('multi-wireframe selection', () => {
+    it('setSelected([A,B]) creates two wireframes added to scene', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B']);
+
+      // Both wireframes should be added to scene
+      expect(mockSceneAdd).toHaveBeenCalledTimes(2);
+      // Each wireframe built from the corresponding mesh geometry
+      const addedGeometries = mockSceneAdd.mock.calls.map((c: any[]) => c[0].geometry.sourceGeometry);
+      expect(addedGeometries).toContain(meshA.geometry);
+      expect(addedGeometries).toContain(meshB.geometry);
+    });
+
+    it('setSelected([A]) after setSelected([A,B]) removes only B wireframe, preserves A', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B']);
+
+      // Capture the wireframe objects
+      const wireframeA = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshA.geometry,
+      )?.[0];
+      const wireframeB = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshB.geometry,
+      )?.[0];
+      expect(wireframeA).toBeDefined();
+      expect(wireframeB).toBeDefined();
+
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      // Shrink selection to just A
+      (selection.setSelected as any)(['A']);
+
+      // B wireframe removed and disposed
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeB);
+      expect(wireframeB.geometry.dispose).toHaveBeenCalled();
+      expect(wireframeB.material.dispose).toHaveBeenCalled();
+      // A wireframe NOT removed (still in scene)
+      expect(mockSceneRemove).not.toHaveBeenCalledWith(wireframeA);
+      // No new wireframe added (A already present)
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+
+    it('setSelected([]) removes all wireframes', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B']);
+      const wireframeA = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshA.geometry,
+      )?.[0];
+      const wireframeB = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshB.geometry,
+      )?.[0];
+
+      mockSceneRemove.mockClear();
+      (selection.setSelected as any)([]);
+
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeA);
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeB);
+      expect(wireframeA.geometry.dispose).toHaveBeenCalled();
+      expect(wireframeB.geometry.dispose).toHaveBeenCalled();
+    });
+
+    it('setSelected(null) removes all wireframes when multiple are active (backward compat)', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B']);
+      const wireframeA = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshA.geometry,
+      )?.[0];
+      const wireframeB = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshB.geometry,
+      )?.[0];
+
+      mockSceneRemove.mockClear();
+      selection.setSelected(null);
+
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeA);
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeB);
+    });
+
+    it('setSelected([A,B,C]) where C is unknown only creates wireframes for A and B', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B', 'Unknown']);
+
+      // Only A and B found in getMeshes, Unknown skipped
+      expect(mockSceneAdd).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('modifier key routing on click', () => {
+    it('plain click calls onSelect with path and { ctrl: false, shift: false }', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300 }));
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
+    });
+
+    it('Ctrl+click calls onSelect with { ctrl: true, shift: false }', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300, ctrlKey: true }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300, ctrlKey: true }));
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: true, shift: false });
+    });
+
+    it('Shift+click calls onSelect with { ctrl: false, shift: true }', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300, shiftKey: true }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300, shiftKey: true }));
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: true });
+    });
+
+    it('click miss calls onSelect with null and { ctrl: false, shift: false }', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300 }));
+
+      expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
+    });
+
+    it('modifier state is read from pointerup event (not pointerdown)', () => {
+      // A user could theoretically release Ctrl between pointerdown and pointerup;
+      // the implementation reads modifiers from the pointerup event.
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      // pointerdown with ctrl, pointerup without ctrl → should see ctrl: false
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300, ctrlKey: true }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300, ctrlKey: false }));
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
+    });
+  });
+
   describe('refreshSelected (V-08)', () => {
     it('exposes refreshSelected method', () => {
       const { selection } = setup();
@@ -1367,6 +1553,106 @@ describe('createSelection', () => {
       // New wireframe should reference the new geometry
       const wireframe2 = mockSceneAdd.mock.calls[0][0];
       expect(wireframe2.geometry.sourceGeometry).toBe(newGeom);
+    });
+  });
+
+  describe('refreshSelected rAF coalescing', () => {
+    function setupWithAsyncRaf(meshMap?: Map<string, any>) {
+      // Install async rAF mock before creating selection
+      globalThis.requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
+        rafCallbacks.push(cb);
+        return rafIdCounter++;
+      }) as unknown as typeof requestAnimationFrame;
+      globalThis.cancelAnimationFrame = vi.fn((_id: number) => {}) as unknown as typeof cancelAnimationFrame;
+
+      const result = setup(meshMap);
+      return result;
+    }
+
+    afterEach(() => {
+      // Restore synchronous rAF/cAF for other test sections
+      globalThis.requestAnimationFrame = syncRAF;
+      globalThis.cancelAnimationFrame = syncCAF;
+    });
+
+    it('multiple rapid refreshSelected calls coalesce into one rebuild per frame', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setupWithAsyncRaf(meshMap);
+
+      selection.setSelected('A');
+
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      // Call refreshSelected three times in the same frame
+      selection.refreshSelected();
+      selection.refreshSelected();
+      selection.refreshSelected();
+
+      // No rebuild should have happened yet (rAF pending)
+      expect(mockSceneRemove).not.toHaveBeenCalled();
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+
+      // Only one rAF should have been scheduled (coalescing)
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(1);
+
+      // Fire the single rAF callback
+      rafCallbacks[0](performance.now());
+
+      // Exactly one rebuild: remove + re-add
+      expect(mockSceneRemove).toHaveBeenCalledTimes(1);
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+    });
+
+    it('dispose cancels outstanding refreshSelected rAF', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setupWithAsyncRaf(meshMap);
+
+      selection.setSelected('A');
+
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      selection.refreshSelected();
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(1);
+      const rafId = (globalThis.requestAnimationFrame as any).mock.results[0].value;
+
+      selection.dispose();
+
+      // cancelAnimationFrame must be called with the refresh rAF id
+      expect(globalThis.cancelAnimationFrame).toHaveBeenCalledWith(rafId);
+
+      // If someone were to fire the rAF callback after dispose, nothing should rebuild
+      // (isDisposed guard prevents work)
+      rafCallbacks[0]?.(performance.now());
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+
+    it('second refreshSelected call after rAF fires schedules a new rAF', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setupWithAsyncRaf(meshMap);
+
+      selection.setSelected('A');
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      // First refresh cycle
+      selection.refreshSelected();
+      rafCallbacks[0](performance.now()); // fire first rAF
+      expect(mockSceneRemove).toHaveBeenCalledTimes(1);
+
+      mockSceneRemove.mockClear();
+      mockSceneAdd.mockClear();
+      rafCallbacks = [];
+
+      // Second refresh cycle after the first completed
+      selection.refreshSelected();
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(2); // total
+      rafCallbacks[0](performance.now());
+      expect(mockSceneRemove).toHaveBeenCalledTimes(1);
     });
   });
 });

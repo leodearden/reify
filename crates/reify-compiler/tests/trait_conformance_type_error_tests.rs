@@ -15,8 +15,9 @@
 //! These tests assert:
 //!   (a) at least one `Severity::Error` diagnostic is present (invariant: wildcard
 //!       silence is always paired with a producer-site error),
-//!   (b) no diagnostic message contains `"type mismatch for trait"` (anti-cascade:
-//!       no redundant conformance-layer mismatch on top of a poisoned operand),
+//!   (b) no diagnostic message contains `"type mismatch for trait"` regardless of
+//!       severity (anti-cascade: no redundant conformance-layer mismatch on top of
+//!       a poisoned operand, even if the cascade were downgraded to Warning),
 //!   (c) at least one error message contains `"unknown member"` (root-cause pin:
 //!       the specific producer diagnostic from `expr.rs` is still present).
 //!
@@ -40,8 +41,55 @@
 //! no "type mismatch for trait let" cascade.  This scenario directly exercises
 //! the wildcard call-site that task-1936 targets.
 
-use reify_test_support::compile_source;
-use reify_types::Severity;
+use reify_test_support::{compile_source, errors_only};
+use reify_types::Diagnostic;
+
+// ── Shared assertion helper ───────────────────────────────────────────────────
+
+/// Asserts the three-part poisoned-conformance invariant on a compiled module:
+///
+/// (a) At least one `Severity::Error` diagnostic is present — wildcard silence
+///     is always paired with a root-cause producer error.
+/// (b) No diagnostic (at **any** severity) has a message containing
+///     `"type mismatch for trait"` — the anti-cascade invariant holds even if
+///     the conformance layer were to downgrade the mismatch to `Warning`.
+/// (c) At least one `Severity::Error` diagnostic contains `"unknown member"` —
+///     the specific root-cause producer diagnostic from `expr.rs` is present.
+fn assert_poisoned_conformance_invariant(module: &reify_compiler::CompiledModule) {
+    let errors = errors_only(module);
+
+    // (a) At least one Severity::Error must be present.
+    assert!(
+        !errors.is_empty(),
+        "Type::Error wildcard allowed conformance to go green but no Severity::Error \
+         was present — the root-cause 'unknown member' diagnostic from the producer \
+         site has been downgraded/removed; this breaks the anti-cascade safety promise \
+         of type_compat.rs:9–11,94–96",
+    );
+
+    // (b) No conformance-layer cascade mismatch on top of the poisoned operand
+    //     — checked across ALL severities so a Warning-severity downgrade is
+    //     also caught.
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait")),
+        "unexpected 'type mismatch for trait' cascade diagnostic (regardless of \
+         severity) — the Type::Error wildcard should suppress conformance-layer \
+         mismatches when a producer-site error is already present; \
+         all diagnostics: {:?}",
+        module.diagnostics,
+    );
+
+    // (c) The specific root-cause "unknown member" diagnostic must be present.
+    assert!(
+        errors.iter().any(|d| d.message.contains("unknown member")),
+        "expected at least one error containing 'unknown member' (the root-cause \
+         producer diagnostic from expr.rs); got: {:?}",
+        errors,
+    );
+}
 
 // ── Scenario A: structure's own poisoned annotated let ────────────────────────
 
@@ -64,39 +112,8 @@ structure def S : HasX {
     let x : Length = self.unsupported
 }
 "#;
-
     let module = compile_source(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    // (a) At least one Severity::Error must be present.
-    assert!(
-        !errors.is_empty(),
-        "Type::Error wildcard allowed conformance to go green but no Severity::Error \
-         was present — the root-cause 'unknown member' diagnostic from the producer \
-         site has been downgraded/removed; this breaks the anti-cascade safety promise \
-         of type_compat.rs:9–11,94–96",
-    );
-
-    // (b) No conformance-layer cascade mismatch on top of the poisoned operand.
-    assert!(
-        !errors.iter().any(|d| d.message.contains("type mismatch for trait")),
-        "unexpected 'type mismatch for trait' cascade diagnostic — the Type::Error \
-         wildcard should suppress conformance-layer mismatches when a producer-site \
-         error is already present; got: {:?}",
-        errors,
-    );
-
-    // (c) The specific root-cause "unknown member" diagnostic must be present.
-    assert!(
-        errors.iter().any(|d| d.message.contains("unknown member")),
-        "expected at least one error containing 'unknown member' (the root-cause \
-         producer diagnostic from expr.rs); got: {:?}",
-        errors,
-    );
+    assert_poisoned_conformance_invariant(&module);
 }
 
 // ── Scenario B: trait-provided default with poisoned expression ───────────────
@@ -121,37 +138,27 @@ trait HasX {
 }
 structure def S : HasX {}
 "#;
-
     let module = compile_source(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    assert_poisoned_conformance_invariant(&module);
+}
 
-    // (a) At least one Severity::Error must be present.
-    assert!(
-        !errors.is_empty(),
-        "Type::Error wildcard allowed conformance to go green but no Severity::Error \
-         was present — the root-cause 'unknown member' diagnostic from the producer \
-         site has been downgraded/removed; this breaks the anti-cascade safety promise \
-         of type_compat.rs:9–11,94–96",
-    );
+// ── Severity-robustness regression test ──────────────────────────────────────
 
-    // (b) No conformance-layer cascade mismatch on top of the poisoned operand.
-    assert!(
-        !errors.iter().any(|d| d.message.contains("type mismatch for trait")),
-        "unexpected 'type mismatch for trait' cascade diagnostic — the Type::Error \
-         wildcard should suppress conformance-layer mismatches when a producer-site \
-         error is already present; got: {:?}",
-        errors,
-    );
-
-    // (c) The specific root-cause "unknown member" diagnostic must be present.
-    assert!(
-        errors.iter().any(|d| d.message.contains("unknown member")),
-        "expected at least one error containing 'unknown member' (the root-cause \
-         producer diagnostic from expr.rs); got: {:?}",
-        errors,
-    );
+/// Robustness test: check (b) must catch a "type mismatch for trait" cascade
+/// even when emitted at `Severity::Warning` (not just `Severity::Error`).
+///
+/// If the helper only filtered `module.diagnostics` by `Severity::Error` before
+/// searching for the cascade message, a Warning-severity offender would be
+/// invisible and the test would silently pass — the invariant inverted.
+#[test]
+#[should_panic(expected = "type mismatch for trait")]
+fn helper_flags_cascade_at_warning_severity() {
+    // CompiledModule has many fields; cheapest way to obtain a valid instance
+    // is a trivial compile, then overwrite .diagnostics with synthetic entries.
+    let mut module = compile_source("structure def Dummy {}");
+    module.diagnostics = vec![
+        Diagnostic::error("unknown member 'unsupported' in scope S"),
+        Diagnostic::warning("type mismatch for trait let x: expected Length, got Error"),
+    ];
+    assert_poisoned_conformance_invariant(&module);
 }

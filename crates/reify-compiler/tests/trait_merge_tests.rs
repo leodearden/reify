@@ -929,6 +929,12 @@ structure def S : FirstParam + SecondParam {
 /// Note: comparison operators (>, <, etc.) have no type checking in the compiler
 /// (only Add/Sub do). The subtraction in `x - 1mm > 0mm` is what triggers the
 /// observable type error when x is overwritten from Length to Real.
+///
+/// Cell shape: exactly ONE Param cell for `x` (from TraitA).  The two-pass
+/// amendment (task 1907) means Pass 2 detects that the Param already claimed
+/// the scope slot and records TraitB's `let x` in `pass2_skipped`, so the
+/// injection loop skips the Let cell — preventing duplicate (entity, member)
+/// pairs for `x`.
 #[test]
 fn cross_kind_pre_registration_preserves_first_type() {
     let source = r#"
@@ -966,7 +972,10 @@ structure def S : TraitA + TraitB {
         template.constraints.len()
     );
 
-    // 2 'x' value cells: one Param (from TraitA), one Let (from TraitB).
+    // Exactly 1 'x' value cell: the Param from TraitA.  TraitB's `let x = 5.0`
+    // is suppressed by the two-pass amendment: Pass 2 finds the scope slot
+    // already occupied by TraitA's Param and records `x` in `pass2_skipped`,
+    // so the injection loop skips Let-cell emission for `x`.
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -974,22 +983,23 @@ structure def S : TraitA + TraitB {
         .collect();
     assert_eq!(
         x_cells.len(),
-        2,
-        "expected 2 'x' value cells (one Param from TraitA, one Let from TraitB), got {}",
+        1,
+        "expected 1 'x' value cell (Param from TraitA only; Let from TraitB \
+         suppressed by pass2_skipped), got {}",
         x_cells.len()
     );
-
-    let param_cells: Vec<_> = x_cells
-        .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Param)
-        .collect();
-    assert_eq!(param_cells.len(), 1, "expected exactly 1 Param 'x' cell");
-
-    let let_cells: Vec<_> = x_cells
-        .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Let)
-        .collect();
-    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell");
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single `x` cell must be Param (from TraitA)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the `x` Param cell must carry type Length"
+    );
 }
 
 /// Constraint default coexists with a param default for the same member name.
@@ -1070,29 +1080,33 @@ structure def S : HasParam + HasConstraint {
     );
 }
 
-/// Documents order-sensitivity of the pre-registration guard (known design limitation).
+/// Documents that the two-pass pre-register split resolves cross-kind
+/// order-sensitivity when one trait provides an annotated Param and the other
+/// provides an unannotated Let for the same name.
 ///
-/// The pre-registration loop uses first-registration-wins semantics: the first trait
-/// bound in the `structure def S : ... {}` declaration wins the scope type for a
-/// shared name. Reversing the bound order (`S : TraitB + TraitA` instead of
-/// `S : TraitA + TraitB`) changes which type gets registered.
-///
-/// In this scenario:
+/// Scenario (bound-list order intentionally reversed to exercise the old failure
+/// mode):
 /// - TraitA provides `param x : Length = 10mm` + `constraint x - 1mm > 0mm`
-/// - TraitB provides `let x = 5.0` (type Real)
+/// - TraitB provides `let x = 5.0` (unannotated, type Real)
 /// - Structure lists TraitB first: `S : TraitB + TraitA`
 ///
-/// With TraitB first, the pre-registration loop visits the Let default before the
-/// Param default. It registers x as Real. When TraitA's Param default is visited
-/// next, `scope.names.contains_key("x")` is already true, so it is skipped.
-/// The constraint `x - 1mm > 0mm` from TraitA then sees x as Real, and the
-/// subtraction `x - 1mm` (Real - Length) produces an 'incompatible types' error.
+/// Under the old single-pass loop, TraitB's unannotated Let was compiled inline
+/// (winning the scope registration for `x : Real`) before TraitA's annotated Param
+/// could be visited — the constraint `x - 1mm > 0mm` then saw `x : Real` and
+/// produced a `Real - Length` type error.
 ///
-/// This test asserts that the reversed order DOES produce an error, documenting
-/// the order-sensitivity as expected (not silent or undefined) behavior. Users who
-/// hit this should reorder trait bounds so the Param-typed trait appears first.
+/// Under the two-pass split in conformance.rs:
+///   Pass 1 — registers every annotated default (Param + Let-with-annotation)
+///             regardless of bound-list order. TraitA's `param x : Length` wins.
+///   Pass 2 — compiles each unannotated Let against the fully-annotated scope.
+///             TraitB's `let x = 5.0` calls `scope.register_if_absent` and finds
+///             `x` already occupied (debug-logged, no error). The constraint sees
+///             `x : Length` → clean compile.
+///
+/// Bound-list order is preserved unchanged (`TraitB + TraitA`) so this test
+/// continues to exercise the formerly-sensitive scenario as a regression guard.
 #[test]
-fn cross_kind_pre_registration_order_sensitivity_reversed_order_produces_error() {
+fn cross_kind_pre_registration_order_resolved_by_two_pass() {
     let source = r#"
 trait TraitA {
     param x : Length = 10mm
@@ -1107,27 +1121,56 @@ structure def S : TraitB + TraitA {
 }
 "#;
 
-    let (_template, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    // With TraitB listed first, the Let default (type Real) registers x before the
-    // Param default (type Length). The contains_key guard then skips the Param
-    // registration, leaving x as Real in scope. The constraint `x - 1mm > 0mm`
-    // performs Real - Length, which the expression compiler rejects.
-    //
-    // This documents order-sensitivity as a known design limitation of the
-    // first-registration-wins approach. To avoid this, users should list the
-    // Param-typed trait before the Let-typed trait.
+    // Pass 1 registers TraitA's annotated `param x : Length` before any
+    // unannotated-let expression is compiled.  Pass 2 then sees `x` as occupied
+    // and skips TraitB's `let x = 5.0`.  The constraint `x - 1mm > 0mm`
+    // operates on `x : Length`, compiles cleanly, and no type error is emitted.
     assert!(
-        !errors.is_empty(),
-        "expected at least one type error when the Let-typed trait (TraitB) is listed \
-         before the Param-typed trait (TraitA): the constraint `x - 1mm > 0mm` should \
-         see x as Real (not Length) and fail. This documents the order-sensitivity of \
-         the pre-registration guard."
+        errors.is_empty(),
+        "with the two-pass pre-register split, `S : TraitB + TraitA` must compile \
+         cleanly — Pass 1 registers the annotated `param x : Length` regardless of \
+         bound-list order, so the constraint sees `x : Length`, not Real; got: {:?}",
+        errors
+    );
+
+    // Pin the cell shape: exactly ONE cell for `x` (the Param from TraitA),
+    // with type Length.  Two cells would reveal double-injection — the old
+    // pre-amendment Pass 2 inserted TraitB's `let x` compiled expression into
+    // `inferred_let_exprs` *before* calling `register_if_absent`, so the
+    // injection loop found an entry and emitted a spurious Let cell alongside
+    // the Param cell, producing duplicate (entity, member) pairs downstream.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "exactly one cell expected for `x` (Param from TraitA); \
+         two cells indicate double-injection (Let cell from TraitB must not \
+         be emitted when Pass 1 already claimed the scope slot): {:?}",
+        template.value_cells
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single `x` cell must be Param (from TraitA), not Let"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the `x` Param cell must carry type Length \
+         (from TraitA's `param x : Length = 10mm`)"
     );
 }
 
@@ -1355,5 +1398,126 @@ structure def S : TraitA + TraitB {
         "expected exactly 1 DEBUG event from reify_compiler::conformance target when two \
          traits supply the same-named default (second register_if_absent returns false), got {}",
         debug
+    );
+}
+
+/// Forward-compatibility contract for task 1951: once `RequirementKind::Let` is
+/// parser-reachable, this test will start catching regressions against the Option B
+/// fix in `conformance.rs`.
+///
+/// ## Why this is a forward-compat placeholder (not a behavioral regression test)
+///
+/// The full 3-trait scenario from task 1951 requires trait X with `let x : Length`
+/// (no `= expr`), which emits `RequirementKind::Let` for `x`.  That syntax is NOT
+/// reachable from the reify parser today: `LetDecl.value` is `Expr`, not
+/// `Option<Expr>`, so `lower_let` always requires a value expression.  The parser
+/// pins this behavior in `let_type_disambiguation_tests.rs:470-497`, and the comment
+/// at `trait_merge_tests.rs:280-284` acknowledges that `RequirementKind::Let` is
+/// unreachable from source.  See also esc-1951-6.
+///
+/// Consequence: in the currently reachable universe, the phantom `(x, Let)` entry in
+/// `available_defaults` is dormant — no `RequirementKind::Let` lookup ever fires
+/// against it — so the phantom-signature guard (assertion 3) passes both before and
+/// after the Option B fix.  This test therefore **cannot distinguish** the patched
+/// binary from the unpatched one; all three assertions pass unconditionally today.
+///
+/// The behavioral unit test that **does** distinguish them (and fails on the unpatched
+/// code) lives in `conformance.rs::tests::option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`.
+/// It hand-builds a `RequirementKind::Let` requirement and verifies the phantom
+/// diagnostic is absent after the fix.
+///
+/// ## What this test exercises
+///
+/// The reachable Y+Z subset suffices to populate `pass2_skipped["x"]`: Pass 1 claims
+/// the scope slot with Y's annotated Param; Pass 2 encounters Z's unannotated Let and
+/// records the name in `pass2_skipped` instead of caching the expression.  The
+/// assertions lock in the correct cell-shape (single Param cell, no spurious Let cell)
+/// and the phantom-signature wording contract, so they will automatically detect a
+/// regression if a parser extension later exposes `let x : Type` as a requirement.
+///
+/// ## Assertions
+/// 1. Zero error diagnostics — structure compiles cleanly.
+/// 2. Exactly 1 `x` value cell, kind `Param`, type `Length` — no spurious Let cell.
+/// 3. No diagnostic combines the phrases "available default" and "Real" for member
+///    `x` — the phantom-signature wording guard (dormant today; activates when
+///    `RequirementKind::Let` becomes parser-reachable).
+#[test]
+fn phantom_let_advertisement_contract_for_future_parser_extension() {
+    // trait Y provides an annotated Param: claims the scope slot in Pass 1.
+    // trait Z provides an unannotated Let: Pass 2 sees the slot occupied,
+    // records "x" in pass2_skipped, and skips caching the expression.
+    let source = r#"
+trait TraitY {
+    param x : Length = 10mm
+}
+
+trait TraitZ {
+    let x = 5.0
+}
+
+structure def S : TraitY + TraitZ {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // --- Assertion 1: zero error diagnostics ---
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: structure S : TraitY + TraitZ should compile cleanly \
+         (TraitY's Param wins the slot, TraitZ's Let is suppressed via pass2_skipped). \
+         Got errors: {:?}",
+        errors
+    );
+
+    // --- Assertion 2: exactly 1 'x' cell, Param, Length ---
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (Param from TraitY; Let from TraitZ \
+         suppressed by pass2_skipped), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single 'x' cell must be Param (from TraitY)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the 'x' Param cell must carry type Length"
+    );
+
+    // --- Assertion 3: phantom-signature wording guard ---
+    // No diagnostic should combine "available default" + "Real" for member 'x'.
+    // In the reachable universe this passes unconditionally (no RequirementKind::Let
+    // lookup fires against the phantom entry). The assertion locks in the contract
+    // for when parser support for bare `let x : Type` requirements is added later.
+    let phantom_diags: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("available default")
+                && d.message.contains("Real")
+                && d.message.contains('x')
+        })
+        .collect();
+    assert!(
+        phantom_diags.is_empty(),
+        "phantom `(name, Let) -> Type::Real` advertisement must not emit a \
+         spurious type-mismatch diagnostic referencing 'x'. \
+         Got phantom-signature diagnostics: {:?}",
+        phantom_diags
     );
 }

@@ -9,9 +9,11 @@ import { createSelection } from './selection';
 export interface ViewportProps {
   meshes: Record<string, MeshData>;
   onHover?: (path: string | null) => void;
-  onSelect?: (path: string | null) => void;
+  onSelect?: (path: string | null, modifiers?: { ctrl: boolean; shift: boolean }) => void;
   hoveredEntity?: string | null;
   selectedEntity?: string | null;
+  /** Multi-selection list. When provided, takes precedence over selectedEntity for wireframe rendering. */
+  selectedEntities?: readonly string[];
   evalStatus?: EvaluationStatus;
   onFitToView?: () => void;
   flyToEntityRef?: (fn: (entityPath: string) => void) => void;
@@ -42,7 +44,7 @@ export function Viewport(props: ViewportProps) {
       domElement: renderer.domElement,
       getMeshes: () => meshManager.getSceneMeshes(),
       onHover: (path) => props.onHover?.(path),
-      onSelect: (path) => props.onSelect?.(path),
+      onSelect: (path, modifiers) => props.onSelect?.(path, modifiers),
       controls: controls.controls,
     });
 
@@ -136,7 +138,12 @@ export function Viewport(props: ViewportProps) {
 
     createEffect(() => {
       void props.meshes;
-      selection.setSelected(props.selectedEntity ?? null);
+      // selectedEntities (multi-select list) takes precedence over scalar selectedEntity
+      if (props.selectedEntities !== undefined) {
+        selection.setSelected(props.selectedEntities);
+      } else {
+        selection.setSelected(props.selectedEntity ?? null);
+      }
       requestRender();
     });
 

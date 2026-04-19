@@ -28,6 +28,8 @@ export interface DebugStores {
   selection: {
     state: {
       selectedEntity: string | null;
+      selectedEntities: string[];
+      anchorEntity: string | null;
       hoveredEntity: string | null;
       highlightedParams: string[];
     };

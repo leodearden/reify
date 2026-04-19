@@ -21,12 +21,296 @@ describe('selectionStore', () => {
     });
   });
 
+  it('has empty selectedEntities array initially', () => {
+    createRoot((dispose) => {
+      const { state } = createSelectionStore();
+      expect(state.selectedEntities).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('has null anchorEntity initially', () => {
+    createRoot((dispose) => {
+      const { state } = createSelectionStore();
+      expect(state.anchorEntity).toBeNull();
+      dispose();
+    });
+  });
+
+  describe('selectSingle', () => {
+    it('sets selectedEntities to [path]', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        expect(state.selectedEntities).toEqual(['Bracket']);
+        dispose();
+      });
+    });
+
+    it('sets anchorEntity to path', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        expect(state.anchorEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity (primary) to path', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        expect(state.selectedEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('calling selectSingle again replaces (not appends) the selection', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        selectSingle('Mount');
+        expect(state.selectedEntities).toEqual(['Mount']);
+        expect(state.selectedEntity).toBe('Mount');
+        expect(state.anchorEntity).toBe('Mount');
+        dispose();
+      });
+    });
+
+    it('selectSingle(null) empties selection and clears anchor', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        selectSingle(null);
+        expect(state.selectedEntities).toEqual([]);
+        expect(state.selectedEntity).toBeNull();
+        expect(state.anchorEntity).toBeNull();
+        dispose();
+      });
+    });
+  });
+
+  describe('toggleSelect', () => {
+    it('adds path when absent, appends to selectedEntities, primary=path', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect } = createSelectionStore();
+        toggleSelect('Bracket');
+        expect(state.selectedEntities).toEqual(['Bracket']);
+        expect(state.selectedEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('removes path when present, primary updates to last remaining', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect } = createSelectionStore();
+        toggleSelect('Bracket');
+        toggleSelect('Mount');
+        // now both are in: ['Bracket', 'Mount']
+        toggleSelect('Mount');
+        // Mount removed, only Bracket remains
+        expect(state.selectedEntities).toEqual(['Bracket']);
+        expect(state.selectedEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('removing last element sets primary to null', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect } = createSelectionStore();
+        toggleSelect('Bracket');
+        toggleSelect('Bracket');
+        expect(state.selectedEntities).toEqual([]);
+        expect(state.selectedEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('preserves insertion order of other entries', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect } = createSelectionStore();
+        toggleSelect('A');
+        toggleSelect('B');
+        toggleSelect('C');
+        toggleSelect('B'); // remove middle
+        expect(state.selectedEntities).toEqual(['A', 'C']);
+        dispose();
+      });
+    });
+
+    it('does not change anchorEntity', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, toggleSelect } = createSelectionStore();
+        selectSingle('Bracket');
+        expect(state.anchorEntity).toBe('Bracket');
+        toggleSelect('Mount');
+        // anchor should still be Bracket (only selectSingle sets anchor)
+        expect(state.anchorEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+  });
+
+  describe('rangeSelect', () => {
+    it('replaces selectedEntities with provided paths (dedup preserving first occurrence)', () => {
+      createRoot((dispose) => {
+        const { state, rangeSelect } = createSelectionStore();
+        rangeSelect(['A', 'B', 'A', 'C']);
+        expect(state.selectedEntities).toEqual(['A', 'B', 'C']);
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity to last path (primary=last)', () => {
+      createRoot((dispose) => {
+        const { state, rangeSelect } = createSelectionStore();
+        rangeSelect(['A', 'B', 'C']);
+        expect(state.selectedEntity).toBe('C');
+        dispose();
+      });
+    });
+
+    it('does not change anchorEntity', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, rangeSelect } = createSelectionStore();
+        selectSingle('X');
+        expect(state.anchorEntity).toBe('X');
+        rangeSelect(['A', 'B']);
+        expect(state.anchorEntity).toBe('X');
+        dispose();
+      });
+    });
+
+    it('empty paths list empties selection and sets primary to null', () => {
+      createRoot((dispose) => {
+        const { state, rangeSelect } = createSelectionStore();
+        rangeSelect([]);
+        expect(state.selectedEntities).toEqual([]);
+        expect(state.selectedEntity).toBeNull();
+        dispose();
+      });
+    });
+  });
+
+  describe('clearSelection', () => {
+    it('empties selectedEntities', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, clearSelection } = createSelectionStore();
+        selectSingle('A');
+        clearSelection();
+        expect(state.selectedEntities).toEqual([]);
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity to null', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, clearSelection } = createSelectionStore();
+        selectSingle('A');
+        clearSelection();
+        expect(state.selectedEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('sets anchorEntity to null', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, clearSelection } = createSelectionStore();
+        selectSingle('A');
+        clearSelection();
+        expect(state.anchorEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('does NOT clear highlightedParams', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, clearSelection } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        clearSelection();
+        expect(state.highlightedParams).toEqual(['c1', 'c2']);
+        dispose();
+      });
+    });
+  });
+
   it('selectEntity sets selectedEntity', () => {
     createRoot((dispose) => {
       const { state, selectEntity } = createSelectionStore();
       selectEntity('Bracket');
       expect(state.selectedEntity).toBe('Bracket');
       dispose();
+    });
+  });
+
+  describe('selectAll', () => {
+    it('replaces selectedEntities with provided list (dedup)', () => {
+      createRoot((dispose) => {
+        const { state, selectAll } = createSelectionStore();
+        selectAll(['A', 'B', 'A', 'C']);
+        expect(state.selectedEntities).toEqual(['A', 'B', 'C']);
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity to last item', () => {
+      createRoot((dispose) => {
+        const { state, selectAll } = createSelectionStore();
+        selectAll(['A', 'B', 'C']);
+        expect(state.selectedEntity).toBe('C');
+        dispose();
+      });
+    });
+
+    it('does not change anchorEntity', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, selectAll } = createSelectionStore();
+        selectSingle('X');
+        expect(state.anchorEntity).toBe('X');
+        selectAll(['A', 'B', 'C']);
+        expect(state.anchorEntity).toBe('X');
+        dispose();
+      });
+    });
+  });
+
+  describe('selectEntity backward-compat alias', () => {
+    it('selectEntity(path) sets selectedEntities=[path] (same as selectSingle)', () => {
+      createRoot((dispose) => {
+        const { state, selectEntity } = createSelectionStore();
+        selectEntity('Bracket');
+        expect(state.selectedEntities).toEqual(['Bracket']);
+        dispose();
+      });
+    });
+
+    it('selectEntity(path) sets anchorEntity=path (same as selectSingle)', () => {
+      createRoot((dispose) => {
+        const { state, selectEntity } = createSelectionStore();
+        selectEntity('Bracket');
+        expect(state.anchorEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('selectEntity(null) empties selectedEntities (same as clearSelection)', () => {
+      createRoot((dispose) => {
+        const { state, selectEntity } = createSelectionStore();
+        selectEntity('Bracket');
+        selectEntity(null);
+        expect(state.selectedEntities).toEqual([]);
+        dispose();
+      });
+    });
+
+    it('selectEntity(null) clears anchorEntity (same as clearSelection)', () => {
+      createRoot((dispose) => {
+        const { state, selectEntity } = createSelectionStore();
+        selectEntity('Bracket');
+        selectEntity(null);
+        expect(state.anchorEntity).toBeNull();
+        dispose();
+      });
     });
   });
 
@@ -116,6 +400,90 @@ describe('selectionStore', () => {
       expect(state.selectedEntity).toBeNull();
       expect(state.highlightedParams).toEqual([]);
       dispose();
+    });
+  });
+
+  // --- clearIfRemoved multi-selection (step-15) ---
+  describe('clearIfRemoved — multi-selection', () => {
+    it('removes only the matching path from selectedEntities, leaving others intact', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect, clearIfRemoved } = createSelectionStore();
+        toggleSelect('A');
+        toggleSelect('B');
+        toggleSelect('C');
+        expect(state.selectedEntities).toEqual(['A', 'B', 'C']);
+
+        clearIfRemoved('B');
+        expect(state.selectedEntities).toEqual(['A', 'C']);
+        dispose();
+      });
+    });
+
+    it('updates selectedEntity to new last element after the removed path was the primary', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect, clearIfRemoved } = createSelectionStore();
+        toggleSelect('A');
+        toggleSelect('B');
+        // primary = B (last added)
+        expect(state.selectedEntity).toBe('B');
+
+        clearIfRemoved('B');
+        // B removed → new last = A
+        expect(state.selectedEntity).toBe('A');
+        expect(state.selectedEntities).toEqual(['A']);
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity to null when removing the last item in selectedEntities', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, clearIfRemoved } = createSelectionStore();
+        selectSingle('A');
+        clearIfRemoved('A');
+        expect(state.selectedEntities).toEqual([]);
+        expect(state.selectedEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('clears anchorEntity iff it matched the removed path', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, toggleSelect, clearIfRemoved } = createSelectionStore();
+        selectSingle('A'); // sets anchor = A
+        toggleSelect('B'); // adds B; anchor stays A
+        expect(state.anchorEntity).toBe('A');
+
+        clearIfRemoved('A'); // A is anchor and was in selectedEntities
+        expect(state.anchorEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('does NOT clear anchorEntity when the removed path does NOT match it', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, toggleSelect, clearIfRemoved } = createSelectionStore();
+        selectSingle('A'); // anchor = A
+        toggleSelect('B');
+        toggleSelect('C');
+        expect(state.anchorEntity).toBe('A');
+
+        clearIfRemoved('C'); // remove C; anchor is still A
+        expect(state.anchorEntity).toBe('A');
+        dispose();
+      });
+    });
+
+    it('does not affect selectedEntities when path is not present', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect, clearIfRemoved } = createSelectionStore();
+        toggleSelect('A');
+        toggleSelect('B');
+
+        clearIfRemoved('X'); // X not in list
+        expect(state.selectedEntities).toEqual(['A', 'B']);
+        expect(state.selectedEntity).toBe('B');
+        dispose();
+      });
     });
   });
 
@@ -213,6 +581,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: null,
       });
     });
@@ -227,6 +596,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });
@@ -243,6 +613,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: 'Bracket.width',
       });
     });
@@ -270,6 +641,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: 'Bracket.width',
       });
     });
@@ -286,6 +658,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: 'X',
       });
 
@@ -303,6 +676,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: null,
       });
 
@@ -315,6 +689,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(2);
       expect(mockInvoke).toHaveBeenLastCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: 'Bracket.width',
       });
     });
@@ -336,6 +711,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: 'B',
       });
     });
@@ -382,6 +758,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });
@@ -401,6 +778,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });
@@ -424,6 +802,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });
@@ -463,7 +842,95 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
+      });
+    });
+  });
+
+  // --- Backend sync: selectedEntities forwarded to IPC (step-17) ---
+  describe('backend sync — multi-selection IPC payload', () => {
+    let dispose!: () => void;
+    let selectSingle!: (path: string | null) => void;
+    let toggleSelect!: (path: string) => void;
+    let clearSelection!: () => void;
+    let hoverEntity!: (path: string | null) => void;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      mockInvoke.mockResolvedValue(undefined);
+
+      createRoot((d) => {
+        dispose = d;
+        const store = createSelectionStore();
+        selectSingle = store.selectSingle;
+        toggleSelect = store.toggleSelect;
+        clearSelection = store.clearSelection;
+        hoverEntity = store.hoverEntity;
+      });
+    });
+
+    afterEach(() => {
+      dispose();
+      vi.useRealTimers();
+      vi.clearAllMocks();
+    });
+
+    it('selectSingle dispatches invoke with selectedEntities list', () => {
+      selectSingle('Bracket');
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
+        hoveredEntity: null,
+      });
+    });
+
+    it('toggleSelect dispatches invoke with updated selectedEntities list', () => {
+      selectSingle('A');
+      mockInvoke.mockClear();
+
+      toggleSelect('B');
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'B',
+        selectedEntities: ['A', 'B'],
+        hoveredEntity: null,
+      });
+    });
+
+    it('clearSelection dispatches invoke with empty selectedEntities list', () => {
+      selectSingle('A');
+      mockInvoke.mockClear();
+
+      clearSelection();
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        selectedEntities: [],
+        hoveredEntity: null,
+      });
+    });
+
+    it('hover-only change sends current selectedEntities snapshot after debounce', () => {
+      selectSingle('A');
+      mockInvoke.mockClear();
+
+      hoverEntity('A.width');
+
+      // Should be debounced
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(100);
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'A',
+        selectedEntities: ['A'],
+        hoveredEntity: 'A.width',
       });
     });
   });

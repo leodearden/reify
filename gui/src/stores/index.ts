@@ -12,3 +12,6 @@ export type { ClaudeState, SessionStatus, ToolCallInfo, AssistantMessage, System
 
 export { createViewStateStore } from './viewStateStore';
 export type { ViewState } from './viewStateStore';
+
+export { generateDefaultView, generateAllGeometryView, generatePurposeViews, defaultVisibilityFor } from './autoViewGenerator';
+export type { ViewDefinition } from './autoViewGenerator';

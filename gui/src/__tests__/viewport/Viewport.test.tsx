@@ -487,3 +487,39 @@ describe('Viewport entityVisibility reset', () => {
     expect(mockMeshSetVisibility).toHaveBeenCalledWith('bracket/hole', 'show');
   });
 });
+
+describe('Viewport multi-selection props', () => {
+  it('selectedEntities prop routes an array of paths to selection.setSelected', () => {
+    // selectedEntities is not yet a known ViewportProps field — test fails until step-28 impl
+    render(() => <Viewport meshes={{}} selectedEntities={['A', 'B'] as any} />);
+    // setSelected should be called with the list (not the scalar selectedEntity path)
+    expect(mockSelectionSetSelected).toHaveBeenCalledWith(['A', 'B']);
+  });
+
+  it('onSelect prop receives (path, modifiers) when the selection module fires with modifiers', () => {
+    const onSelectSpy = vi.fn();
+    render(() => <Viewport meshes={{}} onSelect={onSelectSpy as any} />);
+
+    // Retrieve the onSelect callback that Viewport passed to createSelection
+    const mockCreateSelection = createSelection as unknown as ReturnType<typeof vi.fn>;
+    const selectionOpts = mockCreateSelection.mock.calls[mockCreateSelection.mock.calls.length - 1][0];
+
+    // Simulate the selection module calling onSelect with modifiers
+    selectionOpts.onSelect('A', { ctrl: true, shift: false });
+
+    // Viewport must forward both the path AND the modifiers to props.onSelect
+    expect(onSelectSpy).toHaveBeenCalledWith('A', { ctrl: true, shift: false });
+  });
+
+  it('plain click (no modifiers) forwards { ctrl: false, shift: false } to onSelect prop', () => {
+    const onSelectSpy = vi.fn();
+    render(() => <Viewport meshes={{}} onSelect={onSelectSpy as any} />);
+
+    const mockCreateSelection = createSelection as unknown as ReturnType<typeof vi.fn>;
+    const selectionOpts = mockCreateSelection.mock.calls[mockCreateSelection.mock.calls.length - 1][0];
+
+    selectionOpts.onSelect('B', { ctrl: false, shift: false });
+
+    expect(onSelectSpy).toHaveBeenCalledWith('B', { ctrl: false, shift: false });
+  });
+});

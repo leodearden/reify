@@ -178,10 +178,12 @@ fn eval_status_info_partial_eq() {
 fn selection_info_partial_eq() {
     let a = SelectionInfo {
         selected_entity: Some("box".to_string()),
+        selected_entities: vec![],
         hovered_entity: None,
     };
     let b = SelectionInfo {
         selected_entity: Some("box".to_string()),
+        selected_entities: vec![],
         hovered_entity: None,
     };
     assert_eq!(a, b);

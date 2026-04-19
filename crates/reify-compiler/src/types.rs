@@ -158,9 +158,12 @@ pub struct CompiledModule {
     pub units: Vec<CompiledUnit>,
     /// Compiled type alias declarations from this module.
     pub type_aliases: Vec<CompiledTypeAlias>,
-    /// Constraint definitions declared in this module.
-    /// Stored so downstream modules can reference them during compilation.
-    pub constraint_defs: Vec<reify_syntax::ConstraintDef>,
+    /// Constraint definitions declared in this module — both pub and non-pub.
+    ///
+    /// Only entries with `is_pub == true` are propagated into downstream modules
+    /// via the prelude mechanism (see `compile_with_prelude_refs`); callers that
+    /// want the exported subset must apply the `is_pub` filter themselves.
+    pub constraint_defs: Vec<CompiledConstraintDef>,
     /// Module-level pragmas declared in this module (e.g., `#no_prelude`, `#precision`).
     /// All pragmas are stored here, including consumed ones like `#no_prelude`.
     pub pragmas: Vec<reify_syntax::Pragma>,
@@ -187,17 +190,15 @@ impl CompiledModule {
 
     /// Returns all constraint defs tagged with `@test`.
     ///
-    /// Uses `ConstraintDef::is_test()` as the canonical predicate.
-    // TODO(constraint-def-lowering): migrate to CompiledConstraintDef::is_test field
-    // once constraint-def lowering lands.
-    pub fn test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
+    /// Uses `CompiledConstraintDef::is_test()` as the canonical predicate, which
+    /// delegates to `reify_types::annotation::has_test_annotation` on the already-lowered
+    /// annotation vec.
+    pub fn test_constraint_defs(&self) -> impl Iterator<Item = &CompiledConstraintDef> {
         self.constraint_defs.iter().filter(|d| d.is_test())
     }
 
     /// Returns all constraint defs NOT tagged with `@test`.
-    // TODO(constraint-def-lowering): migrate to CompiledConstraintDef::is_test field
-    // once constraint-def lowering lands.
-    pub fn non_test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
+    pub fn non_test_constraint_defs(&self) -> impl Iterator<Item = &CompiledConstraintDef> {
         self.constraint_defs.iter().filter(|d| !d.is_test())
     }
 
@@ -581,5 +582,54 @@ pub struct CompiledTypeAlias {
     pub is_pub: bool,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// A compiled parameter in a constraint definition.
+///
+/// Produced by `compile_constraint_def`; replaces the raw `reify_syntax::ParamDecl`
+/// in the registry so entity scopes only see resolved data.
+#[derive(Debug, Clone)]
+pub struct CompiledConstraintParam {
+    pub name: String,
+    /// Original default expression, kept as AST so it can be substituted into the
+    /// calling entity's scope at instantiation time.
+    pub default: Option<reify_syntax::Expr>,
+    pub span: SourceSpan,
+}
+
+/// A compiled constraint definition — produced once per `constraint def` declaration.
+///
+/// Removes the raw `reify_syntax::ConstraintDef` from `CompiledModule`, replacing it
+/// with a struct whose fields are either fully resolved (annotations, params) or kept
+/// as AST only where call-site context is required (predicates, param defaults).
+#[derive(Debug, Clone)]
+pub struct CompiledConstraintDef {
+    pub name: String,
+    /// `true` if declared with the `pub` modifier (exported to importing modules).
+    pub is_pub: bool,
+    /// Type parameters declared on this constraint def (e.g., `<T: Rigid>`).
+    pub type_params: Vec<reify_types::TypeParam>,
+    /// Parameters of the constraint def, compiled from `ParamDecl`s.
+    pub params: Vec<CompiledConstraintParam>,
+    /// Predicates kept as AST: param substitution is call-site-local, and compilation
+    /// requires the calling entity's scope. This keeps the public type boundary clean
+    /// (no `reify_syntax::ConstraintDef` in `CompiledModule`) while deferring full lowering.
+    pub predicates: Vec<reify_syntax::Expr>,
+    pub span: SourceSpan,
+    pub content_hash: reify_types::ContentHash,
+    /// Block-level pragmas from the parsed declaration.
+    pub pragmas: Vec<reify_syntax::Pragma>,
+    /// Lowered annotations (validated at def-compile time).
+    pub annotations: Vec<reify_types::Annotation>,
+    /// Cached `@optimized("target")` value extracted from `annotations` once at
+    /// def-compile time so every instantiation can read it without re-scanning.
+    pub annotations_optimized_target: Option<String>,
+}
+
+impl CompiledConstraintDef {
+    /// Returns `true` if this constraint def is tagged with the `@test` annotation.
+    pub fn is_test(&self) -> bool {
+        reify_types::annotation::has_test_annotation(&self.annotations)
+    }
 }
 

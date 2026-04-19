@@ -324,6 +324,7 @@ fn get_selection_returns_selected_entity_from_arc() {
     let engine = Arc::new(Mutex::new(session));
     let selection = Arc::new(RwLock::new(SelectionInfo {
         selected_entity: Some("Bracket".to_string()),
+        selected_entities: vec![],
         hovered_entity: None,
     }));
     let ctx = TauriToolContext::builder(engine)
@@ -340,6 +341,7 @@ fn get_selection_returns_both_selected_and_hovered() {
     let engine = Arc::new(Mutex::new(session));
     let selection = Arc::new(RwLock::new(SelectionInfo {
         selected_entity: Some("Bracket".to_string()),
+        selected_entities: vec![],
         hovered_entity: Some("Bracket.width".to_string()),
     }));
     let ctx = TauriToolContext::builder(engine)
@@ -402,6 +404,7 @@ fn builder_with_selection_matches_new_with_selection() {
     let engine = Arc::new(Mutex::new(session));
     let selection = Arc::new(RwLock::new(SelectionInfo {
         selected_entity: Some("Bracket".to_string()),
+        selected_entities: vec![],
         hovered_entity: None,
     }));
     let ctx = TauriToolContext::builder(engine)
@@ -447,6 +450,7 @@ fn builder_with_both_options() {
     let events_clone = events.clone();
     let selection = Arc::new(RwLock::new(SelectionInfo {
         selected_entity: Some("Bracket.height".to_string()),
+        selected_entities: vec![],
         hovered_entity: None,
     }));
 
