@@ -1250,11 +1250,11 @@ describe('regenerateAutoViews — atomicity (single reactive notification)', () 
       // Counter starts at -1 to account for the initial createComputed run.
       let updateCount = -1;
       createComputed(() => {
-        // Track both explicit and views so we catch setState calls in:
-        //   setTree()  — which changes explicit (stale prune), and
-        //   the second setState inside regenerateAutoViews — which changes views.
-        JSON.stringify(store.state.explicit);
-        JSON.stringify(store.state.views);
+        // Subscribe to the full state snapshot: any setState() call that touches
+        // explicit, views, or activeViewId registers as exactly one notification.
+        // Using store.state (rather than two independent sub-object reads) ensures
+        // the count is stable across Solid version changes in access-tracking.
+        JSON.stringify(store.state);
         updateCount++;
       });
       // Initial run sets counter to 0.
@@ -1290,8 +1290,7 @@ describe('regenerateAutoViews — atomicity (single reactive notification)', () 
 
       let updateCount = -1;
       createComputed(() => {
-        JSON.stringify(store.state.explicit);
-        JSON.stringify(store.state.views);
+        JSON.stringify(store.state);
         updateCount++;
       });
       expect(updateCount).toBe(0);
@@ -1326,8 +1325,7 @@ describe('regenerateAutoViews — atomicity (single reactive notification)', () 
 
       let updateCount = -1;
       createComputed(() => {
-        JSON.stringify(store.state.explicit);
-        JSON.stringify(store.state.views);
+        JSON.stringify(store.state);
         updateCount++;
       });
       expect(updateCount).toBe(0);

@@ -19,8 +19,9 @@ import type { EntityTreeNode, VisibilityState } from '../types';
  *   `defaultRuleFor` via walk-up.
  *
  * **Live user-view mirror**: When a `user:*` view is the active view in
- * `viewStateStore`, every mutation (`setVisibility`, `setVisibilityWithoutCascade`,
- * `resetToInherit`, `showOnly`, `cycleCascading`) automatically rebuilds
+ * `viewStateStore`, every explicit-state mutation (`setVisibility`,
+ * `setVisibilityWithoutCascade`, `resetToInherit`, `showOnly`, `cycleCascading`)
+ * and every tree regeneration (`regenerateAutoViews`) automatically rebuilds
  * `visibility` from the current `state.explicit`, dropping null (inherit-cleared)
  * entries.  This means `visibility` on an active user view always equals the
  * user's live explicit choices — it is not a stale seed from `seedView`.

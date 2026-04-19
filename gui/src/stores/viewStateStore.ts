@@ -305,16 +305,22 @@ export function createViewStateStore() {
    * - active is `auto:*` and view was removed (purpose deactivated) → fall back
    *   to `auto:default` and copy its visibility.
    * - active is `user:*` and view exists → keep explicit entries for paths that
-   *   are still in the tree; leave NEW paths unset so defaultRuleFor handles them.
+   *   are still in the tree; leave NEW paths unset so defaultRuleFor handles them;
+   *   then mirror the pruned explicit back into the user view's stored visibility.
    * - active references a missing view → fall back to `auto:default`.
    *
    * This function keeps the internal nodeByPath / parentByPath maps in sync with
    * the provided tree so callers do not need a separate `setTree` call.
    *
    * NOTE: This function performs exactly one `setState` — all work (stale-explicit
-   * prune, auto-view replacement, active-view reconciliation) is batched into a
-   * single reactive notification.  Do NOT add a `setTree(tree)` call here; use
-   * `rebuildTreeMaps` instead to keep the map refresh non-reactive.
+   * prune, auto-view replacement, active-view reconciliation, user-view mirror) is
+   * batched into a single reactive notification.  Do NOT add a `setTree(tree)` call
+   * here; use `rebuildTreeMaps` instead to keep the map refresh non-reactive.
+   *
+   * NOTE on stale-explicit pruning: the prune loop runs only for the `user:*`
+   * branch (the only branch that preserves `s.explicit` rather than replacing it
+   * wholesale).  Auto:* and unknown branches overwrite `s.explicit` with a fresh
+   * view map, so a prior prune pass would be wasted work.
    *
    * NOTE on the `modified` flag: `ViewDefinition.modified` is tracked in the
    * type but `regenerateAutoViews` does not yet inspect it.  Auto-view edits
@@ -332,21 +338,10 @@ export function createViewStateStore() {
     const freshAllGeo = generateAllGeometryView(tree);
     const freshPurpose = generatePurposeViews(tree, activePurposes);
 
-    // Build set of all paths in the new tree for user-view pruning.
+    // Build set of all paths in the new tree — used by the user:* prune loop.
     const treePathSet = new Set(Object.keys(freshDefault.visibility));
 
     setState(produce((s) => {
-      // ------------------------------------------------------------------
-      // 0. Prune stale explicit entries for paths no longer in the tree.
-      //    This mirrors the cleanup that setTree performs on its own setState,
-      //    consolidated here so that the full regeneration is one notification.
-      // ------------------------------------------------------------------
-      for (const path of Object.keys(s.explicit)) {
-        if (!nodeByPath.has(path)) {
-          delete s.explicit[path];
-        }
-      }
-
       // ------------------------------------------------------------------
       // 1. Replace all auto:* views with fresh ones.
       // ------------------------------------------------------------------
@@ -378,6 +373,8 @@ export function createViewStateStore() {
         // Active is a user view. Keep entries for paths still in the tree;
         // remove entries for paths that are no longer in the tree;
         // leave new paths unset so defaultRuleFor applies via walk-up.
+        // NOTE: this is the only branch that preserves s.explicit rather than
+        // replacing it wholesale, so stale-path pruning is only needed here.
         const userView = s.views[activeId];
         if (!userView) {
           // User view was somehow deleted — fall back to default.
@@ -398,6 +395,14 @@ export function createViewStateStore() {
         s.activeViewId = 'auto:default';
         s.explicit = { ...freshDefault.visibility };
       }
+
+      // ------------------------------------------------------------------
+      // 3. Mirror user-view if applicable.
+      //    Runs after reconcile so that a user view's stored visibility stays
+      //    in sync with the (possibly pruned) explicit map after a tree change.
+      //    Early-returns for auto:* and unknown active views.
+      // ------------------------------------------------------------------
+      mirrorExplicitToActiveUserView(s);
     }));
   }
 
