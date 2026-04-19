@@ -36,7 +36,12 @@ pub(crate) fn check_trait_conformance(
                             reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
                         };
                         if let Some(name) = name_opt {
-                            resolve_type_with_aliases(name, &empty_params, alias_registry)
+                            resolve_type_with_aliases(
+                                name,
+                                &empty_params,
+                                alias_registry,
+                                trait_names,
+                            )
                                 .or_else(|| {
                                     if enum_defs.iter().any(|e| e.name == name) {
                                         Some(Type::Enum(name.to_string()))
@@ -90,7 +95,12 @@ pub(crate) fn check_trait_conformance(
                     reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
                 };
                 if let Some(name) = name_opt {
-                    let ty = resolve_type_with_aliases(name, &empty_params, alias_registry)
+                    let ty = resolve_type_with_aliases(
+                        name,
+                        &empty_params,
+                        alias_registry,
+                        trait_names,
+                    )
                         .or_else(|| {
                             if enum_defs.iter().any(|e| e.name == name) {
                                 Some(Type::Enum(name.to_string()))
@@ -1062,11 +1072,13 @@ mod tests {
         let enum_defs: &[reify_types::EnumDef] = &[];
         let functions: &[CompiledFunction] = &[];
         let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         check_trait_conformance(
             &entity_ref,
             &trait_registry,
+            &trait_names,
             &mut scope,
             &mut value_cells,
             &mut constraints,

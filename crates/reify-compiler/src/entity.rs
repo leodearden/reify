@@ -494,6 +494,7 @@ pub(crate) fn compile_entity(
         check_trait_conformance(
             structure,
             trait_registry,
+            trait_names,
             &mut scope,
             &mut value_cells,
             &mut constraints,
