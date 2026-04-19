@@ -40657,11 +40657,11 @@
         "description": "Three post-merge review suggestions on the task 1926 work (median-per-keystroke guard). All small, local, and touch only the editor-perf test and its shared test-utils helper.\n\n1) gui/src/__tests__/editor-perf.test.tsx:162 — enrich the Vitest second-arg failure message so CI triage doesn't require mentally computing the median from the raw sample list. Replace the current `samples=${JSON.stringify(perKeystroke)}` with something like:\n   `` `median=${median(perKeystroke).toFixed(2)}ms min=${Math.min(...perKeystroke).toFixed(2)} max=${Math.max(...perKeystroke).toFixed(2)} samples=${JSON.stringify(perKeystroke.map(v => +v.toFixed(2)))}` ``\n\n2) gui/src/__tests__/test-utils.ts:26 — `median()` currently rejects NaN but silently accepts ±Infinity. For an even-length array containing Infinity in a middle position the result is `(Infinity + x)/2 = Infinity`, which would fail a `toBeLessThan` with a misleading message (same NaN-propagation rationale the docstring already calls out). Replace `values.some(Number.isNaN)` with `values.some(v => !Number.isFinite(v))` and update the error text and docstring. Add a matching unit test in test-utils.test.ts for ±Infinity inputs.\n\n3) gui/src/__tests__/editor-perf.test.tsx:149 — wrap the measurement loop in `try { ... } finally { unmount(); }` so the 300ms debounce cleanup runs regardless of in-loop failures. Low-risk but makes the cleanup invariant explicit.\n\nSource: review of task 1926 (esc-1926-9).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:35.204Z",
+        "updatedAt": "2026-04-19T21:14:47.265Z",
         "metadata": {
           "files": [
             "gui/src/__tests__/editor-perf.test.tsx",
@@ -41752,7 +41752,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:14:44.885Z",
+      "lastModified": "2026-04-19T21:14:47.266Z",
       "taskCount": 1987,
       "completedCount": 1696,
       "tags": [
