@@ -2768,4 +2768,19 @@ describe('App DesignTree wiring', () => {
     // getSourceLocation should NOT have been called for the Shift+click (no source navigation)
     expect(bridge.getSourceLocation).not.toHaveBeenCalled();
   });
+
+  it('Ctrl+A inside the tree selects all visible paths', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A'), makeNode('Root.B')]);
+    await renderAndWaitForReady();
+
+    fireEvent.keyDown(screen.getByTestId('design-tree'), { key: 'a', ctrlKey: true });
+
+    await waitFor(() => {
+      const sel = capturedViewportProps.selectedEntities as string[];
+      expect(sel).toContain('Root.A');
+      expect(sel).toContain('Root.B');
+    });
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).toBe('true');
+  });
 });
