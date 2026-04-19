@@ -817,14 +817,23 @@ mod tests {
     /// 1. Find the first occurrence of `fn_signature_prefix`.
     /// 2. Scan forward to the first `{` — the function-body open brace.
     /// 3. Walk byte-by-byte tracking `{`/`}` depth to locate the body close brace.
-    /// 4. For each line inside the body: skip `//`-comment lines; on any line that
-    ///    contains `=>`, extract every double-quoted token from the substring before
-    ///    `=>` and collect it into the result set.
+    /// 4. Strip `/* ... */` block comments from the body (prevents false positives
+    ///    from quoted strings inside block comments).
+    /// 5. For each line inside the body: skip `//`-comment-only lines; strip
+    ///    trailing inline `//` comments; accumulate pure-pattern lines (string
+    ///    literals and `|` operators only) into `pending_lhs` for multi-line
+    ///    or-patterns; on any line that contains `=>`, combine `pending_lhs` with
+    ///    the current line's LHS and extract every double-quoted token.
     ///
-    /// This correctly handles single-arm (`"foo" =>`), multi-arm
-    /// (`"a" | "b" | "c" =>`), and nested inner `match` blocks, while ignoring
-    /// wildcard arms (`_ =>`), pattern-destructure arms (no string literals on the
-    /// LHS), and code outside the target function.
+    /// Correctly handles single-arm (`"foo" =>`), multi-arm on one line
+    /// (`"a" | "b" | "c" =>`), rustfmt-wrapped multi-arm patterns (continuation
+    /// lines beginning with `|`), nested inner `match` blocks, wildcard arms
+    /// (`_ =>`), pattern-destructure arms (no string literals on the LHS), and
+    /// code outside the target function.
+    ///
+    /// Known limitation: block-comment stripping does not track string-literal
+    /// boundaries, so a `/*` inside a string literal in a match-arm pattern would
+    /// be mishandled.  This combination does not occur in `compile_geometry_call`.
     fn extract_dispatch_keys_from_source(
         source: &str,
         fn_signature_prefix: &str,
@@ -866,38 +875,158 @@ mod tests {
         }
         let body = &source[body_start..body_end];
 
-        // Step 4: extract double-quoted tokens from non-comment, arrow-bearing lines.
+        // Step 4a: remove block comments to prevent false positives from quoted
+        // strings inside `/* ... */` spans.
+        let body_clean = strip_block_comments(body);
+
+        // Step 4b: scan line-by-line, accumulating multi-line or-pattern fragments.
         let mut keys = HashSet::new();
-        for line in body.lines() {
-            let trimmed = line.trim();
-            // Skip comment-only lines.
+        // Accumulates pattern LHS fragments across physical lines when rustfmt
+        // wraps a long `"a" | "b" | "c" =>` arm (continuation lines start with `|`).
+        let mut pending_lhs = String::new();
+
+        for raw_line in body_clean.lines() {
+            let trimmed = raw_line.trim();
+
+            // Skip `//`-comment-only lines.
             if trimmed.starts_with("//") {
                 continue;
             }
-            // Only process lines that contain a fat-arrow.
-            let Some(arrow_pos) = line.find("=>") else {
-                continue;
-            };
-            // Extract string literals from the LHS (before `=>`).
-            let lhs = &line[..arrow_pos];
-            let mut chars = lhs.chars();
-            while let Some(c) = chars.next() {
-                if c == '"' {
-                    let token: String = chars.by_ref().take_while(|&ch| ch != '"').collect();
-                    if !token.is_empty() {
-                        keys.insert(token);
+
+            // Strip trailing inline `//` comments (only outside string literals).
+            let line = strip_inline_comment(raw_line);
+            let line_trimmed = line.trim();
+
+            if let Some(arrow_pos) = line.find("=>") {
+                // `=>` found: finalize the logical match-arm LHS.
+                let full_lhs = format!("{} {}", pending_lhs, &line[..arrow_pos]);
+                pending_lhs.clear();
+
+                // Extract every double-quoted token from the combined LHS.
+                let mut chars = full_lhs.chars();
+                while let Some(c) = chars.next() {
+                    if c == '"' {
+                        let token: String =
+                            chars.by_ref().take_while(|&ch| ch != '"').collect();
+                        if !token.is_empty() {
+                            keys.insert(token);
+                        }
                     }
                 }
+            } else if is_or_pattern_line(line_trimmed) {
+                // Pure pattern fragment (string literals and `|` operators only):
+                // this is a continuation line of a rustfmt-wrapped multi-arm pattern.
+                pending_lhs.push(' ');
+                pending_lhs.push_str(line_trimmed);
+            } else if !line_trimmed.is_empty() {
+                // Regular arm-body code line — not a pattern continuation.
+                pending_lhs.clear();
             }
+            // Empty/whitespace-only lines: leave `pending_lhs` unchanged.
         }
 
         keys
     }
 
+    /// Returns `true` if `trimmed` consists only of string literals, `|` operators,
+    /// and whitespace — i.e. it is a pure match-pattern fragment with no `=>`.
+    ///
+    /// Used to detect the first and middle lines of a rustfmt-wrapped multi-arm
+    /// pattern:
+    /// ```text
+    ///     "line_segment"      ← is_or_pattern_line → true, accumulate
+    ///         | "arc"         ← is_or_pattern_line → true, accumulate
+    ///         | "helix" => {  ← contains `=>`, flush + process
+    /// ```
+    fn is_or_pattern_line(trimmed: &str) -> bool {
+        let mut s = trimmed;
+        if s.starts_with('|') {
+            s = s[1..].trim_start();
+        }
+        let mut chars = s.chars().peekable();
+        let mut found_string = false;
+        while let Some(&c) = chars.peek() {
+            match c {
+                '"' => {
+                    chars.next();
+                    chars.by_ref().take_while(|&x| x != '"').for_each(drop);
+                    found_string = true;
+                }
+                '|' | ' ' | '\t' => {
+                    chars.next();
+                }
+                _ => return false,
+            }
+        }
+        found_string
+    }
+
+    /// Strip a trailing `//` inline comment from `line`, but only outside string
+    /// literals.  Returns the portion of the line before the `//`.
+    ///
+    /// Limitation: does not handle `/*` block comments or char literals.  Use
+    /// [`strip_block_comments`] as a pre-pass for block-comment removal.
+    fn strip_inline_comment(line: &str) -> &str {
+        let bytes = line.as_bytes();
+        let mut in_string = false;
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => in_string = !in_string,
+                b'\\' if in_string => {
+                    // Skip the next byte (part of an escape sequence) without
+                    // flipping `in_string`.
+                    if i + 1 < bytes.len() {
+                        i += 1;
+                    }
+                }
+                b'/' if !in_string
+                    && i + 1 < bytes.len()
+                    && bytes[i + 1] == b'/' =>
+                {
+                    return &line[..i];
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        line
+    }
+
+    /// Replace all `/* ... */` block comments in `s` with spaces, preserving
+    /// newlines so that line numbers remain stable for the subsequent line scan.
+    ///
+    /// Does not handle `/*` inside string literals (not needed for
+    /// `compile_geometry_call` match-arm patterns).
+    fn strip_block_comments(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        let mut in_block = false;
+        while let Some(c) = chars.next() {
+            if in_block {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next(); // consume '/'
+                    out.push_str("  ");
+                    in_block = false;
+                } else {
+                    // Preserve newlines; replace everything else with a space.
+                    out.push(if c == '\n' { '\n' } else { ' ' });
+                }
+            } else if c == '/' && chars.peek() == Some(&'*') {
+                chars.next(); // consume '*'
+                out.push_str("  ");
+                in_block = true;
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     #[test]
     fn extract_dispatch_keys_from_source_parses_match_arms() {
-        // Synthetic source: target fn has single-arm, multi-arm, wildcard, and destructure arms,
-        // plus a nested inner match. An unrelated fn after it must NOT contribute keys.
+        // Synthetic source exercising the five original shapes plus the three
+        // edge cases most likely to regress in practice.
         let source = r#"
 fn other_fn(name: &str) {
     match name {
@@ -910,18 +1039,41 @@ pub(crate) fn target_fn(x: &str) {
     if let Expr::Ident(name) = x {
         return;
     }
+    // Original shapes: single-arm, multi-arm, wildcard, destructure, nested match.
     match x {
         "foo" => { do_something(); }
         "bar" | "baz" | "qux" => { do_other(); }
         _ => { fallback(); }
     }
-    // A nested inner match inside the function body
     let inner = match x {
         "inner_key" => 1,
         _ => 2,
     };
     match complicated {
         Ident(name) => handle(name),
+        _ => {}
+    }
+    // (a) rustfmt-wrapped multi-arm or-pattern: continuation lines begin with `|`.
+    // All three keys must be extracted even though only the last line has `=>`.
+    match x {
+        "wrapped_a"
+            | "wrapped_b"
+            | "wrapped_c" => { do_wrapped(); }
+        _ => {}
+    }
+    // (b) Trailing `//` comment on an arm-body line containing `"spurious" =>`.
+    // The comment must be stripped so `spurious` is NOT extracted as a dispatch key.
+    match x {
+        "legit" => {
+            let _ = (); // "spurious" => should NOT be extracted
+        }
+        _ => {}
+    }
+    // (c) `/* ... */` block comment containing `"block_key" =>`.
+    // The block comment must be stripped so `block_key` is NOT extracted.
+    /* "block_key" => inside a block comment, must not appear */
+    match x {
+        "after_block_comment" => { after(); }
         _ => {}
     }
 }
@@ -934,14 +1086,27 @@ fn after_fn(name: &str) {
 }
 "#;
         let extracted = extract_dispatch_keys_from_source(source, "pub(crate) fn target_fn(");
-        let expected: HashSet<String> =
-            ["foo", "bar", "baz", "qux", "inner_key"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let expected: HashSet<String> = [
+            // original shapes
+            "foo", "bar", "baz", "qux", "inner_key",
+            // (a) wrapped or-pattern — all three keys must be present
+            "wrapped_a", "wrapped_b", "wrapped_c",
+            // (b) legit dispatch arm (`spurious` must NOT appear)
+            "legit",
+            // (c) real arm after block comment (`block_key` must NOT appear)
+            "after_block_comment",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         assert_eq!(
-            extracted, expected,
-            "extracted keys did not match expected set"
+            extracted,
+            expected,
+            "extracted keys did not match expected set.\n\
+             False positives (in extracted, not in expected): {:?}\n\
+             Missed keys (in expected, not in extracted): {:?}",
+            extracted.difference(&expected).collect::<Vec<_>>(),
+            expected.difference(&extracted).collect::<Vec<_>>(),
         );
     }
 
