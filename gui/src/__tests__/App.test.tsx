@@ -2722,4 +2722,24 @@ describe('App DesignTree wiring', () => {
     expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
     await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
   });
+
+  it('Ctrl+click on a DesignTree row toggles multi-selection without navigating to source', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A'), makeNode('Root.B')]);
+    await renderAndWaitForReady();
+
+    // Plain click on Root.A to seed selection and anchor
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+    vi.mocked(bridge.getSourceLocation).mockClear();
+
+    // Ctrl+click on Root.B to add to selection
+    fireEvent.click(screen.getByTestId('tree-row-Root.B'), { ctrlKey: true });
+
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toContain('Root.A');
+      expect(capturedViewportProps.selectedEntities).toContain('Root.B');
+    });
+    // getSourceLocation should NOT have been called for the Ctrl+click
+    expect(bridge.getSourceLocation).not.toHaveBeenCalled();
+  });
 });
