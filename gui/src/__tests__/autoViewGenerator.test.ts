@@ -248,7 +248,8 @@ describe('generatePurposeViews', () => {
 // ---------------------------------------------------------------------------
 
 describe('anchored type-name matching (regression for substring-match bug)', () => {
-  // --- Negative cases (currently FAIL under .includes() — TDD drivers) ---
+  // Regression guards for the old substring-match bug: these must stay green to
+  // ensure we don't regress to `.includes()`.
 
   it('defaultVisibilityFor: let with type_name="Solidarity" → "show" (not a geometry type)', () => {
     const node = makeNode({ entity_path: 'Root.x', kind: 'let', type_name: 'Solidarity' });

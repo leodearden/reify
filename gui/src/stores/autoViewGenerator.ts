@@ -45,6 +45,11 @@ export interface ViewDefinition {
  * boundaries so generic wrappers like `Option<Solid>` or `List<Curve>` are
  * recognised while substring-only matches like `MySolid`, `Solidarity`, or
  * `SolidBody` are correctly rejected.
+ *
+ * Note: the backend type system does not emit digit-suffix variants such as
+ * `Solid3D` or `Curve2D` (`Solid` resolves to `Type::Geometry` and emits
+ * `"Geometry"`; `Surface`/`Curve` are `StructureRef` types with fixed names).
+ * If that ever changes, extend this pattern accordingly.
  */
 const GEOMETRY_TYPE_NAME_RE = /\b(?:Solid|Surface|Curve)\b/;
 
