@@ -69,7 +69,7 @@ export function createViewStateStore() {
     activeViewId: 'auto:default',
   });
 
-  // Internal non-reactive maps (rebuilt on setTree).
+  // Internal non-reactive maps (rebuilt on setTree / rebuildTreeMaps).
   let nodeByPath = new Map<string, EntityTreeNode>();
   let parentByPath = new Map<string, string | null>();
 
@@ -77,10 +77,20 @@ export function createViewStateStore() {
   // Tree registration
   // ---------------------------------------------------------------------------
 
-  function setTree(nodes: EntityTreeNode[]): void {
+  /**
+   * Internal helper: refresh nodeByPath / parentByPath without touching reactive
+   * state.  Used by regenerateAutoViews so the map rebuild does not produce a
+   * separate setState call; the stale-explicit prune is instead folded into the
+   * same produce block as the view replacement.
+   */
+  function rebuildTreeMaps(nodes: EntityTreeNode[]): void {
     nodeByPath = new Map();
     parentByPath = new Map();
     buildMaps(nodes, nodeByPath, parentByPath, null);
+  }
+
+  function setTree(nodes: EntityTreeNode[]): void {
+    rebuildTreeMaps(nodes);
     // Prune explicit overrides for paths that no longer exist in the tree.
     // Stale entries can accumulate when nodes are deleted or renamed upstream,
     // causing hasOverride / getEffectiveVisibility to return stale values for
@@ -251,9 +261,13 @@ export function createViewStateStore() {
    *   are still in the tree; leave NEW paths unset so defaultRuleFor handles them.
    * - active references a missing view → fall back to `auto:default`.
    *
-   * This function calls `setTree(tree)` internally so the internal nodeByPath /
-   * parentByPath maps stay in sync with the tree passed here.  Callers do not
-   * need to call `setTree` separately, though doing so is harmless (idempotent).
+   * This function keeps the internal nodeByPath / parentByPath maps in sync with
+   * the provided tree so callers do not need a separate `setTree` call.
+   *
+   * NOTE: This function performs exactly one `setState` — all work (stale-explicit
+   * prune, auto-view replacement, active-view reconciliation) is batched into a
+   * single reactive notification.  Do NOT add a `setTree(tree)` call here; use
+   * `rebuildTreeMaps` instead to keep the map refresh non-reactive.
    *
    * NOTE on the `modified` flag: `ViewDefinition.modified` is tracked in the
    * type but `regenerateAutoViews` does not yet inspect it.  Auto-view edits
@@ -262,10 +276,10 @@ export function createViewStateStore() {
    * should preserve the user's edits when `modified === true`.
    */
   function regenerateAutoViews(tree: EntityTreeNode[], activePurposes: string[] = []): void {
-    // Keep the internal nodeByPath/parentByPath maps in sync so that
-    // getEffectiveVisibility works correctly after regeneration without
-    // requiring a separate setTree() call from the caller.
-    setTree(tree);
+    // Rebuild the internal maps without triggering a reactive setState so that
+    // the stale-explicit prune below can be folded into the same produce block
+    // as the view replacement — one reactive notification total.
+    rebuildTreeMaps(tree);
 
     const freshDefault = generateDefaultView(tree);
     const freshAllGeo = generateAllGeometryView(tree);
@@ -275,6 +289,17 @@ export function createViewStateStore() {
     const treePathSet = new Set(Object.keys(freshDefault.visibility));
 
     setState(produce((s) => {
+      // ------------------------------------------------------------------
+      // 0. Prune stale explicit entries for paths no longer in the tree.
+      //    This mirrors the cleanup that setTree performs on its own setState,
+      //    consolidated here so that the full regeneration is one notification.
+      // ------------------------------------------------------------------
+      for (const path of Object.keys(s.explicit)) {
+        if (!nodeByPath.has(path)) {
+          delete s.explicit[path];
+        }
+      }
+
       // ------------------------------------------------------------------
       // 1. Replace all auto:* views with fresh ones.
       // ------------------------------------------------------------------
