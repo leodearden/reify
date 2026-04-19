@@ -41228,11 +41228,11 @@
         "description": "Several cross-module tests in crates/reify-compiler/tests/constraint_def_compile_tests.rs (cross_module_constraint_def_import ~499 and cross_module_constraint_def_name_collision_emits_shadow_warning ~615) call `ModuleResolver::new(&dir, dir.join(\"stdlib\"))` without creating the stdlib subdirectory — the tests rely on the resolver silently tolerating a missing stdlib path. If the resolver ever becomes strict about stdlib existence, all such tests break together. Add `fs::create_dir_all(dir.join(\"stdlib\")).unwrap();` in each affected test (or factor into a shared fixtures helper — see task 877's tempfile helper extraction idea).",
         "details": "memory_hints: search \"cross-module constraint def test tempfile stdlib\" for context; look for other tests using ModuleResolver::new with a non-existent stdlib path.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:13:38.974Z",
+        "updatedAt": "2026-04-19T17:40:46.400Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
@@ -41248,11 +41248,11 @@
         "description": "Review follow-up from task 1920; suggestion S3 from reviewer_comprehensive (non-blocking).\n\nContext: task 1920's new `find_node_compound_variant_coverage` test in crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 400-419) has in-test raw struct-literal helpers `make_user_fn_call` and `make_match` because no public constructor exists for `CompiledExprKind::UserFunctionCall` or `CompiledExprKind::Match`. The other 10+ variants in the table use `CompiledExpr::list_literal`, `set_literal`, `map_literal`, `lambda`, `quantifier`, `range_constructor`, `ad_hoc_selector`, `option_some`, `literal`.\n\nThe ad-hoc helpers fabricate content-hash bytes (`ContentHash::of(&[0xf0])`, `0xf1`) which risks drifting from the real per-variant tag bytes used by the production constructors (7/8/9/10/12/13/14/15/16/18/19). Today `0xf0`/`0xf1` don't collide, but the risk grows as variants are added.\n\nFix: add `CompiledExpr::user_function_call(...)` and `CompiledExpr::match_expr(...)` constructors in `crates/reify-types/src/expr.rs` following the pattern of the existing per-variant constructors (with next-available tag bytes). Then update the test to use them and delete the ad-hoc helpers.\n\nNon-blocking — current in-test helpers work — but removes a small correctness hazard and matches the convention already established for other variants.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:15:16.286Z",
+        "updatedAt": "2026-04-19T17:40:46.586Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/expr.rs",
@@ -41301,11 +41301,11 @@
         "description": "Two review follow-ups from task 1920's new find_node tests (crates/reify-compiler/tests/type_error_propagation_tests.rs).\n\n(S1) Lambda body fixture does not test what it claims. At line ~451, `CompiledExpr::lambda(vec![], vec![], error_leaf(), vec![], Type::Error)` gives the outer Lambda node itself `result_type: Type::Error`. The `find_node` function applies `pred(expr)` to the outer node before entering its match, so this test passes whether the Lambda arm recurses into `body` or not. Fix: change the last argument to `Type::Bool` so only the body carries `Type::Error`.\n\n(S2) Duplication between `find_node_traverses_previously_unhandled_kinds` (lines 332-384) and `find_node_compound_variant_coverage` (lines 386-509). The smoke test covers ListLiteral, OptionSome, and Quantifier(collection); the table-driven test already covers every compound variant. Fix: either fold those rows into the table and delete the smoke test, or drop them from the table and keep the smoke test. One source of truth.\n\nReview followup from task 1920; suggestions S1 and S2 from reviewer_comprehensive.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:16:47.476Z",
+        "updatedAt": "2026-04-19T17:40:46.698Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -41660,7 +41660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T17:40:46.302Z",
+      "lastModified": "2026-04-19T17:40:46.698Z",
       "taskCount": 1985,
       "completedCount": 1684,
       "tags": [
