@@ -842,7 +842,21 @@ impl Engine {
         // matches the arguments, regardless of whether the user also defines a same-named
         // function with a different arity or param types.
         self.functions = module.functions.clone();
-        // Extend with pre-flattened prelude functions (cached once at Engine construction).
+        // Unfiltered append: intentionally adds ALL prelude functions without filtering out
+        // entries whose (name, arity, param_types) triple matches a user function.
+        // Correctness is preserved because `reify_expr::eval_user_function_call` resolves
+        // via first-match-wins linear scan, and user functions are stored FIRST (see
+        // SHADOWING INVARIANT above) — shadowed prelude entries can never be the first
+        // match, so they are permanently unreachable at dispatch time.
+        //
+        // This diverges from the compiler's `resolution_functions` build
+        // (reify-compiler/src/lib.rs, compile_with_prelude_refs), which applies an explicit
+        // shadow filter. That filter is a compile-time concern (it avoids confusing
+        // "ambiguous overload" errors for function-resolution tables); the eval dispatch
+        // table does not need it — unfiltered ≡ filtered under first-match-wins semantics.
+        //
+        // If this divergence becomes a maintenance burden, extract a shared helper in
+        // `reify_compiler` (e.g., `merge_prelude_functions`) and call it from both sides.
         self.functions.extend(self.prelude_functions.iter().cloned());
         self.compiled_purposes = module.compiled_purposes.clone();
         // Clear stale purpose state from previous eval() calls — the fresh
@@ -864,6 +878,21 @@ impl Engine {
         // prelude functions with distinct (name, arity, param types) triples remain callable.
         // Clone here to satisfy the borrow checker: `evaluate_let_bindings` borrows `self`
         // mutably, which would conflict with an immutable borrow of `self.functions`.
+        //
+        // PERFORMANCE NOTE: this clone copies all CompiledFunction entries (user + prelude)
+        // on every eval() call. CompiledFunction contains boxed expression trees so the cost
+        // scales with |user_fns + prelude_fns| * avg_tree_size. The natural fix is to change
+        // `self.functions` to `Arc<Vec<CompiledFunction>>` so the clone is O(1):
+        //
+        //   self.functions = Arc::new({ let mut v = module.functions.clone();
+        //                               v.extend(prelude); v });
+        //   let functions = Arc::clone(&self.functions);   // O(1)
+        //
+        // That refactor also requires updating `ConcurrentEditSetup::functions` in
+        // concurrent.rs (field type `Vec<CompiledFunction>`, assigned as
+        // `functions: self.functions.clone()`) — which lies outside this task's locked
+        // modules. The same pattern repeats in edit_param() below. Deferred to a
+        // follow-up task; see reviewer suggestion at lib.rs:867.
         let functions: Vec<CompiledFunction> = self.functions.clone();
 
         let mut values = ValueMap::new();
@@ -1513,6 +1542,9 @@ impl Engine {
         cell: ValueCellId,
         new_value: reify_types::Value,
     ) -> Result<EvalResult, EngineError> {
+        // Clone the merged function table for use in EvalContext.  Same borrow-checker
+        // workaround and same O(N) cost as the clone in eval(); see PERFORMANCE NOTE
+        // near eval()'s `let functions` binding for the deferred Arc refactor.
         let functions = self.functions.clone();
         let state = self
             .eval_state
