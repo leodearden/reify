@@ -201,6 +201,7 @@ pub(crate) fn compile_block_guard(
     constraint_index: &mut u32,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    trait_names: &HashSet<String>,
     known_geometry_lets: &HashSet<&str>,
 ) {
     let inner_condition = compile_expr(&g.condition, scope, enum_defs, functions, diagnostics);
@@ -237,6 +238,7 @@ pub(crate) fn compile_block_guard(
         constraint_index,
         type_param_names,
         alias_registry,
+        trait_names,
         known_geometry_lets,
     );
 
@@ -261,6 +263,7 @@ pub(crate) fn compile_block_guard(
             constraint_index,
             type_param_names,
             alias_registry,
+            trait_names,
             known_geometry_lets,
         );
     }
@@ -303,6 +306,7 @@ pub(crate) fn compile_guarded_members(
     constraint_index: &mut u32,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    trait_names: &HashSet<String>,
     known_geometry_lets: &HashSet<&str>,
 ) {
     let guard_ctx = Some(current_guard);
@@ -400,6 +404,7 @@ pub(crate) fn compile_guarded_members(
                     let_decl.type_expr.as_ref(),
                     type_param_names,
                     alias_registry,
+                    trait_names,
                     diagnostics,
                 );
                 let cell_type = compiled_expr.result_type.clone();
@@ -477,6 +482,7 @@ pub(crate) fn compile_guarded_members(
                     constraint_index,
                     type_param_names,
                     alias_registry,
+                    trait_names,
                     known_geometry_lets,
                 );
             }

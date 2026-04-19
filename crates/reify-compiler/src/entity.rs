@@ -663,6 +663,7 @@ pub(crate) fn compile_entity(
                     let_decl.type_expr.as_ref(),
                     &type_param_names,
                     alias_registry,
+                    trait_names,
                     diagnostics,
                 );
                 let cell_type = compiled_expr.result_type.clone();
@@ -893,6 +894,7 @@ pub(crate) fn compile_entity(
                     &mut constraint_index,
                     &type_param_names,
                     alias_registry,
+                    trait_names,
                     &known_geometry_lets,
                 );
             }
@@ -998,6 +1000,7 @@ pub(crate) fn compile_entity(
                                 let_decl.type_expr.as_ref(),
                                 &type_param_names,
                                 alias_registry,
+                                trait_names,
                                 diagnostics,
                             );
                             let cell_type = compiled_expr.result_type.clone();
@@ -1981,13 +1984,9 @@ pub(crate) fn fixup_option_none_for_let(
     type_expr: Option<&reify_syntax::TypeExpr>,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // This helper only matches Option<_> annotations for None-fallback fixup;
-    // trait-typed annotations (Type::TraitObject) cannot appear inside an
-    // Option<_> wrapper today, so passing an empty trait-name set here keeps
-    // behavior unchanged.
-    let empty_traits: HashSet<String> = HashSet::new();
     if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
         && let Some(te) = type_expr
         && let Some(resolved) = resolve_type_expr_with_aliases(
@@ -1995,7 +1994,7 @@ pub(crate) fn fixup_option_none_for_let(
             type_param_names,
             alias_registry,
             diagnostics,
-            &empty_traits,
+            trait_names,
         )
         && matches!(&resolved, Type::Option(_))
     {
