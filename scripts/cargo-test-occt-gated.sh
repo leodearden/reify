@@ -14,7 +14,11 @@
 #   ./scripts/cargo-test-occt-gated.sh cargo test --workspace -- --test-threads=1
 #
 # Environment:
-#   REIFY_OCCT_LOCK  Override the lock file path (default: /tmp/reify-occt.lock).
+#   REIFY_OCCT_LOCK  Override the lock file path.
+#                    Default: ${TMPDIR:-/tmp}/reify-occt-$(id -u).lock
+#                    The default is user-scoped so each OS account on a shared
+#                    host gets its own lock file.  Cross-user serialization
+#                    (rare) requires setting REIFY_OCCT_LOCK to a shared path.
 #                    Use a unique per-test path in test harnesses to avoid
 #                    interference with real OCCT runs.
 
@@ -26,6 +30,11 @@ if ! command -v flock >/dev/null 2>&1; then
     exit 1
 fi
 
-LOCK="${REIFY_OCCT_LOCK:-/tmp/reify-occt.lock}"
+LOCK="${REIFY_OCCT_LOCK:-${TMPDIR:-/tmp}/reify-occt-$(id -u).lock}"
+
+if [ "$#" -eq 0 ]; then
+    echo "ERROR: cargo-test-occt-gated.sh: no command provided" >&2
+    exit 64
+fi
 
 exec flock -x "$LOCK" "$@"

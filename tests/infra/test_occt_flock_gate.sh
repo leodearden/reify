@@ -53,10 +53,10 @@ assert "wrapper contains 'flock -x'" \
 
 # -- Test 6: default lock path -------------------------------------------------
 echo ""
-echo "--- Test 6: default lock path contains /tmp/reify-occt.lock ---"
+echo "--- Test 6: default lock path is user-scoped ---"
 
-assert "wrapper contains '/tmp/reify-occt.lock'" \
-    grep -q '/tmp/reify-occt.lock' "$WRAPPER"
+assert "default lock path is user-scoped via 'id -u'" \
+    grep -q 'reify-occt-$(id -u)' "$WRAPPER"
 
 # -- Test 7: argument forwarding -----------------------------------------------
 echo ""
@@ -130,7 +130,7 @@ assert "no bare 'cargo test --workspace' without gate in test_command" \
     bash -c "
         LINE=\$(grep 'test_command:' '$ORCH')
         # Remove gated occurrences; anything left is ungated.
-        STRIPPED=\$(echo \"\$LINE\" | sed 's|\./scripts/cargo-test-occt-gated\.sh cargo test --workspace||g')
+        STRIPPED=\$(echo \"\$LINE\" | sed 's|[^ ]*/cargo-test-occt-gated\.sh cargo test --workspace||g')
         ! echo \"\$STRIPPED\" | grep -q 'cargo test --workspace'
     "
 
