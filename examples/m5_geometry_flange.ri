@@ -18,8 +18,8 @@ structure def BoltFlange : Rigid {
     // Rigid trait requirements
     param moment_of_inertia : Real = 0.000001
 
-    // Stand-in for material reference
-    param material : String = "steel"
+    // Material reference (trait-typed param — supplied at instantiation)
+    param material : Material
 
     constraint outer_radius > bolt_circle_radius
     constraint hole_count > 0
