@@ -810,6 +810,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn all_registry_names_reach_non_wildcard_arm() {
+        // Verify that every function name in the four registry lists dispatches to a
+        // concrete arm in `compile_geometry_call` and does NOT reach the wildcard `_ =>`
+        // arm (which emits the "unsupported geometry function" diagnostic).
+        //
+        // Passing `args: vec![]` is intentional: every dispatch arm returns early via
+        // `push_diagnostic + return None` on arg-count/type mismatches, so no arm
+        // panics on empty args — each generates its own arm-specific diagnostic, NOT
+        // the wildcard marker.
+        let boolean_ops: &[&str] =
+            &["union", "intersection", "difference", "union_all", "intersection_all"];
+        let loft: &[&str] = &["loft"];
+
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+
+        for &name in GEOM_ARG_FUNCTIONS
+            .iter()
+            .chain(NO_GEOM_ARG_FUNCTIONS.iter())
+            .chain(boolean_ops.iter())
+            .chain(loft.iter())
+        {
+            let expr = reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::FunctionCall {
+                    name: name.to_string(),
+                    args: vec![],
+                },
+                span: reify_types::SourceSpan::new(0, 1),
+            };
+            let scope = CompilationScope::new("test");
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+            compile_geometry_call(
+                &expr,
+                &scope,
+                &enum_defs,
+                &functions,
+                &mut diagnostics,
+                0,
+                &geometry_lets,
+                &mut HashSet::new(),
+            );
+
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("unsupported geometry function")),
+                "registry name {:?} reached the wildcard arm in compile_geometry_call \
+                 (\"unsupported geometry function\" diagnostic was emitted) — \
+                 add a dispatch arm for this name or remove it from the registry lists",
+                name
+            );
+        }
+    }
+
     /// Scan the body of a named function in `source` for match-arm string-literal
     /// keys and return them as a `HashSet<String>`.
     ///
