@@ -198,6 +198,14 @@ pub fn compile_with_prelude(
 /// are excluded; all others are appended. The result has user functions first, preserving
 /// first-match-wins dispatch order for any resolver that iterates linearly.
 ///
+/// First-wins dedup also applies prelude-vs-prelude: the shadow check runs against
+/// `result` (the accumulating output), not `user` alone, so when two stdlib modules
+/// both declare the same `(name, arity, param_types)` triple only the first-seen
+/// entry survives. This mirrors stdlib load order (sequential in `stdlib_loader::load_stdlib`)
+/// and silently drops duplicates without a diagnostic — intentional for now; if a future
+/// stdlib PR introduces an accidental collision it will be invisible, so rely on
+/// stdlib-level review rather than this function for duplicate detection.
+///
 /// This is the single-source shadow predicate for Reify function tables. It is used by
 /// [`compile_with_prelude_refs`] to build the compile-time overload-resolution table.
 /// `reify_eval::Engine` uses an unfiltered append that is dispatch-equivalent under

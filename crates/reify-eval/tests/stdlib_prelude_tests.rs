@@ -259,9 +259,12 @@ structure S {
 /// Without the fix at 1455, the post-solver `evaluate_let_bindings` uses
 /// `&module.functions` (empty) so `symmetric_tolerance(x, 1mm)` → Undef.
 ///
-/// Expected values (prelude `symmetric_tolerance(a, b) = a + b`):
-///   - `x` = 10mm = 0.010 m (solver initial point; 10mm < 20mm immediately)
-///   - `y` = symmetric_tolerance(10mm, 1mm) = 11mm = 0.011 m
+/// Expected relationships (prelude `symmetric_tolerance(a, b) = a + b`):
+///   - `x` is finite and satisfies `x < 20mm` (solver produced a feasible point)
+///   - `y == x + 0.001` exactly (prelude was reachable in post-solver re-eval)
+/// The exact value of `x` is not asserted — it depends on DimensionalSolver's
+/// feasibility-shortcut policy and pinning it would couple this test to solver
+/// internals instead of the prelude reachability it guards.
 #[test]
 fn prelude_function_resolves_in_constraint_solver_path() {
     use reify_constraints::DimensionalSolver;
@@ -306,13 +309,20 @@ structure S {
                 result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
             )
         });
+    // Assert solver feasibility rather than a specific x value: we care that the solver
+    // produced a finite result satisfying the constraint `x < symmetric_tolerance(15mm, 5mm)`
+    // = 20mm. The exact x depends on DimensionalSolver's feasibility-shortcut policy; pinning
+    // x == 0.010 would couple this test to that internal behavior rather than to the prelude
+    // reachability it is supposed to guard.
     assert!(
-        (x - 0.010).abs() < 1e-6,
-        "S.x: solver should keep initial 10mm when constraint is already satisfied, got {}",
+        x.is_finite() && x < 0.020,
+        "S.x should be finite and satisfy x < 20mm constraint, got {}",
         x
     );
 
-    // y = symmetric_tolerance(10mm, 1mm) = 11mm = 0.011 m
+    // y = symmetric_tolerance(x, 1mm) = x + 0.001 (exact, by prelude definition).
+    // This is the real regression guard: it proves the prelude function was reachable
+    // from the post-solver let-binding re-evaluation, regardless of solver x choice.
     let cell_y = ValueCellId::new("S", "y");
     let y = result
         .values
@@ -325,8 +335,9 @@ structure S {
             )
         });
     assert!(
-        (y - 0.011).abs() < 1e-6,
-        "S.y: post-solver re-eval should give symmetric_tolerance(10mm,1mm) = 11mm = 0.011m, got {}",
+        (y - (x + 0.001)).abs() < 1e-9,
+        "S.y: post-solver re-eval should give symmetric_tolerance(x, 1mm) = x + 0.001 = {}, got {}",
+        x + 0.001,
         y
     );
 }

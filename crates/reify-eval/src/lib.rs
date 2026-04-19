@@ -879,10 +879,14 @@ impl Engine {
         // Clone here to satisfy the borrow checker: `evaluate_let_bindings` borrows `self`
         // mutably, which would conflict with an immutable borrow of `self.functions`.
         //
-        // PERFORMANCE NOTE: this clone copies all CompiledFunction entries (user + prelude)
-        // on every eval() call. CompiledFunction contains boxed expression trees so the cost
-        // scales with |user_fns + prelude_fns| * avg_tree_size. The natural fix is to change
-        // `self.functions` to `Arc<Vec<CompiledFunction>>` so the clone is O(1):
+        // PERFORMANCE NOTE: eval() currently clones the merged function table TWICE per call —
+        // once when assigning `self.functions = module.functions.clone()` (then extending in
+        // place with the prelude above), and again into the local `functions` below so
+        // EvalContext can hold it without aliasing `self`. Each CompiledFunction contains a
+        // boxed expression tree, so for a nontrivial user module plus the 11-module stdlib
+        // the double-clone is a non-trivial allocation on the hot path (every edit_param,
+        // check, build, and tessellate triggers an eval). The natural fix is to change
+        // `self.functions` to `Arc<Vec<CompiledFunction>>` so both clones become O(1):
         //
         //   self.functions = Arc::new({ let mut v = module.functions.clone();
         //                               v.extend(prelude); v });
