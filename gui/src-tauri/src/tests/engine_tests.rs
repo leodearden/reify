@@ -1150,6 +1150,51 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     );
 }
 
+/// Pins that DiagnosticInfo.severity strings produced by diagnostics_to_info
+/// equal Severity::as_wire_str() for each severity level.
+///
+/// Injects a Warning and an Info diagnostic after a clean load, then asserts
+/// the returned severity strings match the centralized helper. This ensures
+/// the step-4 refactor (replacing the hand-rolled match with as_wire_str())
+/// cannot silently diverge.
+#[test]
+fn get_diagnostics_severity_strings_match_as_wire_str() {
+    use reify_types::{Diagnostic, Severity};
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    session.inject_diagnostic_for_test(Diagnostic::warning("w"));
+    session.inject_diagnostic_for_test(Diagnostic::info("i"));
+
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+
+    let warning_diag = diags
+        .iter()
+        .find(|d| d.message == "w")
+        .expect("injected warning diagnostic not found");
+    let info_diag = diags
+        .iter()
+        .find(|d| d.message == "i")
+        .expect("injected info diagnostic not found");
+
+    assert_eq!(
+        warning_diag.severity,
+        Severity::Warning.as_wire_str(),
+        "Warning DiagnosticInfo.severity must equal Severity::Warning.as_wire_str()"
+    );
+    assert_eq!(
+        info_diag.severity,
+        Severity::Info.as_wire_str(),
+        "Info DiagnosticInfo.severity must equal Severity::Info.as_wire_str()"
+    );
+}
+
 /// get_diagnostics returns empty and get_source_location returns None
 /// when the source_map invariant is deliberately broken after load.
 ///
