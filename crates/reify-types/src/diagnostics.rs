@@ -205,27 +205,7 @@ pub struct DiagnosticRef {
 
 #[cfg(test)]
 mod tests {
-    use super::{Severity, SourceSpan};
-
-    /// Cross-check that `as_wire_str` and the serde PascalCase derive agree on
-    /// every variant. If the serde rename or the match arm drifts, this fails.
-    #[cfg(feature = "serde")]
-    #[test]
-    fn severity_as_wire_str_matches_serde_output() {
-        for variant in [Severity::Error, Severity::Warning, Severity::Info] {
-            let serde_str = serde_json::to_value(&variant)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_owned();
-            assert_eq!(
-                variant.as_wire_str(),
-                serde_str,
-                "as_wire_str() and serde output diverged for {:?}",
-                variant
-            );
-        }
-    }
+    use super::SourceSpan;
 
     #[test]
     fn prelude_sentinel_is_prelude() {

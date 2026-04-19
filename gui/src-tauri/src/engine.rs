@@ -1385,8 +1385,9 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
 /// `"Warning"`, `"Info"`).  The canonical mapping lives on
 /// [`reify_types::Severity::as_wire_str`] and the `Serialize` derive on
 /// `Severity` — not in this helper.  Both `get_diagnostics` (compile-time)
-/// and the tessellation path use `as_wire_str()` so log and wire are
-/// structurally pinned to the same mapping.
+/// and the tessellation path (wire + `warn!` log) call `as_wire_str()`.
+/// The wire format is pinned by tests; the log field shares the same call
+/// but is not separately asserted.
 /// MCP consumers and TypeScript code must compare against PascalCase strings.
 fn diagnostics_to_info(diagnostics: &[Diagnostic], file_path: &str, source: &str) -> Vec<DiagnosticInfo> {
     if diagnostics.is_empty() {
