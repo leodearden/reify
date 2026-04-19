@@ -55,7 +55,7 @@ export function formatPerfSamples(samples: number[]): string {
   const med = median(samples);
   const min = samples.reduce((a, b) => (b < a ? b : a));
   const max = samples.reduce((a, b) => (b > a ? b : a));
-  return `median=${med.toFixed(2)}ms min=${min.toFixed(2)} max=${max.toFixed(2)} samples=${JSON.stringify(samples.map(v => +v.toFixed(2)))}`;
+  return `median=${med.toFixed(2)}ms min=${min.toFixed(2)}ms max=${max.toFixed(2)}ms samples=${JSON.stringify(samples.map(v => +v.toFixed(2)))}`;
 }
 
 /** Yield to the macrotask queue so setTimeout callbacks execute. */
