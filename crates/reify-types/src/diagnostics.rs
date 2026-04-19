@@ -97,6 +97,7 @@ impl SourceSpan {
 /// Severity level for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+// Explicit rename keeps wire format PascalCase even if a future variant uses a non-PascalCase identifier.
 #[cfg_attr(feature = "serde", serde(rename_all = "PascalCase"))]
 pub enum Severity {
     /// Informational note.
@@ -116,7 +117,7 @@ impl Severity {
     /// `DiagnosticInfo.severity` (wire format) and in structured log fields.
     /// It MUST stay in lock-step with the `#[serde(rename_all = "PascalCase")]`
     /// derive on this enum — a feature-gated cross-check in the inline tests
-    /// (`#[cfg(feature = "serde")]`) enforces this invariant at compile time.
+    /// (`#[cfg(feature = "serde")]`) is pinned by a unit test.
     ///
     /// Note: `Display` intentionally keeps lowercase (`"error"`, `"warning"`,
     /// `"info"`) for CLI/human-readable output. Do not change `Display` to
