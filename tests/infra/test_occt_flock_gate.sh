@@ -62,7 +62,10 @@ assert "wrapper contains '/tmp/reify-occt.lock'" \
 echo ""
 echo "--- Test 7: wrapper forwards arguments with exec and \"\$@\" ---"
 
-assert "wrapper contains exec and \"\$@\"" \
-    bash -c "grep -q 'exec' '$WRAPPER' && grep -q '\"\\$@\"' '$WRAPPER'"
+assert "wrapper contains 'exec'" \
+    grep -q 'exec' "$WRAPPER"
+
+assert 'wrapper contains "$@" for argument forwarding' \
+    grep -qF '"$@"' "$WRAPPER"
 
 test_summary
