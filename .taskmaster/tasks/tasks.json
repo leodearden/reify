@@ -39297,11 +39297,11 @@
         "description": "Allow param types to reference traits (e.g. `param material : Material`), so that structures can declare dependencies on trait-satisfying values. Currently `resolve_type_name` rejects trait names used as types (\"unresolved type: Material\"). Required for `examples/m5_geometry_flange.ri` to use the intended syntax instead of the `param material : String = \"steel\"` stand-in.",
         "details": "## Scope\nSpawned from task 1751 esc-1751-2. The architect plan for 1751 substituted `param material : String` because trait-typed params are not implementable in the current compiler.\n\n## Problem\n- `resolve_type_name` (crates/reify-compiler/src/type_resolution.rs) only resolves concrete types; trait names are not accepted.\n- `Material` is defined as a trait in `crates/reify-compiler/stdlib/materials_mechanical.ri:8`.\n\n## Approach options\n- Structural subtyping / existential types — significant design change.\n- Limited nominal trait-typed param (accept only concrete structs satisfying the trait at instantiation).\n- Conformance check at instantiation with the passed value's struct.\n\n## Acceptance\n- `param material : Material` type-checks when callers pass a struct that conforms to `Material`.\n- `examples/m5_geometry_flange.ri` can be updated to use the trait-typed form.\n\n## Dependencies\nCoordinates with task ~follow-up on \"Material as first-class type\" (spawned below).\n\n### memory_hints\n- search: \"resolve_type_name Material trait\"\n- search: \"trait conformance param type annotation\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:06:09.101Z",
+        "updatedAt": "2026-04-19T21:09:16.809Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -39974,11 +39974,11 @@
         "description": "Post-merge polish for the tessellation-diagnostics wiring added in task 1764. Covers performance, API-contract consistency, and doc clarification in engine.rs and diff.rs.",
         "details": "From reviewer_comprehensive suggestions on task 1764:\n\n1. **Avoid cloning source on every diagnostic-producing tessellation** (engine.rs:433-438).\n   - `resolve_source()` result is currently `.map(|(f, s)| (f.to_owned(), s.to_owned()))`, cloning the entire source file each time diagnostics are produced.\n   - `diagnostics_to_info` only needs `&str`. Rework to keep borrows, only allocating the fallback `(\"<unknown>\", \"\")` strings when `resolve_source()` returns `None`.\n   - Suggested form: `let (file_path, source): (&str, &str) = self.resolve_source().unwrap_or((\"<unknown>\", \"\")); let unresolved = file_path == \"<unknown>\";`\n\n2. **Derive Serialize on Severity to centralize PascalCase formatting** (engine.rs:1370-1383, diagnostics_to_info).\n   - The change from lowercase (`Severity`'s Display impl) to PascalCase (hand-rolled match in `diagnostics_to_info`) is an observable wire-format break for MCP `get_diagnostics` consumers.\n   - Preferred: derive `Serialize` on `Severity` with `#[serde(rename_all = \"PascalCase\")]` (or equivalent) and use that everywhere instead of duplicating the mapping. Keeps `DiagnosticInfo.severity` string and other serialized Severity sites in lock-step.\n   - Alternative (if derive is infeasible): add a release/migration note documenting the PascalCase change.\n\n3. **Align log and wire format for diagnostic severity** (engine.rs:427).\n   - `warn!(severity = ?diag.severity, ...)` uses Debug format while the emitted wire `DiagnosticInfo.severity` uses the PascalCase match. They happen to look similar today but will drift.\n   - Use `%diag.severity` (Display) or the same mapping used by `diagnostics_to_info` so log and wire formats stay pinned together.\n\n4. **Clarify StateDelta::full tessellation_diagnostics asymmetry comment** (diff.rs:33-49).\n   - Current comment (line ~41) only explains why the initial full-emission collapses empty→None. It does not mention that `diff_gui_state` still emits `Some(vec![])` when clearing a previously non-empty list.\n   - Expand comment to: \"Initial full emission: skip when empty (the frontend default is already []). Subsequent diffs (diff_gui_state) still emit Some(vec![]) when clearing a previously non-empty list so subscribers can clear their view.\"\n\nVerification: run `cargo test -p gui` (or the workspace equivalent) to ensure MCP and GUI tests still pass; also spot-check any serde tests that cover Severity/DiagnosticInfo serialization.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:06:20.280Z",
+        "updatedAt": "2026-04-19T21:09:16.899Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -40233,11 +40233,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, the \"unknown member on self\" branch (~lines 731-737) now returns `CompiledExpr::literal(Value::Undef, Type::Error)` to activate the anti-cascade guard (task-448 / task-1912). However, other diagnostic-producing sites in `compile_expr_guarded` may still return `CompiledExpr::literal(Value::Undef, Type::Real)` alongside a `diagnostics.push(Diagnostic::error(...))`. Asymmetric producer coverage means cascades will still fire whenever those other producers run. Action: grep `crates/reify-compiler/src/expr.rs` for `Value::Undef, Type::Real` pairs adjacent to `Diagnostic::error` pushes, and either (a) convert each producer to emit `Type::Error`, or (b) document in the module header which producers intentionally keep `Type::Real` and why. Related: task 448 (parent anti-cascade work), task 936 (trait conformance sentinel). Review followup from task 1912; suggestion S5.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:06:09.725Z",
+        "updatedAt": "2026-04-19T21:09:17.064Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -41752,7 +41752,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:09:16.696Z",
+      "lastModified": "2026-04-19T21:09:17.064Z",
       "taskCount": 1987,
       "completedCount": 1696,
       "tags": [
