@@ -40722,7 +40722,9 @@
         "details": "",
         "testStrategy": "",
         "status": "blocked",
-        "dependencies": [],
+        "dependencies": [
+          "1918"
+        ],
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-19T06:08:27.935Z",
@@ -40968,7 +40970,9 @@
       "completedCount": 1674,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T06:08:49.525Z",
+      "description": "Tasks for master context"
     }
   }
 }
