@@ -2742,4 +2742,30 @@ describe('App DesignTree wiring', () => {
     // getSourceLocation should NOT have been called for the Ctrl+click
     expect(bridge.getSourceLocation).not.toHaveBeenCalled();
   });
+
+  it('Shift+click with an anchor performs a range-select', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode('Root.A'),
+      makeNode('Root.B'),
+      makeNode('Root.C'),
+    ]);
+    await renderAndWaitForReady();
+
+    // Plain click Root.A to set anchor
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+    vi.mocked(bridge.getSourceLocation).mockClear();
+
+    // Shift+click Root.C to range-select A…C
+    fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
+
+    await waitFor(() => {
+      const sel = capturedViewportProps.selectedEntities as string[];
+      expect(sel).toContain('Root.A');
+      expect(sel).toContain('Root.B');
+      expect(sel).toContain('Root.C');
+    });
+    // getSourceLocation should NOT have been called for the Shift+click (no source navigation)
+    expect(bridge.getSourceLocation).not.toHaveBeenCalled();
+  });
 });
