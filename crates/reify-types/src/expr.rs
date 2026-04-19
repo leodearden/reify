@@ -961,6 +961,85 @@ mod tests {
     }
 
     #[test]
+    fn user_function_call_constructs_expected_expr() {
+        let arg1 = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let arg2 = CompiledExpr::literal(Value::Int(2), Type::Int);
+        let expr =
+            CompiledExpr::user_function_call("f".to_string(), vec![arg1, arg2], Type::Bool);
+
+        // Kind and fields.
+        match &expr.kind {
+            CompiledExprKind::UserFunctionCall { function_name, args } => {
+                assert_eq!(function_name, "f");
+                assert_eq!(args.len(), 2);
+            }
+            other => panic!("expected UserFunctionCall, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::Bool);
+
+        // Content hash differs for different function names.
+        let other_name =
+            CompiledExpr::user_function_call("g".to_string(), vec![], Type::Bool);
+        assert_ne!(
+            expr.content_hash, other_name.content_hash,
+            "hash should differ for different function names"
+        );
+
+        // Content hash differs for different args.
+        let no_args = CompiledExpr::user_function_call("f".to_string(), vec![], Type::Bool);
+        assert_ne!(
+            expr.content_hash, no_args.content_hash,
+            "hash should differ for different args"
+        );
+    }
+
+    #[test]
+    fn match_expr_constructs_expected_expr() {
+        let discriminant = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let arm_body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let arm = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: arm_body,
+        };
+        let expr = CompiledExpr::match_expr(discriminant.clone(), vec![arm], Type::Bool);
+
+        // Kind and fields.
+        match &expr.kind {
+            CompiledExprKind::Match { discriminant: d, arms } => {
+                assert_eq!(arms.len(), 1);
+                assert_eq!(arms[0].patterns, vec!["_".to_string()]);
+                let _ = d; // discriminant is boxed
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::Bool);
+
+        // Content hash differs when discriminant changes.
+        let different_discriminant = CompiledExpr::literal(Value::Int(99), Type::Int);
+        let arm2 = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let expr2 =
+            CompiledExpr::match_expr(different_discriminant, vec![arm2], Type::Bool);
+        assert_ne!(
+            expr.content_hash, expr2.content_hash,
+            "hash should differ when discriminant changes"
+        );
+
+        // Content hash differs when arm body changes.
+        let arm3 = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        };
+        let expr3 = CompiledExpr::match_expr(discriminant, vec![arm3], Type::Bool);
+        assert_ne!(
+            expr.content_hash, expr3.content_hash,
+            "hash should differ when arm body changes"
+        );
+    }
+
+    #[test]
     fn walk_traverses_deeply_nested() {
         let a = CompiledExpr::value_ref(ValueCellId::new("P", "a"), Type::length());
         let b = CompiledExpr::value_ref(ValueCellId::new("P", "b"), Type::length());
