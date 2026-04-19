@@ -40247,11 +40247,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, the \"unknown member on self\" branch (~lines 731-737) now returns `CompiledExpr::literal(Value::Undef, Type::Error)` to activate the anti-cascade guard (task-448 / task-1912). However, other diagnostic-producing sites in `compile_expr_guarded` may still return `CompiledExpr::literal(Value::Undef, Type::Real)` alongside a `diagnostics.push(Diagnostic::error(...))`. Asymmetric producer coverage means cascades will still fire whenever those other producers run. Action: grep `crates/reify-compiler/src/expr.rs` for `Value::Undef, Type::Real` pairs adjacent to `Diagnostic::error` pushes, and either (a) convert each producer to emit `Type::Error`, or (b) document in the module header which producers intentionally keep `Type::Real` and why. Related: task 448 (parent anti-cascade work), task 936 (trait conformance sentinel). Review followup from task 1912; suggestion S5.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:13.836Z",
+        "updatedAt": "2026-04-19T06:04:21.812Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -40467,11 +40467,11 @@
         "description": "The new 'Editor debounce constant' describe block in gui/src/__tests__/Editor.test.tsx:71-89 overlaps with the existing 'calls bridge.updateSource after 300ms debounce' test at line 110 — both dispatch an edit and assert updateSource fires after the debounce. The unique value of the new test is the (EDITOR_DEBOUNCE_MS-1)ms negative-boundary assertion. Fold the negative-boundary assertion into the existing test and remove the duplicate describe block, OR keep the new test and delete/retitle the older one. Also update the older test's title and inline '// After 300ms debounce' comment to reference EDITOR_DEBOUNCE_MS for consistency.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T06:29:53.543Z",
+        "updatedAt": "2026-04-19T06:04:21.909Z",
         "metadata": {
           "files": [
             "gui/src/__tests__/Editor.test.tsx"
@@ -40499,11 +40499,11 @@
         "description": "Follow-up to task 448 review. The `find_node` helper at crates/reify-compiler/tests/type_error_propagation_tests.rs:12-44 only recurses into BinOp, UnOp, FunctionCall, Conditional, MethodCall, and IndexAccess — returning None for everything else (Quantifier.predicate, ListLiteral elements, SetLiteral elements, Lambda body, Let/Block, etc.). The quantifier test currently works because it pattern-matches the top-level Quantifier out first, but any future refactor that wraps the quantifier or embeds the predicate inside an unhandled variant would cause the `Type::Error` search to silently return None and the assertion would fail in a misleading way.\n\nEither:\n- Extend `find_node` to recurse into all CompiledExprKind variants that contain sub-expressions (Quantifier.predicate, list/set element exprs, Lambda body, Let bindings/body, Block stmts, etc.), OR\n- Document the restricted scope at the top of the helper and panic on unknown recursive kinds so coverage gaps surface loudly instead of silently missing.\n\nPreferred: the extend-coverage approach so anti-cascade tests stay robust against AST/IR restructuring.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:47:49.587Z",
+        "updatedAt": "2026-04-19T06:04:22.068Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40951,7 +40951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:04:21.719Z",
+      "lastModified": "2026-04-19T06:04:22.068Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
