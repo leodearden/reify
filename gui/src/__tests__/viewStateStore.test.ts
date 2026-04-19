@@ -1452,3 +1452,110 @@ describe('setVisibility — user-view write-back', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// other mutations — user-view mirror
+// ---------------------------------------------------------------------------
+
+describe('other mutations — user-view mirror to active user view', () => {
+  // Tree: Root { Root.A { Root.A.a1 }, Root.B }
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            ],
+          }),
+          makeNode({ entity_path: 'Root.B', kind: 'structure' }),
+        ],
+      }),
+    ];
+  }
+
+  function seedAndActivateUserView(store: ReturnType<typeof createViewStateStore>) {
+    const userView: ViewDefinition = {
+      id: 'user:mine',
+      name: 'Mine',
+      auto: false,
+      modified: false,
+      visibility: {},
+    };
+    store.seedView(userView);
+    store.setActiveView('user:mine');
+  }
+
+  it('(a) resetToInherit on user:* view — null-cleared path must NOT appear in mirrored view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      seedAndActivateUserView(store);
+
+      // Prime Root.A as hidden first (mirrors to user:mine).
+      store.setVisibility('Root.A', 'hidden', false);
+      expect(store.state.views['user:mine'].visibility['Root.A']).toBe('hidden');
+
+      // Now reset Root.A to inherit — explicit['Root.A'] becomes null.
+      store.resetToInherit('Root.A');
+
+      // After reset, 'Root.A' is null in explicit → must NOT appear in mirrored view.
+      expect(store.state.views['user:mine'].visibility['Root.A']).toBeUndefined();
+
+      dispose();
+    });
+  });
+
+  it('(b) showOnly on user:* view — target "show" mirrored; non-null "hidden" mirrored; null ancestors omitted', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      seedAndActivateUserView(store);
+
+      store.showOnly('Root.A.a1', true);
+
+      // Target must be mirrored as 'show'.
+      expect(store.state.views['user:mine'].visibility['Root.A.a1']).toBe('show');
+      // Non-ancestor non-target nodes get hidden → mirrored.
+      expect(store.state.views['user:mine'].visibility['Root.B']).toBe('hidden');
+      // Ancestors of target get null (cleared) in explicit → NOT mirrored (undefined).
+      expect(store.state.views['user:mine'].visibility['Root']).toBeUndefined();
+      expect(store.state.views['user:mine'].visibility['Root.A']).toBeUndefined();
+
+      dispose();
+    });
+  });
+
+  it('(c) setVisibilityWithoutCascade on user:* view — mirrors to stored view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      seedAndActivateUserView(store);
+
+      store.setVisibilityWithoutCascade('Root.A', 'ghost');
+
+      expect(store.state.views['user:mine'].visibility['Root.A']).toBe('ghost');
+
+      dispose();
+    });
+  });
+
+  it('(d) cycleCascading on user:* view — mirrors the cycled state (via setVisibility)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      seedAndActivateUserView(store);
+
+      // Default effective for Root.A is 'show'; cycle → 'ghost'.
+      store.cycleCascading('Root.A');
+
+      expect(store.state.views['user:mine'].visibility['Root.A']).toBe('ghost');
+
+      dispose();
+    });
+  });
+});
