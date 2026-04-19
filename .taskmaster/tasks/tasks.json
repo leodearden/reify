@@ -39644,11 +39644,11 @@
         "description": "In gui/src/__tests__/App.test.tsx around line 2429, the save error-path test uses `expect(errorSpy).not.toHaveBeenCalled()`, a strict global check. If any unrelated async code (engine subscriptions, toast rendering, etc.) logs to console.error during the test, the assertion fails in a way that looks like a regression in save-error handling but is actually unrelated noise.\n\nReplace with a targeted check that preserves the test's intent (\"errors route through showToast, not console\") while being robust:\n\n  expect(\n    errorSpy.mock.calls.flat().some(\n      (arg) => String(arg).includes('Save failed') || String(arg).includes('disk full')\n    )\n  ).toBe(false);\n\nThis asserts the specific error message was not logged to console while tolerating incidental console.error from unrelated paths.\n\nFrom task 1793 review (reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:23:21.664Z",
+        "updatedAt": "2026-04-19T06:04:21.476Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -40195,11 +40195,11 @@
         "description": "In crates/reify-compiler/src/type_compat.rs, both `implicitly_converts_to(from, to)` and `type_compatible(param_ty, arg_ty)` short-circuit to `true` when EITHER side is Type::Error. The producer-side guard (`from.is_error()` / `arg_ty.is_error()`) is the anti-cascade path: a poisoned expression feeds into a consumer and must not trigger a second diagnostic. The mirror direction (`to.is_error()` / `param_ty.is_error()`) is conceptually dubious — no legitimate call site should ever pass Type::Error as the *expected* type, so silently returning `true` can mask a bug where Type::Error leaks into a parameter position (e.g. registry lookup returning Error where a concrete type was expected). Evaluate whether the mirror direction can be tightened to only short-circuit on the producer side, with a `debug_assert` (or a `cfg(debug_assertions)` panic) on any call site that legitimately passes Type::Error as `to`/`param_ty`. If the mirror short-circuit stays, document which consumers depend on it. Review followup from task 1912; suggestion S2.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:23.544Z",
+        "updatedAt": "2026-04-19T06:04:21.570Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/type_compat.rs",
@@ -40230,11 +40230,11 @@
         "description": "In crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 17-42), the `find_node` helper walks `CompiledExprKind` recursively but falls through to `_ => None` for many variants (Quantifier, ListLiteral, StructLiteral, tuple-like nodes, etc.). Current callers only search predicate subtrees so this is not a correctness bug today, but it is a maintainability trap: if a future regression produces a nested `Type::Error` inside an unhandled variant, `find_node` would silently return `None` and turn a real regression into a green test. Either (a) enumerate all CompiledExprKind variants exhaustively (no `_ => None`) so the compiler nags when new variants are added, or (b) panic/log in `cfg(test)` on unhandled kinds so silent miss is impossible. Review followup from task 1912; suggestion S4.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:14:41.168Z",
+        "updatedAt": "2026-04-19T06:04:21.719Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40951,7 +40951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:04:21.385Z",
+      "lastModified": "2026-04-19T06:04:21.719Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
