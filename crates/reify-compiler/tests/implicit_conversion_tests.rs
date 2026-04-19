@@ -812,6 +812,12 @@ fn type_compatible_error_wildcard_matrix() {
 }
 
 /// `type_compatible(Error, Error) == true`.
+/// Note: this case is also covered by the identity arm (`param_ty == arg_ty`), so it
+/// does NOT discriminate between guard-present and guard-removed. It is kept
+/// for completeness. The actual guard-pinning tests are
+/// `type_compatible_error_wildcard_real` and
+/// `type_compatible_error_wildcard_mirror_real`, which use types that are not
+/// compatible without the guard (task-1912).
 #[test]
 fn type_compatible_error_wildcard_error_error() {
     assert!(
