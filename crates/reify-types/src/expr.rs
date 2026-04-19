@@ -868,6 +868,11 @@ impl CompiledExpr {
     ///
     /// Hash tag byte: `[20]`. Combines the function name then each argument's
     /// content hash in order, following the same pattern as `method_call`.
+    ///
+    /// **Note:** the production inline code in `reify-compiler/src/expr.rs`
+    /// uses tag `[6]` for this variant, so hashes built via this constructor
+    /// will differ from those produced by the compiler's inline path for the
+    /// same expression.
     pub fn user_function_call(
         function_name: String,
         args: Vec<CompiledExpr>,
@@ -888,8 +893,11 @@ impl CompiledExpr {
     /// Create a match expression.
     ///
     /// Hash tag byte: `[21]`. Combines the discriminant hash then, for each
-    /// arm, each pattern string followed by the arm body hash — mirroring the
-    /// combine order used in the production inline code.
+    /// arm, each pattern string followed by the arm body hash. The combine
+    /// order within arms mirrors the production inline code in
+    /// `reify-compiler/src/expr.rs`, but the tag byte differs: production uses
+    /// `[6]`, so hashes from this constructor will differ from those produced
+    /// by the compiler's inline path for the same expression.
     pub fn match_expr(
         discriminant: CompiledExpr,
         arms: Vec<CompiledMatchArm>,
@@ -1080,10 +1088,42 @@ mod tests {
             patterns: vec!["_".to_string()],
             body: CompiledExpr::literal(Value::Bool(false), Type::Bool),
         };
-        let expr3 = CompiledExpr::match_expr(discriminant, vec![arm3], Type::Bool);
+        let expr3 = CompiledExpr::match_expr(discriminant.clone(), vec![arm3], Type::Bool);
         assert_ne!(
             expr.content_hash, expr3.content_hash,
             "hash should differ when arm body changes"
+        );
+
+        // Content hash differs when arm patterns change.
+        let arm4 = CompiledMatchArm {
+            patterns: vec!["A".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let arm5 = CompiledMatchArm {
+            patterns: vec!["B".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let expr4 = CompiledExpr::match_expr(discriminant.clone(), vec![arm4], Type::Bool);
+        let expr5 = CompiledExpr::match_expr(discriminant.clone(), vec![arm5], Type::Bool);
+        assert_ne!(
+            expr4.content_hash, expr5.content_hash,
+            "hash should differ when arm patterns change"
+        );
+
+        // Reproducibility: two constructions with identical inputs yield equal hashes.
+        let arm_a = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let arm_b = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let expr_a = CompiledExpr::match_expr(discriminant.clone(), vec![arm_a], Type::Bool);
+        let expr_b = CompiledExpr::match_expr(discriminant, vec![arm_b], Type::Bool);
+        assert_eq!(
+            expr_a.content_hash, expr_b.content_hash,
+            "identical inputs should produce identical hashes"
         );
     }
 
