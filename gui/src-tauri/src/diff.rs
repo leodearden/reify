@@ -38,8 +38,9 @@ impl StateDelta {
             removed_mesh_paths: vec![],
             removed_value_ids: vec![],
             removed_constraint_ids: vec![],
-            // Skip the event when the list is empty to avoid no-op wire traffic
-            // on every full refresh in the common clean-compile case.
+            // Initial full emission: skip when empty (the frontend default is already []).
+            // Subsequent diffs (diff_gui_state) still emit Some(vec![]) when clearing a
+            // previously non-empty list so subscribers can clear their view.
             changed_tessellation_diagnostics: if state.tessellation_diagnostics.is_empty() {
                 None
             } else {
