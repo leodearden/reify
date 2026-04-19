@@ -1342,3 +1342,113 @@ describe('regenerateAutoViews — atomicity (single reactive notification)', () 
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// setVisibility — user-view write-back
+// ---------------------------------------------------------------------------
+
+describe('setVisibility — user-view write-back', () => {
+  // Tree: Root { Root.A { Root.A.a1 }, Root.B }
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            ],
+          }),
+          makeNode({ entity_path: 'Root.B', kind: 'structure' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) non-cascade setVisibility mirrors to state.views[activeViewId].visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+
+      // Seed and activate a user view with a starting visibility entry.
+      const userView: ViewDefinition = {
+        id: 'user:mine',
+        name: 'Mine',
+        auto: false,
+        modified: false,
+        visibility: { Root: 'show' },
+      };
+      store.seedView(userView);
+      store.setActiveView('user:mine');
+
+      // Mutate via setVisibility (no cascade).
+      store.setVisibility('Root.A', 'hidden', false);
+
+      // Mirror: state.views['user:mine'].visibility must reflect the mutation.
+      expect(store.state.views['user:mine'].visibility['Root.A']).toBe('hidden');
+      // The original entry should be preserved.
+      expect(store.state.views['user:mine'].visibility['Root']).toBe('show');
+
+      dispose();
+    });
+  });
+
+  it('(b) cascade setVisibility mirrors non-null entries; null (inherit) entries are NOT mirrored', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+
+      // Seed a user view with some existing entries.
+      const userView: ViewDefinition = {
+        id: 'user:mine',
+        name: 'Mine',
+        auto: false,
+        modified: false,
+        visibility: { 'Root.A': 'ghost', 'Root.A.a1': 'show' },
+      };
+      store.seedView(userView);
+      store.setActiveView('user:mine');
+
+      // Cascade-set Root.A to 'hidden' — this writes null to all descendants.
+      store.setVisibility('Root.A', 'hidden', true);
+
+      // 'Root.A' is a non-null write → must be mirrored.
+      expect(store.state.views['user:mine'].visibility['Root.A']).toBe('hidden');
+      // 'Root.A.a1' got null in explicit (cascade-clear) → must NOT appear in the view.
+      expect(store.state.views['user:mine'].visibility['Root.A.a1']).toBeUndefined();
+
+      dispose();
+    });
+  });
+
+  it('(c) when active view is auto:*, setVisibility does NOT mutate state.views[activeViewId].visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+
+      // Seed an auto view and activate it.
+      const autoView: ViewDefinition = {
+        id: 'auto:default',
+        name: 'Default',
+        auto: true,
+        modified: false,
+        visibility: { Root: 'show', 'Root.A': 'show', 'Root.A.a1': 'show', 'Root.B': 'show' },
+      };
+      store.seedView(autoView);
+      store.setActiveView('auto:default');
+
+      const viewBefore = { ...store.state.views['auto:default'].visibility };
+
+      // Mutate — active view is auto:*, mirror must NOT apply.
+      store.setVisibility('Root.A', 'hidden', false);
+
+      // The stored auto view's visibility must be unchanged.
+      expect(store.state.views['auto:default'].visibility).toEqual(viewBefore);
+
+      dispose();
+    });
+  });
+});
