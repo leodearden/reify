@@ -41713,11 +41713,11 @@
         "description": "Post-merge review suggestions for Task 1853 (ID_TO_CALLBACK wiring invariant test). Two low-severity polish items:\n\n1) Test title/docstring drift (gui/src/__tests__/useKeyboardShortcuts.test.ts:262 and gui/src/hooks/useKeyboardShortcuts.ts:20-21). The `it(...)` description says \"minus known no-callback IDs\" but the actual predicate filters via `!s.disabled`. Current `disabled` shortcuts (undo, redo) happen to coincide with the no-callback ones, so the test passes, but the title misleads future readers. Rename to something like \"every enabled shortcut with a bind has an ID_TO_CALLBACK entry\" and update the ID_TO_CALLBACK docstring (\"undo, redo, fitToView are omitted\") to make the coupling with the `disabled` flag explicit.\n\n2) (Optional, non-blocking) Narrower export surface (gui/src/hooks/useKeyboardShortcuts.ts:26). ID_TO_CALLBACK is exported solely to satisfy the invariant test, which widens the module's public surface for an internal mapping. Consider either (a) adding an \"exported for test only — do not import elsewhere\" comment, or (b) replacing the export with a narrow `hasCallbackWiring(id: ShortcutId): boolean` predicate (and using `__test__` / internals-for-test style if a richer view is needed). Risk is low since it's a GUI-internal module.\n\nScope is small; both items can be a single PR.\n\nmemory_hints: search \"ID_TO_CALLBACK wiring invariant shortcuts\" ; get_task 1853",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:35.872Z",
+        "updatedAt": "2026-04-19T21:14:41.981Z",
         "metadata": {
           "files": [
             "gui/src/__tests__/useKeyboardShortcuts.test.ts",
@@ -41752,7 +41752,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:14:41.029Z",
+      "lastModified": "2026-04-19T21:14:41.981Z",
       "taskCount": 1987,
       "completedCount": 1696,
       "tags": [
