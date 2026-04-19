@@ -605,10 +605,7 @@ pub(crate) fn compile_geometry_call(
             compile_curve_op(name, compiled_args, diagnostics)
         }
         _ => {
-            diagnostics.push(Diagnostic::error(format!(
-                "{}: {}",
-                UNSUPPORTED_GEOMETRY_FN_MSG, name
-            )));
+            diagnostics.push(Diagnostic::error(unsupported_geometry_fn_message(name)));
             None
         }
     }
@@ -657,6 +654,15 @@ pub(crate) fn extract_collection_count(
 /// so the production wildcard arm and the registry-cross-check test can share the
 /// same string — if the wording ever changes, both sites update together.
 pub(crate) const UNSUPPORTED_GEOMETRY_FN_MSG: &str = "unsupported geometry function";
+
+/// Full diagnostic message emitted by the wildcard arm in `compile_geometry_call`
+/// for an unrecognised geometry function `name`.  Both the production wildcard arm
+/// and the registry-cross-check test call this function, so a formatting change
+/// only needs to be made in one place and cannot silently diverge between the two
+/// sites.
+pub(crate) fn unsupported_geometry_fn_message(name: &str) -> String {
+    format!("{}: {}", UNSUPPORTED_GEOMETRY_FN_MSG, name)
+}
 
 // ─── Registry cross-check (task-1733) ────────────────────────────────────────
 //
@@ -860,7 +866,7 @@ mod tests {
                 &mut HashSet::new(),
             );
 
-            let wildcard_msg = format!("{}: {}", UNSUPPORTED_GEOMETRY_FN_MSG, name);
+            let wildcard_msg = unsupported_geometry_fn_message(name);
             assert!(
                 !diagnostics
                     .iter()
