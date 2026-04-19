@@ -17,6 +17,7 @@ import type {
   FileData,
   SerializationError,
   DiagnosticInfo,
+  EntityTreeNode,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -101,6 +102,11 @@ export async function pickOpenPath(): Promise<string | null> {
     ],
   });
   return (result as string) ?? null;
+}
+
+/** Get the entity tree from the backend. */
+export async function getEntityTree(): Promise<EntityTreeNode[]> {
+  return invoke<EntityTreeNode[]>('get_entity_tree');
 }
 
 /** Get the source location for an entity. */
