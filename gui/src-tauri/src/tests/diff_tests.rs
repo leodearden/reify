@@ -606,6 +606,39 @@ fn diff_changed_tessellation_diagnostics_returns_some() {
     );
 }
 
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so
+/// subscribers can clear their view.
+///
+/// None would swallow the clear event; subscribers must receive Some(vec![])
+/// to know the list was emptied. This is distinct from StateDelta::full, which
+/// collapses empty → None to avoid no-op wire traffic on initial emission.
+#[test]
+fn diff_clearing_tessellation_diagnostics_emits_some_empty() {
+    let old = crate::types::GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![sample_diagnostic("Error", "kernel failure")],
+    };
+    let new = crate::types::GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tessellation_diagnostics,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can \
+         clear their view; subscribers must receive Some(vec![]) on non-empty → \
+         empty transition to clear their view; None would swallow the clear"
+    );
+}
+
 /// delta_to_events: when `changed_tessellation_diagnostics` is Some(vec),
 /// exactly one event named "tessellation-diagnostics" is produced with the vec
 /// as its JSON payload.
