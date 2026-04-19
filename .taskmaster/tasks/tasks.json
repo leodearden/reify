@@ -40665,11 +40665,11 @@
         "description": "Three post-merge review suggestions on the task 1926 work (median-per-keystroke guard). All small, local, and touch only the editor-perf test and its shared test-utils helper.\n\n1) gui/src/__tests__/editor-perf.test.tsx:162 — enrich the Vitest second-arg failure message so CI triage doesn't require mentally computing the median from the raw sample list. Replace the current `samples=${JSON.stringify(perKeystroke)}` with something like:\n   `` `median=${median(perKeystroke).toFixed(2)}ms min=${Math.min(...perKeystroke).toFixed(2)} max=${Math.max(...perKeystroke).toFixed(2)} samples=${JSON.stringify(perKeystroke.map(v => +v.toFixed(2)))}` ``\n\n2) gui/src/__tests__/test-utils.ts:26 — `median()` currently rejects NaN but silently accepts ±Infinity. For an even-length array containing Infinity in a middle position the result is `(Infinity + x)/2 = Infinity`, which would fail a `toBeLessThan` with a misleading message (same NaN-propagation rationale the docstring already calls out). Replace `values.some(Number.isNaN)` with `values.some(v => !Number.isFinite(v))` and update the error text and docstring. Add a matching unit test in test-utils.test.ts for ±Infinity inputs.\n\n3) gui/src/__tests__/editor-perf.test.tsx:149 — wrap the measurement loop in `try { ... } finally { unmount(); }` so the 300ms debounce cleanup runs regardless of in-loop failures. Low-risk but makes the cleanup invariant explicit.\n\nSource: review of task 1926 (esc-1926-9).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:35:44.974Z",
+        "updatedAt": "2026-04-19T06:04:22.573Z",
         "metadata": {
           "files": [
             "gui/src/__tests__/editor-perf.test.tsx",
@@ -40732,11 +40732,11 @@
         "description": "Follow-up to task 1936 review. Two related improvements to crates/reify-compiler/tests/trait_conformance_type_error_tests.rs:\n\n1. DRY / code_reuse (lines 74-103, 143-157): The three-assertion invariant block (errors non-empty, no \"type mismatch for trait\" cascade, at least one \"unknown member\") is duplicated verbatim between Scenario A (`poisoned_structure_let_preserves_root_cause_error`) and Scenario B (`poisoned_trait_default_preserves_root_cause_error`) — ~30 lines repeated. Extract a private helper `fn assert_poisoned_conformance_invariant(module: &CompiledModule)` that filters errors and runs the three assertions. Each test becomes `source + helper call`; invariant message text lives in one place.\n\n2. Test robustness (lines 86, 145): The cascade-suppression assertion (b) currently filters `module.diagnostics` by `Severity::Error` before searching for \"type mismatch for trait\". If a future refactor ever downgrades the conformance-layer cascade to `Severity::Warning` (e.g. during a deprecation period), the test silently passes even though the cascade reappeared — the opposite of the invariant. Fix: for check (b) only, search `module.diagnostics` across all severities for the \"type mismatch for trait\" substring. Keep checks (a) and (c) on the pre-filtered `errors` vector since they intentionally pin severity.\n\nAcceptance:\n- Single helper contains all three assertion messages; both scenarios call it.\n- Check (b) examines diagnostics regardless of severity; checks (a) and (c) remain severity-pinned.\n- All tests in `cargo test -p reify-compiler --test trait_conformance_type_error_tests` still pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:43:35.362Z",
+        "updatedAt": "2026-04-19T06:04:22.666Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
@@ -40771,11 +40771,11 @@
         "description": "The `field_source_kind_gradient_doc_describes_provenance_only` test in crates/reify-types/src/value.rs (~line 6976) enforces the \"no impl-detail leakage\" rule only for `FieldSourceKind::Gradient`. The same doc cleanup was applied in task 1002 to `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear`, and `SafetyFactor`, but none of those variants have a regression guard. A future author rewording any of those docs could silently reintroduce `lambda slot` / `sample handler` / `central-difference` language.",
         "details": "Parameterize (or loop) the Gradient doc-invariant test over all seven derived-field variants: Gradient, Divergence, Curl, Laplacian, VonMises, PrincipalStresses, MaxShear, SafetyFactor. For each variant assert (a) the doc block omits the forbidden impl tokens (\"lambda slot\", \"sample handler\", \"central-difference\") and (b) mentions the variant's operator name (e.g. `gradient()`, `divergence()`, `curl()`, `laplacian()`, `von_mises()`, `principal_stresses()`, `max_shear()`, `safety_factor()`).\n\nThe `enum_variant_doc_region` helper already supports locating any variant; pass `\"FieldSourceKind\"` and the per-variant line (e.g. `\"    Divergence,\\n\"`). Only the variants table and per-variant operator name strings need to be added.\n\nSource: review escalation esc-1002-30, suggestion 1.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:53:43.737Z",
+        "updatedAt": "2026-04-19T06:04:22.831Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -40802,11 +40802,11 @@
         "description": "`Value::Field`'s doc in crates/reify-types/src/value.rs:205 references `reify_expr::calculus::detect_single_point_param`, but that function is a private `fn` (not `pub fn`) in crates/reify-expr/src/calculus.rs:526. Readers outside reify-expr cannot jump to it from rustdoc, and any intra-doc link would not resolve.",
         "details": "Pick one of:\n1. Make `detect_single_point_param` `pub(crate)` plus a `#[doc(hidden)] pub` re-export so the rustdoc link resolves across crates, or\n2. Soften the cross-reference in value.rs:205 to clarify it's an internal helper — e.g. \"See the private `detect_single_point_param` helper in `crates/reify-expr/src/calculus.rs` for the reference implementation of this heuristic; keep this doc in sync with that function.\"\n\nOption 2 is lower-risk and preserves encapsulation; option 1 enables navigation at the cost of widening the surface.\n\nSource: review escalation esc-1002-30, suggestion 2.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:54:31.407Z",
+        "updatedAt": "2026-04-19T06:04:22.939Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -40951,7 +40951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:04:22.474Z",
+      "lastModified": "2026-04-19T06:04:22.939Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
