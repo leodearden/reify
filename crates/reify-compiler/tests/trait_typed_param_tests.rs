@@ -6,6 +6,7 @@
 //! the `Material` trait (from `stdlib/materials_mechanical.ri`) is in
 //! scope.
 
+use reify_compiler::RequirementKind;
 use reify_test_support::{compile_source_with_stdlib, parse_and_compile_with_stdlib};
 use reify_types::{Severity, Type};
 
@@ -96,6 +97,48 @@ fn guarded_param_with_trait_type_resolves_to_trait_object() {
         Type::TraitObject("Material".to_string()),
         "guarded param typed with trait name Material should resolve to Type::TraitObject(\"Material\")"
     );
+}
+
+/// Trait member: `trait Assembly { param m : Material }` should record the
+/// member's type as `Type::TraitObject("Material")` in required_members.
+#[test]
+fn trait_member_with_trait_type_resolves_to_trait_object() {
+    let source = r#"
+        trait Assembly { param m : Material }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
+
+    let assembly = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly trait should be compiled");
+
+    let m_req = assembly
+        .required_members
+        .iter()
+        .find(|r| r.name == "m")
+        .expect("required member 'm' should exist");
+
+    match &m_req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::TraitObject("Material".to_string()),
+            "trait member typed with trait name Material should resolve to Type::TraitObject(\"Material\")"
+        ),
+        other => panic!("expected RequirementKind::Param, got {:?}", other),
+    }
 }
 
 /// Port member: `port p : in PortType { param m : Material }` should resolve the
