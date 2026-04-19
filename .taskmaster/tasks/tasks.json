@@ -37210,11 +37210,11 @@
         "description": "The Ctrl+O keyboard shortcut to open a file does not work when the CodeMirror editor has focus. The shortcut likely gets captured by CodeMirror before it reaches the app-level handler.",
         "details": "memory_hints: search \"Ctrl+O open file keyboard shortcut CodeMirror\"\n\nThe shortcut is registered via `useKeyboardShortcuts` in App.tsx, but CodeMirror may intercept the keydown event before it bubbles up. Fix by either:\n1. Adding Ctrl+O to the CodeMirror keymap that delegates to the app handler\n2. Using a higher-priority event listener (capture phase)\n3. Using Tauri's global shortcut API\n\nFiles: gui/src/App.tsx (useKeyboardShortcuts, onOpen), gui/src/editor/Editor.tsx (keymap)",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:25.441Z",
+        "updatedAt": "2026-04-19T17:40:45.187Z",
         "metadata": {
           "modules": [
             "gui/src/App.tsx",
@@ -37670,11 +37670,11 @@
         "description": "Three test quality improvements in gui/src-tauri/src/tests/commands_tests.rs from task 1781 review:\n\n1. **Extract shared session helper (code_duplication)**: `make_poisoned_engine()` (lines 124-137) duplicates the `EngineSession::new(Box::new(SimpleConstraintChecker), Some(Box::new(MockGeometryKernel::new())))` construction from `make_loaded_session()` (lines 10-18). Extract a `make_session()` helper that both call, with `make_loaded_session()` adding the `.load_from_source()` step.\n\n2. **Add no-module-loaded edge case tests (test_coverage)**: The healthy-path tests for `get_entity_tree_impl` and `get_entity_identity_map_impl` only test with a loaded session. Add tests that create an `EngineSession` without loading a module and assert that the result is `Ok(empty vec/map)`. This verifies the empty-collection path works correctly after the `unwrap_or_default()` removal.\n\n3. **Assert poison join result (robustness)**: In `make_poisoned_engine()` line 131-135, change `let _ = std::thread::spawn(...).join();` to assert the join result is Err, e.g.: `let join_result = std::thread::spawn(...).join(); assert!(join_result.is_err(), \"thread should have panicked to poison the mutex\");` for clearer failure diagnostics.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:43:49.409Z",
+        "updatedAt": "2026-04-19T17:40:45.292Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/tests"
@@ -39490,11 +39490,11 @@
         "description": "`makeNode` is duplicated verbatim in `gui/src/__tests__/DesignTree.test.tsx` and `gui/src/__tests__/viewStateStore.test.ts`; most describe blocks also redefine a local `makeTree()` of the same Root/A/a1/a2/B shape. Any future change to `EntityTreeNode` schema would require edits in many places.",
         "details": "Create `gui/src/__tests__/test-utils.ts` (or `.tsx` if JSX needed) exporting `makeNode` and a canonical `makeTree`. Update DesignTree, DesignTreeContextMenu, and viewStateStore tests to import from the shared helper. Keep the per-test-file local overrides only where a test needs a non-canonical shape.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:42.063Z",
+        "updatedAt": "2026-04-19T17:40:45.466Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -41660,7 +41660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T17:40:45.089Z",
+      "lastModified": "2026-04-19T17:40:45.466Z",
       "taskCount": 1985,
       "completedCount": 1684,
       "tags": [
