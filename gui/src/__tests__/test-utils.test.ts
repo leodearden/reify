@@ -388,6 +388,17 @@ describe('formatPerfSamples', () => {
     expect(result).toContain('samples=[1.23]');
   });
 
+  it('drops trailing zeros in the samples array (1.2 not 1.20)', () => {
+    // +v.toFixed(2) coerces "1.20" back to the number 1.2 before JSON.stringify,
+    // so the serialised form is [1.2] (not [1.20] with a trailing zero).
+    // Note: the scalar median/min/max fields still show "1.20" via .toFixed(2)
+    // for consistent decimal alignment — the trailing-zero drop applies only to
+    // the samples array where JSON.stringify serialises the coerced number.
+    const result = formatPerfSamples([1.2]);
+    expect(result).toContain('samples=[1.2]');
+    expect(result).not.toContain('samples=[1.20]');
+  });
+
   it('formats min and max fields with ms unit rounded to 2 decimal places', () => {
     const result = formatPerfSamples([1.234, 5.678, 9.012]);
     expect(result).toContain('min=1.23ms');
