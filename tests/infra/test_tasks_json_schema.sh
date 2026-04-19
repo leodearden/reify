@@ -218,6 +218,20 @@ assert "cross-tag orphan dep fails validator" \
 assert "cross-tag orphan dep error mentions 'master' tag name" \
     bash -c "python3 '$VALIDATOR' '$MULTI_TAG_CROSS_DEP' 2>&1 | grep -q 'master'"
 
+# (d) Same task id reused across sibling tags is NOT a duplicate.  Tags are
+#     independent namespaces, so id "1" appearing in both master and feature-x
+#     must pass.  This is the positive twin of case (c) above.
+CROSS_TAG_ID_REUSE="$TMPDIR_FIXTURES/cross_tag_id_reuse.json"
+cat >"$CROSS_TAG_ID_REUSE" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]}]},"feature-x":{"tasks":[{"id":"1","dependencies":[]}]}}
+EOF
+
+assert "same id in sibling tags passes validator (independent namespaces)" \
+    python3 "$VALIDATOR" "$CROSS_TAG_ID_REUSE"
+
+assert "same id in sibling tags does NOT produce 'duplicate' on stderr" \
+    bash -c "! python3 '$VALIDATOR' '$CROSS_TAG_ID_REUSE' 2>&1 | grep -qi 'duplicate'"
+
 # -- Unexpected top-level keys emit warnings ----------------------------------
 echo ""
 echo "--- Test: unexpected top-level keys emit warnings ---"
