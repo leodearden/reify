@@ -41023,7 +41023,7 @@
         "description": "Follow-up to task 1947 review. In crates/reify-compiler/tests/trait_conformance_type_error_tests.rs:154, the regression test `helper_flags_cascade_at_warning_severity` uses `#[should_panic(expected = \"type mismatch for trait\")]`. That substring appears in multiple places that could satisfy the predicate spuriously: (1) in check (b)'s assertion prose (\"unexpected 'type mismatch for trait' cascade\"), (2) in the `{:?}` dump of `module.diagnostics` that check (b) appends, and (3) potentially in the `errors: {:?}` dump of check (c) if the errors vector ever held such a message. If a regression caused check (a) or (c) to panic first with a diagnostics-quoting message, the should_panic would accidentally pass — obscuring which check actually caught the cascade.\n\nFix: change the expected substring to something distinctive to check (b)'s own prose, e.g. `expected = \"unexpected 'type mismatch for trait' cascade\"`. That phrase appears only in check (b)'s assertion message, so a regression in (a)/(c) ordering cannot satisfy the predicate.\n\nAcceptance:\n- should_panic expected substring is unique to check (b)'s prose.\n- `cargo test -p reify-compiler --test trait_conformance_type_error_tests` passes.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41035,7 +41035,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-19T17:41:05.852Z"
+        "updatedAt": "2026-04-19T20:23:47.037Z"
       },
       {
         "id": "1962",
@@ -41236,11 +41236,11 @@
         "description": "Several cross-module tests in crates/reify-compiler/tests/constraint_def_compile_tests.rs (cross_module_constraint_def_import ~499 and cross_module_constraint_def_name_collision_emits_shadow_warning ~615) call `ModuleResolver::new(&dir, dir.join(\"stdlib\"))` without creating the stdlib subdirectory — the tests rely on the resolver silently tolerating a missing stdlib path. If the resolver ever becomes strict about stdlib existence, all such tests break together. Add `fs::create_dir_all(dir.join(\"stdlib\")).unwrap();` in each affected test (or factor into a shared fixtures helper — see task 877's tempfile helper extraction idea).",
         "details": "memory_hints: search \"cross-module constraint def test tempfile stdlib\" for context; look for other tests using ModuleResolver::new with a non-existent stdlib path.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T17:40:54.183Z",
+        "updatedAt": "2026-04-19T20:23:47.137Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
@@ -41256,11 +41256,11 @@
         "description": "Review follow-up from task 1920; suggestion S3 from reviewer_comprehensive (non-blocking).\n\nContext: task 1920's new `find_node_compound_variant_coverage` test in crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 400-419) has in-test raw struct-literal helpers `make_user_fn_call` and `make_match` because no public constructor exists for `CompiledExprKind::UserFunctionCall` or `CompiledExprKind::Match`. The other 10+ variants in the table use `CompiledExpr::list_literal`, `set_literal`, `map_literal`, `lambda`, `quantifier`, `range_constructor`, `ad_hoc_selector`, `option_some`, `literal`.\n\nThe ad-hoc helpers fabricate content-hash bytes (`ContentHash::of(&[0xf0])`, `0xf1`) which risks drifting from the real per-variant tag bytes used by the production constructors (7/8/9/10/12/13/14/15/16/18/19). Today `0xf0`/`0xf1` don't collide, but the risk grows as variants are added.\n\nFix: add `CompiledExpr::user_function_call(...)` and `CompiledExpr::match_expr(...)` constructors in `crates/reify-types/src/expr.rs` following the pattern of the existing per-variant constructors (with next-available tag bytes). Then update the test to use them and delete the ad-hoc helpers.\n\nNon-blocking — current in-test helpers work — but removes a small correctness hazard and matches the convention already established for other variants.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T17:40:55.321Z",
+        "updatedAt": "2026-04-19T20:23:47.306Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/expr.rs",
@@ -41730,7 +41730,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T20:23:46.942Z",
+      "lastModified": "2026-04-19T20:23:47.306Z",
       "taskCount": 1987,
       "completedCount": 1691,
       "tags": [
