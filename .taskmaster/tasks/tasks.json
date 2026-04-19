@@ -41099,11 +41099,17 @@
         "description": "The new \"unknown type\" diagnostic in compile_constraint_def (crates/reify-compiler/src/lib.rs ~113-132) only whitelists builtins (via resolve_type_expr_with_aliases), type parameters, aliases, and enums. It does NOT recognize structure/entity/trait names in scope. If a user writes `constraint def Foo { param s: MyStructure ... }`, they now get an error at def-compile time even though previously the raw ConstraintDef was just cloned into the registry and no such check ran.\n\nOptions: (a) broaden the whitelist to also accept structure/entity/trait names in scope; (b) keep the current strictness but reword the error to explicitly list acceptable categories (\"expected a builtin scalar, type param, alias, or enum\") so users see the restriction isn't arbitrary. Pick one and add a regression test.",
         "details": "Analogue precedent: compile_function has the same blind spot. If (a) is chosen, consider whether compile_function should be updated in parallel.\n\nmemory_hints: search \"constraint def unknown type param diagnostic\" for task 872 review context; search \"compile_function unknown type\" for the analogue.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:00:32.808Z"
+        "updatedAt": "2026-04-19T07:18:31.977Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ]
+        }
       },
       {
         "id": "1967",
@@ -41111,7 +41117,7 @@
         "description": "Connect Task 1749's persistence primitives to the app reactive graph: load sidecar (priority) or localStorage on file open before auto view generation; run the 500ms debounced saver after any viewStateStore change. Requires 1746/1747 UI producers to be real before it's useful end-to-end.",
         "details": "Task 1749 ships `viewPersistence.ts` (localStorage + debounced saver), `sidecarPersistence.ts` (priority loader), `fuzzyPathMatcher.ts`, and `viewReconciliation.ts`. The orchestration glue — load on file open, re-evaluate entity tree through `viewReconciliation.partition()`, subscribe debounced saver to viewStateStore — lives at the App.tsx layer and was deferred because the UI producers (1746/1747) were not actually present on the base branch.\n\n### Steps\n1. On file open (after entity tree is built), call the priority loader; if present, feed into viewStateStore.hydrate(persistedState).\n2. Before auto view generation, gate on whether hydration occurred; if yes, skip fresh defaults and instead reconcile against the new entity tree.\n3. Subscribe the debounced localStorage saver to viewStateStore changes.\n4. On entity tree rebuild, call viewReconciliation to partition kept / new / missing, moving missing-path explicit entries into staleExplicit.\n5. Run fuzzy recovery and surface non-blocking notification for rename matches.\n\n### memory_hints\n- search: \"App.tsx file open entity tree\"\n- search: \"viewStateStore subscribe\"\n- search: \"viewPersistence priority loader\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "1746",
           "1747",
@@ -41119,7 +41125,7 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:16:06.077Z"
+        "updatedAt": "2026-04-19T07:18:31.872Z"
       },
       {
         "id": "1968",
@@ -41394,7 +41400,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:18:31.638Z",
+      "lastModified": "2026-04-19T07:18:31.977Z",
       "taskCount": 1982,
       "completedCount": 1687,
       "tags": [
