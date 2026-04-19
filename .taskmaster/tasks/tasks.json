@@ -41092,14 +41092,14 @@
         "description": "Hook the viewportStore camera state into the `viewportCameras` field of the PersistentViewState that Task 1749 persists. Blocked until Task 1747 actually ships viewportStore.ts.",
         "details": "Task 1749 persists `viewportCameras: Record<string, CameraState>` round-trip but with no consumer — the field is inert until a viewportStore exists to publish/consume camera state. Once 1747 lands viewportStore.ts, wire:\n  - load-path: on file open, after sidecar/localStorage load, call `viewportStore.restoreCameras(persistedState.viewportCameras)`\n  - save-path: when viewportStore publishes a camera change, echo it into the view-persistence snapshot so the debounced saver picks it up\n\n### memory_hints\n- search: \"viewportStore camera state\"\n- search: \"viewPersistence debounced save\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "cancelled",
         "dependencies": [
           "1747",
           "1749"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:19:42.523Z",
+        "updatedAt": "2026-04-19T08:01:23.646Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -41458,7 +41458,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T08:01:22.882Z",
+      "lastModified": "2026-04-19T08:01:23.646Z",
       "taskCount": 1984,
       "completedCount": 1684,
       "tags": [
