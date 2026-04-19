@@ -40356,11 +40356,11 @@
         "description": "Two review suggestions from Task 1821 on `crates/reify-compiler/src/geometry.rs` (the `all_dispatch_functions_accounted_for` test block around lines 603-755):\n\n1. **Reduce breakdown-comment duplication (lines 657-665).** The doc comment on `EXPECTED_DISPATCH_COUNT` re-enumerates every function name already in `GEOM_ARG_FUNCTIONS` / `NO_GEOM_ARG_FUNCTIONS` / boolean_ops / loft, creating a fourth place to keep in sync. The maintenance rule only mentions updating one list and the constant, so the parenthetical names will silently drift. Fix: drop the parenthetical enumerations and keep only per-category counts (e.g. `- GEOM_ARG_FUNCTIONS   14`), or delete the breakdown entirely — the lists are the single source of truth.\n\n2. **Close the reverse-direction gap (lines 748-754).** The revised assertion still only cross-validates the lists against themselves plus a hand-maintained constant. Nothing touches the actual match arms in `compile_geometry_call`, so an arm added there without a corresponding list entry remains undetected — which is the failure mode the module-level comment (lines 603-609) and the test's doc (lines 714-718) explicitly motivate catching. Fix: add a companion test that scans the source of `compile_geometry_call` via `include_str!(\"geometry.rs\")` plus a simple regex over `\"name\" =>` patterns in the match block, then cross-checks the extracted dispatch set against the four lists. This closes the gap without a procedural macro.\n\nBoth suggestions come from reviewer_comprehensive on Task 1821.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:00.194Z",
+        "updatedAt": "2026-04-19T06:04:47.646Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs"
@@ -40951,7 +40951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:04:46.586Z",
+      "lastModified": "2026-04-19T06:04:47.646Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
