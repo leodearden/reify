@@ -534,6 +534,12 @@ pub enum SweepKind {
     Extrude,
     Revolve,
     Sweep,
+    /// Symmetric extrude: distance/2 each way from the profile.
+    ExtrudeSymmetric,
+    /// Sweep with an auxiliary guide wire for orientation control.
+    SweepGuided,
+    /// Loft through multiple sections with one or more guide wires.
+    LoftGuided,
 }
 
 /// Curve construction operations.
