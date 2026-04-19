@@ -366,10 +366,10 @@ describe('hasCallbackWiring invariant', () => {
     expect(actual).toEqual(expected);
   });
 
-  it('no disabled shortcut has a callback wiring', () => {
+  it('every wired shortcut has a bind', () => {
     for (const s of SHORTCUTS) {
-      if (!s.disabled) continue;
-      expect(hasCallbackWiring(s.id), `disabled shortcut "${s.id}" should not have callback wiring`).toBe(false);
+      if (!hasCallbackWiring(s.id)) continue;
+      expect(s.bind, `wired shortcut "${s.id}" must have a bind`).toBeDefined();
     }
   });
 });

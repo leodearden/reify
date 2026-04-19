@@ -43,7 +43,7 @@ const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks
  * without depending on the mapping's value shape.
  */
 export function hasCallbackWiring(id: ShortcutId): boolean {
-  return id in ID_TO_CALLBACK;
+  return ID_TO_CALLBACK[id] !== undefined;
 }
 
 /**
