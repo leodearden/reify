@@ -30,6 +30,21 @@ def normalize(data: dict) -> bool:
     (so callers can skip a write).
     """
     changed = False
+
+    def _normalize_deps(node: dict) -> bool:
+        # dependencies lists are emitted by the Taskmaster CLI as JSON integers
+        # when a newly-added task's deps were passed as numerics; the schema
+        # validator (scripts/validate_tasks_json.py, invariant 2) rejects those.
+        deps = node.get("dependencies")
+        if not isinstance(deps, list):
+            return False
+        local = False
+        for i, dep in enumerate(deps):
+            if isinstance(dep, int):
+                deps[i] = str(dep)
+                local = True
+        return local
+
     for tag_data in data.values():
         if not isinstance(tag_data, dict):
             continue
@@ -42,6 +57,8 @@ def normalize(data: dict) -> bool:
             if isinstance(task.get("id"), int):
                 task["id"] = str(task["id"])
                 changed = True
+            if _normalize_deps(task):
+                changed = True
             subtasks_list = task.get("subtasks", [])
             if not isinstance(subtasks_list, list):
                 continue
@@ -50,6 +67,8 @@ def normalize(data: dict) -> bool:
                     continue
                 if isinstance(subtask.get("id"), int):
                     subtask["id"] = str(subtask["id"])
+                    changed = True
+                if _normalize_deps(subtask):
                     changed = True
     return changed
 
