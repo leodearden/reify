@@ -41118,10 +41118,11 @@
         "description": "Two review follow-ups from task 1920's new find_node tests (crates/reify-compiler/tests/type_error_propagation_tests.rs).\n\n(S1) Lambda body fixture does not test what it claims. At line ~451, `CompiledExpr::lambda(vec![], vec![], error_leaf(), vec![], Type::Error)` gives the outer Lambda node itself `result_type: Type::Error`. The `find_node` function applies `pred(expr)` to the outer node *before* entering its `match`, so this test passes whether the Lambda arm recurses into `body` or not — defeating the table's purpose of asserting each arm visits the correct children. Fix: change the last argument to `Type::Bool` so only the body carries `Type::Error`. Every other row in the table correctly gives the outer node a non-Error type (SetLiteral uses Type::Set, MapLiteral uses Type::Map, Quantifier uses Bool, etc.) — Lambda is the sole hole.\n\n(S2) Duplication between `find_node_traverses_previously_unhandled_kinds` (lines 332-384) and `find_node_compound_variant_coverage` (lines 386-509). The smoke test covers ListLiteral, OptionSome, and Quantifier(collection); the table-driven test already covers every compound variant (and can trivially add those three rows). Two tests asserting substantially the same invariant doubles maintenance when variants change. Fix: either fold ListLiteral / OptionSome / Quantifier-collection rows into the table and delete the smoke test, or drop those rows from the table and keep the smoke test. One source of truth.\n\nBoth fixes are localized to the one test file and require no production code changes.\n\nReview followup from task 1920; suggestions S1 and S2 from reviewer_comprehensive.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:07:54.182Z"
       },
       {
         "id": "1969",
@@ -41214,19 +41215,27 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1977",
+        "title": "Refactor make_poison_literal to take Diagnostic and push internally (esc-1921-36 S1)",
+        "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed Diagnostic and push internally, removing pre_push_len bookkeeping at ~25 call sites. Apply equivalently to make_poison_type. Source: review suggestion S1 in esc-1921-36 (api_ergonomics).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:04:30.303Z",
-      "taskCount": 1966,
+      "lastModified": "2026-04-19T07:07:54.182Z",
+      "taskCount": 1970,
       "completedCount": 1685,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T07:05:24.179Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-19T07:07:14.956Z"
+      ]
     }
   }
 }
