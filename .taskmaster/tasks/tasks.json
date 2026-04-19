@@ -41841,7 +41841,7 @@
         "testStrategy": "",
         "status": "blocked",
         "dependencies": [
-          1972
+          "1972"
         ],
         "priority": "low",
         "subtasks": [],
@@ -41879,11 +41879,13 @@
         "description": "Review follow-up from task 1972 (suggestion 2, reviewer_comprehensive, non-blocking).\n\ncrates/reify-compiler/tests/constructor_hash_tests.rs:72-85 covers single-pattern/single-arg happy paths but not multi-arg UserFunctionCall or multi-arm / multi-pattern Match against the compiler's inline emission. A refactor that e.g. folds arms in reverse, or stops combining the second pattern in a multi-pattern arm, would be caught only by the unit test in expr.rs \u2014 not by these integration tests.\n\nFix: add one integration case per variant with >=2 args and >=2 arms / multi-pattern arms (e.g. `match c { Red | Blue => 1, _ => 2 }` and a two-arg function call) to pin per-iteration combine order end-to-end against the compiler.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
+        "status": "blocked",
+        "dependencies": [
+          "1972"
+        ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:43:10.305Z"
+        "updatedAt": "2026-04-19T21:47:40.000Z"
       }
     ],
     "metadata": {
