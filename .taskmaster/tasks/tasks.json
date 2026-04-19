@@ -41669,7 +41669,7 @@
         "description": "OCCT's kernel is not thread-safe beyond STEP export (documented in memory: `feedback_occt_thread_safety.md`). When the orchestrator runs multiple tasks concurrently, each worktree runs its own `cargo test --workspace` — this produces multiple OCCT test processes executing in parallel, which has been observed to deadlock: three cargo test runs sat at 0% CPU for ~10 hours on 2026-04-19.",
         "details": "## Observed incident — 2026-04-19\n\nThree concurrent `cargo test --workspace --release` invocations (one per active task's worktree) entered 0% CPU state and never progressed. Each worktree had its own `target/` dir, so this wasn't cargo's own build-lock contention. The most likely culprit is OCCT kernel thread-safety: cross-process OCCT calls through shared system resources (filesystem temp files, OCCT's own global state in the C++ library) can serialize or deadlock when multiple test processes hit them simultaneously.\n\n## What exists today\n\n- `feedback_occt_thread_safety.md`: \"OCCT kernel not thread-safe beyond STEP export, M4 needs dedicated kernel thread\"\n- The kernel is accessed via `crates/reify-kernel-occt/` with FFI bindings to the C++ library.\n\n## Proposed fix\n\n### Option A — file-lock gate around OCCT test binaries (cheap, recommended)\n\nWrap `cargo test` for OCCT-touching crates with a flock on a file in `/tmp`:\n\n```\nflock /tmp/reify-occt.lock cargo test -p reify-kernel-occt ...\n```\n\nThis serializes OCCT test execution across all concurrent worktrees without changing any test code. Add a helper (e.g. `scripts/cargo-test-occt-gated.sh`) and have the orchestrator's test_command route OCCT-touching tests through it.\n\n### Option B — `#[serial]` attribute via the `serial_test` crate (in-process only)\n\nInside a single cargo test process, marks OCCT tests as serial so Rust's test harness runs them one at a time. Does not address cross-process concurrency — multiple `cargo test` runs in parallel would still collide. Useful as defence-in-depth alongside Option A.\n\n### Option C — dedicated kernel thread (M4 long-term plan)\n\nFunnel all OCCT calls through a single dedicated thread per process. Does not address cross-process concurrency; multiple processes would each have their own kernel thread and still collide. Slower to implement but right for in-GUI concurrency.\n\n## Recommendation\n\nShip Option A first — it directly addresses the observed cross-worktree deadlock with a 5-line shell wrapper. Option C remains the right long-term answer for in-process concurrency. Option B is defensive.\n\n## Failing tests to write\n\n- Repro test: spawn two background `cargo test -p reify-kernel-occt` invocations (in two copies of the repo or two worktrees), verify both complete within a bounded time when the flock gate is active, deadlock-or-timeout when it isn't.\n- Assertion that the flock gate path covers all OCCT-touching crates (`reify-kernel-occt`, `reify-eval` when geometry tests run, `reify-compiler` geometry integration tests).\n\n## Module tags\n\ncrates/reify-kernel-occt, crates/reify-eval, crates/reify-compiler, scripts\n\n## Memory hints\n\n- search: \"OCCT thread safety\" \"kernel thread\"\n- entity: feedback_occt_thread_safety.md\n- Related: orchestrator verify timeouts (orchestrator.yaml, 2026-04-19) catch hangs but waste budget; this task prevents the hangs themselves.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -41683,7 +41683,7 @@
             "scripts"
           ]
         },
-        "updatedAt": "2026-04-19T20:23:47.489Z"
+        "updatedAt": "2026-04-19T20:23:48.990Z"
       },
       {
         "id": "1993",
@@ -41730,7 +41730,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T20:23:47.736Z",
+      "lastModified": "2026-04-19T20:23:48.990Z",
       "taskCount": 1987,
       "completedCount": 1691,
       "tags": [
