@@ -40657,11 +40657,11 @@
         "description": "Three post-merge review suggestions on the task 1926 work (median-per-keystroke guard). All small, local, and touch only the editor-perf test and its shared test-utils helper.\n\n1) gui/src/__tests__/editor-perf.test.tsx:162 — enrich the Vitest second-arg failure message so CI triage doesn't require mentally computing the median from the raw sample list. Replace the current `samples=${JSON.stringify(perKeystroke)}` with something like:\n   `` `median=${median(perKeystroke).toFixed(2)}ms min=${Math.min(...perKeystroke).toFixed(2)} max=${Math.max(...perKeystroke).toFixed(2)} samples=${JSON.stringify(perKeystroke.map(v => +v.toFixed(2)))}` ``\n\n2) gui/src/__tests__/test-utils.ts:26 — `median()` currently rejects NaN but silently accepts ±Infinity. For an even-length array containing Infinity in a middle position the result is `(Infinity + x)/2 = Infinity`, which would fail a `toBeLessThan` with a misleading message (same NaN-propagation rationale the docstring already calls out). Replace `values.some(Number.isNaN)` with `values.some(v => !Number.isFinite(v))` and update the error text and docstring. Add a matching unit test in test-utils.test.ts for ±Infinity inputs.\n\n3) gui/src/__tests__/editor-perf.test.tsx:149 — wrap the measurement loop in `try { ... } finally { unmount(); }` so the 300ms debounce cleanup runs regardless of in-loop failures. Low-risk but makes the cleanup invariant explicit.\n\nSource: review of task 1926 (esc-1926-9).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T18:10:44.655Z",
+        "updatedAt": "2026-04-19T20:23:46.680Z",
         "metadata": {
           "files": [
             "gui/src/__tests__/editor-perf.test.tsx",
@@ -40771,11 +40771,11 @@
         "description": "The `field_source_kind_gradient_doc_describes_provenance_only` test in crates/reify-types/src/value.rs (~line 6976) enforces the \"no impl-detail leakage\" rule only for `FieldSourceKind::Gradient`. The same doc cleanup was applied in task 1002 to `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear`, and `SafetyFactor`, but none of those variants have a regression guard. A future author rewording any of those docs could silently reintroduce `lambda slot` / `sample handler` / `central-difference` language.",
         "details": "Parameterize (or loop) the Gradient doc-invariant test over all seven derived-field variants: Gradient, Divergence, Curl, Laplacian, VonMises, PrincipalStresses, MaxShear, SafetyFactor. For each variant assert (a) the doc block omits the forbidden impl tokens (\"lambda slot\", \"sample handler\", \"central-difference\") and (b) mentions the variant's operator name (e.g. `gradient()`, `divergence()`, `curl()`, `laplacian()`, `von_mises()`, `principal_stresses()`, `max_shear()`, `safety_factor()`).\n\nThe `enum_variant_doc_region` helper already supports locating any variant; pass `\"FieldSourceKind\"` and the per-variant line (e.g. `\"    Divergence,\\n\"`). Only the variants table and per-variant operator name strings need to be added.\n\nSource: review escalation esc-1002-30, suggestion 1.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T17:50:41.295Z",
+        "updatedAt": "2026-04-19T20:23:46.780Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -40972,11 +40972,11 @@
         "description": "Geometry and material detection in autoViewGenerator.ts uses bare `type_name.includes('Solid' | 'Surface' | 'Curve' | 'Material')`. Any type whose name happens to contain those tokens (e.g. a hypothetical 'MySolidarity', 'MaterialReference') will be misclassified. This is the sole distinction between 'hidden' and 'show' in the default view, so misclassification silently hides (or unhides) geometry.",
         "details": "## Scope\n\ngui/src/stores/autoViewGenerator.ts\n\n### Changes\n\n- `isLetGeometryType` (lines 38-46): replace `type_name.includes('Solid' | 'Surface' | 'Curve')` with anchored matching. Options:\n  - Equality against a known-type enum / set: `GEOMETRY_TYPES = new Set(['Solid', 'Surface', 'Curve'])` with `GEOMETRY_TYPES.has(type_name)`.\n  - If generics/wrappers must be tolerated (e.g. `Option<Solid>`), use a regex anchored on word boundaries or parse the type_name.\n\n- `manufacturingReadyVisibilityFor` (lines 130-144): same fix for `'Material'` check.\n\n### Tests\n\ngui/src/__tests__ — add regression tests with node `type_name` values that contain the substrings but should NOT match (e.g. 'Solidarity', 'MaterialReference', 'SurfaceTreatment', 'CurveBall'). Assert they render via defaultVisibilityFor / manufacturingReadyVisibilityFor as non-geometry / non-material.\n\n### memory_hints\n- search: \"autoViewGenerator type name geometry\"\n- search: \"EntityTreeNode type_name\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T17:40:53.567Z",
+        "updatedAt": "2026-04-19T20:23:46.942Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/autoViewGenerator.test.ts",
@@ -41730,7 +41730,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T20:23:46.592Z",
+      "lastModified": "2026-04-19T20:23:46.942Z",
       "taskCount": 1987,
       "completedCount": 1691,
       "tags": [
