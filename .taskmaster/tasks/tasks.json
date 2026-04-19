@@ -36640,7 +36640,7 @@
         "description": "Implement automatic view generation. The \"Default\" auto view applies Physical-trait-aware visibility rules (show geometry param, hide other solids). The \"All geometry\" auto view shows everything. Purpose-linked auto views are generated when purposes are active, showing entities relevant to that purpose. Auto views update dynamically as the design changes.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 5.4 (Default Rules) and 6.1 (Auto Views).\n\n### Implementation\n\n1. **Auto view generator** (`stores/autoViewGenerator.ts`)\n   - `generateDefaultView(tree: EntityTree) -> ViewDefinition`:\n     - Walk tree; for each node:\n       - If node.traitGeometry: visibility = show\n       - Else if node.kind == \"let\" && node.typeName in {Solid, Surface, Curve}: visibility = hidden\n       - Else if node.kind == \"structure\" || node.kind == \"sub\": visibility = show (container)\n     - Name: \"Default\", auto: true\n   - `generateAllGeometryView(tree: EntityTree) -> ViewDefinition`:\n     - All geometric nodes: visibility = show\n     - Name: \"All geometry\", auto: true\n   - `generatePurposeViews(tree: EntityTree, activePurposes: string[]) -> ViewDefinition[]`:\n     - Heuristic: for each active purpose, generate a view emphasizing relevant entities\n     - e.g., `manufacturing_ready` → show final geometry + material-related params, ghost intermediates\n     - This is v0.1 heuristic — can be refined later\n     - Name: purpose name, auto: true\n\n2. **Extend `viewStateStore.ts`**\n   - `views: Map<string, ViewDefinition>` — all views (auto + user)\n   - `activeViewId: string` — currently applied view\n   - `regenerateAutoViews(tree)`: called on every tree rebuild; regenerates auto views, preserves user views\n   - Auto view IDs prefixed with `auto:` (e.g., `auto:default`, `auto:all-geometry`)\n   - User view IDs prefixed with `user:` (e.g., `user:my-assembly-view`)\n\n3. **Wire into evaluation cycle**\n   - When engine emits new state → rebuild designTreeStore → regenerateAutoViews → reconcile active view\n   - If active view is auto: apply regenerated version\n   - If active view is user: keep user state, apply default rules only for NEW entities\n\n4. **Backend support**\n   - `get_entity_tree` response must include `traitGeometry` flag per node\n   - Engine must expose which purposes are currently active (may already be available via evaluation state)\n\n### Requirements covered\nVM-1, VM-2, VM-3 (heuristic)\n\n### memory_hints\n- search: \"Physical trait geometry param\"\n- search: \"purpose declarations active\"\n- search: \"designTreeStore entity tree\"\n<info added on 2026-04-17T12:50:35.239Z>\nReopen the task and proceed with the implementation as originally planned. Ensure the following:\n\n1. Implement the `autoViewGenerator.ts` file to include the functions `generateDefaultView`, `generateAllGeometryView`, and `generatePurposeViews` as specified in the task details.\n2. Extend `viewStateStore.ts` to include `ViewDefinition`, `activeViewId`, and `regenerateAutoViews` functionality.\n3. Verify that the `traitGeometry` flag is utilized as expected, given its presence in the `EntityTreeNode`.\n4. Ensure that the backend surface work is minimal, focusing on the integration of active purposes.\n5. Update the test strategy to include tests for the new functionalities in `viewStateStore.ts`, creating `viewStateStore.test.ts` if necessary.\n6. Address the dependency on Task 1746 by ensuring the necessary infrastructure is in place.\n</info added on 2026-04-17T12:50:35.239Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1743"
         ],
@@ -36661,7 +36661,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T13:25:04.787Z"
+        "updatedAt": "2026-04-19T06:04:21.106Z"
       },
       {
         "id": "1746",
@@ -37560,11 +37560,11 @@
         "description": "In gui/src-tauri/src/tests/engine_tests.rs: (1) In get_entity_tree_no_realization_has_mesh_false (lines 2254-2278), remove the TopologyTemplateBuilder/CompiledModuleBuilder setup and the bracket_compiled_module() call — they are suppressed with let _ = ... and contribute nothing to the test assertions. (2) In get_entity_tree_sub_component_produces_nested_node (lines 2283-2318), remove the bolt_template/assembly_template/compiled builder code and the let _ = vcid(...) line for the same reason. If builder-based coverage is desired, add a separate focused test using build_template_node directly.\n\n### memory_hints\n- search: \"get_entity_tree_no_realization_has_mesh_false get_entity_tree_sub_component_produces_nested_node\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:43:53.235Z",
+        "updatedAt": "2026-04-19T06:04:21.286Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/tests"
@@ -39099,11 +39099,11 @@
         "description": "Follow-up from Task 1815 review. The current shortcuts.ts pattern widens SHORTCUTS to `readonly ShortcutDef[]` and exposes a parallel `SHORTCUT_IDS: readonly ShortcutId[]` export to let callers iterate ids without an `as ShortcutId` cast. This leaves inconsistencies:\n\n1. Change the SHORTCUTS export from `readonly ShortcutDef[]` to `readonly (ShortcutDef & { id: ShortcutId })[]` in gui/src/shortcuts.ts (currently line 99). This preserves literal-id narrowing on `.id` while still permitting structural access to optional fields (`.disabled`, `.bind`) that was the original motivation for widening.\n2. Drop the `SHORTCUT_IDS` export (gui/src/shortcuts.ts:101-106) — it is redundant once `s.id` is already `ShortcutId`.\n3. Remove the `shortcut.id as ShortcutId` cast at gui/src/hooks/useKeyboardShortcuts.ts:57 and the accompanying \"ShortcutId cast is safe\" comment at :56.\n4. In gui/src/__tests__/shortcuts.test.ts:99-107, replace the SHORTCUT_IDS-based filter with a direct iteration over SHORTCUTS:\n     `for (const s of SHORTCUTS.filter(sh => !sh.disabled && sh.key)) { const entry = getShortcut(s.id); ... }`\n   The `as ShortcutId` cast is unnecessary once SHORTCUTS' id is already narrowed; the redundant `.find()` nested inside a `.filter()` is eliminated.\n5. Update the import in shortcuts.test.ts to stop importing SHORTCUT_IDS.\n\nVerify: `bun run test` in gui/ passes; `bun run build` (or `tsc --noEmit`) confirms no regressions from tightened types.\n\nScope: gui/src/shortcuts.ts, gui/src/hooks/useKeyboardShortcuts.ts, gui/src/__tests__/shortcuts.test.ts.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:09:53.183Z",
+        "updatedAt": "2026-04-19T06:04:21.385Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/shortcuts.test.ts",
@@ -40951,7 +40951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:04:21.018Z",
+      "lastModified": "2026-04-19T06:04:21.385Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
