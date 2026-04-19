@@ -41069,7 +41069,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:59:07.958Z"
+        "updatedAt": "2026-04-19T06:59:07.958Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ]
+        }
       },
       {
         "id": "1965",
@@ -41169,10 +41175,11 @@
         "description": "Review follow-up from task 1920; suggestion S3 from reviewer_comprehensive (non-blocking).\n\nContext: task 1920's new `find_node_compound_variant_coverage` test in crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 400-419) has in-test raw struct-literal helpers `make_user_fn_call` and `make_match` because no public constructor exists for `CompiledExprKind::UserFunctionCall` or `CompiledExprKind::Match`. The other 10+ variants in the table use `CompiledExpr::list_literal`, `set_literal`, `map_literal`, `lambda`, `quantifier`, `range_constructor`, `ad_hoc_selector`, `option_some`, `literal`.\n\nThe ad-hoc helpers fabricate content-hash bytes (`ContentHash::of(&[0xf0])`, `0xf1`) which risks drifting from the real per-variant tag bytes used by the production constructors (7/8/9/10/12/13/14/15/16/18/19). Today `0xf0`/`0xf1` don't collide, but the risk grows as variants are added.\n\nFix: add `CompiledExpr::user_function_call(...)` and `CompiledExpr::match_expr(...)` constructors in `crates/reify-types/src/expr.rs` following the pattern of the existing per-variant constructors (with next-available tag bytes). Then update the test to use them and delete the ad-hoc helpers.\n\nNon-blocking — current in-test helpers work — but removes a small correctness hazard and matches the convention already established for other variants.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:15:16.286Z"
       },
       {
         "id": "1973",
@@ -41294,19 +41301,27 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "1984",
+        "title": "Fix Lambda-body fixture and dedupe find_node tests (1920 followup)",
+        "description": "Task 1920 followup S1+S2. File: crates/reify-compiler/tests/type_error_propagation_tests.rs. S1: Lambda-body row uses Type::Error as outer lambda result_type so test passes trivially; change to Type::Bool. S2: two tests overlap on ListLiteral/OptionSome/Quantifier; consolidate.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:13:38.974Z",
-      "taskCount": 1975,
+      "lastModified": "2026-04-19T07:15:16.286Z",
+      "taskCount": 1977,
       "completedCount": 1685,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T07:14:38.817Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-19T07:14:38.900Z"
+      ]
     }
   }
 }
