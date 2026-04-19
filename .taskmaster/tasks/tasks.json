@@ -40852,7 +40852,9 @@
         "details": "Origin: preserved content from the overwritten task 1959 — see /home/leo/src/dark-factory/data/backups/2026-04-18-wp-a/esc-1959-52.json for the full original spec.\n\n## Audit step\n1. Run `grep -R \"DesignTree\" gui/src/App.tsx` in /home/leo/src/reify.\n2. If DesignTree IS imported and rendered in App.tsx with selection state wired — mark this task done and re-verify task 1901 completion evidence.\n3. If DesignTree is NOT imported in App.tsx (the state task 1744 review observed) — proceed with implementation below.\n\n## Implementation scope (if audit finds wiring missing)\nRender <DesignTree> in gui/src/App.tsx inside the panel area, connected to:\n- tree from the current design-tree source\n- viewStateStore (existing binding)\n- selectedEntity (primary selection)\n- selectedEntities + anchorEntity from selectionStore state\n- onSelect(path, mods): mods.ctrl → selectionStore.toggleSelect(path); mods.shift → selectionStore.rangeSelect(path); else → existing handleViewportSelect(path, mods)\n- onRangeSelect(paths) → selectionStore.rangeSelect variant\n- onSelectAll(paths) → selectionStore.selectAll(paths)\n\n## Prerequisite (may need to be a separate task)\nOriginal 1959 spec included a prerequisite: \"Plumb entity-tree bridge + engineStore.entityTree to feed DesignTree\"\n- gui/src/bridge.ts — add getEntityTree() invoke wrapper around Tauri get_entity_tree command (backend: gui/src-tauri/src/main.rs:233, commands.rs:106; returns Vec<EntityTreeNode>)\n- gui/src/stores/engineStore.ts — add entityTree: EntityTreeNode[] state + setEntityTree mutation; call bridgeGetEntityTree() inside initFromState and after mesh/value/constraint mutations\n- tests for the bridge wrapper and engineStore field+refresh\nIf present state shows engineStore.state.entityTree already populated, skip this.\n\n## Acceptance\n- Audit outcome documented (wired or not).\n- If wiring missing: user can click, Ctrl+click, Shift+click, Ctrl+A inside rendered DesignTree with selection highlight + viewport sync.\n- App.test.tsx continues to pass; add smoke test for DesignTree render + click → selectionStore update.\n\n## Context\nFrom review of task 1744 (reviewer_comprehensive): \"grep for DesignTree outside test files shows only the panels/index.ts export. App.tsx does not instantiate it.\" Task 1901 had been marked done but is suspected incomplete or reverted.",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "1901"
+        ],
         "priority": "high",
         "subtasks": [],
         "metadata": {
@@ -40871,7 +40873,9 @@
       "completedCount": 1673,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T05:39:03.757Z",
+      "description": "Tasks for master context"
     }
   }
 }
