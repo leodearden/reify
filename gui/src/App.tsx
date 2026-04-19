@@ -87,11 +87,26 @@ const App: Component = () => {
   const viewStateStore = createViewStateStore();
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
 
-  // Keep viewStateStore's internal path-map in sync with the latest entity tree.
-  createEffect(() => viewStateStore.setTree(entityTree()));
+  // Reactive counter incremented each time viewStateStore.setTree is called.
+  // This lets the effectiveVisibility memo re-evaluate AFTER nodeByPath is rebuilt,
+  // avoiding a race where the memo re-runs before the createEffect below has executed.
+  const [treeGeneration, setTreeGeneration] = createSignal(0);
 
-  // Effective visibility memo: re-evaluates whenever explicit overrides or active view changes.
-  const effectiveVisibility = createMemo(() => viewStateStore.getAllEffective());
+  // Keep viewStateStore's internal path-map in sync with the latest entity tree.
+  // Increment treeGeneration AFTER setTree so that effectiveVisibility always
+  // evaluates getAllEffective() with an up-to-date nodeByPath.
+  createEffect(() => {
+    viewStateStore.setTree(entityTree());
+    setTreeGeneration((v) => v + 1);
+  });
+
+  // Effective visibility memo: re-evaluates whenever explicit overrides or treeGeneration
+  // changes.  treeGeneration is incremented by the effect above after setTree runs, which
+  // guarantees that getAllEffective() sees the up-to-date nodeByPath on every call.
+  const effectiveVisibility = createMemo(() => {
+    void treeGeneration(); // track treeGeneration so the memo re-runs after setTree
+    return viewStateStore.getAllEffective();
+  });
 
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // This uses a closure-local prev-phase tracker so idle→idle is a no-op.

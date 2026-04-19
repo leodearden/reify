@@ -2783,4 +2783,20 @@ describe('App DesignTree wiring', () => {
     expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
     expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).toBe('true');
   });
+
+  it('eye-icon click in DesignTree propagates to Viewport.entityVisibility', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+
+    // Wait for tree to populate: structure node default is 'show'
+    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('show'));
+
+    // First eye-icon click: show → ghost
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('ghost'));
+
+    // Second eye-icon click: ghost → hidden
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('hidden'));
+  });
 });
