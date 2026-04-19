@@ -268,6 +268,23 @@ assert "tasks-not-list top-level value emits WARN on stderr" \
 assert "tasks-not-list top-level value WARN mentions bad_key" \
     bash -c "python3 '$VALIDATOR' '$WARN_TASKS_NOT_LIST' 2>&1 | grep -q 'bad_key'"
 
+# (d) Top-level key is underscore-prefixed (_meta).  Validator should exit 0
+#     and emit NOTHING on stderr — silent skip, not warn-and-skip.  This pins
+#     the negative space of cases (a)-(c): those all WARN; this does NOT.
+META_UNDERSCORE="$TMPDIR_FIXTURES/meta_underscore.json"
+cat >"$META_UNDERSCORE" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]}]},"_meta":{"version":"1.0"}}
+EOF
+
+assert "_meta key passes validator (exit 0)" \
+    python3 "$VALIDATOR" "$META_UNDERSCORE"
+
+assert "_meta key does NOT emit WARN on stderr (silent skip)" \
+    bash -c "! python3 '$VALIDATOR' '$META_UNDERSCORE' 2>&1 | grep -q 'WARN'"
+
+assert "_meta key does NOT mention _meta on stderr" \
+    bash -c "! python3 '$VALIDATOR' '$META_UNDERSCORE' 2>&1 | grep -q '_meta'"
+
 # -- Multi-tag --check-subtasks support --------------------------------------
 echo ""
 echo "--- Test: multi-tag --check-subtasks support ---"
