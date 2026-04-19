@@ -675,6 +675,13 @@ fn error_wildcard_implicit_error_to_matrix() {
 // Both build configurations are pinned here:
 //   (a) debug_assertions: the call must panic (caught by #[should_panic])
 //   (b) not(debug_assertions): the call must return true (release short-circuit)
+//
+// Two representative types (primitive Real + shape-carrying Scalar[m]) are
+// sufficient because the guard is a single `!to.is_error()` check that is
+// type-agnostic — it fires for every possible `from` type identically.  If
+// anyone special-cased the short-circuit by type variant, the full producer-side
+// suite (Real/Int/Bool/String/Scalar/List/Option/Vector/Tensor/Matrix, above)
+// would catch the regression immediately.
 
 /// Consumer-side contract (debug): `implicitly_converts_to(Real, Error)` panics.
 /// The debug_assert fires because `to=Type::Error` is never legitimate.
@@ -735,6 +742,12 @@ fn error_wildcard_implicit_to_error_release_returns_true_scalar() {
 // Arg-side tests (`arg_ty=Error`, legitimate producer path) are KEPT below.
 
 // ── Param-side Error contract (task-1918) ────────────────────────────────────
+//
+// Two representative arg types (primitive Real + compound List<Int>) are
+// sufficient because the guard is a single `!param_ty.is_error()` check that is
+// type-agnostic — it fires for every possible `arg_ty` value identically.  The
+// arg-side producer tests below cover the full representative type range, so any
+// type-specific regression in the short-circuit would surface there first.
 
 /// Param-side contract (debug): `type_compatible(Error, Real)` panics.
 /// The debug_assert fires because `param_ty=Type::Error` is never legitimate.
