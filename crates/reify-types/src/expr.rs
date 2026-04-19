@@ -866,20 +866,17 @@ impl CompiledExpr {
 
     /// Create a user-defined function call expression.
     ///
-    /// Hash tag byte: `[20]`. Combines the function name then each argument's
-    /// content hash in order, following the same pattern as `method_call`.
-    ///
-    /// **Note:** the production inline code in `reify-compiler/src/expr.rs`
-    /// uses tag `[6]` for this variant, so hashes built via this constructor
-    /// will differ from those produced by the compiler's inline path for the
-    /// same expression.
+    /// Hash tag byte: `[6]`, matching the inline implementation in
+    /// `reify-compiler/src/expr.rs`. Combines the function name then each
+    /// argument's content hash in order, following the same pattern as
+    /// `method_call`.
     pub fn user_function_call(
         function_name: String,
         args: Vec<CompiledExpr>,
         result_type: Type,
     ) -> Self {
         let mut content_hash =
-            ContentHash::of(&[20]).combine(ContentHash::of_str(&function_name));
+            ContentHash::of(&[6]).combine(ContentHash::of_str(&function_name));
         for arg in &args {
             content_hash = content_hash.combine(arg.content_hash);
         }
@@ -892,18 +889,21 @@ impl CompiledExpr {
 
     /// Create a match expression.
     ///
-    /// Hash tag byte: `[21]`. Combines the discriminant hash then, for each
-    /// arm, each pattern string followed by the arm body hash. The combine
-    /// order within arms mirrors the production inline code in
-    /// `reify-compiler/src/expr.rs`, but the tag byte differs: production uses
-    /// `[6]`, so hashes from this constructor will differ from those produced
-    /// by the compiler's inline path for the same expression.
+    /// Hash tag byte: `[6]`, matching the inline implementation in
+    /// `reify-compiler/src/expr.rs`. Combines the discriminant hash then, for
+    /// each arm, each pattern string followed by the arm body hash — the same
+    /// combine order as the production inline code.
+    ///
+    /// **Note:** the compiler uses tag `[6]` for both `UserFunctionCall` and
+    /// `Match` (a pre-existing collision in the production path); this
+    /// constructor preserves that behaviour so hashes agree with what the
+    /// compiler emits.
     pub fn match_expr(
         discriminant: CompiledExpr,
         arms: Vec<CompiledMatchArm>,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[21]).combine(discriminant.content_hash);
+        let mut content_hash = ContentHash::of(&[6]).combine(discriminant.content_hash);
         for arm in &arms {
             for pattern in &arm.patterns {
                 content_hash = content_hash.combine(ContentHash::of_str(pattern));
@@ -1028,6 +1028,15 @@ mod tests {
             CompiledExprKind::UserFunctionCall { function_name, args } => {
                 assert_eq!(function_name, "f");
                 assert_eq!(args.len(), 2);
+                // Verify arg contents are preserved (not swapped or dropped).
+                assert!(
+                    matches!(&args[0].kind, CompiledExprKind::Literal(Value::Int(1))),
+                    "args[0] should be Literal(Int(1))"
+                );
+                assert!(
+                    matches!(&args[1].kind, CompiledExprKind::Literal(Value::Int(2))),
+                    "args[1] should be Literal(Int(2))"
+                );
             }
             other => panic!("expected UserFunctionCall, got {other:?}"),
         }
@@ -1064,7 +1073,12 @@ mod tests {
             CompiledExprKind::Match { discriminant: d, arms } => {
                 assert_eq!(arms.len(), 1);
                 assert_eq!(arms[0].patterns, vec!["_".to_string()]);
-                let _ = d; // discriminant is boxed
+                // Verify the discriminant was preserved (not dropped or replaced).
+                assert!(
+                    matches!(&d.kind, CompiledExprKind::Literal(Value::Int(1))),
+                    "discriminant should be Literal(Int(1))"
+                );
+                assert_eq!(d.result_type, Type::Int, "discriminant result_type should be Int");
             }
             other => panic!("expected Match, got {other:?}"),
         }
