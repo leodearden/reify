@@ -817,6 +817,7 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
 
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
+    fs::create_dir_all(dir.join("stdlib")).unwrap();
 
     // Module a: defines pub MinThickness — ONE predicate (t > 0mm).
     fs::write(
