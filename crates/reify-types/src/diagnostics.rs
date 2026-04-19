@@ -96,6 +96,8 @@ impl SourceSpan {
 
 /// Severity level for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "PascalCase"))]
 pub enum Severity {
     /// Informational note.
     Info,
@@ -103,6 +105,30 @@ pub enum Severity {
     Warning,
     /// Error — prevents compilation or evaluation.
     Error,
+}
+
+impl Severity {
+    /// Canonical wire/log format string for this severity.
+    ///
+    /// Returns `"Error"`, `"Warning"`, or `"Info"` (PascalCase).
+    ///
+    /// This is the **single source of truth** for how severity appears in
+    /// `DiagnosticInfo.severity` (wire format) and in structured log fields.
+    /// It MUST stay in lock-step with the `#[serde(rename_all = "PascalCase")]`
+    /// derive on this enum — a feature-gated cross-check in the inline tests
+    /// (`#[cfg(feature = "serde")]`) enforces this invariant at compile time.
+    ///
+    /// Note: `Display` intentionally keeps lowercase (`"error"`, `"warning"`,
+    /// `"info"`) for CLI/human-readable output. Do not change `Display` to
+    /// PascalCase — that would silently alter the MCP CLI wire format.
+    #[inline]
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            Severity::Error => "Error",
+            Severity::Warning => "Warning",
+            Severity::Info => "Info",
+        }
+    }
 }
 
 impl fmt::Display for Severity {
@@ -178,7 +204,27 @@ pub struct DiagnosticRef {
 
 #[cfg(test)]
 mod tests {
-    use super::SourceSpan;
+    use super::{Severity, SourceSpan};
+
+    /// Cross-check that `as_wire_str` and the serde PascalCase derive agree on
+    /// every variant. If the serde rename or the match arm drifts, this fails.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn severity_as_wire_str_matches_serde_output() {
+        for variant in [Severity::Error, Severity::Warning, Severity::Info] {
+            let serde_str = serde_json::to_value(&variant)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert_eq!(
+                variant.as_wire_str(),
+                serde_str,
+                "as_wire_str() and serde output diverged for {:?}",
+                variant
+            );
+        }
+    }
 
     #[test]
     fn prelude_sentinel_is_prelude() {
