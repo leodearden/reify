@@ -1141,6 +1141,64 @@ mod tests {
         );
     }
 
+    /// Lock in the combine order for arms with multiple patterns.
+    ///
+    /// The hash for a match arm is: `pattern[0]` → `pattern[1]` → … → `body`.
+    /// Swapping pattern order must produce a different hash; adding a second
+    /// pattern must differ from the single-pattern case.  This test pins that
+    /// behaviour so a refactor that accidentally collapses or reorders combines
+    /// fails here rather than silently emitting wrong hashes.
+    #[test]
+    fn match_expr_multi_pattern_arm_combine_order() {
+        let discriminant = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+
+        // Arm with patterns ["A", "B"]
+        let arm_ab = CompiledMatchArm {
+            patterns: vec!["A".to_string(), "B".to_string()],
+            body: body.clone(),
+        };
+        let expr_ab = CompiledExpr::match_expr(discriminant.clone(), vec![arm_ab], Type::Bool);
+
+        // Arm with patterns ["B", "A"] — same set, reversed order.
+        let arm_ba = CompiledMatchArm {
+            patterns: vec!["B".to_string(), "A".to_string()],
+            body: body.clone(),
+        };
+        let expr_ba = CompiledExpr::match_expr(discriminant.clone(), vec![arm_ba], Type::Bool);
+
+        assert_ne!(
+            expr_ab.content_hash, expr_ba.content_hash,
+            "hash should differ when multi-pattern arm order is reversed: \
+             pattern combine order must be stable"
+        );
+
+        // Arm with only ["A"] — a strict prefix of ["A", "B"].
+        let arm_a_only = CompiledMatchArm {
+            patterns: vec!["A".to_string()],
+            body: body.clone(),
+        };
+        let expr_a_only =
+            CompiledExpr::match_expr(discriminant.clone(), vec![arm_a_only], Type::Bool);
+
+        assert_ne!(
+            expr_ab.content_hash, expr_a_only.content_hash,
+            "hash should differ between arm [\"A\",\"B\"] and arm [\"A\"]: \
+             second pattern must actually be combined"
+        );
+
+        // Reproducibility: same multi-pattern arm twice → equal hashes.
+        let arm_ab2 = CompiledMatchArm {
+            patterns: vec!["A".to_string(), "B".to_string()],
+            body: body.clone(),
+        };
+        let expr_ab2 = CompiledExpr::match_expr(discriminant, vec![arm_ab2], Type::Bool);
+        assert_eq!(
+            expr_ab.content_hash, expr_ab2.content_hash,
+            "identical multi-pattern arm inputs should produce identical hashes"
+        );
+    }
+
     #[test]
     fn walk_traverses_deeply_nested() {
         let a = CompiledExpr::value_ref(ValueCellId::new("P", "a"), Type::length());
