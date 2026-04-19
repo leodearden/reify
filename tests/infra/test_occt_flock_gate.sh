@@ -104,4 +104,40 @@ rm -f "$_TMP_LOCK"
 assert "wrapper exit code is 42 (got $_EC)" \
     test "$_EC" -eq 42
 
+
+# -- Orchestrator integration tests --------------------------------------------
+ORCH="$REPO_ROOT/orchestrator.yaml"
+
+echo ""
+echo "--- Test 10: debug pass is gated by cargo-test-occt-gated.sh ---"
+
+assert "test_command contains './scripts/cargo-test-occt-gated.sh cargo test --workspace -- --test-threads=1'" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test --workspace -- --test-threads=1'"
+
+echo ""
+echo "--- Test 11: release pass is gated by cargo-test-occt-gated.sh ---"
+
+assert "test_command contains './scripts/cargo-test-occt-gated.sh cargo test --workspace --release -- --test-threads=1'" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test --workspace --release -- --test-threads=1'"
+
+echo ""
+echo "--- Test 12: no bare ungated 'cargo test --workspace' in test_command ---"
+
+# All occurrences of 'cargo test --workspace' must be preceded by the gate script.
+# Extract the test_command line; replace gated occurrences with a placeholder;
+# then assert no bare 'cargo test --workspace' remains.
+assert "no bare 'cargo test --workspace' without gate in test_command" \
+    bash -c "
+        LINE=\$(grep 'test_command:' '$ORCH')
+        # Remove gated occurrences; anything left is ungated.
+        STRIPPED=\$(echo \"\$LINE\" | sed 's|\./scripts/cargo-test-occt-gated\.sh cargo test --workspace||g')
+        ! echo \"\$STRIPPED\" | grep -q 'cargo test --workspace'
+    "
+
+echo ""
+echo "--- Test 13: --workspace flag preserved under gate (coverage assertion) ---"
+
+assert "gated debug invocation contains --workspace" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'cargo-test-occt-gated.sh cargo test --workspace'"
+
 test_summary
