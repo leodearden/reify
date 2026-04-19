@@ -862,7 +862,7 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
     );
     let c = &s_template.constraints[0];
     assert!(
-        c.label.as_deref().map_or(false, |l| l.starts_with("MinThickness")),
+        c.label.as_deref().is_some_and(|l| l.starts_with("MinThickness")),
         "expected constraint label starting with 'MinThickness', got: {:?}",
         c.label
     );
