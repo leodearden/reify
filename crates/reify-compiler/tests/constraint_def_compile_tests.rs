@@ -18,6 +18,20 @@ fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Create a temporary project directory with `stdlib/` pre-created.
+///
+/// Returns `(TempDir, PathBuf)` — keep the `TempDir` alive for the test's
+/// duration; the `PathBuf` is a copy of `tmp.path()` for ergonomic use.
+/// The `stdlib/` subdirectory exists so that `ModuleResolver::new(&dir,
+/// dir.join("stdlib"))` is robust if the resolver ever becomes strict about
+/// `stdlib_root` existence.
+fn fresh_project_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    std::fs::create_dir_all(dir.join("stdlib")).unwrap();
+    (tmp, dir)
+}
+
 // ── Test 1: simple def one predicate template ────────────────────────────────
 
 /// Compile a single-predicate constraint def, instantiate in a structure.
@@ -500,9 +514,7 @@ structure S {
 fn cross_module_constraint_def_import() {
     use std::fs;
 
-    // RAII temp directory — no PID-based path racing under parallel `cargo test`.
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
+    let (_tmp, dir) = fresh_project_dir();
 
     // Module a: defines a pub constraint def
     fs::write(
@@ -521,8 +533,6 @@ fn cross_module_constraint_def_import() {
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = ModuleDag::new();
     let result = dag.compile_module("b", &resolver);
-
-    // _tmp drops here, cleaning up the temp directory automatically.
 
     assert!(
         result.is_ok(),
@@ -752,8 +762,7 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
     use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
     use std::fs;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().to_path_buf();
+    let (_tmp, dir) = fresh_project_dir();
 
     // Module a: defines pub MinThickness — ONE predicate (t > 0mm).
     fs::write(
@@ -880,8 +889,7 @@ fn non_pub_constraint_def_not_instantiable_cross_module() {
     use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
     use std::fs;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().to_path_buf();
+    let (_tmp, dir) = fresh_project_dir();
 
     // Module a: non-pub MinThickness (no `pub`), used internally in Wall
     fs::write(
