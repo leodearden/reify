@@ -36778,7 +36778,13 @@
             "gui/src/stores",
             "gui/src/utils",
             "gui/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: View persistence: localStorage + sidecar file + fuzzy path matching"
+            ]
+          }
         },
         "updatedAt": "2026-04-19T06:53:55.940Z"
       },
@@ -40732,11 +40738,11 @@
         "description": "Follow-up to task 1936 review. Two related improvements to crates/reify-compiler/tests/trait_conformance_type_error_tests.rs:\n\n1. DRY / code_reuse (lines 74-103, 143-157): The three-assertion invariant block (errors non-empty, no \"type mismatch for trait\" cascade, at least one \"unknown member\") is duplicated verbatim between Scenario A (`poisoned_structure_let_preserves_root_cause_error`) and Scenario B (`poisoned_trait_default_preserves_root_cause_error`) — ~30 lines repeated. Extract a private helper `fn assert_poisoned_conformance_invariant(module: &CompiledModule)` that filters errors and runs the three assertions. Each test becomes `source + helper call`; invariant message text lives in one place.\n\n2. Test robustness (lines 86, 145): The cascade-suppression assertion (b) currently filters `module.diagnostics` by `Severity::Error` before searching for \"type mismatch for trait\". If a future refactor ever downgrades the conformance-layer cascade to `Severity::Warning` (e.g. during a deprecation period), the test silently passes even though the cascade reappeared — the opposite of the invariant. Fix: for check (b) only, search `module.diagnostics` across all severities for the \"type mismatch for trait\" substring. Keep checks (a) and (c) on the pre-filtered `errors` vector since they intentionally pin severity.\n\nAcceptance:\n- Single helper contains all three assertion messages; both scenarios call it.\n- Check (b) examines diagnostics regardless of severity; checks (a) and (c) remain severity-pinned.\n- All tests in `cargo test -p reify-compiler --test trait_conformance_type_error_tests` still pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:59.910Z",
+        "updatedAt": "2026-04-19T06:54:05.371Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
@@ -41042,9 +41048,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:53:55.941Z",
+      "lastModified": "2026-04-19T06:54:05.371Z",
       "taskCount": 1955,
-      "completedCount": 1682,
+      "completedCount": 1683,
       "tags": [
         "master"
       ]
