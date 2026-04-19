@@ -41125,7 +41125,15 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:18:31.872Z"
+        "updatedAt": "2026-04-19T07:18:31.872Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Wire view persistence load-on-open and debounced-save into App.tsx orchestration"
+            ]
+          }
+        }
       },
       {
         "id": "1968",
@@ -41405,7 +41413,9 @@
       "completedCount": 1687,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T07:18:32.377Z",
+      "description": "Tasks for master context"
     }
   }
 }
