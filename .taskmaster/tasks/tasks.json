@@ -41812,10 +41812,11 @@
         "description": "Review follow-up from task 1972 (suggestion 1, reviewer_comprehensive, non-blocking).\n\nBoth `CompiledExpr::user_function_call` (crates/reify-types/src/expr.rs:887) and `CompiledExpr::match_expr` (:917) use hash tag byte `[6]`. The collision is pre-existing in production: the compiler's inline emission at crates/reify-compiler/src/expr.rs:554 (UserFunctionCall) and :1318 (Match) also both use `[6]`. This creates a latent hash-collision risk between structurally equivalent UserFunctionCall and Match expressions.\n\nFix: retag one variant (e.g. Match → `[7]`) with coordinated changes to both the constructor in reify-types and the compiler inline path (reify-compiler/src/expr.rs:1318). Confirm no on-disk hashes depend on the current tag byte before changing, and update any golden fixtures / hash-pinning tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T21:40:46.091Z"
       },
       {
         "id": "2000",
@@ -41825,7 +41826,7 @@
         "testStrategy": "",
         "status": "pending",
         "dependencies": [
-          1992
+          "1992"
         ],
         "priority": "low",
         "subtasks": []
@@ -41844,15 +41845,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:37:55.713Z",
-      "taskCount": 1991,
+      "lastModified": "2026-04-19T21:40:46.091Z",
+      "taskCount": 1994,
       "completedCount": 1699,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T21:38:55.685Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-19T21:40:39.783Z"
+      ]
     }
   }
 }
