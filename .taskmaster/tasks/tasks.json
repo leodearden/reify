@@ -41016,6 +41016,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-19T06:42:47.030Z"
+      },
+      {
+        "id": "1961",
+        "title": "Tighten should_panic substring in helper_flags_cascade_at_warning_severity",
+        "description": "Follow-up to task 1947 review. In crates/reify-compiler/tests/trait_conformance_type_error_tests.rs:154, the regression test `helper_flags_cascade_at_warning_severity` uses `#[should_panic(expected = \"type mismatch for trait\")]`. That substring appears in multiple places that could satisfy the predicate spuriously: (1) in check (b)'s assertion prose (\"unexpected 'type mismatch for trait' cascade\"), (2) in the `{:?}` dump of `module.diagnostics` that check (b) appends, and (3) potentially in the `errors: {:?}` dump of check (c) if the errors vector ever held such a message. If a regression caused check (a) or (c) to panic first with a diagnostics-quoting message, the should_panic would accidentally pass — obscuring which check actually caught the cascade.\n\nFix: change the expected substring to something distinctive to check (b)'s own prose, e.g. `expected = \"unexpected 'type mismatch for trait' cascade\"`. That phrase appears only in check (b)'s assertion message, so a regression in (a)/(c) ordering cannot satisfy the predicate.\n\nAcceptance:\n- should_panic expected substring is unique to check (b)'s prose.\n- `cargo test -p reify-compiler --test trait_conformance_type_error_tests` passes.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -41025,7 +41036,10 @@
       "completedCount": 1682,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T06:52:50.415Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-19T06:52:50.435Z"
     }
   }
 }
