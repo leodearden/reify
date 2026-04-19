@@ -7,13 +7,21 @@ drift after Task 1866's string-ID normalization migration:
   1. Every task `id` is a string matching ``^\d+$`` (not an int, not a slug).
   2. Every entry in a task's `dependencies[]` is a string **and** references an
      existing task id (no orphan deps, no int deps).
-  3. No duplicate `id` values across ``master.tasks[]``.
+  3. No duplicate `id` values within any tag's ``tasks[]``; tags are independent
+     namespaces (so the same id may appear in ``master`` and in a sibling tag).
 
 A fourth invariant (subtask IDs and deps) is implemented but **off by default**
 (``--check-subtasks`` flag).  It is disabled because upstream ``tm-core``
 currently serializes subtask IDs as numbers; enabling it now would make every
 auto-commit fail.  A follow-up task (partner of Task 1888) will flip the default
 once subtask normalization lands in tm-core.
+
+Top-level key convention:
+Tag namespaces are top-level keys whose names do **not** start with ``_``.
+Any non-tag metadata must be underscore-prefixed (e.g. ``_meta``, a future
+``_schemaVersion``) so the validator silently skips it.  This keeps the
+validator forward-compatible with new ``tm-core`` metadata keys without
+requiring a code change or emitting noisy warnings.
 
 Usage::
 
