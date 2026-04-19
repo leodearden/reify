@@ -41,17 +41,31 @@ export interface ViewDefinition {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true when a node is a let-binding whose type is a geometry
- * intermediate (Solid, Surface, or Curve).  Used by both `defaultVisibilityFor`
- * and `manufacturingReadyVisibilityFor` so the two rules cannot drift.
+ * Matches the canonical geometry type tokens (Solid, Surface, Curve) at word
+ * boundaries so generic wrappers like `Option<Solid>` or `List<Curve>` are
+ * recognised while substring-only matches like `MySolid`, `Solidarity`, or
+ * `SolidBody` are correctly rejected.
+ */
+const GEOMETRY_TYPE_NAME_RE = /\b(?:Solid|Surface|Curve)\b/;
+
+/**
+ * Matches the canonical Material token at a word boundary, accepting wrappers
+ * such as `List<Material>` while rejecting `MaterialReference`.
+ */
+const MATERIAL_TYPE_NAME_RE = /\bMaterial\b/;
+
+/**
+ * Returns true when a node is a let-binding whose type matches
+ * `\b(Solid|Surface|Curve)\b` (anchored on word boundaries).  Generic wrappers
+ * such as `Option<Solid>` are recognised; substring-only names such as `MySolid`
+ * or `SolidBody` are not.  Used by both `defaultVisibilityFor` and
+ * `manufacturingReadyVisibilityFor` so the two rules cannot drift.
  */
 function isLetGeometryType(node: EntityTreeNode): boolean {
   return (
     node.kind === 'let' &&
     node.type_name != null &&
-    (node.type_name.includes('Solid') ||
-      node.type_name.includes('Surface') ||
-      node.type_name.includes('Curve'))
+    GEOMETRY_TYPE_NAME_RE.test(node.type_name)
   );
 }
 
@@ -63,7 +77,7 @@ function isLetGeometryType(node: EntityTreeNode): boolean {
  *
  * Rule (in precedence order):
  * 1. `trait_geometry` → 'show'
- * 2. `kind === 'let'` AND `type_name` contains 'Solid' | 'Surface' | 'Curve' → 'hidden'
+ * 2. `kind === 'let'` AND `type_name` matches `\b(Solid|Surface|Curve)\b` (anchored) → 'hidden'
  * 3. Everything else (structure, sub, param, occurrence, auto, port, …) → 'show'
  */
 export function defaultVisibilityFor(node: EntityTreeNode): VisibilityState {
@@ -140,12 +154,13 @@ export function generateAllGeometryView(tree: EntityTreeNode[]): ViewDefinition 
 function manufacturingReadyVisibilityFor(node: EntityTreeNode): VisibilityState {
   // trait_geometry → show
   if (node.trait_geometry) return 'show';
-  // let Solid/Surface/Curve → ghost (still visible as context, not fully hidden)
+  // let node matching \b(Solid|Surface|Curve)\b → ghost (still visible as context)
   if (isLetGeometryType(node)) return 'ghost';
-  // Material params are specifically kept visible (material assignments matter
+  // Material params (type_name matches \bMaterial\b, including wrappers such as
+  // List<Material>) are specifically kept visible (material assignments matter
   // for manufacturing output).  Without this branch they would fall through to
   // the param→ghost rule below, which would incorrectly de-emphasise them.
-  if (node.type_name != null && node.type_name.includes('Material')) return 'show';
+  if (node.type_name != null && MATERIAL_TYPE_NAME_RE.test(node.type_name)) return 'show';
   // Non-geometry, non-material params (dimensions, angles, …) are ghosted so
   // they don't clutter the manufacturing view.
   if (node.kind === 'param') return 'ghost';

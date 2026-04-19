@@ -33,20 +33,20 @@ describe('generateDefaultView', () => {
     expect(view.visibility['Root']).toBe('show');
   });
 
-  it('(b) let-binding with type_name containing "Solid" → "hidden"', () => {
-    const tree = [makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'MySolid' })];
+  it('(b) let-binding with type_name "Solid" → "hidden"', () => {
+    const tree = [makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'Solid' })];
     const view = generateDefaultView(tree);
     expect(view.visibility['Root.geo']).toBe('hidden');
   });
 
-  it('(b) let-binding with type_name containing "Surface" → "hidden"', () => {
-    const tree = [makeNode({ entity_path: 'Root.surf', kind: 'let', type_name: 'MySurface' })];
+  it('(b) let-binding with type_name "Surface" → "hidden"', () => {
+    const tree = [makeNode({ entity_path: 'Root.surf', kind: 'let', type_name: 'Surface' })];
     const view = generateDefaultView(tree);
     expect(view.visibility['Root.surf']).toBe('hidden');
   });
 
-  it('(b) let-binding with type_name containing "Curve" → "hidden"', () => {
-    const tree = [makeNode({ entity_path: 'Root.crv', kind: 'let', type_name: 'MyCurve' })];
+  it('(b) let-binding with type_name "Curve" → "hidden"', () => {
+    const tree = [makeNode({ entity_path: 'Root.crv', kind: 'let', type_name: 'Curve' })];
     const view = generateDefaultView(tree);
     expect(view.visibility['Root.crv']).toBe('hidden');
   });
@@ -74,7 +74,7 @@ describe('generateDefaultView', () => {
             kind: 'structure',
             children: [
               makeNode({ entity_path: 'Assembly.housing.geometry', kind: 'param', trait_geometry: true }),
-              makeNode({ entity_path: 'Assembly.housing.bore_cutout', kind: 'let', type_name: 'SolidCutout' }),
+              makeNode({ entity_path: 'Assembly.housing.bore_cutout', kind: 'let', type_name: 'Solid' }),
             ],
           }),
           makeNode({
@@ -82,8 +82,8 @@ describe('generateDefaultView', () => {
             kind: 'structure',
             children: [
               makeNode({ entity_path: 'Assembly.flange.geometry', kind: 'param', trait_geometry: true }),
-              makeNode({ entity_path: 'Assembly.flange.body', kind: 'let', type_name: 'SolidBody' }),
-              makeNode({ entity_path: 'Assembly.flange.hole', kind: 'let', type_name: 'SolidHole' }),
+              makeNode({ entity_path: 'Assembly.flange.body', kind: 'let', type_name: 'Solid' }),
+              makeNode({ entity_path: 'Assembly.flange.hole', kind: 'let', type_name: 'Option<Solid>' }),
             ],
           }),
         ],
@@ -130,7 +130,7 @@ describe('generateAllGeometryView', () => {
         entity_path: 'Root',
         kind: 'structure',
         children: [
-          makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'MySolid' }),
+          makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'Solid' }),
           makeNode({ entity_path: 'Root.param', kind: 'param', trait_geometry: false }),
           makeNode({ entity_path: 'Root.mesh', kind: 'param', trait_geometry: true }),
         ],
@@ -170,7 +170,7 @@ describe('generatePurposeViews', () => {
         entity_path: 'Root',
         kind: 'structure',
         children: [
-          makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'MySolid' }),
+          makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'Solid' }),
           makeNode({ entity_path: 'Root.mesh', kind: 'param', trait_geometry: true }),
         ],
       }),
@@ -193,9 +193,9 @@ describe('generatePurposeViews', () => {
         entity_path: 'Root',
         kind: 'structure',
         children: [
-          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Solid' }),
           makeNode({ entity_path: 'Root.skin', kind: 'let', type_name: 'Surface' }),
-          makeNode({ entity_path: 'Root.edge', kind: 'let', type_name: 'CurveEdge' }),
+          makeNode({ entity_path: 'Root.edge', kind: 'let', type_name: 'Curve' }),
           makeNode({ entity_path: 'Root.geometry', kind: 'param', trait_geometry: true }),
           makeNode({ entity_path: 'Root.mat', kind: 'param', type_name: 'Material', trait_geometry: false }),
           makeNode({ entity_path: 'Root.width', kind: 'param', type_name: null, trait_geometry: false }),
