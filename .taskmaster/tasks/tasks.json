@@ -11381,7 +11381,7 @@
         "description": "Address robustness suggestions from task #326 review:\n1. Add debug_assert in load_stdlib() that no module has error-level diagnostics — silent cache of broken modules is dangerous (stdlib_loader.rs:23-38)\n2. Compile stdlib modules sequentially with compile_with_prelude so cross-module deps work when second .ri file is added (stdlib_loader.rs:33-36)\n3. Document function shadowing semantics in eval() — user functions shadow prelude by insertion order with iter().find() first-match (lib.rs:847-854)\n4. Investigate _distance_f64 rename — confirm whether is_finite() guard was intentional validation or dead code (lib.rs:3244)\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-eval/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11405,7 +11405,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-19T06:15:15.482Z"
+        "updatedAt": "2026-04-19T17:40:44.895Z"
       },
       {
         "id": "516",
@@ -20551,11 +20551,11 @@
         "description": "In crates/reify-compiler/src/lib.rs: (1) Extract resolve_enum_type(name, enum_defs) helper to replace 4+ inline occurrences. (2) Build HashSet of enum names before filter_map loop in check_trait_conformance. (3) Extract local closure for duplicated 22-line Param/Let blocks. (4) Add assertion when type_args is non-empty on enum match.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:16:06.692Z",
+        "updatedAt": "2026-04-19T17:40:45.089Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -41660,15 +41660,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T08:01:24.756Z",
-      "taskCount": 1984,
+      "lastModified": "2026-04-19T17:40:45.089Z",
+      "taskCount": 1985,
       "completedCount": 1684,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T17:14:47.211Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-19T17:14:47.233Z"
+      ]
     }
   }
 }
