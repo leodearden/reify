@@ -34,6 +34,14 @@ pub enum Type {
     /// (e.g., `Bolt` in `Box<Bolt>()`). Distinct from TypeParam which
     /// represents unresolved type variables needing substitution.
     StructureRef(String),
+    /// Nominal reference to a trait name used as a type
+    /// (e.g., `Material` in `param material : Material`).
+    /// Semantically: "any value whose structure conforms to this trait."
+    /// Distinct from `StructureRef` (which denotes a concrete struct) and
+    /// `TypeParam` (which denotes an unresolved type variable). Call-site
+    /// conformance enforcement for trait-typed params is deferred; this
+    /// variant currently records the declaration only.
+    TraitObject(String),
     /// Field type: a mapping from domain to codomain (e.g., Field<Point3, Scalar>).
     Field {
         domain: Box<Type>,
@@ -269,7 +277,10 @@ impl Type {
     /// Used for registry lookups instead of Display formatting.
     pub fn as_name(&self) -> Option<&str> {
         match self {
-            Type::TypeParam(name) | Type::StructureRef(name) | Type::Enum(name) => Some(name),
+            Type::TypeParam(name)
+            | Type::StructureRef(name)
+            | Type::TraitObject(name)
+            | Type::Enum(name) => Some(name),
             _ => None,
         }
     }
@@ -303,6 +314,7 @@ impl std::fmt::Display for Type {
             }
             Type::TypeParam(name) => write!(f, "{}", name),
             Type::StructureRef(name) => write!(f, "{}", name),
+            Type::TraitObject(name) => write!(f, "{}", name),
             Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
             Type::Geometry => write!(f, "Geometry"),
             Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
