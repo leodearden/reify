@@ -41249,6 +41249,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1980",
+        "title": "Move test introspection helpers to reify_test_support (esc-1921-36 S2)",
+        "description": "Move get_let_expr / get_let_expr_in / assert_no_type_cascade from crates/reify-compiler/tests/expr_error_sentinel_tests.rs and type_error_propagation_tests.rs into the existing reify-test-support crate (likely helpers.rs) to deduplicate ~35 lines. Source: review suggestion S2 in esc-1921-36 (code_duplication).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -41258,7 +41269,10 @@
       "completedCount": 1685,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T07:11:06.112Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-19T07:11:06.133Z"
     }
   }
 }
