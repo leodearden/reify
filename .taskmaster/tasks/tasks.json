@@ -40771,11 +40771,11 @@
         "description": "The `field_source_kind_gradient_doc_describes_provenance_only` test in crates/reify-types/src/value.rs (~line 6976) enforces the \"no impl-detail leakage\" rule only for `FieldSourceKind::Gradient`. The same doc cleanup was applied in task 1002 to `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear`, and `SafetyFactor`, but none of those variants have a regression guard. A future author rewording any of those docs could silently reintroduce `lambda slot` / `sample handler` / `central-difference` language.",
         "details": "Parameterize (or loop) the Gradient doc-invariant test over all seven derived-field variants: Gradient, Divergence, Curl, Laplacian, VonMises, PrincipalStresses, MaxShear, SafetyFactor. For each variant assert (a) the doc block omits the forbidden impl tokens (\"lambda slot\", \"sample handler\", \"central-difference\") and (b) mentions the variant's operator name (e.g. `gradient()`, `divergence()`, `curl()`, `laplacian()`, `von_mises()`, `principal_stresses()`, `max_shear()`, `safety_factor()`).\n\nThe `enum_variant_doc_region` helper already supports locating any variant; pass `\"FieldSourceKind\"` and the per-variant line (e.g. `\"    Divergence,\\n\"`). Only the variants table and per-variant operator name strings need to be added.\n\nSource: review escalation esc-1002-30, suggestion 1.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:23:54.799Z",
+        "updatedAt": "2026-04-19T21:36:20.205Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -41775,9 +41775,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:36:19.904Z",
+      "lastModified": "2026-04-19T21:36:20.205Z",
       "taskCount": 1989,
-      "completedCount": 1697,
+      "completedCount": 1698,
       "tags": [
         "master"
       ]
