@@ -41148,7 +41148,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:16:06.431Z"
+        "updatedAt": "2026-04-19T07:16:06.431Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Refactor make_poison_literal to take Diagnostic and push internally (esc-1921-36 S1)"
+            ]
+          }
+        }
       },
       {
         "id": "1970",
@@ -41342,7 +41350,9 @@
       "completedCount": 1687,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T07:16:07.722Z",
+      "description": "Tasks for master context"
     }
   }
 }
