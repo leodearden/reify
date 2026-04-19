@@ -181,6 +181,37 @@ fn structure_conforming_to_trait_with_trait_typed_member_compiles() {
     );
 }
 
+/// Flange example: after the step-14 migration, `BoltFlange.material` should
+/// have type `Type::TraitObject("Material")` and the example should compile
+/// without errors.
+#[test]
+fn flange_example_material_param_is_trait_object() {
+    let source = std::fs::read_to_string(format!(
+        "{}/../../examples/m5_geometry_flange.ri",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("examples/m5_geometry_flange.ri should exist");
+    let module = parse_and_compile_with_stdlib(&source);
+
+    let flange = module
+        .templates
+        .iter()
+        .find(|t| t.name == "BoltFlange")
+        .expect("BoltFlange template should be compiled");
+
+    let material_cell = flange
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "material")
+        .expect("BoltFlange.material should exist");
+
+    assert_eq!(
+        material_cell.cell_type,
+        Type::TraitObject("Material".to_string()),
+        "BoltFlange.material should resolve to Type::TraitObject(\"Material\") after step-14"
+    );
+}
+
 /// Port member: `port p : in PortType { param m : Material }` should resolve the
 /// port member's param type to `Type::TraitObject("Material")`.
 #[test]
