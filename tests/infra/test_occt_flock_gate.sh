@@ -68,4 +68,40 @@ assert "wrapper contains 'exec'" \
 assert 'wrapper contains "$@" for argument forwarding' \
     grep -qF '"$@"' "$WRAPPER"
 
+
+# -- Test 8: serialization (REIFY_OCCT_LOCK override) --------------------------
+echo ""
+echo "--- Test 8: wrapper serializes two concurrent invocations ---"
+
+_LOCK_FILE="$(mktemp)"
+_START_NS="$(date +%s%N)"
+
+# Spawn two concurrent invocations each sleeping 0.4s.
+REIFY_OCCT_LOCK="$_LOCK_FILE" "$WRAPPER" bash -c 'sleep 0.4' &
+_PID1=$!
+REIFY_OCCT_LOCK="$_LOCK_FILE" "$WRAPPER" bash -c 'sleep 0.4' &
+_PID2=$!
+wait "$_PID1" "$_PID2"
+
+_END_NS="$(date +%s%N)"
+_ELAPSED_MS=$(( (_END_NS - _START_NS) / 1000000 ))
+
+rm -f "$_LOCK_FILE"
+
+# Parallel would finish in ~400ms; serialized takes >=700ms.
+assert "two 0.4s sleep invocations run serially (elapsed >= 700ms, got ${_ELAPSED_MS}ms)" \
+    test "$_ELAPSED_MS" -ge 700
+
+# -- Test 9: exit-code propagation ----------------------------------------------
+echo ""
+echo "--- Test 9: wrapper propagates exit code of wrapped command ---"
+
+_TMP_LOCK="$(mktemp)"
+_EC=0
+REIFY_OCCT_LOCK="$_TMP_LOCK" "$WRAPPER" bash -c 'exit 42' || _EC=$?
+rm -f "$_TMP_LOCK"
+
+assert "wrapper exit code is 42 (got $_EC)" \
+    test "$_EC" -eq 42
+
 test_summary

@@ -28,4 +28,4 @@ fi
 
 LOCK="${REIFY_OCCT_LOCK:-/tmp/reify-occt.lock}"
 
-exec flock -x "$LOCK" -- "$@"
+exec flock -x "$LOCK" "$@"
