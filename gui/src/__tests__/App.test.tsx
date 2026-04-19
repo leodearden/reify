@@ -60,6 +60,7 @@ vi.mock('../editor/FileTabs', () => ({
 const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] };
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
+  getEntityTree: vi.fn().mockResolvedValue([]),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
@@ -100,6 +101,7 @@ beforeEach(() => {
   capturedEditorOnOpen = undefined;
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
+  vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
@@ -2651,5 +2653,22 @@ describe('App viewport multi-selection modifier routing', () => {
     await waitFor(() => {
       expect(bridge.getSourceLocation).toHaveBeenCalledWith('EntityD');
     });
+  });
+});
+
+describe('App DesignTree wiring', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+  }
+
+  it('renders DesignTree in the side panel', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode('Root.A'),
+      makeNode('Root.B'),
+    ]);
+    await renderAndWaitForReady();
+    expect(screen.getByTestId('design-tree')).toBeTruthy();
+    expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy();
+    expect(screen.getByTestId('tree-row-Root.B')).toBeTruthy();
   });
 });
