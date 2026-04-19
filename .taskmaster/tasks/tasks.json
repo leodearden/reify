@@ -41510,7 +41510,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": "1986",
@@ -41521,7 +41529,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": "1987",
