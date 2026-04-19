@@ -41247,11 +41247,11 @@
         "description": "Several cross-module tests in crates/reify-compiler/tests/constraint_def_compile_tests.rs (cross_module_constraint_def_import ~499 and cross_module_constraint_def_name_collision_emits_shadow_warning ~615) call `ModuleResolver::new(&dir, dir.join(\"stdlib\"))` without creating the stdlib subdirectory — the tests rely on the resolver silently tolerating a missing stdlib path. If the resolver ever becomes strict about stdlib existence, all such tests break together. Add `fs::create_dir_all(dir.join(\"stdlib\")).unwrap();` in each affected test (or factor into a shared fixtures helper — see task 877's tempfile helper extraction idea).",
         "details": "memory_hints: search \"cross-module constraint def test tempfile stdlib\" for context; look for other tests using ModuleResolver::new with a non-existent stdlib path.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T20:23:52.218Z",
+        "updatedAt": "2026-04-19T20:43:44.010Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
@@ -41741,9 +41741,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T20:35:29.493Z",
+      "lastModified": "2026-04-19T20:43:44.012Z",
       "taskCount": 1987,
-      "completedCount": 1693,
+      "completedCount": 1694,
       "tags": [
         "master"
       ]
