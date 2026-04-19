@@ -18,6 +18,20 @@ fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Create a temporary project directory with `stdlib/` pre-created.
+///
+/// Returns `(TempDir, PathBuf)` — keep the `TempDir` alive for the test's
+/// duration; the `PathBuf` is a copy of `tmp.path()` for ergonomic use.
+/// The `stdlib/` subdirectory exists so that `ModuleResolver::new(&dir,
+/// dir.join("stdlib"))` is robust if the resolver ever becomes strict about
+/// `stdlib_root` existence.
+fn fresh_project_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    std::fs::create_dir_all(dir.join("stdlib")).unwrap();
+    (tmp, dir)
+}
+
 // ── Test 1: simple def one predicate template ────────────────────────────────
 
 /// Compile a single-predicate constraint def, instantiate in a structure.
@@ -491,68 +505,6 @@ structure S {
     );
 }
 
-// ── Canary: resolver tolerance invariant ─────────────────────────────────────
-
-/// Characterization canary for the `stdlib_root` tolerance invariant relied on
-/// by the cross-module tests below. `ModuleResolver::new` does not validate
-/// that `stdlib_root` exists at construction time; `resolve_import_path` only
-/// consults `stdlib_root` for import paths that begin with `std.`, so tests
-/// that only use non-`std.*` imports work even when `stdlib_root` points to a
-/// nonexistent path.
-///
-/// If this test ever fails, `ModuleResolver` has become strict about
-/// `stdlib_root` existence, and every call site of
-/// `ModuleResolver::new(&dir, dir.join("stdlib"))` in this file (and
-/// elsewhere) must be audited to add explicit
-/// `fs::create_dir_all(dir.join("stdlib"))` setup.
-#[test]
-fn resolver_tolerates_missing_stdlib_root_for_non_std_imports() {
-    use std::fs;
-
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
-
-    // Explicitly do NOT create the stdlib subdirectory.
-    assert!(
-        !dir.join("stdlib").exists(),
-        "stdlib subdir must not exist for this canary to be meaningful"
-    );
-
-    // Minimal modules using only non-std imports.
-    fs::write(
-        dir.join("a.ri"),
-        "pub structure A { param w: Length = 1mm }\n",
-    )
-    .unwrap();
-    fs::write(
-        dir.join("b.ri"),
-        "import a\nstructure B { param x: Length = 2mm }\n",
-    )
-    .unwrap();
-
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let mut dag = ModuleDag::new();
-    let result = dag.compile_module("b", &resolver);
-
-    assert!(
-        result.is_ok(),
-        "resolver must tolerate a missing stdlib_root for non-std imports; got: {:?}",
-        result.unwrap_err()
-    );
-
-    let compiled_b = dag.modules.get("b").expect("compiled module 'b' not found");
-    let errors: Vec<_> = compiled_b
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics in module b when stdlib_root is missing, got: {:?}",
-        errors
-    );
-}
-
 // ── Test 11: cross-module constraint def import ───────────────────────────────
 
 /// A constraint def defined in module `a` can be imported into module `b`
@@ -562,10 +514,7 @@ fn resolver_tolerates_missing_stdlib_root_for_non_std_imports() {
 fn cross_module_constraint_def_import() {
     use std::fs;
 
-    // RAII temp directory — no PID-based path racing under parallel `cargo test`.
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
-    fs::create_dir_all(dir.join("stdlib")).unwrap();
+    let (_tmp, dir) = fresh_project_dir();
 
     // Module a: defines a pub constraint def
     fs::write(
@@ -584,8 +533,6 @@ fn cross_module_constraint_def_import() {
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = ModuleDag::new();
     let result = dag.compile_module("b", &resolver);
-
-    // _tmp drops here, cleaning up the temp directory automatically.
 
     assert!(
         result.is_ok(),
@@ -815,9 +762,7 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
     use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
     use std::fs;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().to_path_buf();
-    fs::create_dir_all(dir.join("stdlib")).unwrap();
+    let (_tmp, dir) = fresh_project_dir();
 
     // Module a: defines pub MinThickness — ONE predicate (t > 0mm).
     fs::write(
@@ -944,9 +889,7 @@ fn non_pub_constraint_def_not_instantiable_cross_module() {
     use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
     use std::fs;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().to_path_buf();
-    fs::create_dir_all(dir.join("stdlib")).unwrap();
+    let (_tmp, dir) = fresh_project_dir();
 
     // Module a: non-pub MinThickness (no `pub`), used internally in Wall
     fs::write(
