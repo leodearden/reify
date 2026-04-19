@@ -7,7 +7,7 @@
 //! scope.
 
 use reify_compiler::RequirementKind;
-use reify_test_support::{compile_source_with_stdlib, parse_and_compile_with_stdlib};
+use reify_test_support::{compile_source, compile_source_with_stdlib, parse_and_compile_with_stdlib};
 use reify_types::{Severity, Type};
 
 /// Structure member: `param m : Material` should resolve to `Type::TraitObject("Material")`.
@@ -257,5 +257,69 @@ fn port_member_param_with_trait_type_resolves_to_trait_object() {
         m_member.cell_type,
         Type::TraitObject("Material".to_string()),
         "port member typed with trait name Material should resolve to Type::TraitObject(\"Material\")"
+    );
+}
+
+// ─── amend: reviewer_comprehensive suggestion #2 ────────────────────────────
+
+/// Negative case: a param typed with a non-existent trait name should emit
+/// the standard `unresolved type` diagnostic. This guards against a future
+/// refactor accidentally making trait-name resolution a silent-pass fallback.
+#[test]
+fn structure_param_with_unknown_trait_name_emits_unresolved_type_diagnostic() {
+    let source = r#"
+        structure def Broken { param m : NoSuchTrait }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("unresolved type") && d.message.contains("NoSuchTrait")),
+        "expected an `unresolved type: NoSuchTrait` diagnostic, got: {:?}",
+        errors
+    );
+}
+
+/// Precedence: local `type Material = Real` must win over a trait named
+/// `Material` (resolution order is builtins → type params → alias registry
+/// → trait names). The param should resolve to `Type::Real`, not
+/// `Type::TraitObject("Material")`.
+#[test]
+fn alias_wins_over_trait_name_for_param_type() {
+    // Both the alias and the trait share the name "Material"; the alias is
+    // defined locally and should take precedence over the local trait.
+    // Using `compile_source` (no stdlib) keeps the test self-contained —
+    // only the names declared inline are visible.
+    let source = r#"
+        trait Material {}
+        type Material = Real
+        structure def Part { param m : Material }
+    "#;
+    let module = compile_source(source);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Part")
+        .expect("Part template should be compiled");
+
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::Real,
+        "alias `type Material = Real` must win over trait `Material`; got: {:?}",
+        m_cell.cell_type
     );
 }
