@@ -40960,16 +40960,28 @@
         "description": "Geometry and material detection in autoViewGenerator.ts uses bare `type_name.includes('Solid' | 'Surface' | 'Curve' | 'Material')`. Any type whose name happens to contain those tokens (e.g. a hypothetical 'MySolidarity', 'MaterialReference') will be misclassified. This is the sole distinction between 'hidden' and 'show' in the default view, so misclassification silently hides (or unhides) geometry.",
         "details": "## Scope\n\ngui/src/stores/autoViewGenerator.ts\n\n### Changes\n\n- `isLetGeometryType` (lines 38-46): replace `type_name.includes('Solid' | 'Surface' | 'Curve')` with anchored matching. Options:\n  - Equality against a known-type enum / set: `GEOMETRY_TYPES = new Set(['Solid', 'Surface', 'Curve'])` with `GEOMETRY_TYPES.has(type_name)`.\n  - If generics/wrappers must be tolerated (e.g. `Option<Solid>`), use a regex anchored on word boundaries or parse the type_name.\n\n- `manufacturingReadyVisibilityFor` (lines 130-144): same fix for `'Material'` check.\n\n### Tests\n\ngui/src/__tests__ — add regression tests with node `type_name` values that contain the substrings but should NOT match (e.g. 'Solidarity', 'MaterialReference', 'SurfaceTreatment', 'CurveBall'). Assert they render via defaultVisibilityFor / manufacturingReadyVisibilityFor as non-geometry / non-material.\n\n### memory_hints\n- search: \"autoViewGenerator type name geometry\"\n- search: \"EntityTreeNode type_name\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-19T06:40:36.361Z"
+      },
+      {
+        "id": "1959",
+        "title": "viewStateStore: clean up dead `modified` field, mark seedView @internal, strip step-16 test comments",
+        "description": "Cleanup batch for artifacts left after Task 1745's migration:\n\n1. `ViewDefinition.modified` is declared and set to false at every construction site but never read. Shipping unused fields invites callers to start setting them inconsistently before a consumer lands.\n2. `seedView` is on the public store interface but is only called from tests — UI callers could bypass the reconciliation that regenerateAutoViews does.\n3. Tests in viewStateStore.test.ts reference \"step-16\" migration context in comments that become archaeology once shipped. Separately, there's no regression test for the documented `resetToInherit` + `setActiveView` null-destruction semantics.",
+        "details": "## Scope\n\n- gui/src/stores/autoViewGenerator.ts:20 and 94-180\n- gui/src/stores/viewStateStore.ts:212-216\n- gui/src/__tests__/viewStateStore.test.ts:921-985\n\n### 1. `ViewDefinition.modified`\n\nDecision: drop it from ViewDefinition until the edit-preservation feature lands. Remove the field from the type and all constructor sites in autoViewGenerator.ts. Update the related doc comment in regenerateAutoViews (lines 258-262) that references the future use.\n\n(Alternative: if the sibling task for user-view write-back decides to stamp `modified=true` for edits, keep the field and add the consumer instead. Coordinate with that task.)\n\n### 2. `seedView` visibility\n\nEither (a) use seedView inside regenerateAutoViews so it has a real production consumer, or (b) remove it from the returned object and expose a test-only helper. Minimum: add a `/** @internal */` JSDoc tag.\n\n### 3. Test hygiene\n\n- Strip \"step-16\" migration comments from viewStateStore.test.ts:921-985 now that the migration is complete.\n- Add a regression test: call resetToInherit(path), setActiveView(otherId), and assert that the prior explicit-null marker is destroyed and the view's own visibility map fully replaces state.explicit (matches the documented setActiveView null-destruction semantics).\n\n### memory_hints\n- search: \"ViewDefinition modified field\"\n- search: \"seedView regenerateAutoViews\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
         "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:39:27.325Z",
-      "taskCount": 1951,
+      "lastModified": "2026-04-19T06:40:36.361Z",
+      "taskCount": 1952,
       "completedCount": 1678,
       "tags": [
         "master"
