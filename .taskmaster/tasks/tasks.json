@@ -40995,30 +40995,6 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-19T06:42:47.030Z"
-      },
-      {
-        "id": "1961",
-        "title": "viewStateStore: clean up dead `modified` field, mark seedView @internal, strip step-16 test comments",
-        "description": "Cleanup batch for artifacts left after Task 1745's migration: ViewDefinition.modified is declared but never read; seedView is on the public store but only used in tests; viewStateStore.test.ts contains step-16 migration archaeology and lacks a regression test for setActiveView's null-destruction semantics.",
-        "details": "## Scope\n\n- gui/src/stores/autoViewGenerator.ts:20 and all ViewDefinition constructor sites\n- gui/src/stores/viewStateStore.ts:212-216 (seedView) and 258-262 (modified doc)\n- gui/src/__tests__/viewStateStore.test.ts:921-985\n\n### 1. ViewDefinition.modified\n\nDrop the field from the type and every constructor in autoViewGenerator.ts. Update the regenerateAutoViews doc comment (lines 258-262) that references its future use. (Coordinate with the sibling \"user-view write-back\" task — if that one decides to stamp modified=true on edits, keep the field and add the consumer instead.)\n\n### 2. seedView\n\nEither (a) call seedView from inside regenerateAutoViews so it has a real production consumer, (b) remove it from the returned object and expose a test-only helper, or at minimum (c) add a `/** @internal */` JSDoc tag on seedView.\n\n### 3. Test hygiene\n\n- Strip step-16 migration comments from viewStateStore.test.ts:921-985.\n- Add a regression test that calls resetToInherit(path), setActiveView(otherId), and asserts that the prior explicit-null marker is destroyed and the view's visibility map fully replaces state.explicit (setActiveView doc comment).\n\n### memory_hints\n- search: \"ViewDefinition modified field\"\n- search: \"seedView regenerateAutoViews\"",
-        "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-19T06:43:49.073Z"
-      },
-      {
-        "id": "1962",
-        "title": "viewStateStore.setActiveView: signal failure on missing view id",
-        "description": "setActiveView silently returns when viewId is not in state.views. Callers (UI buttons, restored session state with stale activeViewId from deactivated purposes) cannot distinguish \"view missing\" from \"view activated\" — clicks appear to do nothing.",
-        "details": "## Scope\n\ngui/src/stores/viewStateStore.ts:233-241\n\n### Change (prefer option c)\n\n- (a) Return a boolean indicating success.\n- (b) Log a dev-mode warning when viewId is missing.\n- (c) Fall back to `auto:default` on missing viewId, matching the reconciliation in regenerateAutoViews (298-303, 310-313, 324-328). Keeps both entry paths consistent.\n\nUpdate docstring accordingly.\n\n### Tests\n\ngui/src/__tests__/viewStateStore.test.ts — add a test calling setActiveView with a non-existent id and asserting the chosen semantics.\n\n### memory_hints\n- search: \"setActiveView viewStateStore\"\n- search: \"activeViewId reconciliation\"",
-        "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-19T06:44:04.180Z"
       }
     ],
     "metadata": {
@@ -41028,7 +41004,9 @@
       "completedCount": 1680,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T06:44:09.954Z",
+      "description": "Tasks for master context"
     }
   }
 }
