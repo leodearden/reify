@@ -24,6 +24,7 @@ import {
   updateSource,
   exportGeometry,
   refreshFullState,
+  getEntityTree,
   onMeshUpdate,
   onEvaluationStatus,
   onSerializationError,
@@ -130,6 +131,25 @@ describe('bridge commands', () => {
     expect(result).toBeDefined();
     expect(result.constraints).toHaveLength(1);
     expect(result.files).toHaveLength(1);
+  });
+
+  it('getEntityTree calls invoke with get_entity_tree and returns payload', async () => {
+    const sampleTree = [
+      {
+        entity_path: 'Bracket',
+        kind: 'structure',
+        type_name: null,
+        has_mesh: false,
+        trait_geometry: false,
+        children: [],
+      },
+    ];
+    mockInvoke.mockResolvedValue(sampleTree);
+
+    const result = await getEntityTree();
+
+    expect(mockInvoke).toHaveBeenCalledWith('get_entity_tree');
+    expect(result).toEqual(sampleTree);
   });
 
   // S7: refreshFullState should call get_initial_state and return a converted GuiState
