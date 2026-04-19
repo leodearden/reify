@@ -41133,6 +41133,21 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1970",
+        "title": "Wire view persistence follow-ups: Save-views button, viewport camera, App.tsx orchestration",
+        "description": "Umbrella follow-up for Task 1749's deferred wiring. 1749 ships the persistence primitives (viewPersistence, sidecarPersistence, fuzzyPathMatcher, viewReconciliation + Tauri read/write_view_sidecar) but three integration hooks were deferred because upstream UI/viewport code (1746/1747) is not actually present on the base branch despite being marked done.",
+        "details": "Three sub-wirings, each blocked on real landing of 1746/1747:\n\n1. **Save-views button** — add into ViewSelector dropdown (next to \"Manage views...\"), calls write_view_sidecar with current PersistentViewState. Blocked on 1746's ViewSelector.tsx being real.\n\n2. **Viewport camera round-trip** — on load, feed PersistentViewState.viewportCameras into viewportStore.restoreCameras; on viewportStore camera change, echo into the persistence snapshot so the debounced saver picks it up. Blocked on 1747's viewportStore.ts being real.\n\n3. **App.tsx orchestration** — on file open, call the priority loader (sidecar > localStorage) before auto view generation; feed into viewStateStore.hydrate; subscribe debounced saver to viewStateStore; on entity tree rebuild, run viewReconciliation.partition() and fuzzy recovery.\n\nSee memory observation at esc-1749-22 for the full 1746/1747 gap context.\n\n### memory_hints\n- search: \"sidecarPersistence write_view_sidecar\"\n- search: \"viewportStore camera state\"\n- search: \"App.tsx file open entity tree\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1746,
+          1747,
+          1749
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -41145,7 +41160,7 @@
       ],
       "created": "2026-04-19T07:01:20.563Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-19T07:01:20.615Z"
+      "updated": "2026-04-19T07:02:00.543Z"
     }
   }
 }
