@@ -977,6 +977,163 @@ mod tests {
         );
     }
 
+    /// sweep_guided() with 2 args should produce diagnostics (missing guide).
+    #[test]
+    fn sweep_guided_compiler_rejects_two_args() {
+        let source = r#"structure S {
+    param a: Scalar = 1mm
+    param b: Scalar = 1mm
+    let result = sweep_guided(a, b)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_swg2"),
+        );
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        let has_op = template.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::SweepGuided,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected error diagnostic for wrong arg count (2 args)"
+        );
+        assert!(
+            !has_op,
+            "should not produce Sweep(SweepGuided) op with wrong arg count"
+        );
+    }
+
+    /// sweep_guided() with 4 args should produce diagnostics.
+    #[test]
+    fn sweep_guided_compiler_rejects_four_args() {
+        let source = r#"structure S {
+    param a: Scalar = 1mm
+    param b: Scalar = 1mm
+    param c: Scalar = 1mm
+    param d: Scalar = 1mm
+    let result = sweep_guided(a, b, c, d)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_swg4"),
+        );
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        let has_op = template.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::SweepGuided,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected error diagnostic for wrong arg count (4 args)"
+        );
+        assert!(
+            !has_op,
+            "should not produce Sweep(SweepGuided) op with wrong arg count"
+        );
+    }
+
+    /// sweep_guided() with 3 non-geometry args emits per-arg diagnostics
+    /// (mirroring sweep() behaviour at geometry.rs:552-579).
+    #[test]
+    fn sweep_guided_compiler_rejects_non_geometry_args() {
+        let source = r#"structure S {
+    param a: Scalar = 1mm
+    param b: Scalar = 1mm
+    param c: Scalar = 1mm
+    let result = sweep_guided(a, b, c)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_swg_nongeom"),
+        );
+        let compiled = crate::compile(&parsed);
+        // Expect three per-arg diagnostics mentioning the arg labels.
+        let profile_diag = compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("profile") && d.message.contains("sweep_guided"));
+        let path_diag = compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("path") && d.message.contains("sweep_guided"));
+        let guide_diag = compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("guide") && d.message.contains("sweep_guided"));
+        assert!(
+            profile_diag,
+            "expected profile-arg diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+        assert!(
+            path_diag,
+            "expected path-arg diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+        assert!(
+            guide_diag,
+            "expected guide-arg diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    /// sweep_guided() with 3 geometry args should produce a Sweep(SweepGuided)
+    /// realization with no diagnostics.
+    #[test]
+    fn sweep_guided_compiler_accepts_three_geometry_args() {
+        let source = r#"structure S {
+    let profile = sphere(5mm)
+    let path = sphere(3mm)
+    let guide = sphere(2mm)
+    let result = sweep_guided(profile, path, guide)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_swg_ok"),
+        );
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization, got {}",
+            template.realizations.len()
+        );
+        let has_op = template.realizations[0].operations.iter().any(|op| {
+            matches!(
+                op,
+                crate::CompiledGeometryOp::Sweep {
+                    kind: crate::SweepKind::SweepGuided,
+                    ..
+                }
+            )
+        });
+        assert!(has_op, "expected Sweep(SweepGuided) op");
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "expected no diagnostics for sweep_guided(profile, path, guide), got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
     /// extrude_symmetric() with 2 args should produce a Sweep(ExtrudeSymmetric) realization.
     #[test]
     fn extrude_symmetric_compiler_accepts_two_args() {
