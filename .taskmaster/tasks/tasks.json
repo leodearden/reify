@@ -40613,11 +40613,11 @@
         "description": "The new `chamfer_let_bound_target_ops` / `fillet_let_bound_target_ops` tests in crates/reify-compiler/tests/let_scope_tests.rs:975-1018 cover the happy path (let-bound cylinder target resolves to Step(0)) but do not exercise an inline (non-let) geometry arg or a chained modifier. Add a test compiling `let result = chamfer(shell(body, 0.5mm), 2mm)` and assert the op sequence `[Cylinder, Modify(Shell, 0), Modify(Chamfer, 1)]` to cover nested modifier resolution and verify chamfer/fillet participate correctly in recursive geometry resolution (sub_ops extension). Follow-up from task 1823 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:50.123Z",
+        "updatedAt": "2026-04-19T06:08:05.508Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/let_scope_tests.rs"
@@ -40951,7 +40951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:04:59.911Z",
+      "lastModified": "2026-04-19T06:08:05.514Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
