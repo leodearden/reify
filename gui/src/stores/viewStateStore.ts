@@ -190,7 +190,14 @@ export function createViewStateStore() {
   }
 
   function setVisibilityWithoutCascade(path: string, vs: VisibilityState): void {
-    setState('explicit', path, vs);
+    // Use produce so the mirror step runs in the same reactive notification
+    // rather than introducing a separate setState call.
+    setState(
+      produce((s) => {
+        s.explicit[path] = vs;
+        mirrorExplicitToActiveUserView(s);
+      }),
+    );
   }
 
   function resetToInherit(path: string): void {
@@ -200,6 +207,7 @@ export function createViewStateStore() {
         for (const desc of walkDescendants(path, nodeByPath)) {
           s.explicit[desc] = null;
         }
+        mirrorExplicitToActiveUserView(s);
       }),
     );
   }
@@ -232,6 +240,7 @@ export function createViewStateStore() {
             s.explicit[desc] = null;
           }
         }
+        mirrorExplicitToActiveUserView(s);
       }),
     );
   }
@@ -250,6 +259,12 @@ export function createViewStateStore() {
   /**
    * Seed a view into state.views (used by regenerateAutoViews and tests).
    * Overwrites any existing entry with the same id.
+   *
+   * NOTE: When a `user:*` view is the active view, subsequent mutations
+   * (`setVisibility`, `setVisibilityWithoutCascade`, `resetToInherit`,
+   * `showOnly`, `cycleCascading`) will overwrite whatever this seed writes
+   * via the live-mirror mechanism.  Callers that need to preserve seeded
+   * state should switch away from a user view before calling mutations.
    */
   function seedView(view: ViewDefinition): void {
     setState(produce((s) => {

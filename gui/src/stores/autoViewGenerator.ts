@@ -17,6 +17,15 @@ import type { EntityTreeNode, VisibilityState } from '../types';
  *   For auto views this is a full assignment (every node has an entry).
  *   For user views the map may be sparse; unset paths fall through to
  *   `defaultRuleFor` via walk-up.
+ *
+ * **Live user-view mirror**: When a `user:*` view is the active view in
+ * `viewStateStore`, every mutation (`setVisibility`, `setVisibilityWithoutCascade`,
+ * `resetToInherit`, `showOnly`, `cycleCascading`) automatically rebuilds
+ * `visibility` from the current `state.explicit`, dropping null (inherit-cleared)
+ * entries.  This means `visibility` on an active user view always equals the
+ * user's live explicit choices — it is not a stale seed from `seedView`.
+ * Consumers that export or restore user views can treat `visibility` as the
+ * complete, up-to-date state.
  */
 export interface ViewDefinition {
   id: string;
