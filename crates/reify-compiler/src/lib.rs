@@ -57,6 +57,22 @@ use reify_types::{
     UnOp, Value, ValueCellId,
 };
 
+/// Format a constraint-def shadow-warning message for a name collision between two prelude modules.
+///
+/// `winner` is the first-imported module path string (whose definition is retained),
+/// `loser` is the later-imported module path string (whose definition is silently discarded).
+///
+/// Exposed as `pub` so tests can build the expected string without duplicating the format
+/// literal — a change to this function propagates to both production code and any test that
+/// calls it, making the coupling explicit rather than hiding it behind substring assertions.
+pub fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> String {
+    format!(
+        "constraint def '{}' from '{}' shadows '{}' from '{}' \
+         (first-imported definition wins)",
+        name, winner, name, loser
+    )
+}
+
 /// Compile a single `constraint def` declaration into a [`CompiledConstraintDef`].
 ///
 /// Runs annotation/pragma lowering and validation exactly once per declaration,
@@ -91,9 +107,31 @@ fn compile_constraint_def(
         .params
         .iter()
         .map(|param| {
-            // Run resolution purely for diagnostics — drop the returned Option<Type>.
+            // Resolve the param type: if resolution returns None for a Named type that is
+            // neither a builtin nor a declared type parameter, the name is unknown — emit
+            // an error so the user sees the typo at def-compile time rather than silently
+            // accepting it and getting a confusing error at the instantiation site.
             if let Some(te) = &param.type_expr {
-                resolve_type_expr_with_aliases(te, &type_param_names, alias_registry, diagnostics);
+                if resolve_type_expr_with_aliases(
+                    te,
+                    &type_param_names,
+                    alias_registry,
+                    diagnostics,
+                )
+                .is_none()
+                {
+                    if let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind {
+                        if !type_param_names.contains(name.as_str()) {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown type '{}' in param '{}' of constraint def '{}'",
+                                    name, param.name, c.name
+                                ))
+                                .with_label(DiagnosticLabel::new(te.span, "unknown type")),
+                            );
+                        }
+                    }
+                }
             }
             CompiledConstraintParam {
                 name: param.name.clone(),
@@ -595,10 +633,10 @@ pub(crate) fn compile_with_prelude_refs(
                     // The first-imported module wins; emit a warning that names the winner
                     // (prev_path) before the loser (module_path_str) so users know which
                     // import is retained and which is silently discarded.
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "constraint def '{}' from '{}' shadows '{}' from '{}' \
-                         (first-imported definition wins)",
-                        cd.name, prev_path, cd.name, module_path_str
+                    diagnostics.push(Diagnostic::warning(format_shadow_warning(
+                        &cd.name,
+                        prev_path,
+                        &module_path_str,
                     )));
                 }
                 // First-import wins: do not overwrite the existing registry entry.
