@@ -6697,7 +6697,7 @@
           "309",
           "310"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6714,7 +6714,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-19T20:35:25.998Z"
       },
       {
         "id": "323",
@@ -41741,14 +41741,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T20:29:59.425Z",
+      "lastModified": "2026-04-19T20:35:26.001Z",
       "taskCount": 1987,
       "completedCount": 1693,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T20:35:16.258Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
