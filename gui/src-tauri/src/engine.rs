@@ -431,9 +431,10 @@ impl EngineSession {
                     // code = "unresolved-source" so frontends can distinguish reliable from
                     // unreliable positions. Borrows from `self` — no allocation on the
                     // happy path; the "<unknown>"/"" fallback is zero-length static strs.
+                    let resolved = self.resolve_source();
+                    let unresolved = resolved.is_none();
                     let (file_path, source): (&str, &str) =
-                        self.resolve_source().unwrap_or(("<unknown>", ""));
-                    let unresolved = file_path == "<unknown>";
+                        resolved.unwrap_or(("<unknown>", ""));
                     let mut diags = diagnostics_to_info(&result.diagnostics, file_path, source);
                     if unresolved {
                         for d in &mut diags {

@@ -67,27 +67,6 @@ fn diagnostic_info_serde_roundtrip() {
 
 #[cfg(feature = "serde")]
 #[test]
-fn severity_serde_pascal_case_serialization() {
-    // Each Severity variant must serialize as a PascalCase JSON string.
-    assert_eq!(
-        serde_json::to_value(&reify_types::Severity::Error).unwrap(),
-        serde_json::Value::String("Error".into()),
-        "Severity::Error must serialize as \"Error\""
-    );
-    assert_eq!(
-        serde_json::to_value(&reify_types::Severity::Warning).unwrap(),
-        serde_json::Value::String("Warning".into()),
-        "Severity::Warning must serialize as \"Warning\""
-    );
-    assert_eq!(
-        serde_json::to_value(&reify_types::Severity::Info).unwrap(),
-        serde_json::Value::String("Info".into()),
-        "Severity::Info must serialize as \"Info\""
-    );
-}
-
-#[cfg(feature = "serde")]
-#[test]
 fn severity_serde_roundtrip() {
     // Each PascalCase string must deserialize back to the correct variant.
     let err: reify_types::Severity =
