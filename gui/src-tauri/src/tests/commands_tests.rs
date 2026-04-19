@@ -7,10 +7,14 @@ use reify_test_support::{MockGeometryKernel, bracket_source};
 use crate::commands::AppState;
 use crate::engine::EngineSession;
 
-fn make_loaded_session() -> EngineSession {
+fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+fn make_loaded_session() -> EngineSession {
+    let mut session = make_session();
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -145,10 +149,7 @@ fn export_writes_file() {
 /// Uses the standard technique: spawn a thread that panics while holding the lock,
 /// then join it. After the join the mutex is in a poisoned state.
 fn make_poisoned_engine() -> Arc<Mutex<EngineSession>> {
-    let session = EngineSession::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    );
+    let session = make_session();
     let engine = Arc::new(Mutex::new(session));
     let engine_clone = Arc::clone(&engine);
     let _ = std::thread::spawn(move || {
@@ -215,10 +216,7 @@ fn get_entity_identity_map_impl_returns_ok_on_healthy_mutex() {
 fn get_entity_tree_impl_returns_ok_empty_when_no_module_loaded() {
     use crate::commands::get_entity_tree_impl;
 
-    let session = EngineSession::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    );
+    let session = make_session();
     let engine = Mutex::new(session);
 
     let result = get_entity_tree_impl(&engine);
@@ -233,10 +231,7 @@ fn get_entity_tree_impl_returns_ok_empty_when_no_module_loaded() {
 fn get_entity_identity_map_impl_returns_ok_empty_when_no_module_loaded() {
     use crate::commands::get_entity_identity_map_impl;
 
-    let session = EngineSession::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    );
+    let session = make_session();
     let engine = Mutex::new(session);
 
     let result = get_entity_identity_map_impl(&engine);
