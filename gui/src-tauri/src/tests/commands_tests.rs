@@ -212,6 +212,42 @@ fn get_entity_identity_map_impl_returns_ok_on_healthy_mutex() {
 }
 
 #[test]
+fn get_entity_tree_impl_returns_ok_empty_when_no_module_loaded() {
+    use crate::commands::get_entity_tree_impl;
+
+    let session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let engine = Mutex::new(session);
+
+    let result = get_entity_tree_impl(&engine);
+    assert!(result.is_ok(), "expected Ok with no module loaded, got {:?}", result);
+    assert!(
+        result.unwrap().is_empty(),
+        "entity tree should be empty when no module is loaded"
+    );
+}
+
+#[test]
+fn get_entity_identity_map_impl_returns_ok_empty_when_no_module_loaded() {
+    use crate::commands::get_entity_identity_map_impl;
+
+    let session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let engine = Mutex::new(session);
+
+    let result = get_entity_identity_map_impl(&engine);
+    assert!(result.is_ok(), "expected Ok with no module loaded, got {:?}", result);
+    assert!(
+        result.unwrap().is_empty(),
+        "entity identity map should be empty when no module is loaded"
+    );
+}
+
+#[test]
 fn get_containing_definition_impl_returns_err_on_poisoned_mutex() {
     use crate::commands::get_containing_definition_impl;
 
