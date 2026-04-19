@@ -654,11 +654,16 @@ pub(crate) fn extract_collection_count(
 
 // ─── Registry cross-check (task-1733) ────────────────────────────────────────
 //
-// The test below cross-checks the set of function names handled in
+// The tests below cross-check the set of function names handled in
 // `geometry_arg_indices` against the names dispatched in `compile_geometry_call`.
 // When a new geometry function is added to the dispatch block, it must also be
 // added to one of the lists below, ensuring `geometry_arg_indices` is kept in
 // sync and geometry-arg resolution is not silently broken.
+//
+// The `compile_geometry_call_source_arms_match_registry_lists` test closes the
+// reverse direction: it scans `compile_geometry_call`'s source text for
+// match-arm string-literal keys and verifies they all appear in the four
+// registry lists, so an undeclared arm cannot slip through undetected.
 
 #[cfg(test)]
 mod tests {
@@ -792,10 +797,10 @@ mod tests {
         // GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft changes,
         // bump that constant and verify that `compile_geometry_call` contains a matching
         // dispatch arm for the new entry.
-        // NOTE: this test does NOT detect the reverse — an arm added to
-        // `compile_geometry_call` without a corresponding entry in one of the four lists.
-        // That gap is an acknowledged limitation; true coverage would require a
-        // source-text scan of the match arms, which is beyond this test's scope.
+        // NOTE: the reverse direction (an arm added to `compile_geometry_call` without
+        // a corresponding entry in one of the four lists) is now caught by the companion
+        // `compile_geometry_call_source_arms_match_registry_lists` test, which scans the
+        // source text of the function directly.
         assert_eq!(
             all.len(),
             EXPECTED_DISPATCH_COUNT,
@@ -803,6 +808,90 @@ mod tests {
              bump EXPECTED_DISPATCH_COUNT and make sure the new function is added to \
              GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft above"
         );
+    }
+
+    /// Scan the body of a named function in `source` for match-arm string-literal
+    /// keys and return them as a `HashSet<String>`.
+    ///
+    /// Algorithm:
+    /// 1. Find the first occurrence of `fn_signature_prefix`.
+    /// 2. Scan forward to the first `{` — the function-body open brace.
+    /// 3. Walk byte-by-byte tracking `{`/`}` depth to locate the body close brace.
+    /// 4. For each line inside the body: skip `//`-comment lines; on any line that
+    ///    contains `=>`, extract every double-quoted token from the substring before
+    ///    `=>` and collect it into the result set.
+    ///
+    /// This correctly handles single-arm (`"foo" =>`), multi-arm
+    /// (`"a" | "b" | "c" =>`), and nested inner `match` blocks, while ignoring
+    /// wildcard arms (`_ =>`), pattern-destructure arms (no string literals on the
+    /// LHS), and code outside the target function.
+    fn extract_dispatch_keys_from_source(
+        source: &str,
+        fn_signature_prefix: &str,
+    ) -> HashSet<String> {
+        // Step 1: locate the function signature.
+        let sig_pos = source.find(fn_signature_prefix).unwrap_or_else(|| {
+            panic!(
+                "extract_dispatch_keys_from_source: could not find '{}' in source",
+                fn_signature_prefix
+            )
+        });
+
+        // Step 2: scan forward from the signature to the opening '{'.
+        let after_sig = &source[sig_pos..];
+        let brace_rel = after_sig.find('{').unwrap_or_else(|| {
+            panic!(
+                "extract_dispatch_keys_from_source: no opening '{{' found after '{}'",
+                fn_signature_prefix
+            )
+        });
+        let body_start = sig_pos + brace_rel + 1; // exclusive of the opening '{'
+
+        // Step 3: track brace depth to find the matching close brace.
+        let mut depth: usize = 1;
+        let mut body_end = body_start;
+        let source_bytes = source.as_bytes();
+        for i in body_start..source.len() {
+            match source_bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &source[body_start..body_end];
+
+        // Step 4: extract double-quoted tokens from non-comment, arrow-bearing lines.
+        let mut keys = HashSet::new();
+        for line in body.lines() {
+            let trimmed = line.trim();
+            // Skip comment-only lines.
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            // Only process lines that contain a fat-arrow.
+            let Some(arrow_pos) = line.find("=>") else {
+                continue;
+            };
+            // Extract string literals from the LHS (before `=>`).
+            let lhs = &line[..arrow_pos];
+            let mut chars = lhs.chars();
+            while let Some(c) = chars.next() {
+                if c == '"' {
+                    let token: String = chars.by_ref().take_while(|&ch| ch != '"').collect();
+                    if !token.is_empty() {
+                        keys.insert(token);
+                    }
+                }
+            }
+        }
+
+        keys
     }
 
     #[test]
