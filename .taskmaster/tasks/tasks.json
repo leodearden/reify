@@ -41122,6 +41122,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1969",
+        "title": "Refactor make_poison_literal to take Diagnostic and push internally (esc-1921-36 S1)",
+        "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed `Diagnostic` and push it internally, removing the `let n = diagnostics.len()` book-keeping at every call site (~25 sites). Enforces the \"push paired with poison\" invariant by construction rather than discipline. Alternative: a `#[must_use]` `PoisonBuilder` wrapper. Apply equivalently to `make_poison_type` (added in task 1921 S3). Source: review suggestion S1 in esc-1921-36 (reviewer_comprehensive, api_ergonomics).",
+        "details": "Files: crates/reify-compiler/src/expr.rs. Risk: large mechanical refactor across ~25 call sites; ensure all expr_error_sentinel_tests + type_error_propagation_tests still pass. memory_hints: search \"task-1921 poison policy\"; entity \"make_poison_literal\".",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -41131,7 +41142,10 @@
       "completedCount": 1684,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T07:01:20.563Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-19T07:01:20.615Z"
     }
   }
 }
