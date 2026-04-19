@@ -20551,11 +20551,11 @@
         "description": "In crates/reify-compiler/src/lib.rs: (1) Extract resolve_enum_type(name, enum_defs) helper to replace 4+ inline occurrences. (2) Build HashSet of enum names before filter_map loop in check_trait_conformance. (3) Extract local closure for duplicated 22-line Param/Let blocks. (4) Add assertion when type_args is non-empty on enum match.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:02:23.299Z",
+        "updatedAt": "2026-04-19T07:16:06.692Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -40222,11 +40222,11 @@
         "description": "In crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 17-42), the `find_node` helper walks `CompiledExprKind` recursively but falls through to `_ => None` for many variants (Quantifier, ListLiteral, StructLiteral, tuple-like nodes, etc.). Current callers only search predicate subtrees so this is not a correctness bug today, but it is a maintainability trap: if a future regression produces a nested `Type::Error` inside an unhandled variant, `find_node` would silently return `None` and turn a real regression into a green test. Either (a) enumerate all CompiledExprKind variants exhaustively (no `_ => None`) so the compiler nags when new variants are added, or (b) panic/log in `cfg(test)` on unhandled kinds so silent miss is impossible. Review followup from task 1912; suggestion S4.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:46.586Z",
+        "updatedAt": "2026-04-19T07:16:06.610Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40491,11 +40491,11 @@
         "description": "Follow-up to task 448 review. The `find_node` helper at crates/reify-compiler/tests/type_error_propagation_tests.rs:12-44 only recurses into BinOp, UnOp, FunctionCall, Conditional, MethodCall, and IndexAccess — returning None for everything else (Quantifier.predicate, ListLiteral elements, SetLiteral elements, Lambda body, Let/Block, etc.). The quantifier test currently works because it pattern-matches the top-level Quantifier out first, but any future refactor that wraps the quantifier or embeds the predicate inside an unhandled variant would cause the `Type::Error` search to silently return None and the assertion would fail in a misleading way.\n\nEither:\n- Extend `find_node` to recurse into all CompiledExprKind variants that contain sub-expressions (Quantifier.predicate, list/set element exprs, Lambda body, Let bindings/body, Block stmts, etc.), OR\n- Document the restricted scope at the top of the helper and panic on unknown recursive kinds so coverage gaps surface loudly instead of silently missing.\n\nPreferred: the extend-coverage approach so anti-cascade tests stay robust against AST/IR restructuring.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:22.068Z",
+        "updatedAt": "2026-04-19T07:16:06.839Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -41337,9 +41337,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:16:06.514Z",
+      "lastModified": "2026-04-19T07:16:06.840Z",
       "taskCount": 1978,
-      "completedCount": 1686,
+      "completedCount": 1687,
       "tags": [
         "master"
       ]
