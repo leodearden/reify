@@ -152,11 +152,15 @@ fn make_poisoned_engine() -> Arc<Mutex<EngineSession>> {
     let session = make_session();
     let engine = Arc::new(Mutex::new(session));
     let engine_clone = Arc::clone(&engine);
-    let _ = std::thread::spawn(move || {
+    let join_result = std::thread::spawn(move || {
         let _guard = engine_clone.lock().unwrap();
         panic!("poison the mutex");
     })
     .join();
+    assert!(
+        join_result.is_err(),
+        "thread should have panicked to poison the mutex"
+    );
     engine
 }
 
