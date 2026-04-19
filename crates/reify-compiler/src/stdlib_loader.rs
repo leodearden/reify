@@ -66,6 +66,12 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             ("std.tolerancing", TOLERANCING_SRC),
         ];
 
+        // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
+        // against all previously-compiled stdlib modules (`&modules` grows by
+        // one each iteration). This implements the cross-module dependency
+        // requirement from task #326 suggestion #2 — a stdlib module added
+        // later (e.g. std.structural.physical) can freely reference traits and
+        // types declared in earlier modules (e.g. std.materials.mechanical).
         let mut modules = Vec::with_capacity(sources.len());
         for (module_name, source) in &sources {
             let segments: Vec<String> = module_name.split('.').map(String::from).collect();
