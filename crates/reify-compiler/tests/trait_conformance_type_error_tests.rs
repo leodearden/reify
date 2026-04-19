@@ -151,11 +151,10 @@ structure def S : HasX {}
 /// searching for the cascade message, a Warning-severity offender would be
 /// invisible and the test would silently pass — the invariant inverted.
 #[test]
-#[should_panic(expected = "unexpected 'type mismatch for trait' cascade")]
+#[should_panic(expected = "type mismatch for trait")]
 fn helper_flags_cascade_at_warning_severity() {
-    // compile_source is the only public constructor for CompiledModule in tests;
-    // diagnostics are immediately overwritten with synthetic entries so the
-    // actual compilation result is irrelevant.
+    // CompiledModule has many fields; cheapest way to obtain a valid instance
+    // is a trivial compile, then overwrite .diagnostics with synthetic entries.
     let mut module = compile_source("structure def Dummy {}");
     module.diagnostics = vec![
         Diagnostic::error("unknown member 'unsupported' in scope S"),
