@@ -41099,7 +41099,15 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:19:42.523Z"
+        "updatedAt": "2026-04-19T07:19:42.523Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Wire viewportStore camera state into view persistence round-trip"
+            ]
+          }
+        }
       },
       {
         "id": "1966",
