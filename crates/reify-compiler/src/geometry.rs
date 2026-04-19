@@ -45,7 +45,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around"
         | "circular_pattern" | "linear_pattern" | "mirror"
-        | "extrude" | "revolve" | "revolve_full"
+        | "extrude" | "extrude_symmetric" | "revolve" | "revolve_full"
         | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
         "sweep" => &[0, 1],
         // NOTE: `loft` is handled specially (variadic geometry args) in the resolution block.
@@ -456,6 +456,30 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // extrude_symmetric(profile, distance) — extrudes distance/2 each way
+        "extrude_symmetric" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "extrude_symmetric() expects exactly 2 arguments (profile, distance), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let distance_expr = it.next().unwrap();
+            let profile = geom_ref(0);
+            let op = CompiledGeometryOp::Sweep {
+                kind: SweepKind::ExtrudeSymmetric,
+                profiles: vec![profile],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("distance".to_string(), distance_expr),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         // revolve(profile, ox, oy, oz, ax, ay, az, angle)
         "revolve" => {
             if compiled_args.len() != 8 {
@@ -688,6 +712,7 @@ mod tests {
         "linear_pattern",
         "mirror",
         "extrude",
+        "extrude_symmetric",
         "revolve",
         "revolve_full",
         "shell",
@@ -731,11 +756,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    16
+    /// GEOM_ARG_FUNCTIONS    17
     /// NO_GEOM_ARG_FUNCTIONS 11
     /// boolean ops            5
     /// loft                   1
-    /// Total                 33
+    /// Total                 34
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -747,7 +772,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 33;
+    const EXPECTED_DISPATCH_COUNT: usize = 34;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

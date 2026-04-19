@@ -26,6 +26,7 @@ pub(crate) fn is_geometry_function(name: &str) -> bool {
             | "union_all"
             | "intersection_all"
             | "sweep"
+            | "extrude_symmetric"
             | "translate"
             | "rotate"
             | "scale"
