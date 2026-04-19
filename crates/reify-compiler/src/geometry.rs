@@ -18,6 +18,26 @@ pub(crate) fn is_geometry_let(
     }
 }
 
+/// Returns `true` if a param with the given type and default expression is a
+/// Solid-typed geometry param — i.e. its type is `Type::Geometry` and its
+/// default expression is a geometry call or a reference to a geometry let.
+///
+/// This predicate is the single source of truth for the "Solid param with
+/// geometry-call default" check, which must be consistent across four sites:
+/// entity.rs pre-pass, entity.rs main Param loop, guards.rs
+/// `register_guarded_names`, and guards.rs `compile_guarded_members`.
+pub(crate) fn is_solid_geometry_param(
+    ty: &reify_types::Type,
+    default: Option<&reify_syntax::Expr>,
+    functions: &[CompiledFunction],
+    known: &HashSet<&str>,
+) -> bool {
+    ty == &reify_types::Type::Geometry
+        && default
+            .map(|e| is_geometry_let(e, functions, known))
+            .unwrap_or(false)
+}
+
 /// Returns the arg indices that are geometry refs for each non-boolean geometry function.
 /// Empty slice means no geometry args (primitives, curves).
 /// Boolean ops are excluded — they handle geometry args with their own recursive block.
@@ -26,7 +46,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around"
         | "circular_pattern" | "linear_pattern" | "mirror"
         | "extrude" | "revolve" | "revolve_full"
-        | "shell" | "thicken" | "draft" => &[0],
+        | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
         "sweep" => &[0, 1],
         // NOTE: `loft` is handled specially (variadic geometry args) in the resolution block.
         // IMPORTANT: New geometry functions that take geometry args MUST be registered here
@@ -99,6 +119,7 @@ pub(crate) fn compile_geometry_call(
             return compile_boolean_op(
                 name,
                 args,
+                expr.span,
                 scope,
                 enum_defs,
                 functions,
@@ -173,10 +194,13 @@ pub(crate) fn compile_geometry_call(
         // --- Primitives ---
         "box" => {
             if compiled_args.len() != 3 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "box() expects 3 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "box() expects 3 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -191,10 +215,13 @@ pub(crate) fn compile_geometry_call(
         }
         "cylinder" => {
             if compiled_args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "cylinder() expects 2 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "cylinder() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -208,10 +235,13 @@ pub(crate) fn compile_geometry_call(
         }
         "sphere" => {
             if compiled_args.len() != 1 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "sphere() expects 1 argument, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "sphere() expects 1 argument, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             Some(vec![CompiledGeometryOp::Primitive {
@@ -226,10 +256,13 @@ pub(crate) fn compile_geometry_call(
         // linear_pattern(target, dx, dy, dz, count, spacing)
         "linear_pattern" => {
             if compiled_args.len() != 6 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "linear_pattern() expects 6 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "linear_pattern() expects 6 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -252,10 +285,13 @@ pub(crate) fn compile_geometry_call(
         // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
         "circular_pattern" => {
             if compiled_args.len() != 9 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "circular_pattern() expects 9 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "circular_pattern() expects 9 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -281,10 +317,13 @@ pub(crate) fn compile_geometry_call(
         // mirror(target, ox, oy, oz, nx, ny, nz)
         "mirror" => {
             if compiled_args.len() != 7 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "mirror() expects 7 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "mirror() expects 7 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -556,15 +595,10 @@ pub(crate) fn compile_geometry_call(
             compile_transform_op(name, compiled_args, geom_ref(0), diagnostics, sub_ops)
         }
         // --- Modify extensions ---
-        // shell/thicken/draft: pass geom_ref(0) as target (correctly resolved from geom_refs).
-        "shell" | "thicken" | "draft" => {
+        // All five modifiers take a geometry target as their first argument (correctly
+        // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
+        "shell" | "thicken" | "draft" | "chamfer" | "fillet" => {
             compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
-        }
-        // chamfer/fillet: pass GeomRef::Step(0) explicitly to preserve the known bug.
-        // These are NOT registered in geometry_arg_indices(), so sub_ops is always empty
-        // and geom_ref(0) would fall back to GeomRef::Step(step_offset), not Step(0).
-        "chamfer" | "fillet" => {
-            compile_modify_op(name, compiled_args, GeomRef::Step(0), expr.span, diagnostics, sub_ops)
         }
         // --- Curve constructors ---
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
@@ -578,6 +612,44 @@ pub(crate) fn compile_geometry_call(
             None
         }
     }
+}
+
+/// Detect if a constraint expression matches the count constraint pattern:
+///   `collection_name.count == expr`  or  `expr == collection_name.count`
+/// Returns `(collection_name, count_expr)` where count_expr is the non-.count side.
+pub(crate) fn extract_count_constraint<'a>(
+    expr: &'a reify_syntax::Expr,
+    collection_sub_names: &HashSet<String>,
+) -> Option<(String, &'a reify_syntax::Expr)> {
+    if let reify_syntax::ExprKind::BinOp { op, left, right } = &expr.kind {
+        if op != "==" {
+            return None;
+        }
+        // Check LHS: collection_name.count == expr
+        if let Some(name) = extract_collection_count(left, collection_sub_names) {
+            return Some((name, right));
+        }
+        // Check RHS: expr == collection_name.count
+        if let Some(name) = extract_collection_count(right, collection_sub_names) {
+            return Some((name, left));
+        }
+    }
+    None
+}
+
+/// Check if an expression is `collection_name.count` for a known collection sub.
+pub(crate) fn extract_collection_count(
+    expr: &reify_syntax::Expr,
+    collection_sub_names: &HashSet<String>,
+) -> Option<String> {
+    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
+        && member == "count"
+        && let reify_syntax::ExprKind::Ident(name) = &object.kind
+        && collection_sub_names.contains(name.as_str())
+    {
+        return Some(name.clone());
+    }
+    None
 }
 
 // ─── Registry cross-check (task-1733) ────────────────────────────────────────
@@ -609,6 +681,8 @@ mod tests {
         "shell",
         "thicken",
         "draft",
+        "chamfer",
+        "fillet",
         "sweep",
     ];
 
@@ -621,8 +695,6 @@ mod tests {
         "sphere",
         "linear_pattern_2d",
         "arbitrary_pattern",
-        "chamfer",
-        "fillet",
         "line_segment",
         "arc",
         "helix",
@@ -630,6 +702,32 @@ mod tests {
         "bezier",
         "nurbs",
     ];
+
+    /// Canary pin: the total number of distinct function names dispatched by
+    /// `compile_geometry_call`, spread across the four category lists.
+    ///
+    /// Breakdown at time of writing:
+    /// ```text
+    /// GEOM_ARG_FUNCTIONS    16  (translate, rotate, scale, rotate_around, circular_pattern,
+    ///                            linear_pattern, mirror, extrude, revolve, revolve_full,
+    ///                            shell, thicken, draft, sweep, chamfer, fillet)
+    /// NO_GEOM_ARG_FUNCTIONS 11  (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
+    ///                            line_segment, arc, helix, interp, bezier, nurbs)
+    /// boolean ops            5  (union, intersection, difference, union_all, intersection_all)
+    /// loft                   1
+    /// Total                 33
+    /// ```
+    ///
+    /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
+    ///   1. Add the function name to exactly one of the four lists in
+    ///      `all_dispatch_functions_accounted_for`.
+    ///   2. Increment this constant.
+    ///   3. Confirm the `assert_eq!` in `all_dispatch_functions_accounted_for` still passes.
+    ///
+    /// The constant is declared separately from the lists so any mutation of the lists
+    /// that omits the corresponding increment will trip the assertion, prompting a
+    /// conscious audit.
+    const EXPECTED_DISPATCH_COUNT: usize = 33;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -693,60 +791,21 @@ mod tests {
         // The per-function tests above (`geometry_arg_indices_covers_all_geom_arg_functions`
         // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
         // correctness guardrail — they verify each function is in the right list.
-        // This count check is a secondary reminder: if you add a new function to
-        // `compile_geometry_call` without adding it to one of the four lists here,
-        // the count will be wrong and this test will tell you to update the lists.
-        let expected = GEOM_ARG_FUNCTIONS.len()
-            + NO_GEOM_ARG_FUNCTIONS.len()
-            + boolean_ops.len()
-            + loft.len();
+        // `EXPECTED_DISPATCH_COUNT` is the canary pin for the four lists above.  If any of
+        // GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft changes,
+        // bump that constant and verify that `compile_geometry_call` contains a matching
+        // dispatch arm for the new entry.
+        // NOTE: this test does NOT detect the reverse — an arm added to
+        // `compile_geometry_call` without a corresponding entry in one of the four lists.
+        // That gap is an acknowledged limitation; true coverage would require a
+        // source-text scan of the match arms, which is beyond this test's scope.
         assert_eq!(
             all.len(),
-            expected,
-            "expected {} total dispatched function names, got {} — \
-             did you add a new geometry function? Add it to GEOM_ARG_FUNCTIONS or \
-             NO_GEOM_ARG_FUNCTIONS in this test.",
-            expected,
-            all.len()
+            EXPECTED_DISPATCH_COUNT,
+            "total dispatched geometry function count changed — \
+             bump EXPECTED_DISPATCH_COUNT and make sure the new function is added to \
+             GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft above"
         );
     }
-}
-
-/// Detect if a constraint expression matches the count constraint pattern:
-///   `collection_name.count == expr`  or  `expr == collection_name.count`
-/// Returns `(collection_name, count_expr)` where count_expr is the non-.count side.
-pub(crate) fn extract_count_constraint<'a>(
-    expr: &'a reify_syntax::Expr,
-    collection_sub_names: &HashSet<String>,
-) -> Option<(String, &'a reify_syntax::Expr)> {
-    if let reify_syntax::ExprKind::BinOp { op, left, right } = &expr.kind {
-        if op != "==" {
-            return None;
-        }
-        // Check LHS: collection_name.count == expr
-        if let Some(name) = extract_collection_count(left, collection_sub_names) {
-            return Some((name, right));
-        }
-        // Check RHS: expr == collection_name.count
-        if let Some(name) = extract_collection_count(right, collection_sub_names) {
-            return Some((name, left));
-        }
-    }
-    None
-}
-
-/// Check if an expression is `collection_name.count` for a known collection sub.
-pub(crate) fn extract_collection_count(
-    expr: &reify_syntax::Expr,
-    collection_sub_names: &HashSet<String>,
-) -> Option<String> {
-    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
-        && member == "count"
-        && let reify_syntax::ExprKind::Ident(name) = &object.kind
-        && collection_sub_names.contains(name.as_str())
-    {
-        return Some(name.clone());
-    }
-    None
 }
 

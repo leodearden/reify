@@ -40,5 +40,6 @@ tree-sitter-reify/src/.generate.lock
 tree-sitter-reify/src/.generate.lock.d
 
 # Sidecar build artifacts
+gui/dist/
 gui/sidecar/dist/
 gui/src-tauri/sidecar/reify-sidecar-*

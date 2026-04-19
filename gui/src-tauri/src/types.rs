@@ -167,10 +167,18 @@ pub struct SourceSpanInfo {
 ///
 /// # Fields
 /// - `content_hash`: 32-character lowercase hex string from `ContentHash::to_string()`.
-///   Derived from `template.content_hash` for roots and `ContentHash::of_str(cell_id)` for cells.
+///   **Semantics differ by entry kind** — the field name is preserved for API stability:
+///   - *Template roots*: the compiler-produced content hash over the template's full
+///     structure (params, constraints, sub-components, etc.) — a true content hash.
+///   - *Value cells*: `ContentHash::of_str(cell.id.to_string())` — an **identity hash**
+///     derived from the cell's path string (e.g. `"Bracket.width"`), NOT a hash of the
+///     cell's content (type, default_expr, kind, etc.).  Callers needing a true
+///     cell-content hash must derive it separately.
 /// - `structural_fingerprint`: `"{type}:{parent}:{child_count}:{hash}"` format.
 ///   - `type` — entity kind (`"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`)
-///   - `parent` — parent template name, empty string for root templates
+///   - `parent` — parent template name, literal `"<root>"` sentinel for root templates
+///     (angle-bracket form cannot be a valid template identifier, preventing
+///     collision with user-defined templates named "root")
 ///   - `child_count` — number of sub-components (0 for value cells)
 ///   - `hash` — hex hash combining sub-component content hashes
 /// - `source_span`: byte span of the entity's declaration; `None` for template roots
@@ -178,6 +186,13 @@ pub struct SourceSpanInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityIdentity {
     /// 32-character lowercase hex string from `ContentHash::to_string()`.
+    ///
+    /// **Semantic note**: for template-root entries this is a true content hash (over
+    /// the template's structure, params, constraints, etc., produced by the compiler).
+    /// For value-cell entries this is an *identity hash* — `ContentHash::of_str(cell.id)`
+    /// — derived from the cell's path string, not from its content or type.
+    /// The field name is preserved for API/JSON stability despite the inconsistency;
+    /// see the `EntityIdentity` struct doc for details.
     pub content_hash: String,
     /// Structural fingerprint: `"{type}:{parent}:{child_count}:{hash}"`.
     pub structural_fingerprint: String,

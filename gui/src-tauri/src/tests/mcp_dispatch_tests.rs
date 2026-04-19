@@ -195,6 +195,7 @@ fn dispatch_get_selection_returns_selected_entity() {
     let engine = make_engine();
     let selection = Arc::new(RwLock::new(SelectionInfo {
         selected_entity: Some("Bracket".to_string()),
+        selected_entities: vec![],
         hovered_entity: None,
     }));
     let ctx = TauriToolContext::builder(engine)
@@ -217,6 +218,7 @@ fn dispatch_get_selection_returns_both_fields() {
     let engine = make_engine();
     let selection = Arc::new(RwLock::new(SelectionInfo {
         selected_entity: Some("Bracket".to_string()),
+        selected_entities: vec![],
         hovered_entity: Some("Bracket.width".to_string()),
     }));
     let ctx = TauriToolContext::builder(engine)

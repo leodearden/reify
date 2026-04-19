@@ -280,4 +280,72 @@ describe('useKeyboardShortcuts', () => {
       document.body.removeChild(input);
     }
   });
+
+  it('dispatching Escape with onClearSelection provided invokes it', () => {
+    const onClearSelection = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onClearSelection });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape invokes onDismissReload first then onClearSelection in sequence', () => {
+    const callOrder: string[] = [];
+    const onDismissReload = vi.fn(() => callOrder.push('dismiss'));
+    const onClearSelection = vi.fn(() => callOrder.push('clear'));
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onDismissReload, onClearSelection });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(onDismissReload).toHaveBeenCalledTimes(1);
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual(['dismiss', 'clear']);
+  });
+
+  it('Escape in an input element does NOT invoke onClearSelection', () => {
+    const onClearSelection = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onClearSelection });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+      expect(onClearSelection).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('Escape in a textarea element does NOT invoke onClearSelection', () => {
+    const onClearSelection = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onClearSelection });
+      return d;
+    });
+
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    try {
+      textarea.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+      expect(onClearSelection).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  });
 });

@@ -7,6 +7,37 @@ use super::*;
 /// Also used by the general method-call path to infer result types for collection methods.
 const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "values"];
 
+/// Construct a `Type::Error` poison literal, asserting in debug builds that
+/// the diagnostics buffer already contains at least one error-severity entry.
+///
+/// Anti-cascade contract (task-448, amendment-round-2 S1): every producer of
+/// a standalone `Type::Error` *literal node* must be paired with a root-cause
+/// `Severity::Error` diagnostic — either pushed immediately by the caller, or
+/// emitted earlier by a recursive sub-expression compile. Routing every
+/// poison *literal emission* through this helper makes "silent poison leak"
+/// bugs (poison without a diagnostic) caught in tests rather than silently
+/// degrading downstream compatibility checks. Inline `Type::Error` used as a
+/// compound node's type *field* (e.g. IndexAccess result_type, quantifier
+/// elem_type) is not covered by this helper — those sites rely on their
+/// compiled sub-expression already having pushed the diagnostic.
+///
+/// Note: this only enforces "AT LEAST one error somewhere in `diagnostics`",
+/// not "EXACTLY this poison was paired with EXACTLY that diagnostic" — the
+/// latter would require span tracking that the helper has no access to.
+/// The weaker invariant still catches the most common bug class (returning
+/// `Type::Error` from a path that forgot to call `diagnostics.push`).
+fn make_poison_literal(diagnostics: &[Diagnostic]) -> CompiledExpr {
+    debug_assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.severity == reify_types::Severity::Error),
+        "Type::Error literal produced without a paired error diagnostic — \
+         anti-cascade contract violation (task-448). Diagnostics buffer: {:?}",
+        diagnostics,
+    );
+    CompiledExpr::literal(Value::Undef, Type::Error)
+}
+
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
@@ -731,7 +762,13 @@ pub(crate) fn compile_expr_guarded(
                                     "unknown member",
                                 )),
                             );
-                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                            // Anti-cascade (task-448): emit Type::Error so
+                            // downstream operand-level guards can short-circuit
+                            // rather than cascading type-mismatch diagnostics.
+                            // Routed through `make_poison_literal` to enforce
+                            // the poison↔diagnostic pairing invariant
+                            // (amendment-round-2 S1).
+                            return make_poison_literal(diagnostics);
                         }
                     }
                 }
@@ -971,6 +1008,19 @@ pub(crate) fn compile_expr_guarded(
                 lambda_counter,
             );
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                // Anti-cascade guard (task-448): if the object is already
+                // poisoned, propagate Type::Error rather than falling back
+                // to Type::Real / List<Real>.
+                //
+                // Amendment-round-2 S4: emit a poison literal (uniform with
+                // the other Type::Error producers in this file) instead of a
+                // dead `MethodCall` node, so any downstream pass that
+                // pattern-matches on `MethodCall` (rather than just
+                // `result_type`) cannot accidentally try to evaluate this
+                // already-poisoned aggregation.
+                if compiled_obj.result_type.is_error() {
+                    return make_poison_literal(diagnostics);
+                }
                 // Infer result type from method and object type
                 let result_type = match member.as_str() {
                     "count" => Type::Int,
@@ -990,11 +1040,25 @@ pub(crate) fn compile_expr_guarded(
                 };
                 CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
             } else {
+                // Anti-cascade (task-448 amend): if the object is already
+                // poisoned, do NOT emit a second "not yet supported" diagnostic
+                // on top of the root-cause error. Short-circuit to Type::Error
+                // silently — the original producer (in the recursive compile
+                // of `object`) already reported the issue, so the
+                // `make_poison_literal` debug_assert is satisfied by that
+                // upstream diagnostic (amendment-round-2 S1).
+                if compiled_obj.result_type.is_error() {
+                    return make_poison_literal(diagnostics);
+                }
                 diagnostics.push(
                     Diagnostic::error(format!("member access not yet supported: .{}", member))
                         .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
                 );
-                CompiledExpr::literal(Value::Undef, Type::Real)
+                // Anti-cascade (task-448): emit Type::Error so downstream
+                // operand-level guards (infer_binop_type, index access,
+                // aggregation, quantifier) can short-circuit and avoid
+                // cascade diagnostics on top of this stub.
+                make_poison_literal(diagnostics)
             }
         }
         reify_syntax::ExprKind::ListLiteral(elements) => {
@@ -1125,11 +1189,18 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            // Infer result type from collection's element type
-            let result_type = match &compiled_obj.result_type {
-                Type::List(inner) => (**inner).clone(),
-                Type::Map(_, val) => (**val).clone(),
-                _ => Type::Real,
+            // Infer result type from collection's element type.
+            // Anti-cascade guard (task-448): if the object is already
+            // poisoned, propagate Type::Error rather than falling back to
+            // Type::Real.
+            let result_type = if compiled_obj.result_type.is_error() {
+                Type::Error
+            } else {
+                match &compiled_obj.result_type {
+                    Type::List(inner) => (**inner).clone(),
+                    Type::Map(_, val) => (**val).clone(),
+                    _ => Type::Real,
+                }
             };
             CompiledExpr::index_access(compiled_obj, compiled_idx, result_type)
         }
@@ -1423,10 +1494,17 @@ pub(crate) fn compile_expr_guarded(
             // Create a nested scope with the bound variable
             let mut quant_scope = scope.clone();
             let variable_id = ValueCellId::new(&quant_entity, variable);
-            // Infer element type from the collection's result type
-            let elem_type = match &compiled_collection.result_type {
-                Type::List(elem) | Type::Set(elem) => *elem.clone(),
-                _ => Type::Real, // fallback for unresolved types
+            // Infer element type from the collection's result type.
+            // Anti-cascade guard (task-448): if the collection is already
+            // poisoned, propagate Type::Error into elem_type rather than
+            // falling back to Type::Real.
+            let elem_type = if compiled_collection.result_type.is_error() {
+                Type::Error
+            } else {
+                match &compiled_collection.result_type {
+                    Type::List(elem) | Type::Set(elem) => *elem.clone(),
+                    _ => Type::Real, // fallback for unresolved types
+                }
             };
             quant_scope
                 .names

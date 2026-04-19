@@ -1,6 +1,15 @@
 use super::*;
 
 pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
+    // Anti-cascade guard (task-448 amend): Type::Error acts as a wildcard to
+    // prevent type-mismatch cascade diagnostics. If either side is already
+    // poisoned, the originating error was already reported at the producer
+    // site — downstream callers (trait conformance, function-argument checks)
+    // must not fire a second "type mismatch" diagnostic on top of it.
+    if from.is_error() || to.is_error() {
+        return true;
+    }
+
     // Identity: same type always converts to itself.
     if from == to {
         return true;
@@ -79,6 +88,12 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 /// Not used in overload resolution (which uses exact matching), but used
 /// in trait conformance and field composition checks.
 pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
+    // Anti-cascade guard (task-448 amend): treat Type::Error as a wildcard.
+    // See `implicitly_converts_to` — same rationale applies to consumer sites
+    // that compare a Type::Error-poisoned operand against an expected type.
+    if param_ty.is_error() || arg_ty.is_error() {
+        return true;
+    }
     if param_ty == arg_ty {
         return true;
     }
@@ -232,6 +247,11 @@ pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
 
 /// Infer the result type of a binary operation given operand types.
 pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
+    // Anti-cascade guard (task-448): if either operand is already poisoned,
+    // propagate Type::Error so downstream sites don't emit follow-on diagnostics.
+    if left.is_error() || right.is_error() {
+        return Type::Error;
+    }
     match op {
         BinOp::Eq
         | BinOp::Ne
@@ -272,5 +292,115 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         },
         BinOp::Mod => left.clone(),
         BinOp::Pow => left.clone(), // simplified for M1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Anti-cascade guard tests (task-448): `Type::Error` operands must
+    //! propagate `Type::Error`, not fall back to any op-specific result type.
+    //!
+    //! Renamed from `infer_binop_type_error_tests` per amendment-round-2 S5
+    //! to match the codebase-standard `mod tests` convention.
+    use super::*;
+
+    #[test]
+    fn binop_add_left_error_yields_error() {
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &Type::Error, &Type::Int),
+            Type::Error,
+        );
+    }
+
+    #[test]
+    fn binop_mul_right_error_yields_error() {
+        assert_eq!(
+            infer_binop_type(BinOp::Mul, &Type::Real, &Type::Error),
+            Type::Error,
+        );
+    }
+
+    #[test]
+    fn binop_lt_error_operand_yields_error_not_bool() {
+        // Comparison ops would normally produce Type::Bool — the error must win.
+        assert_eq!(
+            infer_binop_type(BinOp::Lt, &Type::Error, &Type::Int),
+            Type::Error,
+        );
+    }
+
+    /// Exhaustive BinOp coverage (amendment-round-2 S3): every variant of
+    /// `BinOp` must propagate `Type::Error` when either operand is poisoned.
+    /// This pins down the anti-cascade contract for the full enum, not just
+    /// the three representatives spot-checked above. Update this list (and
+    /// the inner match in `infer_binop_type`) together if a new BinOp arm
+    /// is added.
+    #[test]
+    fn every_binop_variant_propagates_error_from_either_operand() {
+        // Compile-time exhaustiveness guard: adding a new BinOp variant to
+        // the enum is a build error here until the `ops` list below is also
+        // updated. Keeps the test's enumeration honest as the enum grows.
+        #[allow(dead_code)]
+        fn _exhaustive_binop_check(op: BinOp) {
+            match op {
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::Pow
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or => {}
+            }
+        }
+        // (op, expected_non_error_result_for_(Real, Real))_label — the second
+        // tuple element is just a documentation aid for the reviewer; we
+        // never assert on it. We only assert that, with at least one operand
+        // poisoned, the result is Type::Error.
+        let ops: &[(BinOp, &str)] = &[
+            (BinOp::Add, "arithmetic: left.clone()"),
+            (BinOp::Sub, "arithmetic: left.clone()"),
+            (BinOp::Mul, "arithmetic: scalar/widening rules"),
+            (BinOp::Div, "arithmetic: scalar/widening rules"),
+            (BinOp::Mod, "arithmetic: left.clone()"),
+            (BinOp::Pow, "arithmetic: left.clone()"),
+            (BinOp::Eq, "comparison: Bool"),
+            (BinOp::Ne, "comparison: Bool"),
+            (BinOp::Lt, "comparison: Bool"),
+            (BinOp::Le, "comparison: Bool"),
+            (BinOp::Gt, "comparison: Bool"),
+            (BinOp::Ge, "comparison: Bool"),
+            (BinOp::And, "logical: Bool"),
+            (BinOp::Or, "logical: Bool"),
+        ];
+        for (op, label) in ops {
+            assert_eq!(
+                infer_binop_type(*op, &Type::Error, &Type::Real),
+                Type::Error,
+                "BinOp::{:?} ({}) failed to propagate Type::Error from LEFT operand",
+                op,
+                label,
+            );
+            assert_eq!(
+                infer_binop_type(*op, &Type::Real, &Type::Error),
+                Type::Error,
+                "BinOp::{:?} ({}) failed to propagate Type::Error from RIGHT operand",
+                op,
+                label,
+            );
+            assert_eq!(
+                infer_binop_type(*op, &Type::Error, &Type::Error),
+                Type::Error,
+                "BinOp::{:?} ({}) failed to propagate Type::Error when BOTH operands poisoned",
+                op,
+                label,
+            );
+        }
     }
 }

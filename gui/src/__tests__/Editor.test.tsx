@@ -19,7 +19,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Editor } from '../editor/Editor';
+import { Editor, EDITOR_DEBOUNCE_MS } from '../editor/Editor';
 
 const mockListen = vi.mocked(listen);
 const mockInvoke = vi.mocked(invoke);
@@ -68,6 +68,26 @@ describe('Editor mounting', () => {
   });
 });
 
+describe('Editor debounce constant', () => {
+  it('updateSource fires at EDITOR_DEBOUNCE_MS boundary — not before, yes after', () => {
+    const store = setupStore();
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    view.dispatch({ changes: { from: 0, insert: 'x' } });
+
+    // Must NOT fire 1ms before the boundary
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS - 1);
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // Must fire exactly at the boundary
+    vi.advanceTimersByTime(1);
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 /** Get the CM6 EditorView instance from the rendered container. */
 function getEditorView(container: HTMLElement): EditorView {
   const cmEditor = container.querySelector('.cm-editor')!;
@@ -100,7 +120,7 @@ describe('Editor doc change handling', () => {
     expect(updateSpy).not.toHaveBeenCalled();
 
     // After 300ms debounce
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSpy).toHaveBeenCalledWith(file1.path, expect.stringContaining('// comment'));
   });
 
@@ -122,7 +142,7 @@ describe('Editor doc change handling', () => {
     expect(updateSpy).not.toHaveBeenCalled();
 
     // 300ms after last edit
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -142,7 +162,7 @@ describe('Editor doc change handling', () => {
     expect(markDirtySpy).not.toHaveBeenCalled();
 
     // Advance past the debounce timer — updateSource must also not be called
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
@@ -161,7 +181,7 @@ describe('Editor doc change handling', () => {
     store.closeFile(file1.path);
 
     // When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call.
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSpy).not.toHaveBeenCalled();
   });
 });
@@ -608,7 +628,7 @@ describe('Editor debounce timer cancellation on file switch (RC-04)', () => {
     store.setActiveFile(file2.path);
 
     // Advance timers past the debounce period
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
 
     // The debounced updateSource should NOT have fired for the stale edit
     expect(updateSpy).not.toHaveBeenCalled();
@@ -727,7 +747,7 @@ describe('Editor integration: rapid file switch with diagnostics mid-switch', ()
     });
 
     // (4) Advance timers past debounce period
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
 
     // Verify: diagnostics NOT applied to B's editor (E-05 fix)
     const viewB = getEditorView(container);

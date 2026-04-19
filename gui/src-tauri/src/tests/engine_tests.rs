@@ -9,7 +9,7 @@ use reify_types::ExportFormat;
 
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
-use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder, bracket_compiled_module};
+use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder};
 
 use crate::engine::{EngineSession, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
@@ -1397,6 +1397,18 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
             offset, actual, expected
         );
     }
+    // "Two convergent implementations agree" invariant must also hold at the
+    // prelude sentinel (u32::MAX).  Without the sentinel short-circuit, the
+    // fast path computes line_offsets.len() + 1 (a past-last-line value) while
+    // byte_offset_to_line_col returns (1, 1).
+    let sentinel = u32::MAX as usize;
+    let fast_sentinel = offset_to_line_col_fast(source, &line_offsets, sentinel);
+    let orig_sentinel = byte_offset_to_line_col(source, sentinel);
+    assert_eq!(
+        fast_sentinel, orig_sentinel,
+        "sentinel: fast={:?} original={:?} — two convergent implementations must agree at u32::MAX",
+        fast_sentinel, orig_sentinel
+    );
 }
 
 /// offset_to_line_col_fast returns correct values at specific key offsets.
@@ -1459,6 +1471,24 @@ fn offset_to_line_col_fast_at_eof_offset() {
         actual, expected,
         "EOF offset: fast={:?} original={:?}",
         actual, expected
+    );
+}
+
+/// offset_to_line_col_fast returns (1, 1) for the prelude sentinel (u32::MAX).
+///
+/// Without the prelude-sentinel short-circuit the current fast path computes
+/// `line_offsets.len() + 1` (a past-last-line value) instead of the `(1, 1)`
+/// fallback, breaking the "two convergent implementations agree" invariant with
+/// `reify_types::byte_offset_to_line_col`.
+#[test]
+fn offset_to_line_col_fast_prelude_sentinel_returns_fallback() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let offsets = build_line_offsets(source);
+    assert_eq!(
+        offset_to_line_col_fast(source, &offsets, u32::MAX as usize),
+        (1, 1),
+        "prelude sentinel must return (1, 1), not a past-last-line value"
     );
 }
 
@@ -2252,70 +2282,29 @@ fn get_entity_tree_has_mesh_true_when_realization_exists() {
 
 #[test]
 fn get_entity_tree_no_realization_has_mesh_false() {
-    // Build a module with a template that has no realizations
-    use reify_test_support::{CompiledModuleBuilder};
-    use reify_types::ModulePath;
-    use reify_types::Type;
-
-    let template = TopologyTemplateBuilder::new("Simple")
-        .param("Simple", "x", Type::length(), None)
-        .build();
-    let compiled = CompiledModuleBuilder::new(ModulePath::single("simple"))
-        .template(template)
-        .build();
-
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    // Use the bracket_compiled_module to verify the fixture API, then test our custom module
-    let _ = bracket_compiled_module(); // ensure fixture compiles
 
     // Load a module with no realizations via source (no geometry ops)
     session.load_from_source("structure Simple { param x: Scalar = 1mm }", "simple").expect("load");
     let tree = session.get_entity_tree();
     let root = &tree[0];
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
-    let _ = compiled; // suppress unused warning
+    // TODO: extend with direct CompiledModule injection when EngineSession supports it
 }
 
 // ---- Step 5: sub-component tree building tests ----
 
 #[test]
 fn get_entity_tree_sub_component_produces_nested_node() {
-    // Build: Assembly { sub bolt: Bolt }  + Bolt { param mass: Mass }
-    use reify_test_support::{vcid, mm};
-    use reify_types::{ModulePath, Type, DimensionVector};
-    use reify_compiler::EntityKind;
-
-    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
-
-    let bolt_template = TopologyTemplateBuilder::new("Bolt")
-        .param("Bolt", "mass", mass_type.clone(), None)
-        .build();
-
-    let assembly_template = TopologyTemplateBuilder::new("Assembly")
-        .sub_component("bolt", "Bolt", vec![])
-        .build();
-
-    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(assembly_template)
-        .template(bolt_template)
-        .build();
-
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    // Use the direct compiled-module path: load bracket to ensure session can accept modules
-    // then check tree via get_entity_tree() on a manually compiled module
-    // We can't inject a CompiledModule directly, so we validate via source parsing
-    // instead. Source: Assembly with a bolt sub.
     session.load_from_source(
         r#"structure Bolt { param mass: Scalar = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
         "test",
     ).expect("load");
-
-    let _ = compiled; // ensure builder API compiles
-    let _ = vcid("Bolt", "mass"); // ensure vcid compiles
 
     let tree = session.get_entity_tree();
 
@@ -2419,7 +2408,7 @@ fn entity_identity_serialization_roundtrip() {
     use crate::types::{EntityIdentity, SourceSpanInfo};
     let identity = EntityIdentity {
         content_hash: "abc123def456abc123def456abc123de".to_string(),
-        structural_fingerprint: "structure::0:deadbeef00000000000000000000000".to_string(),
+        structural_fingerprint: "structure:<root>:0:deadbeef00000000000000000000000".to_string(),
         source_span: Some(SourceSpanInfo { start: 10, end: 50 }),
     };
     let json = serde_json::to_string(&identity).expect("serialize should succeed");
@@ -2508,7 +2497,9 @@ fn get_entity_identity_map_content_hash_is_hex_string() {
 ///
 /// For a root template:
 /// - type = "structure" or "occurrence"
-/// - parent = "" (empty — no parent)
+/// - parent = "<root>" (reserved sentinel for root templates — angle-bracket form
+///   is an impossible template identifier, preventing collisions with user templates
+///   named "root")
 /// - child_count = number of sub-components (Bracket has 0)
 /// - hash = non-empty hex string from children content hashes
 #[test]
@@ -2532,7 +2523,7 @@ fn get_entity_identity_map_root_structural_fingerprint_format() {
         fp
     );
     assert_eq!(parts[0], "structure", "first part is entity kind");
-    assert_eq!(parts[1], "", "parent of root template is empty string");
+    assert_eq!(parts[1], "<root>", "parent of root template is '<root>' sentinel");
     let child_count: usize = parts[2]
         .parse()
         .expect("third part (child_count) must be a non-negative integer");
@@ -3115,6 +3106,66 @@ fn all_new_commands_callable_on_bracket_fixture() {
         "get_def_preview('Bracket') should return Ok: {:?}",
         preview
     );
+}
+
+/// Regression-pin: value-cell `content_hash` is an identity hash, not a content hash.
+///
+/// Pins the semantics of the `content_hash` field for value-cell entries:
+/// it is derived from the cell's *identity* (the id string `"Bracket.width"`),
+/// not from the cell's *content* (type, default_expr, kind, etc.).
+///
+/// A future "fix" that hashes cell content instead would break this test,
+/// surfacing the semantic change immediately.
+#[test]
+fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    use reify_types::ContentHash;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    let width_identity = map.get("Bracket.width").expect("Bracket.width should be in map");
+    let expected = ContentHash::of_str("Bracket.width").to_string();
+    assert_eq!(
+        width_identity.content_hash, expected,
+        "value-cell content_hash must equal ContentHash::of_str(\"Bracket.width\").to_string()"
+    );
+}
+
+/// In debug builds, get_entity_tree must panic (via debug_assert) when the
+/// compiled module contains duplicate template names.
+///
+/// The compiler guarantees unique names within a well-formed module; this test
+/// pins the invariant so future changes that accidentally produce duplicates
+/// surface loudly in development builds.  Release builds retain the graceful
+/// first-match behaviour.
+///
+/// The uniqueness check runs once in get_entity_tree (O(N) per call), not inside
+/// each build_template_node call (which would be O(N²) across the full tree build).
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "template names must be unique")]
+fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
+    use reify_types::ModulePath;
+
+    let dup1 = TopologyTemplateBuilder::new("Dup").build();
+    let dup2 = TopologyTemplateBuilder::new("Dup").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
+        .template(dup1)
+        .template(dup2)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // Inject the malformed module directly via test helper; the debug_assert in
+    // get_entity_tree fires because compiled.templates contains two "Dup" entries.
+    session.inject_compiled_for_test(compiled);
+    let _ = session.get_entity_tree();
 }
 
 // ---- Cache tests: parsed_cache + line_offsets_cache ----

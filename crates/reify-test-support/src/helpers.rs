@@ -459,7 +459,7 @@ pub fn run_modify_pipeline(
         .build();
 
     let module = crate::builders::CompiledModuleBuilder::new(
-        reify_types::ModulePath::single(&format!("test_{}", entity_name.to_lowercase())),
+        reify_types::ModulePath::single(format!("test_{}", entity_name.to_lowercase())),
     )
     .template(template)
     .build();

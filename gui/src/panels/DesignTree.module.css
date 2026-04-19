@@ -24,6 +24,14 @@
   background: var(--reify-surface-hover, #2a2a2a);
 }
 
+.selected {
+  background: var(--reify-accent-subtle, #1a3a5c);
+}
+
+.selected:hover {
+  background: var(--reify-accent-subtle-hover, #1f4570);
+}
+
 .chevron {
   background: none;
   border: none;

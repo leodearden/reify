@@ -3,6 +3,32 @@
  */
 import { vi, expect, type MockInstance } from 'vitest';
 
+/**
+ * Compute the median of a non-empty array of numbers.
+ *
+ * Sorts a copy of the input (does not mutate the caller's array) and returns
+ * the middle value for odd-length arrays, or the average of the two middle
+ * values for even-length arrays.
+ *
+ * Throws an Error if `values` is empty — a silent NaN would propagate into
+ * assertions and produce a confusing failure far from the actual root cause.
+ * Also throws if any element is NaN — the sort comparator returns NaN for NaN
+ * inputs, producing a nondeterministic order and a NaN result that would fail
+ * `toBeLessThan` with a misleading message.
+ */
+export function median(values: number[]): number {
+  if (values.length === 0) {
+    throw new Error('median: input array is empty');
+  }
+  if (values.some(Number.isNaN)) {
+    throw new Error('median: input contains NaN');
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  const mid = Math.floor(n / 2);
+  return n % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 /** Yield to the macrotask queue so setTimeout callbacks execute. */
 export const flushMacrotasks = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 

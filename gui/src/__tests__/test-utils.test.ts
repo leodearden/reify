@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections } from './test-utils';
+import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections, median } from './test-utils';
 
 describe('flushMacrotasks', () => {
   it('returns a Promise that resolves after yielding to the macrotask queue', async () => {
@@ -332,5 +332,38 @@ describe('expectNoUnhandledRejections', () => {
         window.dispatchEvent(new Event('unhandledrejection'));
       }),
     ).rejects.toThrow(/expected.*not.*called/i);
+  });
+});
+
+describe('median', () => {
+  it('throws on an empty array', () => {
+    expect(() => median([])).toThrow(/empty/i);
+  });
+
+  it('throws when the input contains NaN', () => {
+    expect(() => median([1, NaN, 3])).toThrow(/NaN/i);
+  });
+
+  it('returns the single element for a one-element array', () => {
+    expect(median([42])).toBe(42);
+  });
+
+  it('returns the middle element for an odd-length sorted array', () => {
+    expect(median([1, 2, 3])).toBe(2);
+  });
+
+  it('returns the average of the two middle elements for an even-length sorted array', () => {
+    expect(median([1, 2, 3, 4])).toBe(2.5);
+  });
+
+  it('sorts internally before computing (unsorted input)', () => {
+    expect(median([3, 1, 2])).toBe(2);
+  });
+
+  it('does not mutate the caller\'s input array', () => {
+    const input = [3, 1, 2];
+    const copy = [...input];
+    median(input);
+    expect(input).toEqual(copy);
   });
 });

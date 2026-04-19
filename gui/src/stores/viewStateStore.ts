@@ -1,5 +1,12 @@
 import { createStore, produce } from 'solid-js/store';
 import type { EntityTreeNode, ExplicitVisibility, VisibilityState } from '../types';
+import {
+  generateDefaultView,
+  generateAllGeometryView,
+  generatePurposeViews,
+  defaultVisibilityFor,
+} from './autoViewGenerator';
+import type { ViewDefinition } from './autoViewGenerator';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -7,6 +14,8 @@ import type { EntityTreeNode, ExplicitVisibility, VisibilityState } from '../typ
 
 export interface ViewState {
   explicit: Record<string, ExplicitVisibility>;
+  views: Record<string, ViewDefinition>;
+  activeViewId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,11 +50,12 @@ function walkDescendants(path: string, nodeByPath: Map<string, EntityTreeNode>):
   return result;
 }
 
-/** Default visibility rule for a node when no ancestor has an explicit state. */
+/** Default visibility rule for a node when no ancestor has an explicit state.
+ *  Delegates to autoViewGenerator.defaultVisibilityFor so the walk-up fallback
+ *  and the per-node materialisation in generateDefaultView always agree.
+ */
 function defaultRuleFor(node: EntityTreeNode): VisibilityState {
-  if (node.trait_geometry) return 'show';
-  if (node.kind === 'let' && node.type_name?.includes('Solid')) return 'hidden';
-  return 'show';
+  return defaultVisibilityFor(node);
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +65,8 @@ function defaultRuleFor(node: EntityTreeNode): VisibilityState {
 export function createViewStateStore() {
   const [state, setState] = createStore<ViewState>({
     explicit: {},
+    views: {},
+    activeViewId: 'auto:default',
   });
 
   // Internal non-reactive maps (rebuilt on setTree).
@@ -119,7 +131,7 @@ export function createViewStateStore() {
   }
 
   // ---------------------------------------------------------------------------
-  // Mutations (stubs — fully implemented in later steps)
+  // Mutations
   // ---------------------------------------------------------------------------
 
   function setVisibility(path: string, vs: VisibilityState, cascade = true): void {
@@ -189,6 +201,134 @@ export function createViewStateStore() {
     setVisibility(path, next, true);
   }
 
+  // ---------------------------------------------------------------------------
+  // View management
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Seed a view into state.views (used by regenerateAutoViews and tests).
+   * Overwrites any existing entry with the same id.
+   */
+  function seedView(view: ViewDefinition): void {
+    setState(produce((s) => {
+      s.views[view.id] = view;
+    }));
+  }
+
+  /**
+   * Switch the active view.  If the view doesn't exist in state.views this
+   * is a no-op (the caller should ensure views are populated before
+   * switching, e.g. via regenerateAutoViews).
+   *
+   * When the view exists its `visibility` map is copied into `state.explicit`
+   * so that `getEffectiveVisibility` / `getAllEffective` reflect the view.
+   *
+   * NOTE on null semantics: `ViewDefinition.visibility` only carries concrete
+   * `VisibilityState` values ('show' | 'ghost' | 'hidden') — never `null`.
+   * Activating a view therefore replaces `state.explicit` wholesale and
+   * destroys any prior explicit-null (inherit) markers the user may have set
+   * via `resetToInherit`.  If null/inherit semantics ever need to survive a
+   * view switch they would have to be stored in the `ViewDefinition` itself.
+   */
+  function setActiveView(viewId: string): void {
+    const view = state.views[viewId];
+    if (!view) return;
+    setState(produce((s) => {
+      s.activeViewId = viewId;
+      // Replace explicit with the view's full visibility map.
+      s.explicit = { ...view.visibility };
+    }));
+  }
+
+  /**
+   * Regenerate all `auto:*` views from the current tree and active purposes,
+   * preserve any `user:*` views, then reconcile the active view:
+   *
+   * - active is `auto:*` and view still exists → copy its visibility into explicit.
+   * - active is `auto:*` and view was removed (purpose deactivated) → fall back
+   *   to `auto:default` and copy its visibility.
+   * - active is `user:*` and view exists → keep explicit entries for paths that
+   *   are still in the tree; leave NEW paths unset so defaultRuleFor handles them.
+   * - active references a missing view → fall back to `auto:default`.
+   *
+   * This function calls `setTree(tree)` internally so the internal nodeByPath /
+   * parentByPath maps stay in sync with the tree passed here.  Callers do not
+   * need to call `setTree` separately, though doing so is harmless (idempotent).
+   *
+   * NOTE on the `modified` flag: `ViewDefinition.modified` is tracked in the
+   * type but `regenerateAutoViews` does not yet inspect it.  Auto-view edits
+   * (made via `setVisibility` after switching to an auto view) are therefore
+   * always transient — regenerating will overwrite them.  A future revision
+   * should preserve the user's edits when `modified === true`.
+   */
+  function regenerateAutoViews(tree: EntityTreeNode[], activePurposes: string[] = []): void {
+    // Keep the internal nodeByPath/parentByPath maps in sync so that
+    // getEffectiveVisibility works correctly after regeneration without
+    // requiring a separate setTree() call from the caller.
+    setTree(tree);
+
+    const freshDefault = generateDefaultView(tree);
+    const freshAllGeo = generateAllGeometryView(tree);
+    const freshPurpose = generatePurposeViews(tree, activePurposes);
+
+    // Build set of all paths in the new tree for user-view pruning.
+    const treePathSet = new Set(Object.keys(freshDefault.visibility));
+
+    setState(produce((s) => {
+      // ------------------------------------------------------------------
+      // 1. Replace all auto:* views with fresh ones.
+      // ------------------------------------------------------------------
+      for (const key of Object.keys(s.views)) {
+        if (key.startsWith('auto:')) {
+          delete s.views[key];
+        }
+      }
+      s.views[freshDefault.id] = freshDefault;
+      s.views[freshAllGeo.id] = freshAllGeo;
+      for (const pv of freshPurpose) {
+        s.views[pv.id] = pv;
+      }
+      // user:* views are left untouched.
+
+      // ------------------------------------------------------------------
+      // 2. Reconcile active view.
+      // ------------------------------------------------------------------
+      const activeId = s.activeViewId;
+
+      if (activeId.startsWith('auto:')) {
+        // Active is an auto view. If it still exists, apply it; otherwise fall back.
+        const target = s.views[activeId] ?? s.views['auto:default'];
+        const targetId = s.views[activeId] ? activeId : 'auto:default';
+        s.activeViewId = targetId;
+        s.explicit = { ...target.visibility };
+
+      } else if (activeId.startsWith('user:')) {
+        // Active is a user view. Keep entries for paths still in the tree;
+        // remove entries for paths that are no longer in the tree;
+        // leave new paths unset so defaultRuleFor applies via walk-up.
+        const userView = s.views[activeId];
+        if (!userView) {
+          // User view was somehow deleted — fall back to default.
+          s.activeViewId = 'auto:default';
+          s.explicit = { ...freshDefault.visibility };
+        } else {
+          // Prune explicit entries for paths no longer in tree.
+          for (const path of Object.keys(s.explicit)) {
+            if (!treePathSet.has(path)) {
+              delete s.explicit[path];
+            }
+          }
+          // Do NOT add entries for new paths — leave them unset.
+        }
+
+      } else {
+        // Unknown active view — fall back to default.
+        s.activeViewId = 'auto:default';
+        s.explicit = { ...freshDefault.visibility };
+      }
+    }));
+  }
+
   function hasOverride(path: string): boolean {
     const exp = state.explicit[path];
     if (exp == null) return false;
@@ -219,5 +359,9 @@ export function createViewStateStore() {
     resetToInherit,
     showOnly,
     cycleCascading,
+    // View management
+    seedView,
+    setActiveView,
+    regenerateAutoViews,
   };
 }

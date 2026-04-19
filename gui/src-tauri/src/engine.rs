@@ -493,6 +493,16 @@ impl EngineSession {
             None => return Vec::new(),
         };
 
+        // Validate template-name uniqueness once (O(N)) rather than inside every
+        // build_template_node call (which would be O(N²) across the full tree build).
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                compiled.templates.iter().all(|t| seen.insert(t.name.as_str()))
+            },
+            "template names must be unique within a compiled module"
+        );
+
         compiled
             .templates
             .iter()
@@ -507,11 +517,12 @@ impl EngineSession {
     ///
     /// - **Template roots** — keyed by `template.name` (e.g. `"Bracket"`).
     ///   `content_hash` = `template.content_hash.to_string()` (32-char hex).
-    ///   `structural_fingerprint` = `"{entity_kind}::{sub_count}:{children_hash}"`.
+    ///   `structural_fingerprint` = `"{entity_kind}:<root>:{sub_count}:{children_hash}"`.
     ///   `source_span` = `None` (TopologyTemplate has no span in the compiled IR).
     ///
     /// - **Value cells** — keyed by `"{template.name}.{cell.id.member}"`.
-    ///   `content_hash` = hex of `ContentHash::of_str(cell_id_string)`.
+    ///   `content_hash` = hex of `ContentHash::of_str(cell_id_string)` (identity hash,
+    ///   not a content hash — see `EntityIdentity.content_hash` doc for details).
     ///   `structural_fingerprint` = `"{cell_kind}:{template.name}:0:{cell_type_hash}"`.
     ///   `source_span` = `Some(SourceSpanInfo { start, end })` from `cell.span`.
     ///
@@ -534,10 +545,12 @@ impl EngineSession {
             let sub_count = template.sub_components.len();
             let children_hash =
                 ContentHash::combine_all(template.sub_components.iter().map(|s| s.content_hash));
-            // The second field (parent) is intentionally empty for template roots:
-            // they have no containing definition.  Format: "{kind}:{parent}:{sub_count}:{hash}".
+            // The second field (parent) uses the '<root>' sentinel for template roots
+            // (angle-bracket form is an impossible template identifier, preventing
+            // collision with user-defined templates named "root").
+            // Format: "{kind}:{parent}:{sub_count}:{hash}".
             let structural_fingerprint =
-                format!("{}:{}:{}:{}", entity_kind, "", sub_count, children_hash);
+                format!("{}:{}:{}:{}", entity_kind, "<root>", sub_count, children_hash);
 
             map.insert(
                 template.name.clone(),
@@ -559,6 +572,8 @@ impl EngineSession {
                 map.insert(
                     cell_path,
                     EntityIdentity {
+                        // Identity-hash, not content-hash: see EntityIdentity docs.
+                        // Hashes the cell's id string (e.g. "Bracket.width"), not its type or value.
                         content_hash: ContentHash::of_str(&cell.id.to_string()).to_string(),
                         structural_fingerprint,
                         source_span: Some(SourceSpanInfo {
@@ -874,11 +889,17 @@ fn build_preview_gui_state(
 /// compiler's Tarjan SCC pass), this function emits an empty `children` vec for
 /// that sub node rather than recursing — preventing infinite recursion for
 /// self-referential and mutually-recursive structure definitions.
+///
+/// # Preconditions
+/// Caller must ensure `compiled.templates` has no duplicate names — the compiler
+/// guarantees this for well-formed modules. `get_entity_tree` performs a
+/// debug-only uniqueness check (O(N)) before iterating templates.
 pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
 ) -> EntityTreeNode {
+
     let kind = match template.entity_kind {
         EntityKind::Structure => "structure",
         EntityKind::Occurrence => "occurrence",
@@ -1062,6 +1083,20 @@ impl EngineSession {
     /// uses the cached table rather than recomputing it from the source text.
     pub(crate) fn override_line_offsets_cache_for_test(&mut self, offsets: Vec<usize>) {
         self.line_offsets_cache = Some(offsets);
+    }
+
+    /// Directly inject a `CompiledModule` as the session's current compiled state,
+    /// bypassing parse / compile / check.
+    ///
+    /// Allows tests to exercise functions that operate on `self.compiled` with
+    /// synthetic or intentionally malformed modules (e.g. duplicate template names)
+    /// that the normal compiler pipeline would never produce.
+    ///
+    /// Note: `module_name`, `source_map`, and `last_check` are NOT updated, so the
+    /// session's invariant is intentionally broken.  Functions that rely on those
+    /// fields (e.g. `get_diagnostics`, `resolve_source`) degrade gracefully.
+    pub(crate) fn inject_compiled_for_test(&mut self, compiled: CompiledModule) {
+        self.compiled = Some(compiled);
     }
 }
 
@@ -1410,11 +1445,27 @@ pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
 ///
 /// Line lookup is O(log M).  Column computation is O(line_length) for codepoint
 /// counting — far cheaper than the O(M) full-source scan of the naive implementation.
+///
+/// - If `offset == `[`reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET`]` (i.e.
+///   `u32::MAX as usize`, the [`SourceSpan::prelude()`] sentinel), returns `(1, 1)` —
+///   matching `reify_types::byte_offset_to_line_col` so the two convergent
+///   implementations agree at the sentinel (cross-validated in `engine_tests.rs`).
+///
+/// [`SourceSpan::prelude()`]: reify_types::SourceSpan::prelude
 pub(crate) fn offset_to_line_col_fast(
     source: &str,
     line_offsets: &[usize],
     offset: usize,
 ) -> (usize, usize) {
+    // Prelude-sentinel early return: SourceSpan::PRELUDE_SENTINEL_OFFSET
+    // (u32::MAX as usize) is used by SourceSpan::prelude() to mark spans that
+    // have no meaningful byte-offset in the current compilation unit (e.g.
+    // cross-prelude collision warnings).  Return (1, 1) — matching
+    // reify_types::byte_offset_to_line_col so the two convergent
+    // implementations agree at the sentinel.
+    if offset == reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET {
+        return (1, 1);
+    }
     // Count newlines that appear *strictly before* `offset`.
     let line_idx = line_offsets.partition_point(|&nl| nl < offset);
     let line = line_idx + 1;

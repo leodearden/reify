@@ -972,6 +972,104 @@ fn draft_let_bound_target_ops() {
     );
 }
 
+// ─── task-1823: chamfer/fillet let-bound target resolution ───
+
+#[test]
+fn chamfer_let_bound_target_ops() {
+    // chamfer(body, distance): body is a let-bound cylinder.
+    // Expected: [Cylinder, Modify(Chamfer, 0)] — target resolves to Step(0).
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = chamfer(body, 2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Chamfer, 0),
+        ],
+    );
+}
+
+#[test]
+fn fillet_let_bound_target_ops() {
+    // fillet(body, radius): body is a let-bound cylinder.
+    // Expected: [Cylinder, Modify(Fillet, 0)] — target resolves to Step(0).
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = fillet(body, 2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Fillet, 0),
+        ],
+    );
+}
+
+// ─── task-1941: chained modifier resolution ───
+
+#[test]
+fn chamfer_chained_shell_ops() {
+    // chamfer(shell(body, t), d): shell is an inline modifier wrapping a let-bound cylinder.
+    // Expected: [Cylinder, Modify(Shell, 0), Modify(Chamfer, 1)]
+    //   shell resolves body → Step(0), emits Modify(Shell, 0) at Step(1)
+    //   chamfer receives Step(1) as its geometry target, emits Modify(Chamfer, 1) at Step(2)
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = chamfer(shell(body, 0.5), 2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Shell, 0),
+            ExpectedOp::Modify(ModifyKind::Chamfer, 1),
+        ],
+    );
+}
+
+#[test]
+fn fillet_chained_shell_ops() {
+    // fillet(shell(body, t), d): shell is an inline modifier wrapping a let-bound cylinder.
+    // Expected: [Cylinder, Modify(Shell, 0), Modify(Fillet, 1)]
+    //   shell resolves body → Step(0), emits Modify(Shell, 0) at Step(1)
+    //   fillet receives Step(1) as its geometry target, emits Modify(Fillet, 1) at Step(2)
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = fillet(shell(body, 0.5), 2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Shell, 0),
+            ExpectedOp::Modify(ModifyKind::Fillet, 1),
+        ],
+    );
+}
+
 // ─── task-1715 step-7 + step-9: sweep two geometry args; loft all-geometry profiles ───
 
 #[test]

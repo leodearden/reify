@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "packageManager": "npm@10.9.7",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build:grammar": "lezer-generator src/editor/reify.grammar -o src/editor/reifyParser.js",
     "dev": "vite",
@@ -15,7 +17,6 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@reify/shared-utils": "^0.1.0",
     "@codemirror/autocomplete": "^6.18.0",
     "@codemirror/commands": "^6.3.0",
     "@codemirror/language": "^6.10.0",
@@ -25,6 +26,7 @@
     "@codemirror/view": "^6.26.0",
     "@lezer/highlight": "^1.2.0",
     "@lezer/lr": "^1.4.0",
+    "@reify/shared-utils": "^0.1.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "solid-js": "^1.9.0",
@@ -34,6 +36,7 @@
   "devDependencies": {
     "@lezer/generator": "^1.7.0",
     "@solidjs/testing-library": "^0.8.0",
+    "@types/node": "^25.6.0",
     "@types/three": "^0.183.1",
     "jsdom": "^25.0.0",
     "typescript": "^5.5.0",

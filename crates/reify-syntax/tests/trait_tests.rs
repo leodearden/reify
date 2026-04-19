@@ -12,7 +12,7 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
 }
 
 /// Helper: unwrap a Named type_expr returning (name, type_args).
-fn as_named<'a>(te: &'a TypeExpr) -> (&'a str, &'a [TypeExpr]) {
+fn as_named(te: &TypeExpr) -> (&str, &[TypeExpr]) {
     match &te.kind {
         TypeExprKind::Named { name, type_args } => (name.as_str(), type_args.as_slice()),
         other => panic!("expected TypeExprKind::Named, got {:?}", other),

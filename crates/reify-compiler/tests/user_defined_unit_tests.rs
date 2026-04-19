@@ -422,9 +422,9 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
         dup_diag.message
     );
 
-    // (c) Exactly one label with a non-empty span — the user-module branch emits
-    // only the duplicate decl span and omits the original's SourceSpan::empty(0).
-    common::assert_single_non_empty_label(dup_diag);
+    // (c) Two labels: labels[0] is the user's in-file dup decl span;
+    // labels[1] is the prelude sentinel with provenance in its message.
+    common::assert_prelude_collision_labels(dup_diag);
 }
 
 // ─── step-17: transitive pub unit NOT visible two hops via compile_with_prelude ─

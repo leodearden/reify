@@ -6,12 +6,9 @@ use super::*;
 ///
 /// All arms use the passed `target`, push to sub_ops, and return Some(sub_ops).
 ///
-/// NOTE: chamfer/fillet are NOT registered in geometry_arg_indices(), so their
-/// sub_ops is always empty and geom_ref(0) in the caller would fall back to
-/// GeomRef::Step(step_offset) rather than a true geometry ref. The caller
-/// (geometry.rs) passes GeomRef::Step(0) explicitly for chamfer/fillet to
-/// preserve bug-for-bug compatibility with existing behaviour. This function
-/// simply honours whatever target it receives.
+/// chamfer/fillet are registered in geometry_arg_indices() alongside
+/// shell/thicken/draft, so their target is resolved via geom_ref(0) in the caller
+/// (geometry.rs). This function honours whatever target it receives.
 pub(crate) fn compile_modify_op(
     name: &str,
     compiled_args: Vec<CompiledExpr>,

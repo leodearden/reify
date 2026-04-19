@@ -1,5 +1,10 @@
 use super::*;
 
+/// Maximum allowed depth for trait refinement chains to prevent stack overflow
+/// from pathologically deep but acyclic hierarchies. Realistic refinement chains
+/// rarely exceed ~10 levels; 128 provides ample headroom.
+const MAX_TRAIT_DEPTH: usize = 128;
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
@@ -146,6 +151,7 @@ pub(crate) fn check_trait_conformance(
             &mut ctx,
             &structure_members,
             structure.span,
+            0,
             diagnostics,
         );
     }
@@ -164,6 +170,145 @@ pub(crate) fn check_trait_conformance(
         Let,
     }
 
+    // Cache of compiled expressions for unannotated let defaults, keyed by
+    // default name.  Populated by Pass 2 below and drained by the injection
+    // loop (task 1834 step-9) to avoid double-compilation of the same
+    // expression.  Also consumed by the `available_defaults` builder
+    // (task 1834 step-8) so unannotated let defaults contribute their
+    // *inferred* type to requirement-matching, instead of the previous
+    // `Type::Real` fallback.
+    //
+    // INVARIANTS that make the name-only key safe (no `AvailableDefaultKind`
+    // discriminator, unlike `available_defaults` below):
+    //   1. Only `DefaultKind::Let { cell_type: None }` inserts into this cache —
+    //      no cross-kind writes, so a `Param`-named `x` and a `Let`-named `x`
+    //      never collide on this map.
+    //   2. Only the `DefaultKind::Let` arm of the injection loop reads from
+    //      this cache — reads are kind-guarded by the enclosing match, so
+    //      the lookup cannot be satisfied by a non-Let entry.
+    //   3. `collect_all_requirements` deduplicates defaults by (name, kind)
+    //      across the trait-bound set, so at most one unannotated-let default
+    //      with a given name reaches this loop.
+    //
+    // If any of these ever drift, key the cache on
+    // `(String, AvailableDefaultKind)` to match `available_defaults` for
+    // symmetry and explicit kind discrimination.
+    //
+    // TWO-PASS PRE-REGISTER DESIGN (task 1834 amendment — reviewer_comprehensive
+    // behavior_regression fix):
+    //   Pass 1 — register every *annotated* default (Param + Let with
+    //     `Some(cell_type)`) into the scope.  No expression compilation
+    //     happens here, so ordering within `ctx.defaults` does not matter
+    //     for the annotated types made visible to Pass 2.
+    //   Pass 2 — for each *unannotated* Let (`cell_type: None`), compile
+    //     the expression against the fully-populated annotated scope from
+    //     Pass 1, cache the compiled_expr in `inferred_let_exprs`, and
+    //     register the inferred `result_type`.
+    //
+    // The split restores the pre-1834 tolerance for forward references to
+    // any *annotated* member: before this amendment, Pass 1+2 were a single
+    // pass that walked `ctx.defaults` in source order, so an unannotated
+    // `let a = b + 1mm` appearing before `let b : Length = 2mm` would compile
+    // against a scope that did not yet contain `b` — a silent regression
+    // vs. the pre-1834 code, which registered every annotated type up front.
+    // Both passes run BEFORE `available_defaults` is built so Pass 2's
+    // inference results feed the requirement-matching lookup below.
+    //
+    // DESIGN LIMITATION (acknowledged simplification): Pass 2 still walks
+    // `ctx.defaults` in source order.  Two *unannotated* lets that
+    // forward-reference each other — e.g., `let a = b + 1mm` where
+    // `let b = 5mm` is *also* unannotated — will fail inference for the
+    // forward-referencing binding (`b` is not in scope when `a`'s
+    // expression is compiled), yielding an `unresolved name` diagnostic.
+    // Annotating *either* binding unblocks the case because annotated
+    // types are registered by Pass 1.  A topological ordering pass over
+    // unannotated lets would remove the limitation entirely but is out of
+    // scope for task 1834 ("documenting as intentional simplification").
+    let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+    // Unannotated-let defaults whose scope slot was already claimed by an annotated
+    // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
+    // insert so the injection loop does not emit a duplicate Let cell alongside the
+    // Param/annotated-Let cell that will already be injected for the same name.
+    // The injection loop uses this set to distinguish a deliberate skip from drift.
+    let mut pass2_skipped: HashSet<String> = HashSet::new();
+
+    // Shared conflict logger for `register_if_absent` Occupied returns.  Captures
+    // `&structure.name` from the enclosing scope so both Pass 1 and Pass 2 call
+    // sites stay structurally identical — no drift risk if the message or fields
+    // ever change.
+    let log_conflict = |name: &str, ignored_ty: Type| {
+        tracing::debug!(
+            target: "reify_compiler::conformance",
+            name = %name,
+            entity = %structure.name,
+            ignored_ty = ?ignored_ty,
+            "trait-merge conflict: second default with same name ignored; first-seen type wins"
+        );
+    };
+
+    // Pass 1: register all *annotated* defaults (Param, Let-with-annotation).
+    // Unannotated lets and constraints are deferred to Pass 2 / injection.
+    // register_if_absent provides the no-overwrite guarantee: first-seen type
+    // wins, and the method itself is safe against cross-kind overwrites
+    // without a call-site guard.
+    for default in &ctx.defaults {
+        if let Some(name) = &default.name
+            && !structure_members.contains_key(name)
+        {
+            let ty = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let {
+                    cell_type: Some(annotation_ty),
+                    ..
+                } => annotation_ty.clone(),
+                // Deferred to Pass 2 — needs Pass 1's scope to compile against.
+                DefaultKind::Let { cell_type: None, .. } => continue,
+                DefaultKind::Constraint(_) => continue,
+            };
+            // First-seen type wins. `ty` is moved into `register_if_absent`; on
+            // the cold Occupied (conflict) path the method hands it back via
+            // `Some(ignored_ty)` for the debug emission, so no clone is needed on
+            // the hot Vacant insertion path.
+            if let Some(ignored_ty) = scope.register_if_absent(name, ty) {
+                log_conflict(name, ignored_ty);
+            }
+        }
+    }
+
+    // Pass 2: compile each *unannotated* Let's expression against the
+    // fully-populated annotated scope from Pass 1 and register its inferred
+    // type.  When `register_if_absent` finds the scope slot already claimed
+    // (Pass 1 registered an annotated Param or Let), the compiled expression
+    // is discarded and the name is recorded in `pass2_skipped` so the
+    // injection loop skips Let-cell injection — preventing a duplicate
+    // (entity, member) cell alongside the annotated-type injection.  When the
+    // slot is vacant, the expression is cached in `inferred_let_exprs` for
+    // reuse by the injection loop (avoids double compilation) and by
+    // `available_defaults` (so requirement-matching uses the inferred type
+    // instead of the old `Type::Real` fallback).
+    for default in &ctx.defaults {
+        if let Some(name) = &default.name
+            && !structure_members.contains_key(name)
+            && let DefaultKind::Let {
+                cell_type: None,
+                let_decl,
+            } = &default.kind
+        {
+            let compiled_expr =
+                compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
+            let inferred_ty = compiled_expr.result_type.clone();
+            if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {
+                log_conflict(name, ignored_ty);
+                // Scope slot already claimed by an annotated type (Pass 1).
+                // Record in pass2_skipped so the injection loop skips Let-cell
+                // injection for this name and avoids duplicate (entity, member) cells.
+                pass2_skipped.insert(name.to_string());
+            } else {
+                inferred_let_exprs.insert(name.clone(), compiled_expr);
+            }
+        }
+    }
+
     // Build a map of available default names from ctx.defaults (non-constraint, named).
     // Used to cross-check requirements: a requirement is satisfied if the structure
     // provides the member OR if another trait in the bound set provides a matching default
@@ -173,7 +318,18 @@ pub(crate) fn check_trait_conformance(
     // member name occupy separate slots and are looked up independently. A Param default
     // can satisfy a Param requirement, and a Let default can satisfy a Let requirement,
     // without interfering with each other.
-    let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx.defaults
+    //
+    // For unannotated let defaults (`cell_type: None`), the advertised type comes from
+    // `inferred_let_exprs` populated by the pre-register pass above — see task 1834 step-8.
+    // The `Type::Real` fallback is reached when (a) inference failed (the
+    // expression errored out and left no cached result), or (b) Pass 2 deliberately
+    // skipped caching the result because an annotated type already claimed the scope
+    // slot (see `pass2_skipped` above).  In case (b) the Let entry advertises Real;
+    // that entry is only relevant if a requirement check looks up `("name", Let)`,
+    // and in the Param-wins scenario the requirement is structurally unsatisfied
+    // anyway (kind mismatch), so the Real fallback does not cause a false positive.
+    let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx
+        .defaults
         .iter()
         .filter_map(|d| {
             let name = d.name.as_deref()?;
@@ -182,7 +338,13 @@ pub(crate) fn check_trait_conformance(
                     (AvailableDefaultKind::Param, cell_type.clone())
                 }
                 DefaultKind::Let { cell_type, .. } => {
-                    (AvailableDefaultKind::Let, cell_type.clone().unwrap_or(Type::Real))
+                    let resolved = cell_type.clone().unwrap_or_else(|| {
+                        inferred_let_exprs
+                            .get(name)
+                            .map(|e| e.result_type.clone())
+                            .unwrap_or(Type::Real)
+                    });
+                    (AvailableDefaultKind::Let, resolved)
                 }
                 DefaultKind::Constraint(_) => return None,
             };
@@ -223,9 +385,7 @@ pub(crate) fn check_trait_conformance(
                         // because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`.
                         // Requirement counts are small in practice so this is not a hot path; if it
                         // ever becomes one, switch to a two-level map `HashMap<String, HashMap<K, V>>`.
-                        match available_defaults
-                            .get(&(req.name.clone(), required_default_kind))
-                        {
+                        match available_defaults.get(&(req.name.clone(), required_default_kind)) {
                             Some(default_type)
                                 if implicitly_converts_to(default_type, expected_type) =>
                             {
@@ -239,10 +399,9 @@ pub(crate) fn check_trait_conformance(
                                          requirement expects {}, available default has {}",
                                         req.name, expected_type, default_type
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        structure.span,
-                                        "type mismatch",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(structure.span, "type mismatch"),
+                                    ),
                                 );
                             }
                             None => {
@@ -254,10 +413,9 @@ pub(crate) fn check_trait_conformance(
                                         "missing required member '{}' (expected type: {})",
                                         req.name, expected_type
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        structure.span,
-                                        "required by trait",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(structure.span, "required by trait"),
+                                    ),
                                 );
                             }
                         }
@@ -281,39 +439,6 @@ pub(crate) fn check_trait_conformance(
                         .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                     );
                 }
-            }
-        }
-    }
-
-    // Pre-register default member names in scope so their expressions can
-    // reference each other (e.g., constraint x > 0 references param x from same trait).
-    // register_if_absent provides the no-overwrite guarantee: first-seen type wins,
-    // and the method itself is safe against cross-kind overwrites without a call-site guard.
-    for default in &ctx.defaults {
-        if let Some(name) = &default.name
-            && !structure_members.contains_key(name)
-        {
-            let ty = match &default.kind {
-                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let { cell_type, .. } => cell_type.clone().unwrap_or(Type::Real),
-                DefaultKind::Constraint(_) => continue,
-            };
-            // `ty` is cloned here so we retain the value for the debug event on
-            // the cold conflict path (`!was_new`). `register_if_absent` consumes its
-            // argument, so we cannot borrow `ty` after the call without the clone.
-            // This is a compile-time-only path; the clone cost is negligible.
-            let was_new = scope.register_if_absent(name, ty.clone());
-            // First-seen type wins. When was_new is false a prior default already
-            // owns this name — the incoming type is silently dropped. Emit a debug
-            // event so trait-merge conflicts are observable at runtime.
-            if !was_new {
-                tracing::debug!(
-                    target: "reify_compiler::conformance",
-                    name = %name,
-                    entity = %structure.name,
-                    ignored_ty = ?ty,
-                    "trait-merge conflict: second default with same name ignored; first-seen type wins"
-                );
             }
         }
     }
@@ -352,7 +477,10 @@ pub(crate) fn check_trait_conformance(
                     });
                 }
             }
-            DefaultKind::Let { let_decl, .. } => {
+            DefaultKind::Let {
+                cell_type,
+                let_decl,
+            } => {
                 let name = default
                     .name
                     .as_deref()
@@ -363,14 +491,111 @@ pub(crate) fn check_trait_conformance(
                         member: name.to_string(),
                     };
 
-                    let compiled_expr =
-                        compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
+                    // Reuse the compiled_expr cached by the pre-register/inference
+                    // pass (task 1834 step-9) to avoid a second compilation of the
+                    // same expression.  The dispatch mirrors the pre-register
+                    // branches: unannotated lets populate the cache unless Pass 2
+                    // found the scope slot already claimed (recorded in `pass2_skipped`);
+                    // annotated lets never use the cache.
+                    //
+                    // Cache miss handling: two reasons a `None` arm miss can occur:
+                    //   (a) Deliberate skip (`pass2_skipped.contains(name)`): Pass 2
+                    //       found an annotated type claiming the scope slot and did not
+                    //       cache the expression.  Silent `continue` — the Param/
+                    //       annotated-Let default will inject its own cell for this name.
+                    //   (b) Unexpected drift: a refactor decoupled the pre-register
+                    //       guard from the injection guard or changed the cache key.
+                    //       `debug_assert!(false, …)` fires in dev/test; the error
+                    //       diagnostic fires in release rather than silently recompiling
+                    //       (which would risk duplicating diagnostics already pushed by
+                    //       Pass 2 for the same AST node).
+                    let compiled_expr = match cell_type {
+                        Some(_) => {
+                            compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
+                        }
+                        None => {
+                            match inferred_let_exprs.remove(name) {
+                                Some(ce) => ce,
+                                None => {
+                                    if pass2_skipped.contains(name) {
+                                        // Deliberate skip: Pass 2 found an annotated
+                                        // type already occupying the scope slot and
+                                        // did not cache this expression (see `pass2_skipped`
+                                        // above).  The Param/annotated-Let default will
+                                        // inject its own cell; skip Let injection here
+                                        // to prevent duplicate (entity, member) cells.
+                                        continue;
+                                    }
+                                    // Unexpected: pre-register guard and injection guard
+                                    // have diverged, or the cache key changed.
+                                    debug_assert!(
+                                        false,
+                                        "unannotated let '{}' has no cached compiled expression \
+                                         and is not in pass2_skipped — drift between the \
+                                         pre-register guard and the injection guard in conformance.rs",
+                                        name
+                                    );
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "internal error: compiled expression for unannotated \
+                                             trait let '{}' was not cached by the pre-register \
+                                             pass; this indicates a drift between the pre-register \
+                                             and injection guards in conformance.rs",
+                                            name
+                                        ))
+                                        .with_label(
+                                            DiagnosticLabel::new(
+                                                default.span,
+                                                "internal consistency",
+                                            ),
+                                        ),
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+
+                    // Cross-check the expression type against the let's annotation.
+                    // The annotation captures user intent; any drift here is an error.
+                    //
+                    // Use `type_compatible` (not `implicitly_converts_to`) so the check
+                    // honors Int→Real widening — `let x : Real = 42.0` parses the
+                    // expression as `Int` (parser quirk on whole-number `.0` literals,
+                    // expr.rs:102-109) and the annotation captures the user's `Real`
+                    // intent.  `type_compatible` is the same widening relation applied
+                    // throughout type checking (type_compat.rs:81), so accepting it here
+                    // matches the rest of the compiler instead of being stricter at this
+                    // one site.  See task 1834 esc-1834-58 for the trade-off; the
+                    // requirement-vs-member sites at lines 268/293 keep the stricter
+                    // `implicitly_converts_to` because they compare two annotated types
+                    // (no Int-literal source).
+                    if let Some(annotation_ty) = cell_type
+                        && !type_compatible(annotation_ty, &compiled_expr.result_type)
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "type mismatch for trait let '{}': annotation expects {}, expression evaluates to {}",
+                                name, annotation_ty, compiled_expr.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(default.span, "type mismatch")),
+                        );
+                    }
+
+                    // Annotation is authoritative on the injected cell when present
+                    // (matches the scope pre-registration at ~line 167 which also
+                    // prefers the annotation over the inferred expression type).
+                    // Fall back to the inferred expression type only when there
+                    // is no annotation.
+                    let injected_cell_type = cell_type
+                        .clone()
+                        .unwrap_or_else(|| compiled_expr.result_type.clone());
 
                     value_cells.push(ValueCellDecl {
                         id: cell_id,
                         kind: ValueCellKind::Let,
                         visibility: Visibility::Private,
-                        cell_type: compiled_expr.result_type.clone(),
+                        cell_type: injected_cell_type,
                         default_expr: Some(compiled_expr),
                         solver_hints: Vec::new(),
                         span: default.span,
@@ -462,16 +687,34 @@ impl MergeContext {
 }
 
 /// Recursively collect all requirements and defaults from a trait and its refinements.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_all_requirements(
     trait_name: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
     ctx: &mut MergeContext,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
+    depth: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // IMPORTANT: `visited` MUST be checked (and inserted) BEFORE the depth guard.
+    // In a diamond refinement pattern, a trait reachable via two paths at depth >
+    // MAX_TRAIT_DEPTH would emit duplicate "too deep" diagnostics if the depth guard
+    // fired first (because the visited insert never happened on the first path).
+    // Visited-first ensures the second path short-circuits silently. (Task 403 fix.)
     if !ctx.visited.insert(trait_name.to_string()) {
         return; // Already visited (diamond pattern)
+    }
+
+    if depth > MAX_TRAIT_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "trait refinement chain too deep (exceeded {} levels) at '{}'",
+                MAX_TRAIT_DEPTH, trait_name
+            ))
+            .with_label(DiagnosticLabel::new(span, "trait chain too deep")),
+        );
+        return;
     }
 
     let Some(compiled_trait) = trait_registry.get(trait_name) else {
@@ -490,6 +733,7 @@ pub(crate) fn collect_all_requirements(
             ctx,
             structure_members,
             span,
+            depth + 1,
             diagnostics,
         );
     }
@@ -556,7 +800,10 @@ pub(crate) fn collect_all_requirements(
                             ))
                             .with_label(DiagnosticLabel::new(
                                 span,
-                                format!("conflict between '{}' and '{}'", existing_trait, trait_name),
+                                format!(
+                                    "conflict between '{}' and '{}'",
+                                    existing_trait, trait_name
+                                ),
                             )),
                         );
                     }
@@ -625,9 +872,9 @@ pub(crate) fn collect_all_requirements(
                 // Same (name, kind) already seen → skip (deduplicate).
                 continue;
             }
-            ctx.seen_defaults.insert(key, (default_type, trait_name.to_string()));
+            ctx.seen_defaults
+                .insert(key, (default_type, trait_name.to_string()));
             ctx.defaults.push(default.clone());
         }
     }
 }
-

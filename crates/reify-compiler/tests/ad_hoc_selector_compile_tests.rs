@@ -1,6 +1,5 @@
 //! Compiler behavior for ad-hoc selector (@) expressions.
 
-use reify_compiler::*;
 use reify_test_support::compile_source;
 use reify_types::*;
 

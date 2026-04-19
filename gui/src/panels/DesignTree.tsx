@@ -10,7 +10,11 @@ interface Props {
   tree: EntityTreeNode[];
   viewStateStore: ReturnType<typeof createViewStateStore>;
   selectedEntity?: string | null;
-  onSelect?: (path: string) => void;
+  selectedEntities?: readonly string[];
+  anchorEntity?: string | null;
+  onSelect?: (path: string, modifiers: { ctrl: boolean; shift: boolean }) => void;
+  onRangeSelect?: (paths: string[]) => void;
+  onSelectAll?: (paths: string[]) => void;
 }
 
 interface MenuState {
@@ -24,9 +28,31 @@ function nodeName(entityPath: string): string {
   return parts[parts.length - 1];
 }
 
+/** DFS flatten: returns all visible entity paths respecting the expanded set. */
+function flattenVisible(nodes: EntityTreeNode[], expandedSet: Set<string>): string[] {
+  const result: string[] = [];
+  function visit(node: EntityTreeNode) {
+    result.push(node.entity_path);
+    if (expandedSet.has(node.entity_path)) {
+      for (const child of node.children) visit(child);
+    }
+  }
+  for (const node of nodes) visit(node);
+  return result;
+}
+
 const DesignTree: Component<Props> = (props) => {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const [menu, setMenu] = createSignal<MenuState | null>(null);
+
+  // Unifies single and multi-selection: prefer selectedEntities when provided,
+  // else fall back to [selectedEntity] (or empty). Returns a Set for O(1) lookup.
+  const effectiveSelected = createMemo((): Set<string> => {
+    if (props.selectedEntities !== undefined) {
+      return new Set(props.selectedEntities);
+    }
+    return props.selectedEntity ? new Set([props.selectedEntity]) : new Set();
+  });
 
   createEffect(() => {
     props.viewStateStore.setTree(props.tree);
@@ -61,16 +87,34 @@ const DesignTree: Component<Props> = (props) => {
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    const selected = props.selectedEntity;
-    if (!selected) return;
+    // Ctrl+A / Meta+A: select-all visible nodes. Must come BEFORE the
+    // general ctrlKey/metaKey early-exit guard below.
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      props.onSelectAll?.(flattenVisible(props.tree, expanded()));
+      return;
+    }
+
     // Don't steal browser/OS shortcuts (Ctrl+S = save, etc.)
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    // Apply visibility shortcuts to ALL currently-selected rows so that
+    // multi-selection behaves consistently with the bulk eye-icon cycle.
+    const sel = effectiveSelected();
+    if (sel.size === 0) return;
     const vs = props.viewStateStore;
+    let mode: 'hidden' | 'ghost' | 'show' | null = null;
     switch (e.key.toLowerCase()) {
-      case 'h': e.preventDefault(); vs.setVisibility(selected, 'hidden', true); break;
-      case 'g': e.preventDefault(); vs.setVisibility(selected, 'ghost', true); break;
+      case 'h': mode = 'hidden'; break;
+      case 'g': mode = 'ghost'; break;
       case 's':
-      case 'enter': e.preventDefault(); vs.setVisibility(selected, 'show', true); break;
+      case 'enter': mode = 'show'; break;
+    }
+    if (mode !== null) {
+      e.preventDefault();
+      for (const path of sel) {
+        vs.setVisibility(path, mode, true);
+      }
     }
   }
 
@@ -105,10 +149,25 @@ const DesignTree: Component<Props> = (props) => {
     return (
       <div class={styles.nodeWrapper} style={{ 'padding-left': `${depth * 16}px` }}>
         <div
-          class={styles.row}
+          classList={{ [styles.row]: true, [styles.selected]: effectiveSelected().has(node.entity_path) }}
           data-testid={`tree-row-${node.entity_path}`}
+          data-selected={effectiveSelected().has(node.entity_path) ? 'true' : undefined}
           onContextMenu={(e) => openMenu(node.entity_path, e)}
-          onClick={() => props.onSelect?.(node.entity_path)}
+          onClick={(e) => {
+            if (e.shiftKey && props.anchorEntity && props.onRangeSelect) {
+              // Shift+click with anchor: compute visible range and invoke onRangeSelect
+              const visibleOrder = flattenVisible(props.tree, expanded());
+              const anchorIdx = visibleOrder.indexOf(props.anchorEntity);
+              const targetIdx = visibleOrder.indexOf(node.entity_path);
+              if (anchorIdx !== -1 && targetIdx !== -1) {
+                const lo = Math.min(anchorIdx, targetIdx);
+                const hi = Math.max(anchorIdx, targetIdx);
+                props.onRangeSelect(visibleOrder.slice(lo, hi + 1));
+                return;
+              }
+            }
+            props.onSelect?.(node.entity_path, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+          }}
         >
           <Show when={node.children.length > 0} fallback={<span class={styles.chevronPlaceholder} />}>
             <button
@@ -128,7 +187,17 @@ const DesignTree: Component<Props> = (props) => {
             class={styles.eyeIcon}
             data-testid={`eye-icon-${node.entity_path}`}
             aria-label={eff()}
-            onClick={(e) => { e.stopPropagation(); props.viewStateStore.cycleCascading(node.entity_path); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              const sel = effectiveSelected();
+              // Bulk-cycle: if the clicked row is part of a multi-selection (>1),
+              // cycle all selected paths. Otherwise fall back to single-path cycle.
+              if (sel.size > 1 && sel.has(node.entity_path)) {
+                for (const p of sel) props.viewStateStore.cycleCascading(p);
+              } else {
+                props.viewStateStore.cycleCascading(node.entity_path);
+              }
+            }}
           >
             {eff() === 'show' ? '👁' : eff() === 'ghost' ? '◑' : '○'}
           </button>

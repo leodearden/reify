@@ -306,6 +306,396 @@ describe('DesignTree — context menu', () => {
   });
 });
 
+describe('DesignTree — multi-selection highlight', () => {
+  it('rows in selectedEntities get data-selected="true"', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).toBe('true');
+  });
+
+  it('rows NOT in selectedEntities do not have data-selected="true"', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    expect(screen.getByTestId('tree-row-Root.C').getAttribute('data-selected')).not.toBe('true');
+  });
+
+  it('backward-compat: selectedEntity (legacy) marks that single row selected', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity="Root.A"
+      />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).not.toBe('true');
+  });
+
+  it('selectedEntities takes precedence over selectedEntity when both provided', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity="Root.A"
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    // Both should be selected because selectedEntities overrides
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).toBe('true');
+  });
+});
+
+describe('DesignTree — modifier click routing', () => {
+  it('plain click calls onSelect with (path, { ctrl: false, shift: false })', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onSelect = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelect={onSelect} />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onSelect).toHaveBeenCalledWith('Root.A', { ctrl: false, shift: false });
+  });
+
+  it('Ctrl+click calls onSelect with (path, { ctrl: true, shift: false })', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onSelect = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelect={onSelect} />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'), { ctrlKey: true });
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onSelect).toHaveBeenCalledWith('Root.A', { ctrl: true, shift: false });
+  });
+
+  it('Meta+click (Mac) treated as ctrl, passes { ctrl: true, shift: false }', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onSelect = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelect={onSelect} />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'), { metaKey: true });
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onSelect).toHaveBeenCalledWith('Root.A', { ctrl: true, shift: false });
+  });
+
+  it('Shift+click calls onSelect with (path, { ctrl: false, shift: true })', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onSelect = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelect={onSelect} />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'), { shiftKey: true });
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onSelect).toHaveBeenCalledWith('Root.A', { ctrl: false, shift: true });
+  });
+
+  it('single-arg onSelect handler (ignores second arg) is still invoked', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const captured: string[] = [];
+    // Callback that accepts only one arg — TypeScript callers can ignore extra args
+    const onSelect = (path: string) => { captured.push(path); };
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelect={onSelect as any} />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+    expect(captured).toEqual(['Root.A']);
+  });
+});
+
+describe('DesignTree — range select', () => {
+  // Tree: Root.A, Root.B, Root.C, Root.D as siblings (all visible, none expanded yet)
+  function makeFlatTree() {
+    return [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+      makeNode({ entity_path: 'Root.D' }),
+    ];
+  }
+
+  it('Shift+click with anchorEntity calls onRangeSelect with the slice (A→C)', () => {
+    const nodes = makeFlatTree();
+    const store = makeStore(nodes);
+    const onSelect = vi.fn();
+    const onRangeSelect = vi.fn();
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        anchorEntity="Root.A"
+        onSelect={onSelect}
+        onRangeSelect={onRangeSelect}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
+    expect(onRangeSelect).toHaveBeenCalledOnce();
+    expect(onRangeSelect).toHaveBeenCalledWith(['Root.A', 'Root.B', 'Root.C']);
+    // onSelect must NOT be called when onRangeSelect is used
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('Shift+click with no anchorEntity falls back to onSelect(path, { shift: true })', () => {
+    const nodes = makeFlatTree();
+    const store = makeStore(nodes);
+    const onSelect = vi.fn();
+    const onRangeSelect = vi.fn();
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        onSelect={onSelect}
+        onRangeSelect={onRangeSelect}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onSelect).toHaveBeenCalledWith('Root.C', { ctrl: false, shift: true });
+    expect(onRangeSelect).not.toHaveBeenCalled();
+  });
+
+  it('range respects expansion: collapsed children are NOT included', () => {
+    // Root.B has children b1,b2 but Root.B is NOT expanded → b1,b2 excluded
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({
+        entity_path: 'Root.B',
+        children: [
+          makeNode({ entity_path: 'Root.B.b1' }),
+          makeNode({ entity_path: 'Root.B.b2' }),
+        ],
+      }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    const onRangeSelect = vi.fn();
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        anchorEntity="Root.A"
+        onRangeSelect={onRangeSelect}
+      />
+    ));
+    // Root.B is not expanded → Range A→C is [Root.A, Root.B, Root.C]
+    fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
+    expect(onRangeSelect).toHaveBeenCalledWith(['Root.A', 'Root.B', 'Root.C']);
+  });
+
+  it('range order is ascending (visible flat order) regardless of click direction (C→A)', () => {
+    const nodes = makeFlatTree();
+    const store = makeStore(nodes);
+    const onRangeSelect = vi.fn();
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        anchorEntity="Root.C"
+        onRangeSelect={onRangeSelect}
+      />
+    ));
+    // Clicking A with anchor=C should still yield ascending order [A, B, C]
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'), { shiftKey: true });
+    expect(onRangeSelect).toHaveBeenCalledWith(['Root.A', 'Root.B', 'Root.C']);
+  });
+});
+
+describe('DesignTree — select all', () => {
+  it('Ctrl+A calls onSelectAll with all visible flat paths', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    const onSelectAll = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelectAll={onSelectAll} />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'a', ctrlKey: true });
+    expect(onSelectAll).toHaveBeenCalledOnce();
+    expect(onSelectAll).toHaveBeenCalledWith(['Root.A', 'Root.B']);
+  });
+
+  it('Ctrl+A excludes collapsed children (only visible paths)', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({
+        entity_path: 'Root.B',
+        children: [makeNode({ entity_path: 'Root.B.b1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    const onSelectAll = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelectAll={onSelectAll} />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    // Root.B is not expanded → b1 is not visible
+    fireEvent.keyDown(treeRoot, { key: 'a', ctrlKey: true });
+    expect(onSelectAll).toHaveBeenCalledWith(['Root.A', 'Root.B']);
+  });
+
+  it('Ctrl+A without onSelectAll prop is a no-op (no throw)', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const treeRoot = screen.getByTestId('design-tree');
+    expect(() => fireEvent.keyDown(treeRoot, { key: 'a', ctrlKey: true })).not.toThrow();
+  });
+
+  it('Meta+A (Mac) also triggers onSelectAll', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onSelectAll = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelectAll={onSelectAll} />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'a', metaKey: true });
+    expect(onSelectAll).toHaveBeenCalledOnce();
+    expect(onSelectAll).toHaveBeenCalledWith(['Root.A']);
+  });
+
+  it('Ctrl+A calls e.preventDefault() (suppresses browser Select-All)', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onSelectAll = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelectAll={onSelectAll} />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    const event = new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true, cancelable: true });
+    const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
+    treeRoot.dispatchEvent(event);
+    expect(preventDefaultSpy).toHaveBeenCalled();
+  });
+});
+
+describe('DesignTree — bulk eye-icon', () => {
+  it('clicking eye-icon on a row in a multi-selection cycles ALL selected rows', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    // Root.A and Root.B are selected
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    // Click eye-icon on Root.A (which is in the selected set)
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    // Both Root.A and Root.B should be cycled (show → ghost)
+    expect(store.state.explicit['Root.A']).toBe('ghost');
+    expect(store.state.explicit['Root.B']).toBe('ghost');
+    // Root.C (not selected) should be unchanged
+    expect(store.state.explicit['Root.C']).toBeUndefined();
+  });
+
+  it('clicking eye-icon on a row NOT in the selection cycles only that row', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    // Click eye-icon on Root.C (NOT in selection)
+    fireEvent.click(screen.getByTestId('eye-icon-Root.C'));
+    // Only Root.C should be cycled
+    expect(store.state.explicit['Root.C']).toBe('ghost');
+    // Root.A and Root.B unchanged
+    expect(store.state.explicit['Root.A']).toBeUndefined();
+    expect(store.state.explicit['Root.B']).toBeUndefined();
+  });
+
+  it('clicking eye-icon with single-item selectedEntities cycles only that one row', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A']}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    expect(store.state.explicit['Root.A']).toBe('ghost');
+    expect(store.state.explicit['Root.B']).toBeUndefined();
+  });
+
+  it('backward-compat: no selectedEntities prop → clicking eye cycles just that row', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity="Root.A"
+      />
+    ));
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    expect(store.state.explicit['Root.A']).toBe('ghost');
+    expect(store.state.explicit['Root.B']).toBeUndefined();
+  });
+});
+
 describe('DesignTree — keyboard shortcuts', () => {
   it('pressing H with selected entity sets hidden+cascade', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
@@ -379,5 +769,67 @@ describe('DesignTree — keyboard shortcuts', () => {
     const treeRoot = screen.getByTestId('design-tree');
     fireEvent.keyDown(treeRoot, { key: 'h', metaKey: true });
     expect(store.state.explicit['Root.A']).toBeUndefined();
+  });
+
+  it('pressing H with multiple entities selected hides ALL of them', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+      makeNode({ entity_path: 'Root.C' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'h' });
+    expect(store.state.explicit['Root.A']).toBe('hidden');
+    expect(store.state.explicit['Root.B']).toBe('hidden');
+    // Root.C (not selected) must remain unchanged
+    expect(store.state.explicit['Root.C']).toBeUndefined();
+  });
+
+  it('pressing G with multiple entities selected ghosts ALL of them', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'g' });
+    expect(store.state.explicit['Root.A']).toBe('ghost');
+    expect(store.state.explicit['Root.B']).toBe('ghost');
+  });
+
+  it('pressing S with multiple entities selected shows ALL of them', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    store.setVisibility('Root.A', 'hidden', false);
+    store.setVisibility('Root.B', 'hidden', false);
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A', 'Root.B']}
+      />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 's' });
+    expect(store.state.explicit['Root.A']).toBe('show');
+    expect(store.state.explicit['Root.B']).toBe('show');
   });
 });

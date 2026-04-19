@@ -273,13 +273,31 @@ pub(crate) fn compile_with_prelude_refs(
         let module_display = prelude_module.path.to_string();
         for cu in &prelude_module.units {
             if cu.is_pub {
+                // Detect cross-prelude collision before overwriting: if another
+                // prelude module already seeded this unit name, emit a warning.
+                if let Some(existing) = unit_registry.lookup(&cu.name) {
+                    let first_module: &str = existing
+                        .source_module
+                        .as_deref()
+                        .unwrap_or("<unknown>");
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "prelude unit '{}' declared in both '{}' and '{}'; last-wins",
+                            cu.name, first_module, module_display
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            SourceSpan::prelude(),
+                            "cross-prelude collision",
+                        )),
+                    );
+                }
                 unit_registry.seed_prelude_unit(UnitEntry {
                     name: cu.name.clone(),
                     dimension: cu.dimension,
                     factor: cu.factor,
                     offset: cu.offset,
                     is_pub: cu.is_pub,
-                    span: SourceSpan::empty(0),
+                    span: SourceSpan::prelude(),
                     content_hash: cu.content_hash,
                     source_module: Some(module_display.clone()),
                 });
@@ -309,9 +327,9 @@ pub(crate) fn compile_with_prelude_refs(
                     match &original.source_module {
                         Some(m) if m.starts_with("std/") => {
                             // Original is a stdlib prelude unit.
-                            // Emit a single-label diagnostic — omit the misleading
-                            // SourceSpan::empty(0) label that would point to byte 0
-                            // of the user's file.
+                            // Emit a two-label diagnostic: primary is the user's
+                            // duplicate decl; secondary is the prelude sentinel
+                            // carrying provenance text.
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}' — already defined in stdlib prelude",
@@ -320,13 +338,18 @@ pub(crate) fn compile_with_prelude_refs(
                                 .with_label(DiagnosticLabel::new(
                                     dup_entry.span,
                                     "duplicate of stdlib unit",
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    original.span,
+                                    "defined in stdlib prelude",
                                 )),
                             );
                         }
                         Some(m) => {
                             // Original was seeded from a user module — name that module.
-                            // Emit a single-label diagnostic (original span is empty(0),
-                            // so omit it to avoid a misleading byte-0 label).
+                            // Emit a two-label diagnostic: primary is the user's
+                            // duplicate decl; secondary is the prelude sentinel
+                            // carrying provenance text.
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}' — already defined in module '{}'",
@@ -335,6 +358,10 @@ pub(crate) fn compile_with_prelude_refs(
                                 .with_label(DiagnosticLabel::new(
                                     dup_entry.span,
                                     format!("duplicate of unit from '{}'", m),
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    original.span,
+                                    format!("defined in module '{}' prelude", m),
                                 )),
                             );
                         }
@@ -835,15 +862,6 @@ pub(crate) fn compile_with_prelude_refs(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Convenience helper: build a bare number-literal expression.
-    /// Used by multiple tests to construct non-geometry arguments.
-    fn num_lit(v: f64) -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral(v),
-            span: reify_types::SourceSpan::new(0, 1),
-        }
-    }
 
     #[test]
     fn entity_kind_display() {
@@ -2359,14 +2377,11 @@ structure S {
     }
 
     #[test]
-    fn compile_modify_op_chamfer_preserves_step0() {
-        // The bug-preservation lives in the *caller* (geometry.rs), not in compile_modify_op.
-        // geometry.rs passes GeomRef::Step(0) explicitly for chamfer/fillet because they are
-        // not registered in geometry_arg_indices() — so geom_ref(0) would fall back to
-        // GeomRef::Step(step_offset) rather than a resolved geometry ref.
-        //
-        // This integration test verifies the full compile pipeline produces GeomRef::Step(0)
-        // for chamfer, confirming the caller upholds bug-for-bug compatibility.
+    fn compile_modify_op_chamfer_non_geometry_target_fallback() {
+        // chamfer is registered in geometry_arg_indices() — so geom_ref(0) is used.
+        // When the first arg is a scalar param (not a geometry let), the resolution
+        // block finds no ops for it, so geom_ref(0) falls back to GeomRef::Step(step_offset).
+        // With no sub-ops, step_offset == 0, so the target is GeomRef::Step(0).
         let source = r#"structure S {
     param target: Scalar = 5mm
     param dist: Scalar = 2mm
@@ -2380,9 +2395,9 @@ structure S {
         assert_eq!(ops.len(), 1);
         match &ops[0] {
             CompiledGeometryOp::Modify { kind: ModifyKind::Chamfer, target: op_target, .. } => {
-                // Caller passes GeomRef::Step(0) for chamfer — bug preserved in dispatch
+                // Non-geometry target → geom_ref(0) falls back to GeomRef::Step(0)
                 assert_eq!(*op_target, GeomRef::Step(0),
-                    "chamfer caller must pass GeomRef::Step(0) for bug-compat, got {:?}", op_target);
+                    "chamfer with non-geometry target should fall back to GeomRef::Step(0), got {:?}", op_target);
             }
             other => panic!("expected Modify(Chamfer), got {:?}", other),
         }

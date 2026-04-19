@@ -14,9 +14,7 @@
 //!   - scc.rs          — duplicate template name (internal; tested via lib.rs path)
 //!   - lib.rs          — duplicate entity definitions, duplicate unit declarations
 
-use reify_compiler::*;
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use reify_types::*;
 
 // ── Step 1: Trait conformance error tests ─────────────────────────────────────
 
@@ -725,6 +723,114 @@ structure def S : A {
     // Document: compilation completes without panic. Errors may or may not appear.
     // If no explicit cycle diagnostic is emitted, that's acceptable behavior.
     let _ = errors_only(&module);
+}
+
+// ── Task 403: Depth / visited guard ordering in collect_all_requirements ──────
+
+/// A 130-level linear trait refinement chain (deeper than MAX_TRAIT_DEPTH=128)
+/// should complete compilation without a stack overflow and emit exactly ONE
+/// "trait refinement chain too deep" diagnostic.
+///
+/// Guards: (1) compilation returns (no panic/SO), (2) exactly one "too deep"
+/// error, (3) that error's first label has a non-empty span.
+///
+/// Exercises conformance.rs `collect_all_requirements` depth guard.
+#[test]
+fn trait_refinement_chain_too_deep_single_path() {
+    // Build a 130-level linear chain: T0, T1 : T0, T2 : T1, ..., T130 : T129
+    let mut src = String::new();
+    src.push_str("trait T0 { }\n");
+    for i in 1..=130 {
+        src.push_str(&format!("trait T{} : T{} {{ }}\n", i, i - 1));
+    }
+    // Structure bound to the deepest trait
+    src.push_str("structure def S : T130 { }\n");
+
+    // Must not panic / stack-overflow
+    let module = compile_source(&src);
+
+    let errors = errors_only(&module);
+    let too_deep: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("trait refinement chain too deep"))
+        .collect();
+
+    assert_eq!(
+        too_deep.len(),
+        1,
+        "expected exactly one 'trait refinement chain too deep' diagnostic, got {}: {:?}",
+        too_deep.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let diag = too_deep[0];
+    assert!(
+        !diag.labels.is_empty(),
+        "expected at least one label on the 'too deep' diagnostic"
+    );
+    assert!(
+        !diag.labels[0].span.is_empty(),
+        "expected a non-empty span on the 'too deep' diagnostic label"
+    );
+}
+
+/// Diamond refinement convergence on a deep shared tail should produce exactly
+/// ONE "trait refinement chain too deep" diagnostic, not two.
+///
+/// Both chains A128→A127→...→A0→Shared and B128→B127→...→B0→Shared reach
+/// the shared trait `Shared` at depth 129 > MAX_TRAIT_DEPTH (128).
+///
+/// With the visited-FIRST ordering (task 403's fix): chain A's depth-limit
+/// branch INSERTS `Shared` into the visited set before returning, so chain
+/// B's subsequent walk of `Shared` hits the visited check and short-circuits
+/// silently — exactly ONE diagnostic is emitted.
+///
+/// With the buggy depth-FIRST ordering, `Shared` would NOT be inserted on
+/// chain A's depth-fail branch, so chain B would also reach depth 129 and
+/// emit a second "too deep" diagnostic — a duplicate.
+///
+/// Exercises conformance.rs `collect_all_requirements` guard ordering (task 403).
+#[test]
+fn trait_refinement_too_deep_diamond_no_duplicate_diagnostic() {
+    // Shared trait reached by both chains at depth 129 > MAX_TRAIT_DEPTH (128).
+    let mut src = String::new();
+    src.push_str("trait Shared { }\n");
+
+    // Chain A: A0 refines Shared; A1 refines A0; ...; A128 refines A127.
+    // Walking from A128 at depth 0 reaches Shared at depth 129.
+    src.push_str("trait A0 : Shared { }\n");
+    for i in 1..=128 {
+        src.push_str(&format!("trait A{} : A{} {{ }}\n", i, i - 1));
+    }
+
+    // Chain B: identical structure, independent path to the same Shared trait.
+    src.push_str("trait B0 : Shared { }\n");
+    for i in 1..=128 {
+        src.push_str(&format!("trait B{} : B{} {{ }}\n", i, i - 1));
+    }
+
+    // Structure bound to both deepest traits via '+' (Reify multi-bound syntax).
+    src.push_str("structure def S : A128 + B128 { }\n");
+
+    // Must not panic
+    let module = compile_source(&src);
+
+    let errors = errors_only(&module);
+    let too_deep_count = errors
+        .iter()
+        .filter(|d| d.message.contains("trait refinement chain too deep"))
+        .count();
+
+    // Visited-first ordering (task 403 fix): Shared is inserted on chain A's
+    // depth-limit branch, so chain B's walk of Shared short-circuits silently.
+    assert_eq!(
+        too_deep_count,
+        1,
+        "expected exactly ONE 'trait refinement chain too deep' diagnostic \
+         (visited-first dedup); got {}: {:?}",
+        too_deep_count,
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 /// Two entity definitions with the same name should produce

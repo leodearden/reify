@@ -30,6 +30,61 @@ impl SourceSpan {
         self.start == self.end
     }
 
+    /// The raw `usize` byte-offset value that identifies the prelude sentinel.
+    ///
+    /// Equals `u32::MAX as usize` — the value you get when casting
+    /// `SourceSpan::prelude().start` or `SourceSpan::prelude().end` to `usize`.
+    /// Both `reify_types::byte_offset_to_line_col` and
+    /// `gui::engine::offset_to_line_col_fast` check for this exact value and
+    /// return `(1, 1)` without further computation.
+    ///
+    /// Prefer this constant over a bare `u32::MAX as usize` literal so the
+    /// sentinel contract is expressed in one canonical location.
+    ///
+    /// Note: `source_location::byte_offset_to_line_col` currently uses the raw
+    /// literal directly (that file is a separate module); a follow-up can migrate
+    /// it to reference this constant.
+    pub const PRELUDE_SENTINEL_OFFSET: usize = u32::MAX as usize;
+
+    /// A sentinel span used for prelude-originated entries that have no
+    /// meaningful byte-offset in the current compilation unit.
+    ///
+    /// The value `{ start: u32::MAX, end: u32::MAX }` is guaranteed to fall
+    /// outside any real source (files are bounded well below 4 GiB in
+    /// practice).  Use [`SourceSpan::is_prelude`] to detect this sentinel
+    /// before converting offsets to line/column positions.
+    ///
+    /// # Renderer behaviour
+    ///
+    /// - Both `reify_types::byte_offset_to_line_col` and the GUI/LSP fast path
+    ///   (`gui::engine::offset_to_line_col_fast`) short-circuit the prelude
+    ///   sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) to `(1, 1)` — the
+    ///   same "no user-file location" fallback used by `mcp_context::get_diagnostics`
+    ///   when no labels are present.  This prevents a `debug_assert` panic
+    ///   (debug builds) and a silent past-last-line mis-report (release builds).
+    /// - Ad-hoc offset converters that do **not** route through one of those
+    ///   helpers (e.g. `reify_lsp::convert::offset_to_position`) apply
+    ///   `offset.min(source.len())` clamping instead, producing an EOF-position
+    ///   rather than `(1, 1)`.  Callers using such converters must guard with
+    ///   [`SourceSpan::is_prelude`] before the offset conversion.
+    /// - The provenance truth for prelude-originated entries is carried by the
+    ///   label *message* (e.g. "defined in stdlib prelude"), not the span
+    ///   coordinates.  For explicit control over presentation, check
+    ///   [`SourceSpan::is_prelude`] and substitute a "no user-file location"
+    ///   message rather than relying on any numeric fallback.
+    pub fn prelude() -> Self {
+        Self {
+            start: u32::MAX,
+            end: u32::MAX,
+        }
+    }
+
+    /// Returns `true` if this span is the prelude sentinel produced by
+    /// [`SourceSpan::prelude`].
+    pub fn is_prelude(&self) -> bool {
+        self.start == u32::MAX && self.end == u32::MAX
+    }
+
     /// Merge two spans into one covering both.
     pub fn merge(self, other: SourceSpan) -> SourceSpan {
         SourceSpan {
@@ -119,6 +174,44 @@ impl DiagnosticLabel {
 #[derive(Debug, Clone)]
 pub struct DiagnosticRef {
     pub index: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceSpan;
+
+    #[test]
+    fn prelude_sentinel_is_prelude() {
+        assert!(
+            SourceSpan::prelude().is_prelude(),
+            "SourceSpan::prelude() must satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn empty_zero_is_not_prelude() {
+        assert!(
+            !SourceSpan::empty(0).is_prelude(),
+            "SourceSpan::empty(0) must NOT satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn regular_span_is_not_prelude() {
+        assert!(
+            !SourceSpan::new(0, 5).is_prelude(),
+            "SourceSpan::new(0, 5) must NOT satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn prelude_distinct_from_empty_zero() {
+        assert_ne!(
+            SourceSpan::prelude(),
+            SourceSpan::empty(0),
+            "SourceSpan::prelude() must be distinct from SourceSpan::empty(0)"
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
