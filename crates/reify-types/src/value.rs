@@ -6969,41 +6969,88 @@ mod tests {
         doc_lines.join("\n")
     }
 
-    /// Asserts that `FieldSourceKind::Gradient`'s doc describes provenance
-    /// only, without leaking reify-expr implementation details ("lambda slot",
-    /// "sample handler", "central-difference").
+    /// Asserts that each derived `FieldSourceKind` variant's doc describes
+    /// provenance only, without leaking reify-expr implementation details
+    /// ("lambda slot", "sample handler", "central-difference"), and mentions
+    /// the corresponding language-level operator name.
+    ///
+    /// Covers all eight derived variants: `Gradient`, `Divergence`, `Curl`,
+    /// `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear`, `SafetyFactor`.
     #[test]
-    fn field_source_kind_gradient_doc_describes_provenance_only() {
+    fn field_source_kind_derived_docs_describe_provenance_only() {
         let source = value_rs_source();
 
-        let region = enum_variant_doc_region(&source, "FieldSourceKind", "    Gradient,\n");
+        // The exhaustive match below is never called at runtime; it exists so
+        // the compiler enforces that this list is updated whenever a new
+        // FieldSourceKind variant is added.  Adding a derived variant without
+        // extending the table below produces a "non-exhaustive patterns"
+        // compile error, which serves as a reminder to add its regression guard.
+        #[allow(dead_code)]
+        fn _exhaustive_guard(k: FieldSourceKind) {
+            match k {
+                // Non-derived base kinds — not guarded by this test.
+                FieldSourceKind::Analytical
+                | FieldSourceKind::Sampled
+                | FieldSourceKind::Composed
+                | FieldSourceKind::Imported => {}
+                // Derived kinds — all eight must appear in the variants table below.
+                FieldSourceKind::Gradient
+                | FieldSourceKind::Divergence
+                | FieldSourceKind::Curl
+                | FieldSourceKind::Laplacian
+                | FieldSourceKind::VonMises
+                | FieldSourceKind::PrincipalStresses
+                | FieldSourceKind::MaxShear
+                | FieldSourceKind::SafetyFactor => {}
+            }
+        }
 
-        // Locator self-checks: ensure we got a real doc block.
-        assert!(!region.is_empty(), "Gradient doc region must not be empty");
-        assert!(
-            region.trim_start().starts_with("///"),
-            "Gradient doc region must start with ///; got:\n{region}"
-        );
+        // Each entry: (variant declaration line, expected operator name in doc).
+        let variants: &[(&str, &str)] = &[
+            ("    Gradient,\n", "gradient()"),
+            ("    Divergence,\n", "divergence()"),
+            ("    Curl,\n", "curl()"),
+            ("    Laplacian,\n", "laplacian()"),
+            ("    VonMises,\n", "von_mises()"),
+            ("    PrincipalStresses,\n", "principal_stresses()"),
+            ("    MaxShear,\n", "max_shear()"),
+            ("    SafetyFactor,\n", "safety_factor()"),
+        ];
 
-        // (a) Must NOT mention reify-expr implementation internals.
-        assert!(
-            !region.contains("lambda slot"),
-            "Gradient doc must not mention 'lambda slot' (impl detail); region:\n{region}"
-        );
-        assert!(
-            !region.contains("sample handler"),
-            "Gradient doc must not mention 'sample handler' (impl detail); region:\n{region}"
-        );
-        assert!(
-            !region.contains("central-difference"),
-            "Gradient doc must not mention 'central-difference' (impl detail); region:\n{region}"
-        );
+        for (variant_line, op_name) in variants {
+            let region =
+                enum_variant_doc_region(&source, "FieldSourceKind", variant_line);
 
-        // (b) Must describe provenance — produced by the `gradient()` operator.
-        assert!(
-            region.contains("gradient()"),
-            "Gradient doc must mention gradient() as provenance; region:\n{region}"
-        );
+            // (a) Region must be non-empty and begin with `///`.
+            assert!(
+                !region.is_empty(),
+                "{variant_line:?} doc region must not be empty; region:\n{region}"
+            );
+            assert!(
+                region.trim_start().starts_with("///"),
+                "{variant_line:?} doc region must start with ///; region:\n{region}"
+            );
+
+            // (b) Must NOT mention reify-expr implementation internals.
+            assert!(
+                !region.contains("lambda slot"),
+                "{variant_line:?} doc must not mention 'lambda slot' (impl detail); region:\n{region}"
+            );
+            assert!(
+                !region.contains("sample handler"),
+                "{variant_line:?} doc must not mention 'sample handler' (impl detail); region:\n{region}"
+            );
+            assert!(
+                !region.contains("central-difference"),
+                "{variant_line:?} doc must not mention 'central-difference' (impl detail); region:\n{region}"
+            );
+
+            // (c) Must describe provenance — produced by the named operator.
+            assert!(
+                region.contains(op_name),
+                "{variant_line:?} doc must mention {op_name:?} as provenance; region:\n{region}"
+            );
+        }
     }
 
     /// Asserts that the `Value::Field` variant's doc block documents the
