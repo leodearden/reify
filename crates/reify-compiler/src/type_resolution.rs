@@ -488,14 +488,21 @@ pub(crate) fn resolve_type_with_params(name: &str, type_param_names: &HashSet<St
     None
 }
 
-/// Resolve a type name, checking builtins, type parameters, then the alias registry.
+/// Resolve a type name, checking builtins, type parameters, then the alias
+/// registry, and finally trait names.
 ///
 /// This is the primary type resolution function when aliases are available.
-/// Falls through: builtins → type params → alias registry.
+/// Falls through: builtins → type params → alias registry → trait names.
+///
+/// Trait-name resolution is LAST so existing sources that happened to reuse
+/// a name present in the builtin/alias/generic-param namespaces keep their
+/// prior resolution behavior; trait names only resolve when no earlier kind
+/// matches.
 pub(crate) fn resolve_type_with_aliases(
     name: &str,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    trait_names: &HashSet<String>,
 ) -> Option<Type> {
     if let Some(ty) = resolve_type_with_params(name, type_param_names) {
         return Some(ty);
@@ -505,6 +512,11 @@ pub(crate) fn resolve_type_with_aliases(
         && let Some(ref resolved) = alias_entry.resolved_type
     {
         return Some(resolved.clone());
+    }
+    // Trait-name fallback (last in precedence): `param m : Material` where
+    // `Material` is a trait name resolves to Type::TraitObject("Material").
+    if trait_names.contains(name) {
+        return Some(Type::TraitObject(name.to_string()));
     }
     None
 }
@@ -552,11 +564,18 @@ pub(crate) fn resolve_type_alias_expr(
             // contain unresolved type params (e.g. Container<T>) — we must not
             // emit errors for those; the alias body will be fully resolved at
             // instantiation time via resolve_type_alias_expr_with_subst.
+            //
+            // Trait-name resolution is NOT applied during alias DFS: trait
+            // names aren't known until compile_trait has populated the trait
+            // registry, which happens after alias resolution. Pass an empty
+            // trait-name set so alias bodies resolve only against builtins
+            // and the alias registry here.
             if !type_args.is_empty()
                 && let Some(alias_entry) = alias_registry.lookup(name)
                 && !alias_entry.type_params.is_empty()
             {
                 let empty = HashSet::new();
+                let empty_traits = HashSet::new();
                 let mut tmp_diags = Vec::new();
                 if let Some(ty) = resolve_parameterized_alias(
                     alias_entry,
@@ -565,6 +584,7 @@ pub(crate) fn resolve_type_alias_expr(
                     alias_registry,
                     &mut tmp_diags,
                     0,
+                    &empty_traits,
                 ) {
                     return Some(ty);
                 }
@@ -572,7 +592,8 @@ pub(crate) fn resolve_type_alias_expr(
             }
             // Simple name: check builtins, then alias registry
             let empty = HashSet::new();
-            resolve_type_with_aliases(name, &empty, alias_registry)
+            let empty_traits = HashSet::new();
+            resolve_type_with_aliases(name, &empty, alias_registry, &empty_traits)
         }
     }
 }
@@ -622,13 +643,15 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
 
 /// Resolve a full TypeExpr at a use site, handling parameterized aliases.
 ///
-/// Falls through: builtins → type params → non-parameterized aliases → parameterized aliases.
+/// Falls through: builtins → type params → non-parameterized aliases →
+/// parameterized aliases → trait names.
 /// Returns None if the type cannot be resolved (caller handles "unresolved" error).
 pub(crate) fn resolve_type_expr_with_aliases(
     type_expr: &reify_syntax::TypeExpr,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
+    trait_names: &HashSet<String>,
 ) -> Option<Type> {
     let (name, type_args) = match &type_expr.kind {
         reify_syntax::TypeExprKind::Named { name, type_args } => (name.as_str(), type_args.as_slice()),
@@ -646,8 +669,10 @@ pub(crate) fn resolve_type_expr_with_aliases(
         return Some(ty);
     }
 
-    // Simple name resolution (builtins, type params, non-parameterized aliases)
-    if let Some(ty) = resolve_type_with_aliases(name, type_param_names, alias_registry) {
+    // Simple name resolution (builtins, type params, non-parameterized aliases, trait names)
+    if let Some(ty) =
+        resolve_type_with_aliases(name, type_param_names, alias_registry, trait_names)
+    {
         return Some(ty);
     }
 
@@ -662,6 +687,7 @@ pub(crate) fn resolve_type_expr_with_aliases(
             alias_registry,
             diagnostics,
             0,
+            trait_names,
         );
     }
 
@@ -683,6 +709,7 @@ pub(crate) fn resolve_parameterized_alias(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
+    trait_names: &HashSet<String>,
 ) -> Option<Type> {
     if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
         diagnostics.push(
@@ -726,8 +753,13 @@ pub(crate) fn resolve_parameterized_alias(
     // Resolve each explicit type argument to a concrete Type
     let mut subst: HashMap<String, Type> = HashMap::new();
     for (param, arg_expr) in alias_entry.type_params.iter().zip(type_args) {
-        let resolved =
-            resolve_type_expr_with_aliases(arg_expr, type_param_names, alias_registry, diagnostics);
+        let resolved = resolve_type_expr_with_aliases(
+            arg_expr,
+            type_param_names,
+            alias_registry,
+            diagnostics,
+            trait_names,
+        );
         if let Some(ty) = resolved {
             subst.insert(param.name.clone(), ty);
         } else {
@@ -854,9 +886,14 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     depth + 1,
                 );
             }
-            // Then builtins + alias registry
+            // Then builtins + alias registry.
+            // Trait-name resolution is not applied during alias-body resolution
+            // under substitution: alias bodies are resolved either during DFS
+            // (before traits exist) or during alias instantiation at a use site
+            // where the alias body itself should only refer to builtins/aliases.
             let empty = HashSet::new();
-            resolve_type_with_aliases(name, &empty, alias_registry)
+            let empty_traits = HashSet::new();
+            resolve_type_with_aliases(name, &empty, alias_registry, &empty_traits)
         }
     }
 }

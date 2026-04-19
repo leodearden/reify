@@ -231,6 +231,7 @@ pub(crate) fn compile_entity(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_names: &HashSet<String>,
     field_registry: &HashMap<String, &CompiledField>,
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     unit_registry: &UnitRegistry,
@@ -312,6 +313,7 @@ pub(crate) fn compile_entity(
                         &type_param_names,
                         alias_registry,
                         diagnostics,
+                        trait_names,
                     ) {
                         Some(t) => t,
                         None => {
@@ -366,8 +368,8 @@ pub(crate) fn compile_entity(
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 // `known_geometry_lets` is intentionally shared across both branches
                 // (consistent with the same pattern in register_guarded_names/guards.rs).
-                register_guarded_names(&g.members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, &mut known_geometry_lets);
-                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, &mut known_geometry_lets);
+                register_guarded_names(&g.members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, trait_names, &mut known_geometry_lets);
+                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, trait_names, &mut known_geometry_lets);
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
@@ -391,7 +393,7 @@ pub(crate) fn compile_entity(
                         reify_syntax::MemberDecl::Param(param) => {
                             let composite_name = format!("{}.{}", port_decl.name, param.name);
                             let ty = if let Some(type_expr) = &param.type_expr {
-                                resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics).unwrap_or_else(|| {
+                                resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics, trait_names).unwrap_or_else(|| {
                                     diagnostics.push(
                                         Diagnostic::error(format!(
                                             "unresolved type name '{}' in port parameter",
@@ -1980,10 +1982,20 @@ pub(crate) fn fixup_option_none_for_let(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // This helper only matches Option<_> annotations for None-fallback fixup;
+    // trait-typed annotations (Type::TraitObject) cannot appear inside an
+    // Option<_> wrapper today, so passing an empty trait-name set here keeps
+    // behavior unchanged.
+    let empty_traits: HashSet<String> = HashSet::new();
     if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
         && let Some(te) = type_expr
-        && let Some(resolved) =
-            resolve_type_expr_with_aliases(te, type_param_names, alias_registry, diagnostics)
+        && let Some(resolved) = resolve_type_expr_with_aliases(
+            te,
+            type_param_names,
+            alias_registry,
+            diagnostics,
+            &empty_traits,
+        )
         && matches!(&resolved, Type::Option(_))
     {
         *compiled_expr = CompiledExpr::option_none(resolved);

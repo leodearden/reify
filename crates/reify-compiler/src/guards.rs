@@ -115,6 +115,7 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
 
 /// Register names from guarded group members in the compilation scope (pass 1).
 /// Recursively handles nested guarded groups.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_guarded_names<'a>(
     members: &'a [reify_syntax::MemberDecl],
     scope: &mut CompilationScope,
@@ -122,13 +123,21 @@ pub(crate) fn register_guarded_names<'a>(
     diagnostics: &mut Vec<Diagnostic>,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    trait_names: &HashSet<String>,
     known_geometry_lets: &mut HashSet<&'a str>,
 ) {
     for member in members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    resolve_type_expr_with_aliases(type_expr, type_param_names, alias_registry, diagnostics).unwrap_or_else(|| {
+                    resolve_type_expr_with_aliases(
+                        type_expr,
+                        type_param_names,
+                        alias_registry,
+                        diagnostics,
+                        trait_names,
+                    )
+                    .unwrap_or_else(|| {
                         diagnostics.push(
                             Diagnostic::error(format!("unresolved type: {}", type_expr))
                                 .with_label(DiagnosticLabel::new(
@@ -165,8 +174,8 @@ pub(crate) fn register_guarded_names<'a>(
                 // if the aliased name appeared in the if-branch. Fixing this would
                 // require snapshotting both `scope` and `known_geometry_lets` atomically
                 // for each branch — a larger change that is deferred until needed.
-                register_guarded_names(&g.members, scope, functions, diagnostics, type_param_names, alias_registry, known_geometry_lets);
-                register_guarded_names(&g.else_members, scope, functions, diagnostics, type_param_names, alias_registry, known_geometry_lets);
+                register_guarded_names(&g.members, scope, functions, diagnostics, type_param_names, alias_registry, trait_names, known_geometry_lets);
+                register_guarded_names(&g.else_members, scope, functions, diagnostics, type_param_names, alias_registry, trait_names, known_geometry_lets);
             }
             _ => {}
         }

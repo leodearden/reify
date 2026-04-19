@@ -9,6 +9,7 @@ const MAX_TRAIT_DEPTH: usize = 128;
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_names: &HashSet<String>,
     scope: &mut CompilationScope,
     value_cells: &mut Vec<ValueCellDecl>,
     constraints: &mut Vec<CompiledConstraint>,
