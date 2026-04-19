@@ -14,14 +14,17 @@ export interface KeyboardShortcutCallbacks {
 }
 
 /**
- * Internal map from shortcut id to the corresponding callback key.
+ * Source of truth for bind→callback wiring: maps each shortcut id to the
+ * corresponding callback key on KeyboardShortcutCallbacks. Exported so the
+ * invariant test can assert every bound shortcut has an entry here.
+ *
  * Shortcuts without a callback (undo, redo, fitToView) are omitted —
  * the registry loop skips them when no entry is found here.
  *
  * Keyed by ShortcutId so typos in shortcut IDs (e.g. 'toogleChat') are
  * caught at compile time rather than silently failing at runtime.
  */
-const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks>> = {
+export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks>> = {
   open:        'onOpen',
   save:        'onSave',
   export:      'onExportDialog',
