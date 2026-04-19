@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createRoot } from 'solid-js';
+import { createRoot, createComputed } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { EntityTreeNode } from '../types';
@@ -1206,6 +1206,138 @@ describe('viewStateStore — auto view generators — integration sanity', () =>
       expect(store.getAllEffective()['Assembly.Physical.body1']).toBe('hidden');
       expect(store.getAllEffective()['Assembly.Physical.body2']).toBe('hidden');
 
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// regenerateAutoViews — atomicity (single reactive notification)
+// ---------------------------------------------------------------------------
+
+describe('regenerateAutoViews — atomicity (single reactive notification)', () => {
+  // treeA: has Root and Root.stale — explicit entries seeded here become stale
+  //         when regenerateAutoViews is called with treeB.
+  // treeB: has Root and Root.fresh (no Root.stale) — the "new" tree used for
+  //         the regenerateAutoViews call under test.
+  function makeTreeA() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [makeNode({ entity_path: 'Root.stale', kind: 'param' })],
+      }),
+    ];
+  }
+
+  function makeTreeB() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [makeNode({ entity_path: 'Root.fresh', kind: 'param' })],
+      }),
+    ];
+  }
+
+  it('(a) auto:default branch: regenerateAutoViews fires exactly one reactive notification', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // Prime a stale explicit entry so setTree's setState changes explicit.
+      store.setTree(makeTreeA());
+      store.setVisibility('Root.stale', 'hidden', false);
+
+      // Counter starts at -1 to account for the initial createComputed run.
+      let updateCount = -1;
+      createComputed(() => {
+        // Track both explicit and views so we catch setState calls in:
+        //   setTree()  — which changes explicit (stale prune), and
+        //   the second setState inside regenerateAutoViews — which changes views.
+        JSON.stringify(store.state.explicit);
+        JSON.stringify(store.state.views);
+        updateCount++;
+      });
+      // Initial run sets counter to 0.
+      expect(updateCount).toBe(0);
+
+      // activeViewId defaults to 'auto:default'.
+      store.regenerateAutoViews(makeTreeB());
+
+      // Before fix: 2  — setTree's setState prunes explicit (notify 1);
+      //                   second setState updates views + replaces explicit (notify 2).
+      // After  fix: 1  — single batched setState does all work.
+      expect(updateCount).toBe(1);
+      dispose();
+    });
+  });
+
+  it('(b) user:* branch: regenerateAutoViews fires exactly one reactive notification', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTreeA());
+
+      // Seed and activate a user view so we enter the user:* reconciliation branch.
+      const userView: ViewDefinition = {
+        id: 'user:mine',
+        name: 'Mine',
+        auto: false,
+        modified: false,
+        visibility: { 'Root.stale': 'hidden' },
+      };
+      store.seedView(userView);
+      store.setActiveView('user:mine');
+      // explicit is now { 'Root.stale': 'hidden' }
+
+      let updateCount = -1;
+      createComputed(() => {
+        JSON.stringify(store.state.explicit);
+        JSON.stringify(store.state.views);
+        updateCount++;
+      });
+      expect(updateCount).toBe(0);
+
+      store.regenerateAutoViews(makeTreeB());
+
+      // Before fix: 2  — setTree prunes explicit (notify 1);
+      //                   second setState refreshes auto:* views (notify 2).
+      // After  fix: 1  — single batched setState.
+      expect(updateCount).toBe(1);
+      dispose();
+    });
+  });
+
+  it('(c) unknown-view fallback branch: regenerateAutoViews fires exactly one reactive notification', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTreeA());
+
+      // Seed and activate a view whose id starts with neither 'auto:' nor 'user:'.
+      // This exercises the else-branch fallback inside regenerateAutoViews.
+      const customView: ViewDefinition = {
+        id: 'custom:test',
+        name: 'Custom',
+        auto: false,
+        modified: false,
+        visibility: { 'Root.stale': 'hidden' },
+      };
+      store.seedView(customView);
+      store.setActiveView('custom:test');
+      // explicit is now { 'Root.stale': 'hidden' }
+
+      let updateCount = -1;
+      createComputed(() => {
+        JSON.stringify(store.state.explicit);
+        JSON.stringify(store.state.views);
+        updateCount++;
+      });
+      expect(updateCount).toBe(0);
+
+      store.regenerateAutoViews(makeTreeB());
+
+      // Before fix: 2  — setTree prunes explicit (notify 1);
+      //                   second setState updates views + replaces explicit (notify 2).
+      // After  fix: 1  — single batched setState.
+      expect(updateCount).toBe(1);
       dispose();
     });
   });
