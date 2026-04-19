@@ -860,15 +860,17 @@ mod tests {
                 &mut HashSet::new(),
             );
 
+            let wildcard_msg = format!("{}: {}", UNSUPPORTED_GEOMETRY_FN_MSG, name);
             assert!(
                 !diagnostics
                     .iter()
-                    .any(|d| d.message.contains(UNSUPPORTED_GEOMETRY_FN_MSG)),
+                    .any(|d| d.message == wildcard_msg),
                 "registry name {:?} reached the wildcard arm in compile_geometry_call \
-                 ({:?} diagnostic was emitted) — \
+                 (\"{}: {}\" diagnostic was emitted) — \
                  add a dispatch arm for this name or remove it from the registry lists",
                 name,
-                UNSUPPORTED_GEOMETRY_FN_MSG
+                UNSUPPORTED_GEOMETRY_FN_MSG,
+                name
             );
         }
     }
