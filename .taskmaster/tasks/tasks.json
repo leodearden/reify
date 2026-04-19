@@ -39085,11 +39085,11 @@
         "description": "Follow-up from Task 1815 review. The current shortcuts.ts pattern widens SHORTCUTS to `readonly ShortcutDef[]` and exposes a parallel `SHORTCUT_IDS: readonly ShortcutId[]` export to let callers iterate ids without an `as ShortcutId` cast. This leaves inconsistencies:\n\n1. Change the SHORTCUTS export from `readonly ShortcutDef[]` to `readonly (ShortcutDef & { id: ShortcutId })[]` in gui/src/shortcuts.ts (currently line 99). This preserves literal-id narrowing on `.id` while still permitting structural access to optional fields (`.disabled`, `.bind`) that was the original motivation for widening.\n2. Drop the `SHORTCUT_IDS` export (gui/src/shortcuts.ts:101-106) — it is redundant once `s.id` is already `ShortcutId`.\n3. Remove the `shortcut.id as ShortcutId` cast at gui/src/hooks/useKeyboardShortcuts.ts:57 and the accompanying \"ShortcutId cast is safe\" comment at :56.\n4. In gui/src/__tests__/shortcuts.test.ts:99-107, replace the SHORTCUT_IDS-based filter with a direct iteration over SHORTCUTS:\n     `for (const s of SHORTCUTS.filter(sh => !sh.disabled && sh.key)) { const entry = getShortcut(s.id); ... }`\n   The `as ShortcutId` cast is unnecessary once SHORTCUTS' id is already narrowed; the redundant `.find()` nested inside a `.filter()` is eliminated.\n5. Update the import in shortcuts.test.ts to stop importing SHORTCUT_IDS.\n\nVerify: `bun run test` in gui/ passes; `bun run build` (or `tsc --noEmit`) confirms no regressions from tightened types.\n\nScope: gui/src/shortcuts.ts, gui/src/hooks/useKeyboardShortcuts.ts, gui/src/__tests__/shortcuts.test.ts.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:39.132Z",
+        "updatedAt": "2026-04-19T06:50:23.334Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/shortcuts.test.ts",
@@ -40976,7 +40976,14 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:40:36.361Z"
+        "updatedAt": "2026-04-19T06:40:36.361Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/autoViewGenerator.test.ts",
+            "gui/src/__tests__/viewStateStore.test.ts",
+            "gui/src/stores/autoViewGenerator.ts"
+          ]
+        }
       },
       {
         "id": "1959",
@@ -41013,12 +41020,14 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:46:51.240Z",
+      "lastModified": "2026-04-19T06:50:23.334Z",
       "taskCount": 1953,
-      "completedCount": 1681,
+      "completedCount": 1682,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T06:50:23.517Z",
+      "description": "Tasks for master context"
     }
   }
 }
