@@ -40736,7 +40736,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:43:35.362Z"
+        "updatedAt": "2026-04-17T13:43:35.362Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1948,
@@ -40779,7 +40787,13 @@
               "task 1002 derived field variant doc cleanup FieldSourceKind"
             ]
           },
-          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96",
+          "files": [
+            "crates/reify-types/src/value.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src"
+          ]
         }
       },
       {
@@ -40805,7 +40819,15 @@
               "task 1002 doc reference fix value.rs calculus.rs"
             ]
           },
-          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96",
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/calculus.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-expr/src"
+          ]
         }
       },
       {
@@ -40831,7 +40853,15 @@
               "task 1834 1907 two-pass pre-register conformance Let Param collision"
             ]
           },
-          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
+          "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96",
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
