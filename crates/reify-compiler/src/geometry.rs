@@ -708,12 +708,9 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    16  (translate, rotate, scale, rotate_around, circular_pattern,
-    ///                            linear_pattern, mirror, extrude, revolve, revolve_full,
-    ///                            shell, thicken, draft, sweep, chamfer, fillet)
-    /// NO_GEOM_ARG_FUNCTIONS 11  (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
-    ///                            line_segment, arc, helix, interp, bezier, nurbs)
-    /// boolean ops            5  (union, intersection, difference, union_all, intersection_all)
+    /// GEOM_ARG_FUNCTIONS    16
+    /// NO_GEOM_ARG_FUNCTIONS 11
+    /// boolean ops            5
     /// loft                   1
     /// Total                 33
     /// ```
