@@ -41043,7 +41043,7 @@
         "description": "Follow-up to task 1947 review. In crates/reify-compiler/tests/trait_conformance_type_error_tests.rs:154, `#[should_panic(expected = \"type mismatch for trait\")]` uses a substring that appears in multiple places (check (b) prose, dumped `module.diagnostics`, potentially `errors: {:?}`), so a regression causing check (a) or (c) to panic first with diagnostics-quoting output could spuriously satisfy the predicate. Fix: change expected substring to something unique to check (b)'s own prose, e.g. `expected = \"unexpected 'type mismatch for trait' cascade\"`. Acceptance: expected substring is unique to check (b); `cargo test -p reify-compiler --test trait_conformance_type_error_tests` passes.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41055,7 +41055,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-19T18:10:35.252Z"
+        "updatedAt": "2026-04-19T18:13:21.106Z"
       },
       {
         "id": "1963",
@@ -41684,7 +41684,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T18:12:39.119Z",
+      "lastModified": "2026-04-19T18:13:21.106Z",
       "taskCount": 1987,
       "completedCount": 1691,
       "tags": [
