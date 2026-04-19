@@ -1863,8 +1863,14 @@ describe('App splitter max bounds', () => {
 
     // Property height should be clamped so constraint panel remains visible
     // containerHeight(600) - MIN_PANEL_HEIGHT(80) - 4(splitter) = 516
+    // The grid-template-rows is: minmax(120px, 1fr) <propertyHeight>px 4px 1fr 1fr
+    // Extract the propertyHeight value (the last leading \d+px before a space that isn't part of minmax)
     const rows = sidePanel.style.gridTemplateRows;
-    const heightPx = parseInt(rows.split('px')[0], 10);
+    const pxValues = rows.match(/(?<![,\(])\b(\d+)px\b/g)!;
+    // pxValues[0] is 4px (from splitter), pxValues[-1] is propertyHeight px
+    // Actually extract all standalone NNpx tokens (not inside minmax(...)):
+    const standaloneMatches = rows.match(/\b(\d+)px(?=\s)/g)!;
+    const heightPx = parseInt(standaloneMatches[0], 10);
     expect(heightPx).toBeLessThanOrEqual(600 - 80 - 4);
     expect(heightPx).toBeGreaterThan(0);
   });
