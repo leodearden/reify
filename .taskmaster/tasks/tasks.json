@@ -39837,7 +39837,7 @@
         "description": "The DesignTree component (gui/src/panels/DesignTree.tsx) and viewStateStore (gui/src/stores/viewStateStore.ts) are fully implemented and exported from panels/index.ts and stores/index.ts respectively, and the backend get_entity_tree Tauri command is registered and working. However, App.tsx never imports DesignTree, never creates a viewStateStore instance, never subscribes to the `entity-tree-update` event, and never renders the DesignTree component. As a result the Design Tree UI is entirely non-functional end-to-end, even though the pieces are done. Task #1741 was marked done with an explicit instruction to \"Modify App.tsx — Add tab bar for Tree / Properties in right panel area; Wire up DesignTree component\", but the App.tsx wire-up was dropped during the 2026-04-16 merge that \"accepted origin/main's parallel Design Tree implementation\" (note on cancelled task #1862).\n\nRequired wiring:\n1. In App.tsx, import { DesignTree } from './panels' and { createViewStateStore } from './stores/viewStateStore'.\n2. Create a viewStateStore instance next to the other stores (engineStore, editorStore, etc.).\n3. Subscribe to the backend `entity-tree-update` event (or poll via `get_entity_tree` on relevant engine state changes) and pass the tree data to the viewStateStore / DesignTree.\n4. Add a tab bar or panel slot in the right-side panel region (alongside PropertyEditor / ConstraintPanel) and render <DesignTree tree={tree} viewStateStore={store} />.\n5. Verify the DesignTree appears in the live app (not only unit tests) and that eye-icon visibility toggling propagates back to meshManager (viewport/meshManager.ts already consults visibility).\n\nVerification:\n- Launch `npm run tauri dev` with a .ri file loaded and confirm the Design Tree renders real entity nodes.\n- Confirm eye-icon clicks hide/ghost the mesh in the viewport.\n- Re-check App.test.tsx for DesignTree integration coverage — currently App.test.tsx exists but does not cover DesignTree mounting.",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -39863,7 +39863,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T05:56:15.065Z"
+        "updatedAt": "2026-04-19T05:39:03.288Z"
       },
       {
         "id": "1902",
@@ -40866,15 +40866,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:55:04.410Z",
+      "lastModified": "2026-04-19T05:39:03.293Z",
       "taskCount": 1949,
-      "completedCount": 1674,
+      "completedCount": 1673,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T14:19:00.618Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-18T20:24:51.599Z"
+      ]
     }
   }
 }
