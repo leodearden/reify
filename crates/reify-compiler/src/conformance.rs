@@ -321,13 +321,17 @@ pub(crate) fn check_trait_conformance(
     //
     // For unannotated let defaults (`cell_type: None`), the advertised type comes from
     // `inferred_let_exprs` populated by the pre-register pass above — see task 1834 step-8.
-    // The `Type::Real` fallback is reached when (a) inference failed (the
-    // expression errored out and left no cached result), or (b) Pass 2 deliberately
-    // skipped caching the result because an annotated type already claimed the scope
-    // slot (see `pass2_skipped` above).  In case (b) the Let entry advertises Real;
-    // that entry is only relevant if a requirement check looks up `("name", Let)`,
-    // and in the Param-wins scenario the requirement is structurally unsatisfied
-    // anyway (kind mismatch), so the Real fallback does not cause a false positive.
+    //
+    // Names in `pass2_skipped` are explicitly excluded from the Let arm (Option B,
+    // task 1951): those are names where Pass 1 claimed the scope slot with an annotated
+    // Param or Let, so the injection loop (lines ~520-527) already `continue`s past
+    // them — no Let cell is ever injected for such a name. Advertising a phantom
+    // `(name, Let)` entry would break the invariant "only one default satisfies a
+    // given (name, kind)": a `RequirementKind::Let` lookup against the phantom entry
+    // would kind-match and emit a spurious "requirement expects <T>, available default
+    // has Real" type-mismatch instead of the clearer "missing required member" diagnostic.
+    // Excluding pass2_skipped names makes the advertisement builder symmetric with the
+    // injection loop.
     let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx
         .defaults
         .iter()
@@ -338,6 +342,13 @@ pub(crate) fn check_trait_conformance(
                     (AvailableDefaultKind::Param, cell_type.clone())
                 }
                 DefaultKind::Let { cell_type, .. } => {
+                    // Do not advertise a phantom Let entry for names that Pass 2
+                    // recorded in pass2_skipped: the injection loop will not emit
+                    // a Let cell for those names, so advertising one here would
+                    // violate the "one default per (name, kind)" invariant.
+                    if pass2_skipped.contains(name) {
+                        return None;
+                    }
                     let resolved = cell_type.clone().unwrap_or_else(|| {
                         inferred_let_exprs
                             .get(name)
