@@ -565,6 +565,7 @@ fn cross_module_constraint_def_import() {
     // RAII temp directory — no PID-based path racing under parallel `cargo test`.
     let _tmp = tempfile::tempdir().unwrap();
     let dir = _tmp.path().to_path_buf();
+    fs::create_dir_all(dir.join("stdlib")).unwrap();
 
     // Module a: defines a pub constraint def
     fs::write(
