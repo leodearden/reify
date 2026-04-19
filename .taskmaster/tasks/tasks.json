@@ -40491,11 +40491,11 @@
         "description": "Follow-up to task 448 review. The `find_node` helper at crates/reify-compiler/tests/type_error_propagation_tests.rs:12-44 only recurses into BinOp, UnOp, FunctionCall, Conditional, MethodCall, and IndexAccess — returning None for everything else (Quantifier.predicate, ListLiteral elements, SetLiteral elements, Lambda body, Let/Block, etc.). The quantifier test currently works because it pattern-matches the top-level Quantifier out first, but any future refactor that wraps the quantifier or embeds the predicate inside an unhandled variant would cause the `Type::Error` search to silently return None and the assertion would fail in a misleading way.\n\nEither:\n- Extend `find_node` to recurse into all CompiledExprKind variants that contain sub-expressions (Quantifier.predicate, list/set element exprs, Lambda body, Let bindings/body, Block stmts, etc.), OR\n- Document the restricted scope at the top of the helper and panic on unknown recursive kinds so coverage gaps surface loudly instead of silently missing.\n\nPreferred: the extend-coverage approach so anti-cascade tests stay robust against AST/IR restructuring.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:16:06.839Z",
+        "updatedAt": "2026-04-19T17:40:45.924Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40777,11 +40777,11 @@
         "description": "The `field_source_kind_gradient_doc_describes_provenance_only` test in crates/reify-types/src/value.rs (~line 6976) enforces the \"no impl-detail leakage\" rule only for `FieldSourceKind::Gradient`. The same doc cleanup was applied in task 1002 to `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear`, and `SafetyFactor`, but none of those variants have a regression guard. A future author rewording any of those docs could silently reintroduce `lambda slot` / `sample handler` / `central-difference` language.",
         "details": "Parameterize (or loop) the Gradient doc-invariant test over all seven derived-field variants: Gradient, Divergence, Curl, Laplacian, VonMises, PrincipalStresses, MaxShear, SafetyFactor. For each variant assert (a) the doc block omits the forbidden impl tokens (\"lambda slot\", \"sample handler\", \"central-difference\") and (b) mentions the variant's operator name (e.g. `gradient()`, `divergence()`, `curl()`, `laplacian()`, `von_mises()`, `principal_stresses()`, `max_shear()`, `safety_factor()`).\n\nThe `enum_variant_doc_region` helper already supports locating any variant; pass `\"FieldSourceKind\"` and the per-variant line (e.g. `\"    Divergence,\\n\"`). Only the variants table and per-variant operator name strings need to be added.\n\nSource: review escalation esc-1002-30, suggestion 1.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:59:08.287Z",
+        "updatedAt": "2026-04-19T17:40:46.023Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -40842,11 +40842,11 @@
         "description": "In `crates/reify-compiler/src/conformance.rs` the `available_defaults` map still emits a `(name, Let) -> Type::Real` entry when Pass 2 recorded the name in `pass2_skipped` (an annotated Param/Let won the slot). The rationale comment at ~324-330 asserts \"the requirement is structurally unsatisfied anyway (kind mismatch)\" — but a Let requirement looking up `(name, Let)` gets a kind MATCH and will emit a spurious `requirement expects <T>, available default has Real` type-mismatch when \"missing required member\" would be clearer.\n\nScenario: trait X requires `let x : Length`; trait Y provides `param x : Length`; trait Z provides unannotated `let x = 5.0`. The Let from Z survives `collect_all_requirements` dedup, Pass 2 skips registering it because Y's Param claimed the slot, and the requirement in X is evaluated against a phantom `Let -> Real` advertisement.\n\nMemory hints: search \"task 1907 pass2_skipped available_defaults phantom Let entry\"; entities: DefaultKind, AvailableDefaultKind, Type.",
         "details": "Two viable fixes (reviewer proposed both):\n\nOption A — In Pass 2's conflict branch (`if let Some(ignored_ty)` arm), still insert the compiled expression into `inferred_let_exprs` (or a parallel map) so `available_defaults` can advertise the inferred type for the `(name, Let)` slot. This preserves the Let requirement-matching path even when Pass 1 won the scope slot.\n\nOption B — In the `available_defaults` builder, skip emitting the `(name, Let)` entry entirely when `pass2_skipped.contains(name)` — since no Let cell is actually injected, advertising one is misleading. Update the rationale comment at ~324-330 to reflect this.\n\nOption B is simpler and keeps the invariant \"only one default satisfies a given (name, kind)\"; Option A preserves the old shape but requires reasoning about why the skipped expression is still useful. Prefer Option B unless the Let-requirement-survives-slot-claim behavior is intentional.\n\nAdd regression test in `crates/reify-compiler/tests/trait_merge_tests.rs` covering the 3-trait scenario: structure bound to traits X (requires `let x : Length`), Y (provides `param x : Length`), Z (provides unannotated `let x = 5.0`). Assert ONE diagnostic (\"missing required Let member `x`\" or \"kind mismatch\" or the chosen wording) — NOT a secondary \"available default has Real\" type-mismatch.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 1). Complements but distinct from task 1914 item 1 (compile_expr error-cascade), which addresses the Type::Real fallback when inference FAILS; this task addresses the fallback when Pass 2 deliberately DISCARDS the inferred expression.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:30.415Z",
+        "updatedAt": "2026-04-19T17:40:46.202Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -40978,11 +40978,11 @@
         "description": "Geometry and material detection in autoViewGenerator.ts uses bare `type_name.includes('Solid' | 'Surface' | 'Curve' | 'Material')`. Any type whose name happens to contain those tokens (e.g. a hypothetical 'MySolidarity', 'MaterialReference') will be misclassified. This is the sole distinction between 'hidden' and 'show' in the default view, so misclassification silently hides (or unhides) geometry.",
         "details": "## Scope\n\ngui/src/stores/autoViewGenerator.ts\n\n### Changes\n\n- `isLetGeometryType` (lines 38-46): replace `type_name.includes('Solid' | 'Surface' | 'Curve')` with anchored matching. Options:\n  - Equality against a known-type enum / set: `GEOMETRY_TYPES = new Set(['Solid', 'Surface', 'Curve'])` with `GEOMETRY_TYPES.has(type_name)`.\n  - If generics/wrappers must be tolerated (e.g. `Option<Solid>`), use a regex anchored on word boundaries or parse the type_name.\n\n- `manufacturingReadyVisibilityFor` (lines 130-144): same fix for `'Material'` check.\n\n### Tests\n\ngui/src/__tests__ — add regression tests with node `type_name` values that contain the substrings but should NOT match (e.g. 'Solidarity', 'MaterialReference', 'SurfaceTreatment', 'CurveBall'). Assert they render via defaultVisibilityFor / manufacturingReadyVisibilityFor as non-geometry / non-material.\n\n### memory_hints\n- search: \"autoViewGenerator type name geometry\"\n- search: \"EntityTreeNode type_name\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:40:36.361Z",
+        "updatedAt": "2026-04-19T17:40:46.302Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/autoViewGenerator.test.ts",
@@ -41660,7 +41660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T17:40:45.824Z",
+      "lastModified": "2026-04-19T17:40:46.302Z",
       "taskCount": 1985,
       "completedCount": 1684,
       "tags": [
