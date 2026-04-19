@@ -41808,6 +41808,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2000",
+        "title": "OCCT flock gate: narrow scope from workspace-wide to OCCT-touching crates",
+        "description": "Follow-up to task 1992 review. The wrapper currently serializes the entire `cargo test --workspace` invocation across all concurrent worktrees. Only a subset of workspace crates actually touches OCCT (reify-kernel-occt, reify-eval, reify-compiler geometry tests) — the rest (tree-sitter bindings, protocol, persistence, etc.) run one-at-a-time under the gate for no safety reason.",
+        "details": "## Context\n\nTask 1992 applied the flock gate at the `cargo test --workspace` level — coarse but simple. Under N concurrent worktrees this forces verify to run ~O(N) in wall-clock time for *all* crates, not just OCCT-touching ones.\n\n## Options\n\n- **(a) Two-pass test_command** — run `cargo test -p <occt-crates...>` gated, then `cargo test --workspace --exclude <occt-crates...>` ungated. Preserves parallelism for non-OCCT crates.\n- **(b) Per-test gate via `serial_test` crate** — marks OCCT tests serial in-process only; doesn't address cross-process contention. Defense-in-depth alongside (a).\n- **(c) Document the trade-off and defer** — acknowledge in the script header block that workspace-wide serialization is intentional simplicity.\n\nRecommend (a). Requires tracking which crates are OCCT-touching — maintain a single list in both `orchestrator.yaml` and the wrapper (or a shared include).\n\n## Acceptance\n\n- `test_command` splits into gated (OCCT-touching crates) and ungated (all other crates) invocations.\n- A test in `tests/infra/` asserts the split covers every OCCT-touching crate (no crate silently drops out of the gate).\n- Header comment in `cargo-test-occt-gated.sh` documents the design.\n- Wall-clock verify time under N concurrent worktrees drops for non-OCCT crates.\n\n## Modules\n\norchestrator.yaml, scripts/cargo-test-occt-gated.sh, tests/infra\n\n## Memory hints\n\n- search: \"OCCT thread safety\" \"flock gate\" \"cargo-test-occt-gated\"\n- See task 1992 for the base gate. Depends on that landing first.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1992
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -41820,7 +41833,7 @@
       ],
       "created": "2026-04-19T21:38:55.685Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-19T21:38:55.712Z"
+      "updated": "2026-04-19T21:39:43.044Z"
     }
   }
 }
