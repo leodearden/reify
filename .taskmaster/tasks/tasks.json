@@ -41051,13 +41051,14 @@
         "description": "Add the \"Save views\" action into the ViewSelector dropdown (next to \"Manage views...\") that invokes the sidecar-write primitive shipped by Task 1749. Blocked until Task 1746 actually ships ViewSelector.tsx / ViewManageModal.tsx.",
         "details": "Task 1749 shipped the persistence primitives (`gui/src/utils/sidecarPersistence.ts` + `read_view_sidecar`/`write_view_sidecar` Tauri commands) with a public API but could not wire the UI because `gui/src/panels/ViewSelector.tsx` was absent at the time. Once 1746's UI work lands for real, add a \"Save views\" button to the selector dropdown that calls the sidecar writer with the current `PersistentViewState`. Confirm visible user feedback (toast) on success/failure.\n\n### memory_hints\n- search: \"sidecarPersistence write_view_sidecar\"\n- search: \"ViewSelector dropdown Manage views\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1746",
           "1749"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:16:05.862Z"
       },
       {
         "id": "1964",
@@ -41083,13 +41084,14 @@
         "description": "Hook the viewportStore camera state into the `viewportCameras` field of the PersistentViewState that Task 1749 persists. Blocked until Task 1747 actually ships viewportStore.ts.",
         "details": "Task 1749 persists `viewportCameras: Record<string, CameraState>` round-trip but with no consumer — the field is inert until a viewportStore exists to publish/consume camera state. Once 1747 lands viewportStore.ts, wire:\n  - load-path: on file open, after sidecar/localStorage load, call `viewportStore.restoreCameras(persistedState.viewportCameras)`\n  - save-path: when viewportStore publishes a camera change, echo it into the view-persistence snapshot so the debounced saver picks it up\n\n### memory_hints\n- search: \"viewportStore camera state\"\n- search: \"viewPersistence debounced save\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1747",
           "1749"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:16:05.946Z"
       },
       {
         "id": "1966",
@@ -41109,14 +41111,15 @@
         "description": "Connect Task 1749's persistence primitives to the app reactive graph: load sidecar (priority) or localStorage on file open before auto view generation; run the 500ms debounced saver after any viewStateStore change. Requires 1746/1747 UI producers to be real before it's useful end-to-end.",
         "details": "Task 1749 ships `viewPersistence.ts` (localStorage + debounced saver), `sidecarPersistence.ts` (priority loader), `fuzzyPathMatcher.ts`, and `viewReconciliation.ts`. The orchestration glue — load on file open, re-evaluate entity tree through `viewReconciliation.partition()`, subscribe debounced saver to viewStateStore — lives at the App.tsx layer and was deferred because the UI producers (1746/1747) were not actually present on the base branch.\n\n### Steps\n1. On file open (after entity tree is built), call the priority loader; if present, feed into viewStateStore.hydrate(persistedState).\n2. Before auto view generation, gate on whether hydration occurred; if yes, skip fresh defaults and instead reconcile against the new entity tree.\n3. Subscribe the debounced localStorage saver to viewStateStore changes.\n4. On entity tree rebuild, call viewReconciliation to partition kept / new / missing, moving missing-path explicit entries into staleExplicit.\n5. Run fuzzy recovery and surface non-blocking notification for rename matches.\n\n### memory_hints\n- search: \"App.tsx file open entity tree\"\n- search: \"viewStateStore subscribe\"\n- search: \"viewPersistence priority loader\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1746",
           "1747",
           "1749"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:16:06.077Z"
       },
       {
         "id": "1968",
@@ -41153,14 +41156,15 @@
         "description": "Umbrella follow-up for Task 1749's deferred wiring. 1749 ships the persistence primitives (viewPersistence, sidecarPersistence, fuzzyPathMatcher, viewReconciliation + Tauri read/write_view_sidecar) but three integration hooks were deferred because upstream UI/viewport code (1746/1747) is not actually present on the base branch despite being marked done.",
         "details": "Three sub-wirings, each blocked on real landing of 1746/1747:\n\n1. **Save-views button** — add into ViewSelector dropdown (next to \"Manage views...\"), calls write_view_sidecar with current PersistentViewState. Blocked on 1746's ViewSelector.tsx being real.\n\n2. **Viewport camera round-trip** — on load, feed PersistentViewState.viewportCameras into viewportStore.restoreCameras; on viewportStore camera change, echo into the persistence snapshot so the debounced saver picks it up. Blocked on 1747's viewportStore.ts being real.\n\n3. **App.tsx orchestration** — on file open, call the priority loader (sidecar > localStorage) before auto view generation; feed into viewStateStore.hydrate; subscribe debounced saver to viewStateStore; on entity tree rebuild, run viewReconciliation.partition() and fuzzy recovery.\n\nSee memory observation at esc-1749-22 for the full 1746/1747 gap context.\n\n### memory_hints\n- search: \"sidecarPersistence write_view_sidecar\"\n- search: \"viewportStore camera state\"\n- search: \"App.tsx file open entity tree\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1746",
           "1747",
           "1749"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:16:06.159Z"
       },
       {
         "id": "1971",
@@ -41332,7 +41336,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:16:05.765Z",
+      "lastModified": "2026-04-19T07:16:06.159Z",
       "taskCount": 1978,
       "completedCount": 1685,
       "tags": [
