@@ -2708,4 +2708,18 @@ describe('App DesignTree wiring', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(bridge.getEntityTree).toHaveBeenCalledTimes(2);
   });
+
+  it('plain click on a DesignTree row navigates to source and selects the entity', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue({
+      file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5,
+    });
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+
+    await waitFor(() => expect(bridge.getSourceLocation).toHaveBeenCalledWith('Root.A'));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+  });
 });
