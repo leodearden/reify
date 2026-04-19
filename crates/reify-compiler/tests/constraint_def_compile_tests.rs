@@ -491,6 +491,68 @@ structure S {
     );
 }
 
+// ── Canary: resolver tolerance invariant ─────────────────────────────────────
+
+/// Characterization canary for the `stdlib_root` tolerance invariant relied on
+/// by the cross-module tests below. `ModuleResolver::new` does not validate
+/// that `stdlib_root` exists at construction time; `resolve_import_path` only
+/// consults `stdlib_root` for import paths that begin with `std.`, so tests
+/// that only use non-`std.*` imports work even when `stdlib_root` points to a
+/// nonexistent path.
+///
+/// If this test ever fails, `ModuleResolver` has become strict about
+/// `stdlib_root` existence, and every call site of
+/// `ModuleResolver::new(&dir, dir.join("stdlib"))` in this file (and
+/// elsewhere) must be audited to add explicit
+/// `fs::create_dir_all(dir.join("stdlib"))` setup.
+#[test]
+fn resolver_tolerates_missing_stdlib_root_for_non_std_imports() {
+    use std::fs;
+
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Explicitly do NOT create the stdlib subdirectory.
+    assert!(
+        !dir.join("stdlib").exists(),
+        "stdlib subdir must not exist for this canary to be meaningful"
+    );
+
+    // Minimal modules using only non-std imports.
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure A { param w: Length = 1mm }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.ri"),
+        "import a\nstructure B { param x: Length = 2mm }\n",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("b", &resolver);
+
+    assert!(
+        result.is_ok(),
+        "resolver must tolerate a missing stdlib_root for non-std imports; got: {:?}",
+        result.unwrap_err()
+    );
+
+    let compiled_b = dag.modules.get("b").expect("compiled module 'b' not found");
+    let errors: Vec<_> = compiled_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics in module b when stdlib_root is missing, got: {:?}",
+        errors
+    );
+}
+
 // ── Test 11: cross-module constraint def import ───────────────────────────────
 
 /// A constraint def defined in module `a` can be imported into module `b`
