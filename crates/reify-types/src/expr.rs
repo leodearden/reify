@@ -863,6 +863,54 @@ impl CompiledExpr {
             content_hash,
         }
     }
+
+    /// Create a user-defined function call expression.
+    ///
+    /// Hash tag byte: `[20]`. Combines the function name then each argument's
+    /// content hash in order, following the same pattern as `method_call`.
+    pub fn user_function_call(
+        function_name: String,
+        args: Vec<CompiledExpr>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash =
+            ContentHash::of(&[20]).combine(ContentHash::of_str(&function_name));
+        for arg in &args {
+            content_hash = content_hash.combine(arg.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::UserFunctionCall { function_name, args },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a match expression.
+    ///
+    /// Hash tag byte: `[21]`. Combines the discriminant hash then, for each
+    /// arm, each pattern string followed by the arm body hash — mirroring the
+    /// combine order used in the production inline code.
+    pub fn match_expr(
+        discriminant: CompiledExpr,
+        arms: Vec<CompiledMatchArm>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash = ContentHash::of(&[21]).combine(discriminant.content_hash);
+        for arm in &arms {
+            for pattern in &arm.patterns {
+                content_hash = content_hash.combine(ContentHash::of_str(pattern));
+            }
+            content_hash = content_hash.combine(arm.body.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+            result_type,
+            content_hash,
+        }
+    }
 }
 
 #[cfg(test)]
