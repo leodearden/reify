@@ -41234,7 +41234,15 @@
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:19:42.261Z"
+        "updatedAt": "2026-04-19T07:19:42.261Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Move get_let_expr / get_let_expr_in / assert_no_type_cascade to reify_test_support (esc-1921-36 S2)"
+            ]
+          }
+        }
       },
       {
         "id": "1974",
