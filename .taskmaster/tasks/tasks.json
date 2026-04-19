@@ -19241,11 +19241,11 @@
         "description": "Consolidates CompiledConstraintDef struct introduction, visibility-semantics fix, alloc/iter cleanup, tempfile-based cross-module test isolation, missing coverage (non-pub/field/second-predicate/active-guard), test-name polish, and name-collision diagnostic with module_dag invariant doc.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 872 plus 7 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 872: Introduce CompiledConstraintDef to eliminate AST nodes from CompiledModule\n\n\nReplace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure\n\n### Absorbed from task 873: Fix constraint_defs visibility semantics and doc comment\nEither filter constraint_defs to only pub defs at collection time (lib.rs:3812-3822) so non-pub defs never appear in the compiled artifact, or explicitly document that the field contains all local defs and callers must apply is_pub filtering themselves. Update the doc comment from 'Stored so downstream modules can reference them' to accurately describe visibility behavior: only is_pub==true defs are propagated to downstream modules.\n\nmemory_hints: search \"constraint_defs is_pub visibility\" for prior context on pub visibility implementation\n\n### Absorbed from task 874: Eliminate redundant allocations and iterations in constraint def compilation\nThree performance improvements: (1) module_dag.rs:168-178 — change compile_with_prelude to accept &[&[ConstraintDef]] or equivalent instead of &[CompiledModule] to avoid full module clones; (2) module_dag.rs:161-178 — merge the two Declaration::Import iteration passes into one that both compiles dependencies and collects prelude defs; (3) lib.rs:3804-3822 — merge the two Declaration::Constraint passes in compile_with_prelude into one that simultaneously inserts into the registry and pushes to the output vec.\n\nmemory_hints: search \"compile_with_prelude constraint def compilation\" for implementation context\n\n### Absorbed from task 875: Fix non-asserting test 13 (type_mismatch_bool_for_length)\nTest 13 in constraint_def_compile_tests.rs (line ~607-641) always passes regardless of compiler behavior — it branches on diagnostics.is_empty() and passes in both branches. Mark it #[ignore = \"known gap: param-level type checking not implemented\"] and add a failing assertion inside (e.g. assert!(!errors.is_empty(), ...)), so when type checking is implemented the test is explicitly re-enabled rather than silently passing.\n\nmemory_hints: search \"type_mismatch_bool_for_length constraint def test\" for context\n\n### Absorbed from task 877: Fix cross-module test temp dir: use tempfile::TempDir for thread safety\nIn constraint_def_compile_tests.rs (lines ~469-520), replace the PID-based temp dir path with tempfile::TempDir::new() which generates a unique path per call and cleans up automatically on drop. This fixes thread-isolation race conditions where parallel test runs in the same process derive the same path. Consider extracting the write-files-to-temp-dir pattern into a reify-test-support::fixtures helper for reuse by other cross-module tests.\n\nmemory_hints: search \"tempfile TempDir test temp directory\" for established convention\n\n### Absorbed from task 878: Add missing test coverage: non-pub visibility, field contents, second predicate, active guard\nFour additive tests across two files: (1) constraint_def_compile_tests.rs — add test that a non-pub constraint def in module A is NOT instantiable in module B (guards the is_pub filter at lib.rs:3792); (2) same file — add test asserting module.constraint_defs.len(), each entry's .name and .is_pub after compile_module; (3) same file, test 4 (named_args_different_order, line 173) — add assertions for tmpl.constraints[1]: op==Le, left==ValueRef(d), right==100mm literal; (4) m9_constraint_def.rs — add guarded_constraint_active test filtering constraint_results for ActiveWall, asserting exactly 1 Satisfied result labeled MinThickness[0].\n\nmemory_hints: search \"constraint def compile test coverage\" for context\n\n### Absorbed from task 879: Fix misleading test name and strengthen single-char error assertions\nTwo improvements: (1) Rename wrong_arg_count_zero (line 368) to wrong_arg_name_single or misnamed_single_arg_produces_two_errors to accurately describe the scenario; (2) In tests 7, 8, and 9 (lines ~350, ~387, ~430), replace single-char char-literal contains checks (contains('c'), contains('y'), contains('b')) with multi-char quoted strings like \"'c'\" or \"arg 'c'\" to prevent false-positives on any English word containing those characters.\n\nmemory_hints: search \"constraint def compile test error assertions\" for context\n\n### Absorbed from task 880: Emit diagnostic on constraint def name collision and document module_dag invariant\nTwo improvements: (1) lib.rs:3799-3803 — Before inserting a prelude def into constraint_def_registry, check if the name is already present from a different module; if so, emit a warning-level diagnostic (e.g. 'constraint def X from module b shadows import from module a') so the ambiguity is visible rather than silently discarding the first definition. (2) module_dag.rs:167 — Add a debug_assert or explanatory comment before the preludes collection pass making explicit that all imports were compiled successfully above (via early-return ?) and are therefore guaranteed to be present in self.modules.\n\nmemory_hints: search \"constraint def registry name collision shadow\" for context\n",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:45:11.009Z",
+        "updatedAt": "2026-04-19T06:04:20.753Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -22107,7 +22107,7 @@
         "description": "compute_gradient stores the original field via Box::new(field_val.clone()), deep-cloning the entire captured environment per gradient(). With repeated gradient() calls on the same field this is O(env_size). The lambda field's contract is also documented as 'lambda or Undef' but FieldSourceKind::Gradient now stores a Field there — making the variant a hidden encoding protocol.\n\n## What\n1. Update the doc comment on Value::Field.lambda in crates/reify-types/src/value.rs:51 to describe all three valid contents: Value::Lambda (Analytical/Composed), Value::Undef (Sampled/Imported), or Value::Field (Gradient — the original field).\n2. Update the FieldSourceKind::Gradient doc comment to describe provenance only — drop references to 'lambda slot' and 'sample handler' that leak reify-expr internals into reify-types.\n3. Consider switching Value::Field's lambda from Box<Value> to Arc<Value> so gradient wrapping becomes a refcount bump rather than a deep clone of captured environment. This is cross-crate and may need its own subtask.\n4. Document the single_point_param calling-convention contract on Value::Field so it isn't an undocumented heuristic.\n\nSource: review escalation esc-281-66, suggestions about Field.lambda.",
         "details": "<info added on 2026-04-16T21:23:23.404Z>\nWhen assigning this task, verify whether Task 1629 has completed. If Task 1629 is complete, treat item 3 as already done and focus this task on items 1, 2, and 4 only.\n</info added on 2026-04-16T21:23:23.404Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -22146,7 +22146,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T12:57:00.226Z"
+        "updatedAt": "2026-04-19T06:04:20.926Z"
       },
       {
         "id": "1003",
@@ -36585,7 +36585,7 @@
         "description": "Extend the single-selection model to multi-selection. Ctrl+click toggles entities in/out of selection set, Shift+click range-selects in the tree. Multi-selection syncs between tree and viewport. Bulk visibility operations apply to all selected entities. Escape clears selection.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 10 (Multi-Selection) and 4.3 (Interaction — Ctrl/Shift click).\n\n### Implementation\n\n1. **Extend `selectionStore.ts`**\n   - Change from `selectedEntity: string | null` to `selectedEntities: Set<string>`\n   - Add `anchorEntity: string | null` for Shift+click range calculation\n   - `selectSingle(path)`: clear set, add path, set anchor\n   - `toggleSelect(path)`: add/remove from set (Ctrl+click)\n   - `rangeSelect(path)`: select all visible tree nodes between anchor and target (Shift+click)\n   - `clearSelection()`: empty set\n   - `selectAll()`: add all visible tree nodes\n   - Backward-compatible: `primarySelected` getter returns first/most-recent item for PropertyEditor focus\n\n2. **Update `panels/DesignTree.tsx`**\n   - Click: `selectSingle`\n   - Ctrl+click: `toggleSelect`\n   - Shift+click: `rangeSelect` (requires knowing visible node order — flatten expanded tree)\n   - Ctrl+A: `selectAll` (when tree panel has focus)\n   - Escape: `clearSelection`\n   - Visual: selected nodes get highlight background; multi-selected nodes all highlighted\n   - Eye icon click with multi-selection: apply visibility change to all selected nodes\n\n3. **Update `viewport/selection.ts`**\n   - Click: `selectSingle` (existing behavior, now via store method)\n   - Ctrl+click: `toggleSelect` (add/remove mesh's entity from selection set)\n   - Multi-selected entities all get wireframe overlay\n   - Ghost entities remain non-selectable\n\n4. **Update backend `selectionStore` sync**\n   - `update_selection` Tauri command may need to accept a list instead of single entity\n   - Or batch multiple calls — depends on how MCP tools consume selection\n\n5. **Keyboard shortcuts**\n   - Escape: clear selection (global)\n   - Ctrl+A: select all (when tree focused)\n\n### Requirements covered\nMS-1, MS-2, MS-3, MS-4, MS-5, MS-6, T-10, T-11, T-12\n\n### memory_hints\n- search: \"selectionStore selected entity\"\n- search: \"selection.ts raycasting wireframe\"\n- search: \"update_selection Tauri command\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1741"
         ],
@@ -36632,7 +36632,7 @@
           },
           "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96"
         },
-        "updatedAt": "2026-04-17T12:46:02.268Z"
+        "updatedAt": "2026-04-19T06:04:21.018Z"
       },
       {
         "id": "1745",
@@ -40951,14 +40951,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T05:39:03.293Z",
+      "lastModified": "2026-04-19T06:04:21.018Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T05:39:03.757Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
