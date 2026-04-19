@@ -41133,7 +41133,7 @@
         "description": "Connect Task 1749's persistence primitives to the app reactive graph: load sidecar (priority) or localStorage on file open before auto view generation; run the 500ms debounced saver after any viewStateStore change. Requires 1746/1747 UI producers to be real before it's useful end-to-end.",
         "details": "Task 1749 ships `viewPersistence.ts` (localStorage + debounced saver), `sidecarPersistence.ts` (priority loader), `fuzzyPathMatcher.ts`, and `viewReconciliation.ts`. The orchestration glue — load on file open, re-evaluate entity tree through `viewReconciliation.partition()`, subscribe debounced saver to viewStateStore — lives at the App.tsx layer and was deferred because the UI producers (1746/1747) were not actually present on the base branch.\n\n### Steps\n1. On file open (after entity tree is built), call the priority loader; if present, feed into viewStateStore.hydrate(persistedState).\n2. Before auto view generation, gate on whether hydration occurred; if yes, skip fresh defaults and instead reconcile against the new entity tree.\n3. Subscribe the debounced localStorage saver to viewStateStore changes.\n4. On entity tree rebuild, call viewReconciliation to partition kept / new / missing, moving missing-path explicit entries into staleExplicit.\n5. Run fuzzy recovery and surface non-blocking notification for rename matches.\n\n### memory_hints\n- search: \"App.tsx file open entity tree\"\n- search: \"viewStateStore subscribe\"\n- search: \"viewPersistence priority loader\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "cancelled",
         "dependencies": [
           "1746",
           "1747",
@@ -41141,7 +41141,7 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:18:31.872Z",
+        "updatedAt": "2026-04-19T08:01:24.356Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -41458,7 +41458,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T08:01:23.646Z",
+      "lastModified": "2026-04-19T08:01:24.356Z",
       "taskCount": 1984,
       "completedCount": 1684,
       "tags": [
