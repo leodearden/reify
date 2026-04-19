@@ -526,6 +526,69 @@ mod tests {
     }
 
     #[test]
+    fn geometry_op_extrude_symmetric_variant_exists() {
+        let op = GeometryOp::ExtrudeSymmetric {
+            profile: GeometryHandleId(1),
+            distance: Value::Real(0.01),
+        };
+        let cloned = op.clone();
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("ExtrudeSymmetric"));
+        match &cloned {
+            GeometryOp::ExtrudeSymmetric { profile, distance } => {
+                assert_eq!(*profile, GeometryHandleId(1));
+                assert!((distance.as_f64().unwrap() - 0.01).abs() < 1e-15);
+            }
+            _ => panic!("expected ExtrudeSymmetric variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_sweep_guided_variant_exists() {
+        let op = GeometryOp::SweepGuided {
+            profile: GeometryHandleId(1),
+            path: GeometryHandleId(2),
+            guide: GeometryHandleId(3),
+        };
+        let cloned = op.clone();
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("SweepGuided"));
+        match &cloned {
+            GeometryOp::SweepGuided {
+                profile,
+                path,
+                guide,
+            } => {
+                assert_eq!(*profile, GeometryHandleId(1));
+                assert_eq!(*path, GeometryHandleId(2));
+                assert_eq!(*guide, GeometryHandleId(3));
+            }
+            _ => panic!("expected SweepGuided variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_loft_guided_variant_exists() {
+        let op = GeometryOp::LoftGuided {
+            profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
+            guides: vec![GeometryHandleId(3)],
+        };
+        let cloned = op.clone();
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("LoftGuided"));
+        match &cloned {
+            GeometryOp::LoftGuided { profiles, guides } => {
+                assert_eq!(profiles.len(), 2);
+                assert_eq!(profiles[0], GeometryHandleId(1));
+                assert_eq!(profiles[1], GeometryHandleId(2));
+                assert_eq!(guides.len(), 1);
+                assert_eq!(guides[0], GeometryHandleId(3));
+            }
+            _ => panic!("expected LoftGuided variant"),
+        }
+    }
+
+    #[test]
     fn geometry_op_nurbs_curve_variant_exists() {
         let op = GeometryOp::NurbsCurve {
             control_points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0], [3.0, 1.0, 0.0]],
