@@ -41735,11 +41735,11 @@
         "description": "Two review suggestions from Task 1927 on `crates/reify-compiler/src/geometry.rs`:\n\n1. **Fix incorrect NOTE about reverse-direction coverage (lines 808-810).** The current NOTE states that `all_registry_names_reach_non_wildcard_arm` catches \"an arm added to `compile_geometry_call` without a corresponding entry in one of the four lists.\" This is wrong: that companion test iterates over the four registry lists and checks each list entry reaches a non-wildcard arm — it's the forward direction (list → dispatch). A dispatch arm whose name is NOT in any list would go undetected. Restore an explicit acknowledgement of the gap, e.g. \"NOTE: this test does NOT detect the reverse — an arm added to compile_geometry_call whose name is not listed in any of the four lists. The companion `all_registry_names_reach_non_wildcard_arm` only covers the forward direction (list → dispatch). True bidirectional coverage would require a source-text scan of the match arms.\"\n\n2. **Tighten substring assertion on wildcard diagnostic (line 864).** `d.message.contains(UNSUPPORTED_GEOMETRY_FN_MSG)` could in principle be tripped by an arm-specific diagnostic that embeds the literal words \"unsupported geometry function\". Replace with either a prefix match (`starts_with(&format!(\"{}:\", UNSUPPORTED_GEOMETRY_FN_MSG))`) or an exact match against `format!(\"{}: {}\", UNSUPPORTED_GEOMETRY_FN_MSG, name)` so only the wildcard arm's output can trip the assertion.\n\nBoth suggestions are from reviewer_comprehensive on Task 1927.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T20:23:47.736Z",
+        "updatedAt": "2026-04-19T21:06:28.981Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/geometry.rs"
@@ -41752,7 +41752,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:06:26.715Z",
+      "lastModified": "2026-04-19T21:06:28.987Z",
       "taskCount": 1987,
       "completedCount": 1696,
       "tags": [
