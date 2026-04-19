@@ -40230,11 +40230,11 @@
         "description": "In crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 17-42), the `find_node` helper walks `CompiledExprKind` recursively but falls through to `_ => None` for many variants (Quantifier, ListLiteral, StructLiteral, tuple-like nodes, etc.). Current callers only search predicate subtrees so this is not a correctness bug today, but it is a maintainability trap: if a future regression produces a nested `Type::Error` inside an unhandled variant, `find_node` would silently return `None` and turn a real regression into a green test. Either (a) enumerate all CompiledExprKind variants exhaustively (no `_ => None`) so the compiler nags when new variants are added, or (b) panic/log in `cfg(test)` on unhandled kinds so silent miss is impossible. Review followup from task 1912; suggestion S4.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:21.719Z",
+        "updatedAt": "2026-04-19T06:04:46.586Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40951,7 +40951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:04:45.152Z",
+      "lastModified": "2026-04-19T06:04:46.586Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
