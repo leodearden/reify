@@ -81,6 +81,7 @@ pub fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> String {
 fn compile_constraint_def(
     c: &reify_syntax::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
+    enum_defs: &[reify_types::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledConstraintDef {
     // Extract @optimized target from raw syntax annotations BEFORE lowering so the
@@ -111,27 +112,25 @@ fn compile_constraint_def(
             // neither a builtin nor a declared type parameter, the name is unknown — emit
             // an error so the user sees the typo at def-compile time rather than silently
             // accepting it and getting a confusing error at the instantiation site.
-            if let Some(te) = &param.type_expr {
-                if resolve_type_expr_with_aliases(
+            if let Some(te) = &param.type_expr
+                && resolve_type_expr_with_aliases(
                     te,
                     &type_param_names,
                     alias_registry,
                     diagnostics,
                 )
                 .is_none()
-                {
-                    if let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind {
-                        if !type_param_names.contains(name.as_str()) {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unknown type '{}' in param '{}' of constraint def '{}'",
-                                    name, param.name, c.name
-                                ))
-                                .with_label(DiagnosticLabel::new(te.span, "unknown type")),
-                            );
-                        }
-                    }
-                }
+                && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
+                && !type_param_names.contains(name.as_str())
+                && !enum_defs.iter().any(|e| e.name == *name)
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "unknown type '{}' in param '{}' of constraint def '{}'",
+                        name, param.name, c.name
+                    ))
+                    .with_label(DiagnosticLabel::new(te.span, "unknown type")),
+                );
             }
             CompiledConstraintParam {
                 name: param.name.clone(),
@@ -611,7 +610,7 @@ pub(crate) fn compile_with_prelude_refs(
         .iter()
         .filter_map(|d| {
             if let reify_syntax::Declaration::Constraint(c) = d {
-                Some(compile_constraint_def(c, &alias_registry, &mut diagnostics))
+                Some(compile_constraint_def(c, &alias_registry, &resolution_enums, &mut diagnostics))
             } else {
                 None
             }
