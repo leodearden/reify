@@ -41017,11 +41017,11 @@
         "description": "setActiveView silently returns when viewId is not in state.views. UI buttons and restored session state cannot distinguish \"view didn't exist\" from \"view activated\" — e.g. a persisted activeViewId for an auto:purpose:* view that no longer exists after a purpose was deactivated will look like a broken click.",
         "details": "## Scope\n\ngui/src/stores/viewStateStore.ts:233-241\n\n### Change\n\nPick one; prefer (c):\n- (a) Return a boolean indicating success; callers surface a toast/log if false.\n- (b) Log a dev-mode warning via the project's logger when viewId is missing.\n- (c) Fall back to `auto:default` on missing viewId, matching the reconciliation behavior already in regenerateAutoViews (lines 298-303, 310-313, 324-328). This keeps the UI consistent across both entry paths.\n\nIf (c), update the docstring; if (a) or (b), update call sites.\n\n### Tests\n\ngui/src/__tests__/viewStateStore.test.ts — add a test that calls setActiveView with a non-existent id and asserts the chosen semantics (returned false / warning emitted / fell back to auto:default).\n\n### memory_hints\n- search: \"setActiveView viewStateStore\"\n- search: \"activeViewId reconciliation\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:42:47.030Z"
+        "updatedAt": "2026-04-19T06:57:29.625Z"
       },
       {
         "id": "1961",
@@ -41053,8 +41053,8 @@
         "testStrategy": "",
         "status": "pending",
         "dependencies": [
-          1746,
-          1749
+          "1746",
+          "1749"
         ],
         "priority": "medium",
         "subtasks": []
@@ -41069,19 +41069,30 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "1965",
+        "title": "Wire viewportStore camera state into view persistence round-trip",
+        "description": "Hook the viewportStore camera state into the `viewportCameras` field of the PersistentViewState that Task 1749 persists. Blocked until Task 1747 actually ships viewportStore.ts.",
+        "details": "Task 1749 persists `viewportCameras: Record<string, CameraState>` round-trip but with no consumer — the field is inert until a viewportStore exists to publish/consume camera state. Once 1747 lands viewportStore.ts, wire:\n  - load-path: on file open, after sidecar/localStorage load, call `viewportStore.restoreCameras(persistedState.viewportCameras)`\n  - save-path: when viewportStore publishes a camera change, echo it into the view-persistence snapshot so the debounced saver picks it up\n\n### memory_hints\n- search: \"viewportStore camera state\"\n- search: \"viewPersistence debounced save\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1747",
+          "1749"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:54:05.371Z",
-      "taskCount": 1955,
-      "completedCount": 1683,
+      "lastModified": "2026-04-19T06:57:29.625Z",
+      "taskCount": 1958,
+      "completedCount": 1684,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T06:55:46.586Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-19T06:56:48.351Z"
+      ]
     }
   }
 }
