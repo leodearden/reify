@@ -804,5 +804,85 @@ mod tests {
              GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft above"
         );
     }
+
+    #[test]
+    fn extract_dispatch_keys_from_source_parses_match_arms() {
+        // Synthetic source: target fn has single-arm, multi-arm, wildcard, and destructure arms,
+        // plus a nested inner match. An unrelated fn after it must NOT contribute keys.
+        let source = r#"
+fn other_fn(name: &str) {
+    match name {
+        "should_not_appear" => {}
+        _ => {}
+    }
+}
+
+pub(crate) fn target_fn(x: &str) {
+    if let Expr::Ident(name) = x {
+        return;
+    }
+    match x {
+        "foo" => { do_something(); }
+        "bar" | "baz" | "qux" => { do_other(); }
+        _ => { fallback(); }
+    }
+    // A nested inner match inside the function body
+    let inner = match x {
+        "inner_key" => 1,
+        _ => 2,
+    };
+    match complicated {
+        Ident(name) => handle(name),
+        _ => {}
+    }
+}
+
+fn after_fn(name: &str) {
+    match name {
+        "also_should_not_appear" => {}
+        _ => {}
+    }
+}
+"#;
+        let extracted = extract_dispatch_keys_from_source(source, "pub(crate) fn target_fn(");
+        let expected: HashSet<String> =
+            ["foo", "bar", "baz", "qux", "inner_key"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        assert_eq!(
+            extracted, expected,
+            "extracted keys did not match expected set"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_call_source_arms_match_registry_lists() {
+        let source = include_str!("geometry.rs");
+        let extracted =
+            extract_dispatch_keys_from_source(source, "pub(crate) fn compile_geometry_call(");
+
+        let boolean_ops: &[&str] =
+            &["union", "intersection", "difference", "union_all", "intersection_all"];
+        let loft: &[&str] = &["loft"];
+
+        let expected: HashSet<String> = GEOM_ARG_FUNCTIONS
+            .iter()
+            .chain(NO_GEOM_ARG_FUNCTIONS.iter())
+            .chain(boolean_ops.iter())
+            .chain(loft.iter())
+            .map(|s| s.to_string())
+            .collect();
+
+        assert_eq!(
+            extracted,
+            expected,
+            "match-arm keys extracted from compile_geometry_call source do not match registry lists.\n\
+             In source but not in lists: {:?}\n\
+             In lists but not in source: {:?}",
+            extracted.difference(&expected).collect::<Vec<_>>(),
+            expected.difference(&extracted).collect::<Vec<_>>(),
+        );
+    }
 }
 
