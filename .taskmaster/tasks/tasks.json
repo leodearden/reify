@@ -41586,7 +41586,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "hooks/post-commit"
+          ],
+          "modules": [
+            "hooks"
+          ]
+        }
       },
       {
         "id": "1990",
@@ -41597,7 +41605,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/trait_merge_tests.rs",
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests",
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": "1991",
@@ -41608,7 +41626,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            ".gitignore"
+          ],
+          "modules": [
+            "gui/dist"
+          ]
+        }
       },
       {
         "id": "1992",
@@ -41619,7 +41645,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-kernel-occt/tests/common/mod.rs",
+            "scripts/run-tests.sh"
+          ],
+          "modules": [
+            "crates/reify-kernel-occt",
+            "scripts"
+          ]
+        }
       }
     ],
     "metadata": {
