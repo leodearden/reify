@@ -849,14 +849,14 @@ impl Engine {
         // SHADOWING INVARIANT above) — shadowed prelude entries can never be the first
         // match, so they are permanently unreachable at dispatch time.
         //
-        // This diverges from the compiler's `resolution_functions` build
-        // (reify-compiler/src/lib.rs, compile_with_prelude_refs), which applies an explicit
-        // shadow filter. That filter is a compile-time concern (it avoids confusing
-        // "ambiguous overload" errors for function-resolution tables); the eval dispatch
-        // table does not need it — unfiltered ≡ filtered under first-match-wins semantics.
-        //
-        // If this divergence becomes a maintenance burden, extract a shared helper in
-        // `reify_compiler` (e.g., `merge_prelude_functions`) and call it from both sides.
+        // This diverges from the compiler's `resolution_functions` build in
+        // compile_with_prelude_refs, which applies an explicit shadow filter via
+        // `reify_compiler::merge_prelude_functions`. That filter is a compile-time
+        // concern (it avoids ambiguous-overload errors in the resolution table); the
+        // eval dispatch table does not need it — unfiltered ≡ filtered under
+        // first-match-wins semantics. The shadow predicate itself is canonical in
+        // `merge_prelude_functions`; if the filtering rule changes, update that
+        // function and verify the dispatch-time equivalence still holds.
         self.functions.extend(self.prelude_functions.iter().cloned());
         self.compiled_purposes = module.compiled_purposes.clone();
         // Clear stale purpose state from previous eval() calls — the fresh
@@ -891,8 +891,8 @@ impl Engine {
         // That refactor also requires updating `ConcurrentEditSetup::functions` in
         // concurrent.rs (field type `Vec<CompiledFunction>`, assigned as
         // `functions: self.functions.clone()`) — which lies outside this task's locked
-        // modules. The same pattern repeats in edit_param() below. Deferred to a
-        // follow-up task; see reviewer suggestion at lib.rs:867.
+        // modules. The same pattern repeats in edit_param() below. Deferred to
+        // task #1997 (perf: Arc<Vec<CompiledFunction>> in Engine::eval/edit_param).
         let functions: Vec<CompiledFunction> = self.functions.clone();
 
         let mut values = ValueMap::new();

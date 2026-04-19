@@ -193,6 +193,37 @@ pub fn compile_with_prelude(
     compile_with_prelude_refs(parsed, &refs)
 }
 
+/// Merge user functions with prelude functions, applying the canonical shadowing rule:
+/// prelude functions whose `(name, arity, param_types)` triple matches any user function
+/// are excluded; all others are appended. The result has user functions first, preserving
+/// first-match-wins dispatch order for any resolver that iterates linearly.
+///
+/// This is the single-source shadow predicate for Reify function tables. It is used by
+/// [`compile_with_prelude_refs`] to build the compile-time overload-resolution table.
+/// `reify_eval::Engine` uses an unfiltered append that is dispatch-equivalent under
+/// first-match-wins semantics (shadowed prelude entries are unreachable at dispatch time),
+/// but the dedup logic for the filtered case lives here.
+pub fn merge_prelude_functions(
+    user: &[CompiledFunction],
+    prelude: &[CompiledFunction],
+) -> Vec<CompiledFunction> {
+    let mut result = user.to_vec();
+    for f in prelude {
+        let shadowed = result.iter().any(|uf| {
+            uf.name == f.name
+                && uf.params.len() == f.params.len()
+                && uf.params
+                    .iter()
+                    .zip(f.params.iter())
+                    .all(|((_, ut), (_, ft))| ut == ft)
+        });
+        if !shadowed {
+            result.push(f.clone());
+        }
+    }
+    result
+}
+
 /// Compile a parsed module with prelude definitions provided as references.
 ///
 /// This is the inner implementation used by the module DAG to avoid cloning
@@ -542,32 +573,17 @@ pub(crate) fn compile_with_prelude_refs(
         }
     }
 
-    // Build a resolution function list for use in field/entity/purpose compilation.
-    // Includes user functions first (for shadowing priority), then appends prelude
-    // functions whose (name, arity, param_types) triple is not already covered by a
-    // user function. This allows a user function with one arity to coexist with a
-    // prelude function of the same name but different arity: calls resolve to whichever
-    // signature matches the call site. If the user defines an identical signature, the
-    // prelude version is excluded (user function shadows it, first-match-wins in the
-    // overload resolver). `functions` (user-only) remains the output for CompiledModule.
+    // Build a resolution function list for compile-time overload resolution.
+    // User functions appear first (shadowing priority); prelude functions with
+    // distinct (name, arity, param_types) triples are appended. See
+    // merge_prelude_functions() for the canonical shadow predicate.
+    // `functions` (user-only) remains the output stored in CompiledModule.
     let resolution_functions: Vec<CompiledFunction> = {
-        let mut res = functions.clone();
-        for module in prelude {
-            for f in &module.functions {
-                let shadowed = res.iter().any(|uf| {
-                    uf.name == f.name
-                        && uf.params.len() == f.params.len()
-                        && uf.params
-                            .iter()
-                            .zip(f.params.iter())
-                            .all(|((_, ut), (_, ft))| ut == ft)
-                });
-                if !shadowed {
-                    res.push(f.clone());
-                }
-            }
-        }
-        res
+        let prelude_fns: Vec<CompiledFunction> = prelude
+            .iter()
+            .flat_map(|m| m.functions.iter().cloned())
+            .collect();
+        merge_prelude_functions(&functions, &prelude_fns)
     };
 
     // 2. Traits (depend on resolution_enums for enum type resolution in params)
