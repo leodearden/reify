@@ -12,6 +12,12 @@ use reify_types::{CompiledExpr, CompiledExprKind, QuantifierKind, Severity, Type
 /// Walk a `CompiledExpr` tree and return the first node whose `result_type`
 /// satisfies the predicate, if any. Used to search for a `Type::Error`-typed
 /// node inside a compiled let binding.
+///
+/// The match is intentionally exhaustive with **no `_` wildcard**, so the
+/// compiler will flag any new `CompiledExprKind` variant added to the enum at
+/// this helper — preventing silent `None` fallthrough for future variants
+/// (task-1920 / task-1912 S4 follow-up). The traversal shape mirrors
+/// `CompiledExpr::walk` in `crates/reify-types/src/expr.rs`.
 fn find_node<'a>(
     expr: &'a CompiledExpr,
     pred: &impl Fn(&CompiledExpr) -> bool,
@@ -20,6 +26,14 @@ fn find_node<'a>(
         return Some(expr);
     }
     match &expr.kind {
+        // Leaf variants — no subexpressions to recurse into.
+        CompiledExprKind::Literal(_) => None,
+        CompiledExprKind::ValueRef(_) => None,
+        CompiledExprKind::OptionNone => None,
+        CompiledExprKind::MetaAccess { .. } => None,
+        CompiledExprKind::DeterminacyPredicate { .. } => None,
+
+        // Compound variants — recurse into every child subexpression.
         CompiledExprKind::BinOp { left, right, .. } => {
             find_node(left, pred).or_else(|| find_node(right, pred))
         }
@@ -34,12 +48,38 @@ fn find_node<'a>(
         } => find_node(condition, pred)
             .or_else(|| find_node(then_branch, pred))
             .or_else(|| find_node(else_branch, pred)),
-        CompiledExprKind::MethodCall { object, args, .. } => find_node(object, pred)
-            .or_else(|| args.iter().find_map(|a| find_node(a, pred))),
+        CompiledExprKind::Match { discriminant, arms } => find_node(discriminant, pred)
+            .or_else(|| arms.iter().find_map(|arm| find_node(&arm.body, pred))),
+        CompiledExprKind::UserFunctionCall { args, .. } => {
+            args.iter().find_map(|a| find_node(a, pred))
+        }
+        CompiledExprKind::Lambda { body, .. } => find_node(body, pred),
+        CompiledExprKind::ListLiteral(elements) => {
+            elements.iter().find_map(|e| find_node(e, pred))
+        }
+        CompiledExprKind::SetLiteral(elements) => {
+            elements.iter().find_map(|e| find_node(e, pred))
+        }
+        CompiledExprKind::MapLiteral(entries) => entries
+            .iter()
+            .find_map(|(k, v)| find_node(k, pred).or_else(|| find_node(v, pred))),
         CompiledExprKind::IndexAccess { object, index } => {
             find_node(object, pred).or_else(|| find_node(index, pred))
         }
-        _ => None,
+        CompiledExprKind::MethodCall { object, args, .. } => find_node(object, pred)
+            .or_else(|| args.iter().find_map(|a| find_node(a, pred))),
+        CompiledExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => find_node(collection, pred).or_else(|| find_node(predicate, pred)),
+        CompiledExprKind::OptionSome(inner) => find_node(inner, pred),
+        CompiledExprKind::RangeConstructor { lower, upper, .. } => lower
+            .as_deref()
+            .and_then(|lo| find_node(lo, pred))
+            .or_else(|| upper.as_deref().and_then(|hi| find_node(hi, pred))),
+        CompiledExprKind::AdHocSelector { base, args, .. } => find_node(base, pred)
+            .or_else(|| args.iter().find_map(|a| find_node(a, pred))),
     }
 }
 
