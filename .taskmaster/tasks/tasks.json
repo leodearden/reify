@@ -19241,11 +19241,11 @@
         "description": "Consolidates CompiledConstraintDef struct introduction, visibility-semantics fix, alloc/iter cleanup, tempfile-based cross-module test isolation, missing coverage (non-pub/field/second-predicate/active-guard), test-name polish, and name-collision diagnostic with module_dag invariant doc.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 872 plus 7 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 872: Introduce CompiledConstraintDef to eliminate AST nodes from CompiledModule\n\n\nReplace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure\n\n### Absorbed from task 873: Fix constraint_defs visibility semantics and doc comment\nEither filter constraint_defs to only pub defs at collection time (lib.rs:3812-3822) so non-pub defs never appear in the compiled artifact, or explicitly document that the field contains all local defs and callers must apply is_pub filtering themselves. Update the doc comment from 'Stored so downstream modules can reference them' to accurately describe visibility behavior: only is_pub==true defs are propagated to downstream modules.\n\nmemory_hints: search \"constraint_defs is_pub visibility\" for prior context on pub visibility implementation\n\n### Absorbed from task 874: Eliminate redundant allocations and iterations in constraint def compilation\nThree performance improvements: (1) module_dag.rs:168-178 — change compile_with_prelude to accept &[&[ConstraintDef]] or equivalent instead of &[CompiledModule] to avoid full module clones; (2) module_dag.rs:161-178 — merge the two Declaration::Import iteration passes into one that both compiles dependencies and collects prelude defs; (3) lib.rs:3804-3822 — merge the two Declaration::Constraint passes in compile_with_prelude into one that simultaneously inserts into the registry and pushes to the output vec.\n\nmemory_hints: search \"compile_with_prelude constraint def compilation\" for implementation context\n\n### Absorbed from task 875: Fix non-asserting test 13 (type_mismatch_bool_for_length)\nTest 13 in constraint_def_compile_tests.rs (line ~607-641) always passes regardless of compiler behavior — it branches on diagnostics.is_empty() and passes in both branches. Mark it #[ignore = \"known gap: param-level type checking not implemented\"] and add a failing assertion inside (e.g. assert!(!errors.is_empty(), ...)), so when type checking is implemented the test is explicitly re-enabled rather than silently passing.\n\nmemory_hints: search \"type_mismatch_bool_for_length constraint def test\" for context\n\n### Absorbed from task 877: Fix cross-module test temp dir: use tempfile::TempDir for thread safety\nIn constraint_def_compile_tests.rs (lines ~469-520), replace the PID-based temp dir path with tempfile::TempDir::new() which generates a unique path per call and cleans up automatically on drop. This fixes thread-isolation race conditions where parallel test runs in the same process derive the same path. Consider extracting the write-files-to-temp-dir pattern into a reify-test-support::fixtures helper for reuse by other cross-module tests.\n\nmemory_hints: search \"tempfile TempDir test temp directory\" for established convention\n\n### Absorbed from task 878: Add missing test coverage: non-pub visibility, field contents, second predicate, active guard\nFour additive tests across two files: (1) constraint_def_compile_tests.rs — add test that a non-pub constraint def in module A is NOT instantiable in module B (guards the is_pub filter at lib.rs:3792); (2) same file — add test asserting module.constraint_defs.len(), each entry's .name and .is_pub after compile_module; (3) same file, test 4 (named_args_different_order, line 173) — add assertions for tmpl.constraints[1]: op==Le, left==ValueRef(d), right==100mm literal; (4) m9_constraint_def.rs — add guarded_constraint_active test filtering constraint_results for ActiveWall, asserting exactly 1 Satisfied result labeled MinThickness[0].\n\nmemory_hints: search \"constraint def compile test coverage\" for context\n\n### Absorbed from task 879: Fix misleading test name and strengthen single-char error assertions\nTwo improvements: (1) Rename wrong_arg_count_zero (line 368) to wrong_arg_name_single or misnamed_single_arg_produces_two_errors to accurately describe the scenario; (2) In tests 7, 8, and 9 (lines ~350, ~387, ~430), replace single-char char-literal contains checks (contains('c'), contains('y'), contains('b')) with multi-char quoted strings like \"'c'\" or \"arg 'c'\" to prevent false-positives on any English word containing those characters.\n\nmemory_hints: search \"constraint def compile test error assertions\" for context\n\n### Absorbed from task 880: Emit diagnostic on constraint def name collision and document module_dag invariant\nTwo improvements: (1) lib.rs:3799-3803 — Before inserting a prelude def into constraint_def_registry, check if the name is already present from a different module; if so, emit a warning-level diagnostic (e.g. 'constraint def X from module b shadows import from module a') so the ambiguity is visible rather than silently discarding the first definition. (2) module_dag.rs:167 — Add a debug_assert or explanatory comment before the preludes collection pass making explicit that all imports were compiled successfully above (via early-return ?) and are therefore guaranteed to be present in self.modules.\n\nmemory_hints: search \"constraint def registry name collision shadow\" for context\n",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:27.108Z",
+        "updatedAt": "2026-04-19T07:16:06.514Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -41144,11 +41144,11 @@
         "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed `Diagnostic` and push it internally, removing the `let n = diagnostics.len()` book-keeping at every call site (~25 sites). Enforces the \"push paired with poison\" invariant by construction rather than discipline. Alternative: a `#[must_use]` `PoisonBuilder` wrapper. Apply equivalently to `make_poison_type` (added in task 1921 S3). Source: review suggestion S1 in esc-1921-36 (reviewer_comprehensive, api_ergonomics).",
         "details": "Files: crates/reify-compiler/src/expr.rs. Risk: large mechanical refactor across ~25 call sites; ensure all expr_error_sentinel_tests + type_error_propagation_tests still pass. memory_hints: search \"task-1921 poison policy\"; entity \"make_poison_literal\".",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:10:01.020Z"
+        "updatedAt": "2026-04-19T07:16:06.431Z"
       },
       {
         "id": "1970",
@@ -41196,10 +41196,11 @@
         "description": "Move the test introspection helpers `get_let_expr` / `get_let_expr_in` (and likely `assert_no_type_cascade`) from crates/reify-compiler/tests/expr_error_sentinel_tests.rs and crates/reify-compiler/tests/type_error_propagation_tests.rs into the existing `reify-test-support` crate (likely `helpers.rs`). Both integration-test binaries currently duplicate ~35 lines with a TODO acknowledging the duplication. Source: review suggestion S2 in esc-1921-36 (reviewer_comprehensive, code_duplication).",
         "details": "Files: crates/reify-test-support/src/helpers.rs (or new helper module), crates/reify-compiler/tests/expr_error_sentinel_tests.rs, crates/reify-compiler/tests/type_error_propagation_tests.rs. Risk: low; mechanical move + import update. Run `cargo test -p reify-compiler` to verify.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:16:06.256Z"
       },
       {
         "id": "1974",
@@ -41336,9 +41337,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:16:06.159Z",
+      "lastModified": "2026-04-19T07:16:06.514Z",
       "taskCount": 1978,
-      "completedCount": 1685,
+      "completedCount": 1686,
       "tags": [
         "master"
       ]
