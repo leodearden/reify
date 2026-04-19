@@ -32,11 +32,13 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store for dirty-file tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store and onOpen for tests
 let capturedEditorStore: any = null;
+let capturedEditorOnOpen: (() => void) | undefined = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
+    capturedEditorOnOpen = props.onOpen;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -95,6 +97,7 @@ beforeEach(() => {
   mockViewportFitToView.mockClear();
   localStorage.clear();
   capturedEditorStore = null;
+  capturedEditorOnOpen = undefined;
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
@@ -1887,6 +1890,23 @@ describe('App fit-to-view wiring', () => {
 });
 
 describe('App Ctrl+O open file', () => {
+  it('App wires handleOpen into Editor.onOpen (invoking it calls bridge.pickOpenPath)', async () => {
+    const pickSpy = vi.spyOn(bridge, 'pickOpenPath').mockResolvedValue(null);
+    await renderAndWaitForReady();
+
+    // capturedEditorOnOpen should be wired to App's handleOpen
+    await vi.waitFor(() => {
+      expect(capturedEditorOnOpen).toBeDefined();
+    });
+
+    // Invoke the captured callback — should trigger bridge.pickOpenPath
+    capturedEditorOnOpen!();
+
+    await vi.waitFor(() => {
+      expect(pickSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('dispatching Ctrl+O triggers pickOpenPath then openFile', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue({
       meshes: [], values: [], constraints: [],

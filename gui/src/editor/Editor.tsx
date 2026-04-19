@@ -35,6 +35,7 @@ export interface EditorProps {
    */
   scrollToLocation?: () => SourceLocation | null;
   onError?: (message: string) => void;
+  onOpen?: () => void;
 }
 
 export function Editor(props: EditorProps) {
@@ -114,6 +115,14 @@ export function Editor(props: EditorProps) {
       // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
       linter(() => [] as Diagnostic[]),
       keymap.of([
+        {
+          key: 'Mod-o',
+          run: () => {
+            props.onOpen?.();
+            return true;
+          },
+          preventDefault: true,
+        },
         {
           key: 'Mod-s',
           run: () => {
