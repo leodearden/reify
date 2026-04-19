@@ -141,6 +141,46 @@ fn trait_member_with_trait_type_resolves_to_trait_object() {
     }
 }
 
+/// Conformance path: a structure that conforms to a trait with a trait-typed
+/// member must compile without `unresolved type in conformance check: Material`.
+#[test]
+fn structure_conforming_to_trait_with_trait_typed_member_compiles() {
+    let source = r#"
+        trait HasMaterial { param material : Material }
+        structure def Part : HasMaterial { param material : Material }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
+
+    let part = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Part")
+        .expect("Part template should be compiled");
+
+    let material_cell = part
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "material")
+        .expect("value cell 'material' should exist");
+
+    assert_eq!(
+        material_cell.cell_type,
+        Type::TraitObject("Material".to_string()),
+        "Part.material should resolve to Type::TraitObject(\"Material\")"
+    );
+}
+
 /// Port member: `port p : in PortType { param m : Material }` should resolve the
 /// port member's param type to `Type::TraitObject("Material")`.
 #[test]
