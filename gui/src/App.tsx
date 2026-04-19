@@ -109,12 +109,15 @@ const App: Component = () => {
   });
 
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
-  // This uses a closure-local prev-phase tracker so idle→idle is a no-op.
+  // prevPhase starts as undefined so the first effect run (which just reads the
+  // initial phase) never triggers a fetch — only genuine non-idle→idle transitions
+  // do. This avoids races with initApp's explicit fetch regardless of what phase
+  // the engine reports during initialisation.
   {
-    let prevPhase = 'idle';
+    let prevPhase: string | undefined;
     createEffect(() => {
       const phase = engineStore.state.evalStatus.phase;
-      if (phase === 'idle' && prevPhase !== 'idle') {
+      if (prevPhase !== undefined && phase === 'idle' && prevPhase !== 'idle') {
         bridgeGetEntityTree()
           .then((t) => { if (alive) setEntityTree(t); })
           .catch((err) => console.error('[entity-tree] refresh failed:', err));
@@ -661,7 +664,7 @@ const App: Component = () => {
               ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
-              style={{ 'grid-template-rows': `minmax(120px, 1fr) ${propertyHeight()}px 4px 1fr 1fr` }}
+              style={{ 'grid-template-rows': `minmax(120px, 1fr) ${propertyHeight()}px 4px 1fr ${chatOpen() ? '1fr' : '0'}` }}
             >
               <DesignTree
                 tree={entityTree()}

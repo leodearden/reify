@@ -1863,12 +1863,11 @@ describe('App splitter max bounds', () => {
 
     // Property height should be clamped so constraint panel remains visible
     // containerHeight(600) - MIN_PANEL_HEIGHT(80) - 4(splitter) = 516
-    // The grid-template-rows is: minmax(120px, 1fr) <propertyHeight>px 4px 1fr 1fr
-    // Extract the propertyHeight value (the last leading \d+px before a space that isn't part of minmax)
     const rows = sidePanel.style.gridTemplateRows;
-    const pxValues = rows.match(/(?<![,\(])\b(\d+)px\b/g)!;
-    // pxValues[0] is 4px (from splitter), pxValues[-1] is propertyHeight px
-    // Actually extract all standalone NNpx tokens (not inside minmax(...)):
+    // Verify the DesignTree minmax track is still at the front and the layout shape is intact:
+    // minmax(120px, 1fr) <propertyHeight>px 4px <constraintTrack> <chatTrack>
+    expect(rows).toMatch(/^minmax\(120px, 1fr\) \d+px 4px/);
+    // Extract the standalone Npx tokens (not inside function parens) to read propertyHeight:
     const standaloneMatches = rows.match(/\b(\d+)px(?=\s)/g)!;
     const heightPx = parseInt(standaloneMatches[0], 10);
     expect(heightPx).toBeLessThanOrEqual(600 - 80 - 4);
@@ -2707,6 +2706,33 @@ describe('App DesignTree wiring', () => {
     // Give any potential spurious fetch a chance to fire
     await new Promise((r) => setTimeout(r, 50));
     expect(bridge.getEntityTree).toHaveBeenCalledTimes(2);
+  });
+
+  it('error phase → idle also triggers re-fetch', async () => {
+    let evalStatusCallback: ((data: any) => void) | undefined;
+    vi.mocked(bridge.onEvaluationStatus).mockImplementation(async (cb: any) => {
+      evalStatusCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalStatusCallback).toBeDefined());
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
+
+    // Transition error → idle should trigger a re-fetch (not just evaluating → idle)
+    evalStatusCallback!({ phase: 'error' });
+    evalStatusCallback!({ phase: 'idle' });
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(2));
+  });
+
+  it('initial idle phase does not cause spurious refetch beyond initApp fetch', async () => {
+    // The phase-tracking createEffect must NOT fire a fetch on its first run when the
+    // engine starts in idle — only initApp's explicit fetch should occur.
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    // Allow any spurious async effects to settle
+    await new Promise((r) => setTimeout(r, 50));
+    expect(bridge.getEntityTree).toHaveBeenCalledTimes(1);
   });
 
   it('plain click on a DesignTree row navigates to source and selects the entity', async () => {
