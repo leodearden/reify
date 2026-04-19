@@ -47,6 +47,57 @@ fn structure_param_with_trait_type_resolves_to_trait_object() {
     );
 }
 
+/// Guarded param: `where cond { param m : Material }` inside a structure should
+/// resolve the guarded member's type to `Type::TraitObject("Material")`.
+#[test]
+fn guarded_param_with_trait_type_resolves_to_trait_object() {
+    let source = r#"
+        structure def GuardedMaterial {
+            param active : Bool = true
+            where active {
+                param m : Material
+            }
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "GuardedMaterial")
+        .expect("GuardedMaterial template should be compiled");
+
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected 1 guarded group"
+    );
+    let group = &template.guarded_groups[0];
+
+    let m_member = group
+        .members
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("guarded member 'm' should exist");
+
+    assert_eq!(
+        m_member.cell_type,
+        Type::TraitObject("Material".to_string()),
+        "guarded param typed with trait name Material should resolve to Type::TraitObject(\"Material\")"
+    );
+}
+
 /// Port member: `port p : in PortType { param m : Material }` should resolve the
 /// port member's param type to `Type::TraitObject("Material")`.
 #[test]
