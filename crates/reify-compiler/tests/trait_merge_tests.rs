@@ -1400,3 +1400,118 @@ structure def S : TraitA + TraitB {
         debug
     );
 }
+
+/// Regression test for task 1951: `pass2_skipped` names must not be advertised
+/// in the `available_defaults` map as phantom `(name, Let) -> Type::Real` entries.
+///
+/// ## Background
+///
+/// The full scenario from task 1951 requires trait X with `let x : Length` (no `=
+/// expr`), which makes X emit a `RequirementKind::Let` for `x`. That syntax is
+/// NOT reachable from the reify parser today: `LetDecl.value` is `Expr`, not
+/// `Option<Expr>`, so `lower_let` always demands a value. The parser pins this
+/// behavior in `let_type_disambiguation_tests.rs:470-497`, and the comment at
+/// `trait_merge_tests.rs:280-284` acknowledges that `RequirementKind::Let` is
+/// unreachable from source. Consequently the literal 3-trait X+Y+Z reproducer
+/// from the task description cannot be written today (see esc-1951-6).
+///
+/// ## What this test exercises
+///
+/// The reachable Y+Z subset suffices to populate `pass2_skipped["x"]`: Pass 1
+/// claims the scope slot with Y's annotated Param; Pass 2 encounters Z's
+/// unannotated Let and records the name in `pass2_skipped` instead of caching
+/// the compiled expression. Without the fix, `available_defaults` would still
+/// emit `("x", Let) -> Type::Real` for Z's entry, advertising a Let default that
+/// has no backing injection cell. With the fix, the phantom entry is suppressed.
+///
+/// In the reachable universe the phantom entry is dormant (no `RequirementKind::Let`
+/// lookup ever reaches it), so the phantom-signature assertion (assertion 3 below)
+/// passes both before and after the fix. It serves as a forward-compatibility
+/// contract: if a parser extension later exposes `let x : Type` as a requirement,
+/// the no-spurious-diagnostic invariant is already locked in here.
+///
+/// ## Assertions
+/// 1. Zero error diagnostics — structure compiles cleanly.
+/// 2. Exactly 1 `x` value cell, kind `Param`, type `Length` — no spurious Let cell.
+/// 3. No diagnostic combines the phrases "available default" and "Real" for member
+///    `x` — the phantom-signature wording guard.
+#[test]
+fn pass2_skipped_name_omitted_from_available_defaults() {
+    // trait Y provides an annotated Param: claims the scope slot in Pass 1.
+    // trait Z provides an unannotated Let: Pass 2 sees the slot occupied,
+    // records "x" in pass2_skipped, and skips caching the expression.
+    let source = r#"
+trait TraitY {
+    param x : Length = 10mm
+}
+
+trait TraitZ {
+    let x = 5.0
+}
+
+structure def S : TraitY + TraitZ {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // --- Assertion 1: zero error diagnostics ---
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: structure S : TraitY + TraitZ should compile cleanly \
+         (TraitY's Param wins the slot, TraitZ's Let is suppressed via pass2_skipped). \
+         Got errors: {:?}",
+        errors
+    );
+
+    // --- Assertion 2: exactly 1 'x' cell, Param, Length ---
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (Param from TraitY; Let from TraitZ \
+         suppressed by pass2_skipped), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single 'x' cell must be Param (from TraitY)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the 'x' Param cell must carry type Length"
+    );
+
+    // --- Assertion 3: phantom-signature wording guard ---
+    // No diagnostic should combine "available default" + "Real" for member 'x'.
+    // In the reachable universe this passes unconditionally (no RequirementKind::Let
+    // lookup fires against the phantom entry). The assertion locks in the contract
+    // for when parser support for bare `let x : Type` requirements is added later.
+    let phantom_diags: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("available default")
+                && d.message.contains("Real")
+                && d.message.contains('x')
+        })
+        .collect();
+    assert!(
+        phantom_diags.is_empty(),
+        "phantom `(name, Let) -> Type::Real` advertisement must not emit a \
+         spurious type-mismatch diagnostic referencing 'x'. \
+         Got phantom-signature diagnostics: {:?}",
+        phantom_diags
+    );
+}
