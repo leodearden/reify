@@ -39759,11 +39759,11 @@
         "description": "The 300ms debounce interval is hardcoded in Editor.tsx (lines 146, 155) and duplicated across four assertions in gui/src/__tests__/editor-perf.test.tsx (lines ~95, 107, 149, 179). If the debounce is ever tuned, the tests will break in multiple places and the error messages will not point to the root cause. Fix: export a named constant `EDITOR_DEBOUNCE_MS = 300` from gui/src/editor/Editor.tsx, import it in the test file, and use it in all setTimeout call sites and test assertions.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T17:40:58.006Z",
+        "updatedAt": "2026-04-19T17:43:47.205Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/Editor.test.tsx",
@@ -41664,7 +41664,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T17:41:10.656Z",
+      "lastModified": "2026-04-19T17:43:47.206Z",
       "taskCount": 1985,
       "completedCount": 1685,
       "tags": [
