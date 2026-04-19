@@ -3483,3 +3483,52 @@ fn build_gui_state_captures_tessellation_errors_from_failing_kernel() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Pins the unresolved-source fallback contract in the tessellation path.
+///
+/// When resolve_source() returns None (e.g. break_module_name_for_test),
+/// diagnostics_to_info must still produce DiagnosticInfo entries with:
+///   (a) file_path == "<unknown>"
+///   (b) code == Some("unresolved-source")
+///
+/// This ensures the step-6 borrow refactor cannot accidentally drop that tagging.
+#[test]
+fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = FailingMockGeometryKernel;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // load_from_source succeeds even when the geometry kernel will fail
+    // (tessellation happens inside build_gui_state, not during load).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed even with failing geometry kernel");
+
+    // Break module_name so that resolve_source() returns None during tessellation.
+    session.break_module_name_for_test();
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed even with unresolved source");
+
+    // (a) Tessellation must produce diagnostics (kernel always fails)
+    assert!(
+        !state.tessellation_diagnostics.is_empty(),
+        "expected non-empty tessellation_diagnostics with failing kernel"
+    );
+
+    // (b) Every diagnostic must be tagged with the unresolved-source sentinel
+    for diag in &state.tessellation_diagnostics {
+        assert_eq!(
+            diag.file_path, "<unknown>",
+            "unresolved-source diagnostic must have file_path == \"<unknown>\", got {:?}",
+            diag.file_path
+        );
+        assert_eq!(
+            diag.code,
+            Some("unresolved-source".to_owned()),
+            "unresolved-source diagnostic must have code == Some(\"unresolved-source\"), got {:?}",
+            diag.code
+        );
+    }
+}
