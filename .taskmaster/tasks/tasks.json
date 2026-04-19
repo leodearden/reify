@@ -41756,7 +41756,9 @@
         "details": "",
         "testStrategy": "",
         "status": "in-progress",
-        "dependencies": [],
+        "dependencies": [
+          "1921"
+        ],
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-19T21:36:17.429Z",
@@ -41841,6 +41843,30 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2002",
+        "title": "OCCT flock gate: narrow scope from workspace-wide to OCCT-touching crates",
+        "description": "Follow-up to task 1992 review. The wrapper currently serializes the entire `cargo test --workspace` invocation across all concurrent worktrees. Only a subset of workspace crates actually touches OCCT (reify-kernel-occt, reify-eval, reify-compiler geometry tests) — the rest (tree-sitter bindings, protocol, persistence, etc.) run one-at-a-time under the gate for no safety reason.",
+        "details": "## Context\n\nTask 1992 applied the flock gate at the `cargo test --workspace` level — coarse but simple. Under N concurrent worktrees this forces verify to run ~O(N) in wall-clock time for *all* crates, not just OCCT-touching ones.\n\n## Options\n\n- (a) Two-pass test_command — `cargo test -p <occt-crates...>` gated, then `cargo test --workspace --exclude <occt-crates...>` ungated. Preserves parallelism for non-OCCT crates.\n- (b) Per-test `serial_test` marking — defense-in-depth but doesn't address cross-process contention.\n- (c) Document the trade-off and defer.\n\nRecommend (a) once the OCCT-touching crate list is stable.\n\n## Acceptance\n\n- test_command splits into gated (OCCT crates) and ungated (all other crates) invocations.\n- A test in tests/infra asserts the split covers every OCCT-touching crate.\n- Header in scripts/cargo-test-occt-gated.sh documents the scoping.\n\n## Modules\n\norchestrator.yaml, scripts/cargo-test-occt-gated.sh, tests/infra\n\n## Memory hints\n\n- search: \"OCCT thread safety\" \"flock gate\"\n- Depends on task 1992 landing first.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1992
+        ],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2003",
+        "title": "Extend constructor_hash_tests with multi-arg UserFunctionCall and multi-arm/multi-pattern Match cases",
+        "description": "Review follow-up from task 1972 (suggestion 2, reviewer_comprehensive, non-blocking).\n\ncrates/reify-compiler/tests/constructor_hash_tests.rs:72-85 covers single-pattern/single-arg happy paths but not multi-arg UserFunctionCall or multi-arm / multi-pattern Match against the compiler's inline emission. A refactor that e.g. folds arms in reverse, or stops combining the second pattern in a multi-pattern arm, would be caught only by the unit test in expr.rs — not by these integration tests.\n\nFix: add one integration case per variant with ≥2 args and ≥2 arms / multi-pattern arms (e.g. `match c { Red | Blue => 1, _ => 2 }` and a two-arg function call) to pin per-iteration combine order end-to-end against the compiler.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -41850,7 +41876,10 @@
       "completedCount": 1699,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T21:41:33.778Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-19T21:41:35.538Z"
     }
   }
 }
