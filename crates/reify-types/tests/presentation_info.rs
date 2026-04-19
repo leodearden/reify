@@ -67,6 +67,66 @@ fn diagnostic_info_serde_roundtrip() {
 
 #[cfg(feature = "serde")]
 #[test]
+fn severity_serde_pascal_case_serialization() {
+    // Each Severity variant must serialize as a PascalCase JSON string.
+    assert_eq!(
+        serde_json::to_value(&reify_types::Severity::Error).unwrap(),
+        serde_json::Value::String("Error".into()),
+        "Severity::Error must serialize as \"Error\""
+    );
+    assert_eq!(
+        serde_json::to_value(&reify_types::Severity::Warning).unwrap(),
+        serde_json::Value::String("Warning".into()),
+        "Severity::Warning must serialize as \"Warning\""
+    );
+    assert_eq!(
+        serde_json::to_value(&reify_types::Severity::Info).unwrap(),
+        serde_json::Value::String("Info".into()),
+        "Severity::Info must serialize as \"Info\""
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn severity_serde_roundtrip() {
+    // Each PascalCase string must deserialize back to the correct variant.
+    let err: reify_types::Severity =
+        serde_json::from_value(serde_json::Value::String("Error".into())).unwrap();
+    assert_eq!(err, reify_types::Severity::Error);
+
+    let warn: reify_types::Severity =
+        serde_json::from_value(serde_json::Value::String("Warning".into())).unwrap();
+    assert_eq!(warn, reify_types::Severity::Warning);
+
+    let info: reify_types::Severity =
+        serde_json::from_value(serde_json::Value::String("Info".into())).unwrap();
+    assert_eq!(info, reify_types::Severity::Info);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn severity_serde_unknown_string_is_error() {
+    // The PascalCase contract must be fail-closed: lowercase or unknown strings
+    // must not successfully deserialize.
+    let result: Result<reify_types::Severity, _> =
+        serde_json::from_value(serde_json::Value::String("error".into()));
+    assert!(
+        result.is_err(),
+        "lowercase \"error\" must not deserialize as Severity (got {:?})",
+        result
+    );
+
+    let result2: Result<reify_types::Severity, _> =
+        serde_json::from_value(serde_json::Value::String("unknown".into()));
+    assert!(
+        result2.is_err(),
+        "\"unknown\" must not deserialize as Severity (got {:?})",
+        result2
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
 fn source_location_info_serde_has_file_path_key() {
     let loc = reify_types::SourceLocationInfo {
         file_path: "bracket.ri".into(),
