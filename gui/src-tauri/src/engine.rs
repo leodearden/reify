@@ -426,17 +426,15 @@ impl EngineSession {
                     for diag in &result.diagnostics {
                         warn!(severity = diag.severity.as_wire_str(), message = %diag.message, "tessellation diagnostic");
                     }
-                    // Resolve source for span lookup.  When source is unavailable
-                    // (e.g. break_*_for_test helpers), we still produce
-                    // DiagnosticInfo but tag code = "unresolved-source" so
-                    // frontends can distinguish reliable from unreliable positions.
-                    let source_info = self
-                        .resolve_source()
-                        .map(|(f, s)| (f.to_owned(), s.to_owned()));
-                    let unresolved = source_info.is_none();
-                    let (file_path, source) =
-                        source_info.unwrap_or_else(|| ("<unknown>".to_owned(), String::new()));
-                    let mut diags = diagnostics_to_info(&result.diagnostics, &file_path, &source);
+                    // Resolve source for span lookup. When source is unavailable (e.g.
+                    // break_*_for_test helpers), we still produce DiagnosticInfo but tag
+                    // code = "unresolved-source" so frontends can distinguish reliable from
+                    // unreliable positions. Borrows from `self` — no allocation on the
+                    // happy path; the "<unknown>"/"" fallback is zero-length static strs.
+                    let (file_path, source): (&str, &str) =
+                        self.resolve_source().unwrap_or(("<unknown>", ""));
+                    let unresolved = file_path == "<unknown>";
+                    let mut diags = diagnostics_to_info(&result.diagnostics, file_path, source);
                     if unresolved {
                         for d in &mut diags {
                             if d.code.is_none() {
