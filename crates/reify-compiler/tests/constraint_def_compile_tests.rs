@@ -946,6 +946,7 @@ fn non_pub_constraint_def_not_instantiable_cross_module() {
 
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
+    fs::create_dir_all(dir.join("stdlib")).unwrap();
 
     // Module a: non-pub MinThickness (no `pub`), used internally in Wall
     fs::write(
