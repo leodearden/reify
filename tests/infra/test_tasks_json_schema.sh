@@ -126,9 +126,12 @@ echo "--- Test: real tasks.json passes schema ---"
 assert "current .taskmaster/tasks/tasks.json passes schema" \
     python3 "$VALIDATOR" "$REPO_ROOT/.taskmaster/tasks/tasks.json"
 
-# -- Subtask path: default-off behaviour (invariant 4 guarded) ----------------
+assert "current .taskmaster/tasks/tasks.json passes validator subtask invariants (explicit --check-subtasks)" \
+    python3 "$VALIDATOR" --check-subtasks "$REPO_ROOT/.taskmaster/tasks/tasks.json"
+
+# -- Subtask path: default-on behaviour (--no-check-subtasks escape hatch) ----
 echo ""
-echo "--- Test: subtask checks (--check-subtasks flag, default off) ---"
+echo "--- Test: subtask checks (--check-subtasks default on, --no-check-subtasks escape hatch) ---"
 
 # Valid subtask with string id — passes both with and without --check-subtasks.
 VALID_SUBTASK="$TMPDIR_FIXTURES/valid_subtask.json"
@@ -149,9 +152,12 @@ assert "valid subtask passes without --check-subtasks" \
 assert "valid subtask passes with --check-subtasks" \
     python3 "$VALIDATOR" --check-subtasks "$VALID_SUBTASK"
 
-# Default-off: bad subtask id passes WITHOUT the flag.
-assert "bad subtask int id passes without --check-subtasks (default-off verified)" \
-    python3 "$VALIDATOR" "$BAD_SUBTASK"
+# Default-on: bad subtask id FAILS without any flag (default-on guard).
+assert "bad subtask int id FAILS by default (default-on)" \
+    bash -c "! python3 '$VALIDATOR' '$BAD_SUBTASK'"
+
+assert "bad subtask int id passes with --no-check-subtasks (escape hatch)" \
+    python3 "$VALIDATOR" --no-check-subtasks "$BAD_SUBTASK"
 
 # Enabled: bad subtask id fails WITH the flag.
 assert "bad subtask int id fails with --check-subtasks" \
@@ -165,8 +171,11 @@ cat >"$SUBTASK_ORPHAN_DEP" <<'EOF'
 {"master":{"tasks":[{"id":"1","dependencies":[],"subtasks":[{"id":"1","dependencies":["999"]}]}]}}
 EOF
 
-assert "subtask orphan dep passes without --check-subtasks (default-off)" \
-    python3 "$VALIDATOR" "$SUBTASK_ORPHAN_DEP"
+assert "subtask orphan dep FAILS by default (default-on)" \
+    bash -c "! python3 '$VALIDATOR' '$SUBTASK_ORPHAN_DEP'"
+
+assert "subtask orphan dep passes with --no-check-subtasks (escape hatch)" \
+    python3 "$VALIDATOR" --no-check-subtasks "$SUBTASK_ORPHAN_DEP"
 
 assert "subtask orphan dep fails with --check-subtasks" \
     bash -c "! python3 '$VALIDATOR' --check-subtasks '$SUBTASK_ORPHAN_DEP'"
@@ -312,8 +321,11 @@ cat >"$MULTI_TAG_BAD_SUBTASK_FX" <<'EOF'
 {"master":{"tasks":[{"id":"1","dependencies":[],"subtasks":[{"id":"1","dependencies":[]}]}]},"feature-x":{"tasks":[{"id":"2","dependencies":[],"subtasks":[{"id":99,"dependencies":[]}]}]}}
 EOF
 
-assert "multi-tag bad subtask (feature-x) passes without --check-subtasks" \
-    python3 "$VALIDATOR" "$MULTI_TAG_BAD_SUBTASK_FX"
+assert "multi-tag bad subtask (feature-x) FAILS by default" \
+    bash -c "! python3 '$VALIDATOR' '$MULTI_TAG_BAD_SUBTASK_FX'"
+
+assert "multi-tag bad subtask passes with --no-check-subtasks (escape hatch)" \
+    python3 "$VALIDATOR" --no-check-subtasks "$MULTI_TAG_BAD_SUBTASK_FX"
 
 assert "multi-tag bad subtask (feature-x) fails with --check-subtasks" \
     bash -c "! python3 '$VALIDATOR' --check-subtasks '$MULTI_TAG_BAD_SUBTASK_FX'"
