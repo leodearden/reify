@@ -1358,7 +1358,7 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: values.clone(),
                     objective: template.objective.clone(),
-                    functions: module.functions.clone(),
+                    functions: functions.clone(),
                 };
 
                 let parent_snap_id = snapshot.id;
@@ -1452,7 +1452,7 @@ impl Engine {
                             &mut values,
                             &mut snapshot,
                             res_version_id,
-                            &module.functions,
+                            &functions,
                             &meta_map,
                             &mut diagnostics,
                         );
@@ -2529,7 +2529,7 @@ impl Engine {
                     } else if let Some(ref expr) = cell.default_expr {
                         reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &module.functions)
+                            &reify_expr::EvalContext::new(&values, &self.functions)
                                 .with_meta(&self.meta_map),
                         )
                     } else {
@@ -2625,7 +2625,7 @@ impl Engine {
 
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(&values, &module.functions)
+                        &reify_expr::EvalContext::new(&values, &self.functions)
                             .with_meta(&self.meta_map),
                     );
 
@@ -2705,7 +2705,7 @@ impl Engine {
             let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 &values,
-                &module.functions,
+                &self.functions,
                 Some(&state.snapshot.values),
             );
             diagnostics.extend(dispatch_diags);
@@ -2800,7 +2800,7 @@ impl Engine {
             let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 &eval_result.values,
-                &module.functions,
+                &self.functions,
                 Some(det_values),
             );
             diagnostics.extend(dispatch_diags);
@@ -2863,7 +2863,7 @@ impl Engine {
                 let (results, dispatch_diags) = self.dispatch_constraints(
                     entries,
                     &values,
-                    &module.functions,
+                    &self.functions,
                     Some(&state.snapshot.values),
                 );
                 diagnostics.extend(dispatch_diags);
@@ -2896,7 +2896,7 @@ impl Engine {
                         kernel.as_mut(),
                         &realization.operations,
                         &values,
-                        &module.functions,
+                        &self.functions,
                         &self.meta_map,
                         &mut step_handles,
                         &mut diagnostics,
@@ -2953,7 +2953,7 @@ impl Engine {
                         kernel.as_mut(),
                         &realization.operations,
                         &check_result.values,
-                        &module.functions,
+                        &self.functions,
                         &self.meta_map,
                         &mut step_handles,
                         &mut diagnostics,
@@ -3013,6 +3013,7 @@ impl Engine {
             &mut self.geometry_kernel,
             module,
             &check_result.values,
+            &self.functions,
             &mut diagnostics,
             &self.meta_map,
         );
@@ -3036,6 +3037,7 @@ impl Engine {
         geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
         module: &CompiledModule,
         values: &ValueMap,
+        functions: &[CompiledFunction],
         diagnostics: &mut Vec<Diagnostic>,
         meta_map: &HashMap<String, HashMap<String, String>>,
     ) -> Vec<(String, Mesh)> {
@@ -3055,7 +3057,7 @@ impl Engine {
                     kernel.as_mut(),
                     &realization.operations,
                     values,
-                    &module.functions,
+                    functions,
                     meta_map,
                     &mut step_handles,
                     diagnostics,
@@ -3180,7 +3182,7 @@ impl Engine {
                 let (results, dispatch_diags) = self.dispatch_constraints(
                     entries,
                     &values,
-                    &module.functions,
+                    &self.functions,
                     Some(&state.snapshot.values),
                 );
                 diagnostics.extend(dispatch_diags);
@@ -3205,6 +3207,7 @@ impl Engine {
             &mut self.geometry_kernel,
             module,
             &values,
+            &self.functions,
             &mut diagnostics,
             &self.meta_map,
         );

@@ -242,6 +242,95 @@ structure S {
     );
 }
 
+// ─── step-4: Constraint solver path regression ───────────────────────
+
+/// Regression guard: prelude functions must be reachable from the constraint
+/// solver's `ResolutionProblem` (lib.rs:1361) and from the post-solver
+/// let-binding re-evaluation (lib.rs:1455).
+///
+/// Uses `auto(free)` to skip uniqueness verification and an inequality
+/// constraint whose initial point (10mm) is immediately feasible, so the
+/// solver returns without running Nelder-Mead — giving a predictable x value.
+///
+/// Without the fix at 1361, `problem.functions` contains only user functions
+/// (empty here), so `symmetric_tolerance(15mm, 5mm)` in the constraint
+/// expression evaluates to Undef — the initial point appears infeasible, the
+/// Nelder-Mead runs and fails, and an error diagnostic is emitted.
+/// Without the fix at 1455, the post-solver `evaluate_let_bindings` uses
+/// `&module.functions` (empty) so `symmetric_tolerance(x, 1mm)` → Undef.
+///
+/// Expected values (prelude `symmetric_tolerance(a, b) = a + b`):
+///   - `x` = 10mm = 0.010 m (solver initial point; 10mm < 20mm immediately)
+///   - `y` = symmetric_tolerance(10mm, 1mm) = 11mm = 0.011 m
+#[test]
+fn prelude_function_resolves_in_constraint_solver_path() {
+    use reify_constraints::DimensionalSolver;
+
+    let source = r#"
+structure S {
+    param x : Length = auto(free)
+    let y : Length = symmetric_tolerance(x, 1mm)
+    constraint x < symmetric_tolerance(15mm, 5mm)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(DimensionalSolver));
+    let result = engine.eval(&compiled);
+
+    // Only the auto(free) non-unique warning is expected; no errors.
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no error diagnostics, got: {:?}",
+        eval_errors
+    );
+
+    // x = 10mm (solver initial; x < 20mm is already satisfied → returned immediately)
+    let cell_x = ValueCellId::new("S", "x");
+    let x = result
+        .values
+        .get(&cell_x)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            panic!(
+                "S.x should be numeric. Available: {:?}",
+                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (x - 0.010).abs() < 1e-6,
+        "S.x: solver should keep initial 10mm when constraint is already satisfied, got {}",
+        x
+    );
+
+    // y = symmetric_tolerance(10mm, 1mm) = 11mm = 0.011 m
+    let cell_y = ValueCellId::new("S", "y");
+    let y = result
+        .values
+        .get(&cell_y)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            panic!(
+                "S.y should be numeric. Available: {:?}",
+                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (y - 0.011).abs() < 1e-6,
+        "S.y: post-solver re-eval should give symmetric_tolerance(10mm,1mm) = 11mm = 0.011m, got {}",
+        y
+    );
+}
+
 // ─── step-3: Eval idempotency (caching regression) ───────────────────
 
 /// Regression guard: calling `eval()` twice on the same engine with the
@@ -328,6 +417,65 @@ structure S {
         (v1 - 0.007).abs() < 1e-9,
         "symmetric_tolerance(5mm, 2mm) should be 0.007 m (7mm), got {}",
         v1
+    );
+}
+
+// ─── step-6: Downstream dispatch path regression ─────────────────────
+
+/// Regression guard: prelude functions must be reachable at ALL dispatch
+/// sites, not just inside `eval()`. The `check()` path calls
+/// `dispatch_constraints` at lib.rs:2803 with `&module.functions` (user-only)
+/// before the step-7 sweep.
+///
+/// `SimpleConstraintChecker` (unlike `MockConstraintChecker`) evaluates each
+/// constraint expression via `eval_expr`. Without the fix at 2803,
+/// `symmetric_tolerance(1mm, 1mm)` evaluates to Undef, making the constraint
+/// `Indeterminate` rather than `Satisfied`.
+///
+/// With the fix: `symmetric_tolerance(1mm, 1mm)` = 2mm → `5mm > 2mm = true`
+/// → `Satisfied`, no warning.
+#[test]
+fn prelude_function_resolves_in_downstream_dispatch_paths() {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_types::Satisfaction;
+
+    let source = r#"
+structure S {
+    let y : Length = 5mm
+    constraint y > symmetric_tolerance(1mm, 1mm)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let check_result = engine.check(&compiled);
+
+    let check_errors = collect_errors(&check_result.diagnostics);
+    assert!(
+        check_errors.is_empty(),
+        "check() should produce no error diagnostics, got: {:?}",
+        check_errors
+    );
+
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "should have exactly 1 constraint result"
+    );
+    let cr = &check_result.constraint_results[0];
+    assert_eq!(
+        cr.satisfaction,
+        Satisfaction::Satisfied,
+        "constraint y > symmetric_tolerance(1mm,1mm) should be Satisfied (5mm > 2mm), \
+         got {:?}. All diagnostics: {:?}",
+        cr.satisfaction,
+        check_result.diagnostics
     );
 }
 
