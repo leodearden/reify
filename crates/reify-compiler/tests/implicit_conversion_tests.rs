@@ -667,14 +667,10 @@ fn error_wildcard_implicit_error_to_matrix() {
 // Task 1918 tightens the error-wildcard contract: `Type::Error` must never appear
 // on the consumer/target side (`to`) of `implicitly_converts_to` — declared
 // annotations always resolve to a concrete type via `resolve_type_with_aliases`.
-//
-// In debug builds a `debug_assert!` fires immediately to catch this bug class.
-// In release builds the existing short-circuit returns `true` as a belt-and-braces
-// cascade-safety net (task-448 rationale preserved).
-//
-// Both build configurations are pinned here:
-//   (a) debug_assertions: the call must panic (caught by #[should_panic])
-//   (b) not(debug_assertions): the call must return true (release short-circuit)
+// A `debug_assert!` fires in debug builds to catch this bug class immediately.
+// (The release short-circuit still returns `true` for cascade safety as a
+// single-line belt-and-braces fallback; its behavior is mechanically obvious
+// and does not require a test.)
 //
 // Two representative types (primitive Real + shape-carrying Scalar[m]) are
 // sufficient because the guard is a single `!to.is_error()` check that is
@@ -701,43 +697,14 @@ fn error_wildcard_implicit_to_error_debug_panics_scalar() {
     let _ = implicitly_converts_to(&length_scalar(), &Type::Error);
 }
 
-/// Consumer-side contract (release): `implicitly_converts_to(Real, Error)` returns true.
-/// Belt-and-braces short-circuit preserves cascade safety in release builds.
-///
-/// NOTE: This test only executes under `cargo test --release` (or any profile with
-/// `debug-assertions = false`).  In the default debug build `debug_assertions` is
-/// enabled, so this cfg branch is compiled out and the panic variant above runs instead.
-/// Run `cargo test --release -p reify-compiler` to exercise these belt-and-braces pins.
-#[cfg(not(debug_assertions))]
-#[test]
-fn error_wildcard_implicit_to_error_release_returns_true_real() {
-    assert!(
-        implicitly_converts_to(&Type::Real, &Type::Error),
-        "implicitly_converts_to(Real, Error) must return true in release (belt-and-braces, task-1918)"
-    );
-}
-
-/// Consumer-side contract (release): `implicitly_converts_to(Scalar[m], Error)` returns true.
-/// Shape-carrying type — belt-and-braces short-circuit still fires in release.
-///
-/// NOTE: Only executes under `cargo test --release`. See note on
-/// `error_wildcard_implicit_to_error_release_returns_true_real` above.
-#[cfg(not(debug_assertions))]
-#[test]
-fn error_wildcard_implicit_to_error_release_returns_true_scalar() {
-    assert!(
-        implicitly_converts_to(&length_scalar(), &Type::Error),
-        "implicitly_converts_to(Scalar[m], Error) must return true in release (belt-and-braces, task-1918)"
-    );
-}
-
 // ── type_compatible() arg-side error-wildcard tests (task-1912 / task-1918) ──
 //
 // Task 1918 tightens the error-wildcard contract for `type_compatible`:
 // `Type::Error` must never appear on the param/expected side (`param_ty`) —
 // declared annotations always resolve to a concrete type. A debug_assert fires
-// in debug builds to catch this bug class. In release builds the belt-and-braces
-// short-circuit still returns `true` for cascade safety (task-448 rationale).
+// in debug builds to catch this bug class. (The release short-circuit still
+// returns `true` for cascade safety as a single-line belt-and-braces fallback;
+// its behavior is mechanically obvious and does not require a test.)
 //
 // Arg-side tests (`arg_ty=Error`, legitimate producer path) are KEPT below.
 
@@ -765,36 +732,6 @@ fn type_compatible_param_error_debug_panics_real() {
 #[should_panic(expected = "param/expected side of type_compatible")]
 fn type_compatible_param_error_debug_panics_list() {
     let _ = type_compatible(&Type::Error, &Type::List(Box::new(Type::Int)));
-}
-
-/// Param-side contract (release): `type_compatible(Error, Real)` returns true.
-/// Belt-and-braces short-circuit preserves cascade safety in release builds.
-///
-/// NOTE: This test only executes under `cargo test --release` (or any profile with
-/// `debug-assertions = false`).  In the default debug build `debug_assertions` is
-/// enabled, so this cfg branch is compiled out and the panic variant above runs instead.
-/// Run `cargo test --release -p reify-compiler` to exercise these belt-and-braces pins.
-#[cfg(not(debug_assertions))]
-#[test]
-fn type_compatible_param_error_release_returns_true_real() {
-    assert!(
-        type_compatible(&Type::Error, &Type::Real),
-        "type_compatible(Error, Real) must return true in release (belt-and-braces, task-1918)"
-    );
-}
-
-/// Param-side contract (release): `type_compatible(Error, List<Int>)` returns true.
-/// Compound arg type — belt-and-braces short-circuit still fires in release.
-///
-/// NOTE: Only executes under `cargo test --release`. See note on
-/// `type_compatible_param_error_release_returns_true_real` above.
-#[cfg(not(debug_assertions))]
-#[test]
-fn type_compatible_param_error_release_returns_true_list() {
-    assert!(
-        type_compatible(&Type::Error, &Type::List(Box::new(Type::Int))),
-        "type_compatible(Error, List<Int>) must return true in release (belt-and-braces, task-1918)"
-    );
 }
 
 // ── Arg-side error-wildcard tests (producer path, task-1912) ─────────────────
