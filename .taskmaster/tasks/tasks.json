@@ -41580,7 +41580,7 @@
         "description": "Reviewer flagged that a recent change converted 10 subtask `id` fields from numeric to string, making tasks.json internally consistent (1918 string-id occurrences, 0 remaining bare numerics). But no schema/serializer guard was added to prevent the mixed-type state from recurring the next time Taskmaster or a hand edit writes a subtask.",
         "details": "Root cause not addressed: 5 parents acquired numeric subtask IDs at some point, and the current fix is a one-shot data cleanup.\n\nSteps:\n1. Locate the Taskmaster interceptor / tasks.json writer (likely in fused-memory or a reify hook).\n2. Add a normalization step that coerces subtask `id` to string on write.\n3. Alternatively, if a schema file (JSON schema) exists, tighten subtask.id type to `string` and add a CI check that validates tasks.json.\n4. Add a regression test that writes a subtask with a numeric-style id and asserts the serialized form is a string.\n\nmemory_hints: search \"tasks.json Taskmaster interceptor subtask id writer\", search \"tasks.json post-commit normalizer hook\".\n\nSource: reviewer_comprehensive on task 1768 review.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41592,7 +41592,7 @@
             "hooks"
           ]
         },
-        "updatedAt": "2026-04-19T17:41:10.655Z"
+        "updatedAt": "2026-04-19T18:08:30.259Z"
       },
       {
         "id": "1990",
@@ -41655,13 +41655,24 @@
           ]
         },
         "updatedAt": "2026-04-19T17:40:49.634Z"
+      },
+      {
+        "id": "1993",
+        "title": "Tighten ID_TO_CALLBACK invariant test: align title/docstring with `disabled` predicate and consider narrowing export",
+        "description": "Post-merge review suggestions for Task 1853 (ID_TO_CALLBACK wiring invariant test). Two low-severity polish items:\n\n1) Test title/docstring drift (gui/src/__tests__/useKeyboardShortcuts.test.ts:262 and gui/src/hooks/useKeyboardShortcuts.ts:20-21). The `it(...)` description says \"minus known no-callback IDs\" but the actual predicate filters via `!s.disabled`. Current `disabled` shortcuts (undo, redo) happen to coincide with the no-callback ones, so the test passes, but the title misleads future readers. Rename to something like \"every enabled shortcut with a bind has an ID_TO_CALLBACK entry\" and update the ID_TO_CALLBACK docstring (\"undo, redo, fitToView are omitted\") to make the coupling with the `disabled` flag explicit.\n\n2) (Optional, non-blocking) Narrower export surface (gui/src/hooks/useKeyboardShortcuts.ts:26). ID_TO_CALLBACK is exported solely to satisfy the invariant test, which widens the module's public surface for an internal mapping. Consider either (a) adding an \"exported for test only — do not import elsewhere\" comment, or (b) replacing the export with a narrow `hasCallbackWiring(id: ShortcutId): boolean` predicate (and using `__test__` / internals-for-test style if a richer view is needed). Risk is low since it's a GUI-internal module.\n\nScope is small; both items can be a single PR.\n\nmemory_hints: search \"ID_TO_CALLBACK wiring invariant shortcuts\" ; get_task 1853",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T17:54:46.456Z",
-      "taskCount": 1985,
-      "completedCount": 1688,
+      "lastModified": "2026-04-19T18:08:30.259Z",
+      "taskCount": 1986,
+      "completedCount": 1689,
       "tags": [
         "master"
       ]
