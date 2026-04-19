@@ -41266,11 +41266,11 @@
         "description": "Review follow-up from task 1920; suggestion S3 from reviewer_comprehensive (non-blocking).\n\nContext: task 1920's new `find_node_compound_variant_coverage` test in crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 400-419) has in-test raw struct-literal helpers `make_user_fn_call` and `make_match` because no public constructor exists for `CompiledExprKind::UserFunctionCall` or `CompiledExprKind::Match`. The other 10+ variants in the table use `CompiledExpr::list_literal`, `set_literal`, `map_literal`, `lambda`, `quantifier`, `range_constructor`, `ad_hoc_selector`, `option_some`, `literal`.\n\nThe ad-hoc helpers fabricate content-hash bytes (`ContentHash::of(&[0xf0])`, `0xf1`) which risks drifting from the real per-variant tag bytes used by the production constructors (7/8/9/10/12/13/14/15/16/18/19). Today `0xf0`/`0xf1` don't collide, but the risk grows as variants are added.\n\nFix: add `CompiledExpr::user_function_call(...)` and `CompiledExpr::match_expr(...)` constructors in `crates/reify-types/src/expr.rs` following the pattern of the existing per-variant constructors (with next-available tag bytes). Then update the test to use them and delete the ad-hoc helpers.\n\nNon-blocking — current in-test helpers work — but removes a small correctness hazard and matches the convention already established for other variants.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:35.532Z",
+        "updatedAt": "2026-04-19T21:14:41.029Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/expr.rs",
@@ -41752,7 +41752,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:14:40.553Z",
+      "lastModified": "2026-04-19T21:14:41.029Z",
       "taskCount": 1987,
       "completedCount": 1696,
       "tags": [
