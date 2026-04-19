@@ -41229,7 +41229,9 @@
         "details": "Files: crates/reify-test-support/src/helpers.rs (or new helper module), crates/reify-compiler/tests/expr_error_sentinel_tests.rs, crates/reify-compiler/tests/type_error_propagation_tests.rs. Risk: low; mechanical move + import update. Run `cargo test -p reify-compiler` to verify.",
         "testStrategy": "",
         "status": "blocked",
-        "dependencies": [],
+        "dependencies": [
+          "1921"
+        ],
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-19T07:19:42.261Z"
@@ -41288,10 +41290,11 @@
         "description": "S1: Lambda-body row in find_node_compound_variant_coverage uses Type::Error as the outer lambda's result_type so the test passes even if the Lambda match arm is broken. Change last arg to Type::Bool. S2: find_node_traverses_previously_unhandled_kinds and find_node_compound_variant_coverage overlap on ListLiteral/OptionSome/Quantifier — consolidate into one source of truth. File: crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 330-509). Review followup from task 1920, suggestions S1+S2.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:19:42.927Z"
       },
       {
         "id": "1979",
@@ -41439,12 +41442,14 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:19:42.837Z",
+      "lastModified": "2026-04-19T07:19:42.927Z",
       "taskCount": 1984,
       "completedCount": 1687,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T07:19:42.990Z",
+      "description": "Tasks for master context"
     }
   }
 }
