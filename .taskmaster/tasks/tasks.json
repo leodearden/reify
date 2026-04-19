@@ -41144,13 +41144,13 @@
         "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed `Diagnostic` and push it internally, removing the `let n = diagnostics.len()` book-keeping at every call site (~25 sites). Enforces the \"push paired with poison\" invariant by construction rather than discipline. Alternative: a `#[must_use]` `PoisonBuilder` wrapper. Apply equivalently to `make_poison_type` (added in task 1921 S3). Source: review suggestion S1 in esc-1921-36 (reviewer_comprehensive, api_ergonomics).",
         "details": "Files: crates/reify-compiler/src/expr.rs. Risk: large mechanical refactor across ~25 call sites; ensure all expr_error_sentinel_tests + type_error_propagation_tests still pass. memory_hints: search \"task-1921 poison policy\"; entity \"make_poison_literal\".",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "deferred",
         "dependencies": [
           "1921"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T07:16:06.431Z",
+        "updatedAt": "2026-04-19T07:17:56.122Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -41230,10 +41230,11 @@
         "description": "The new \"unknown type\" diagnostic in compile_constraint_def (crates/reify-compiler/src/lib.rs ~113-132) only whitelists builtins (via resolve_type_expr_with_aliases), type parameters, aliases, and enums. It does NOT recognize structure/entity/trait names in scope. If a user writes `constraint def Foo { param s: MyStructure ... }`, they now get an error at def-compile time even though previously the raw ConstraintDef was cloned into the registry with no such check.\n\nOptions: (a) broaden the whitelist to also accept structure/entity/trait names in scope; (b) keep current strictness but reword the error to list acceptable categories (\"expected a builtin scalar, type param, alias, or enum\") so users see the restriction isn't arbitrary. Pick one and add a regression test. compile_function has the same blind spot — consider updating it in parallel if (a) is chosen.\n\nmemory_hints: search \"constraint def unknown type param diagnostic\" for task 872 review context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:17:56.204Z"
       },
       {
         "id": "1976",
@@ -41366,19 +41367,27 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1988",
+        "title": "conformance: tighten pass2_skipped Let advertisement guard (esc-1951-20 s1+s3+s4)",
+        "description": "Tighten guard at conformance.rs:344-351 to `cell_type.is_none() && pass2_skipped.contains(name)` so annotated-Let advertisements aren't dropped. Add unit-test sub-case for pass2_skipped triggered by annotated-Let. Replace `.contains('x')` with `.contains(\"'x'\")` in test filters at ~1095-1105.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:16:47.476Z",
-      "taskCount": 1979,
+      "lastModified": "2026-04-19T07:17:56.204Z",
+      "taskCount": 1981,
       "completedCount": 1687,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T07:17:17.441Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-19T07:17:17.463Z"
+      ]
     }
   }
 }
