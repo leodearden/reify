@@ -2684,4 +2684,28 @@ describe('App DesignTree wiring', () => {
     await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy();
   });
+
+  it('re-fetches entity tree when evalStatus transitions from non-idle to idle', async () => {
+    let evalStatusCallback: ((data: any) => void) | undefined;
+    vi.mocked(bridge.onEvaluationStatus).mockImplementation(async (cb: any) => {
+      evalStatusCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalStatusCallback).toBeDefined());
+    // Initial fetch on mount
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
+
+    // Transition non-idle → idle triggers a re-fetch
+    evalStatusCallback!({ phase: 'evaluating' });
+    evalStatusCallback!({ phase: 'idle' });
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(2));
+
+    // Redundant idle → idle should NOT trigger another fetch
+    evalStatusCallback!({ phase: 'idle' });
+    // Give any potential spurious fetch a chance to fire
+    await new Promise((r) => setTimeout(r, 50));
+    expect(bridge.getEntityTree).toHaveBeenCalledTimes(2);
+  });
 });
