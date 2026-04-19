@@ -40181,11 +40181,11 @@
         "description": "In crates/reify-compiler/src/type_compat.rs, both `implicitly_converts_to(from, to)` and `type_compatible(param_ty, arg_ty)` short-circuit to `true` when EITHER side is Type::Error. The producer-side guard (`from.is_error()` / `arg_ty.is_error()`) is the anti-cascade path: a poisoned expression feeds into a consumer and must not trigger a second diagnostic. The mirror direction (`to.is_error()` / `param_ty.is_error()`) is conceptually dubious — no legitimate call site should ever pass Type::Error as the *expected* type, so silently returning `true` can mask a bug where Type::Error leaks into a parameter position (e.g. registry lookup returning Error where a concrete type was expected). Evaluate whether the mirror direction can be tightened to only short-circuit on the producer side, with a `debug_assert` (or a `cfg(debug_assertions)` panic) on any call site that legitimately passes Type::Error as `to`/`param_ty`. If the mirror short-circuit stays, document which consumers depend on it. Review followup from task 1912; suggestion S2.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:21.570Z",
+        "updatedAt": "2026-04-19T06:50:29.992Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/type_compat.rs",
@@ -41020,14 +41020,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:50:23.334Z",
+      "lastModified": "2026-04-19T06:50:29.992Z",
       "taskCount": 1953,
       "completedCount": 1682,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T06:50:23.517Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
