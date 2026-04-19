@@ -41157,10 +41157,11 @@
         "description": "Several cross-module tests in crates/reify-compiler/tests/constraint_def_compile_tests.rs (cross_module_constraint_def_import ~499 and cross_module_constraint_def_name_collision_emits_shadow_warning ~615) call `ModuleResolver::new(&dir, dir.join(\"stdlib\"))` without creating the stdlib subdirectory — the tests rely on the resolver silently tolerating a missing stdlib path. If the resolver ever becomes strict about stdlib existence, all such tests break together. Add `fs::create_dir_all(dir.join(\"stdlib\")).unwrap();` in each affected test (or factor into a shared fixtures helper — see task 877's tempfile helper extraction idea).",
         "details": "memory_hints: search \"cross-module constraint def test tempfile stdlib\" for context; look for other tests using ModuleResolver::new with a non-existent stdlib path.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T07:13:38.974Z"
       },
       {
         "id": "1972",
@@ -41271,19 +41272,27 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1982",
+        "title": "conformance.rs: tighten pass2_skipped Let-advertisement guard + add annotated-Let coverage",
+        "description": "Three coupled improvements to the Option B fix landed in task 1951 (`crates/reify-compiler/src/conformance.rs` ~344-351 and the in-crate unit test ~932-1115).\n\n1. **Over-broad guard (robustness)** — conformance.rs:344-351. The current guard `if pass2_skipped.contains(name) { return None; }` fires on the WHOLE `DefaultKind::Let` arm regardless of `cell_type`. If two traits both provide a Let default for the same name — one annotated (Pass 1 registers a real cell) and one unannotated (Pass 2 records the name in `pass2_skipped`) — the guard drops BOTH from `available_defaults`. Meanwhile the injection loop at ~520-527 still emits a cell for the annotated Let, so the advertisement map becomes asymmetric with injection in the OPPOSITE direction the comment claims. A future `RequirementKind::Let` lookup against that name would emit a bogus \"missing required member\" instead of matching the legitimately injected annotated Let. Latent (RequirementKind::Let is not parser-reachable today, same reason esc-1951-6 and the unit test had to hand-build one), but a regression waiting for the parser extension.\n\n   Fix: `if cell_type.is_none() && pass2_skipped.contains(name) { return None; }`. Update the rationale comment at ~324-334 to reflect the narrower scope.\n\n2. **Missing annotated-Let coverage (test_coverage)** — conformance.rs:932-1115 unit test currently only covers pass2_skipped-triggered-by-Param. Add a sub-case (or sibling test) where Pass 1 registers an annotated Let, Pass 2 records pass2_skipped from an unannotated Let with the same name, and a hand-built `RequirementKind::Let` requirement of the matching type is satisfied (no \"missing required member\" diagnostic). This surfaces the bug from #1.\n\n3. **Single-letter substring match in test (test_quality)** — conformance.rs:1095-1105. `d.message.contains('x')` matches incidental `x` letters in diagnostic prose. Tighten to `d.message.contains(\"'x'\")` or `\"member 'x'\"` on both filters.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestions 1 + 3 + 4). Distinct from task 1952 (cell-injection symmetry) and task 1914 #3 (shared advertised-type helper extraction — coordinate sequencing).\n\nMemory hints: search \"task 1951 pass2_skipped phantom Let advertisement Option B\"; entities: DefaultKind, AvailableDefaultKind, RequirementKind.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T07:10:01.020Z",
-      "taskCount": 1972,
+      "lastModified": "2026-04-19T07:13:38.974Z",
+      "taskCount": 1975,
       "completedCount": 1685,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T07:11:06.112Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-19T07:11:57.833Z"
+      ]
     }
   }
 }
