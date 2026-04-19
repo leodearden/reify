@@ -560,16 +560,6 @@ fn error_wildcard_implicit_from_error_to_real() {
     );
 }
 
-/// (task-1912 req-b) `implicitly_converts_to(Real, Error) == true`.
-/// Anti-cascade guard: when `to` is the poison sentinel, suppress any
-/// downstream type-mismatch diagnostic.
-#[test]
-fn error_wildcard_implicit_from_real_to_error() {
-    assert!(
-        implicitly_converts_to(&Type::Real, &Type::Error),
-        "implicitly_converts_to(Real, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, Int) == true`.
 #[test]
@@ -580,14 +570,6 @@ fn error_wildcard_implicit_error_to_int() {
     );
 }
 
-/// `implicitly_converts_to(Int, Error) == true`.
-#[test]
-fn error_wildcard_implicit_int_to_error() {
-    assert!(
-        implicitly_converts_to(&Type::Int, &Type::Error),
-        "implicitly_converts_to(Int, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, Bool) == true`.
 #[test]
@@ -607,20 +589,6 @@ fn error_wildcard_implicit_error_to_string() {
     );
 }
 
-/// `implicitly_converts_to(Error, Error) == true`.
-/// Note: this case is also covered by the identity arm (`from == to`), so it
-/// does NOT discriminate between guard-present and guard-removed. It is kept
-/// for completeness. The actual guard-pinning tests are
-/// `error_wildcard_implicit_from_error_to_real` and
-/// `error_wildcard_implicit_from_real_to_error`, which use types that are not
-/// convertible without the guard (task-1912).
-#[test]
-fn error_wildcard_implicit_error_to_error() {
-    assert!(
-        implicitly_converts_to(&Type::Error, &Type::Error),
-        "implicitly_converts_to(Error, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, List<Int>) == true` — compound type.
 #[test]
@@ -632,15 +600,6 @@ fn error_wildcard_implicit_error_to_list() {
     );
 }
 
-/// `implicitly_converts_to(List<Int>, Error) == true` — mirror direction for compound.
-#[test]
-fn error_wildcard_implicit_list_to_error() {
-    let from = Type::List(Box::new(Type::Int));
-    assert!(
-        implicitly_converts_to(&from, &Type::Error),
-        "implicitly_converts_to(List<Int>, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, Option<Real>) == true` — compound type.
 #[test]
@@ -661,15 +620,6 @@ fn error_wildcard_implicit_error_to_scalar() {
     );
 }
 
-/// `implicitly_converts_to(Scalar[m], Error) == true` — mirror direction for
-/// shape-carrying type.
-#[test]
-fn error_wildcard_implicit_scalar_to_error() {
-    assert!(
-        implicitly_converts_to(&length_scalar(), &Type::Error),
-        "implicitly_converts_to(Scalar[m], Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, Vector<3,Real>) == true` — shape-carrying type.
 #[test]
@@ -712,119 +662,82 @@ fn error_wildcard_implicit_error_to_matrix() {
     );
 }
 
-// ── type_compatible() error-wildcard tests (task-1912 req-c) ───────────────
+// ── Consumer-side Error contract: implicitly_converts_to (task-1918) ──────────
 //
-// `type_compatible(param_ty, arg_ty)` has the same anti-cascade guard:
-//   if param_ty.is_error() || arg_ty.is_error() { return true; }
-// These tests pin that guard for a representative sample of X values and for
-// both argument positions so that removing or reordering the guard is caught.
+// Task 1918 tightens the error-wildcard contract: `Type::Error` must never appear
+// on the consumer/target side (`to`) of `implicitly_converts_to` — declared
+// annotations always resolve to a concrete type via `resolve_type_with_aliases`.
+// A `debug_assert!` fires in debug builds to catch this bug class immediately.
+// (The release short-circuit still returns `true` for cascade safety as a
+// single-line belt-and-braces fallback; its behavior is mechanically obvious
+// and does not require a test.)
+//
+// Two representative types (primitive Real + shape-carrying Scalar[m]) are
+// sufficient because the guard is a single `!to.is_error()` check that is
+// type-agnostic — it fires for every possible `from` type identically.  If
+// anyone special-cased the short-circuit by type variant, the full producer-side
+// suite (Real/Int/Bool/String/Scalar/List/Option/Vector/Tensor/Matrix, above)
+// would catch the regression immediately.
 
-/// `type_compatible(Error, Real) == true`.
+/// Consumer-side contract (debug): `implicitly_converts_to(Real, Error)` panics.
+/// The debug_assert fires because `to=Type::Error` is never legitimate.
+#[cfg(debug_assertions)]
 #[test]
-fn type_compatible_error_wildcard_real() {
-    assert!(
-        type_compatible(&Type::Error, &Type::Real),
-        "type_compatible(Error, Real) must be true (anti-cascade guard, task-1912)"
-    );
+#[should_panic(expected = "consumer/target side of implicitly_converts_to")]
+fn error_wildcard_implicit_to_error_debug_panics_real() {
+    let _ = implicitly_converts_to(&Type::Real, &Type::Error);
 }
 
-/// `type_compatible(Error, Int) == true`.
+/// Consumer-side contract (debug): `implicitly_converts_to(Scalar[m], Error)` panics.
+/// Shape-carrying type — the debug_assert fires regardless of the `from` type.
+#[cfg(debug_assertions)]
 #[test]
-fn type_compatible_error_wildcard_int() {
-    assert!(
-        type_compatible(&Type::Error, &Type::Int),
-        "type_compatible(Error, Int) must be true (anti-cascade guard, task-1912)"
-    );
+#[should_panic(expected = "consumer/target side of implicitly_converts_to")]
+fn error_wildcard_implicit_to_error_debug_panics_scalar() {
+    let _ = implicitly_converts_to(&length_scalar(), &Type::Error);
 }
 
-/// `type_compatible(Error, Bool) == true`.
+// ── type_compatible() arg-side error-wildcard tests (task-1912 / task-1918) ──
+//
+// Task 1918 tightens the error-wildcard contract for `type_compatible`:
+// `Type::Error` must never appear on the param/expected side (`param_ty`) —
+// declared annotations always resolve to a concrete type. A debug_assert fires
+// in debug builds to catch this bug class. (The release short-circuit still
+// returns `true` for cascade safety as a single-line belt-and-braces fallback;
+// its behavior is mechanically obvious and does not require a test.)
+//
+// Arg-side tests (`arg_ty=Error`, legitimate producer path) are KEPT below.
+
+// ── Param-side Error contract (task-1918) ────────────────────────────────────
+//
+// Two representative arg types (primitive Real + compound List<Int>) are
+// sufficient because the guard is a single `!param_ty.is_error()` check that is
+// type-agnostic — it fires for every possible `arg_ty` value identically.  The
+// arg-side producer tests below cover the full representative type range, so any
+// type-specific regression in the short-circuit would surface there first.
+
+/// Param-side contract (debug): `type_compatible(Error, Real)` panics.
+/// The debug_assert fires because `param_ty=Type::Error` is never legitimate.
+#[cfg(debug_assertions)]
 #[test]
-fn type_compatible_error_wildcard_bool() {
-    assert!(
-        type_compatible(&Type::Error, &Type::Bool),
-        "type_compatible(Error, Bool) must be true (anti-cascade guard, task-1912)"
-    );
+#[should_panic(expected = "param/expected side of type_compatible")]
+fn type_compatible_param_error_debug_panics_real() {
+    let _ = type_compatible(&Type::Error, &Type::Real);
 }
 
-/// `type_compatible(Error, String) == true`.
+/// Param-side contract (debug): `type_compatible(Error, List<Int>)` panics.
+/// Compound arg type — the debug_assert fires regardless of `arg_ty`.
+#[cfg(debug_assertions)]
 #[test]
-fn type_compatible_error_wildcard_string() {
-    assert!(
-        type_compatible(&Type::Error, &Type::String),
-        "type_compatible(Error, String) must be true (anti-cascade guard, task-1912)"
-    );
+#[should_panic(expected = "param/expected side of type_compatible")]
+fn type_compatible_param_error_debug_panics_list() {
+    let _ = type_compatible(&Type::Error, &Type::List(Box::new(Type::Int)));
 }
 
-/// `type_compatible(Error, Scalar[m]) == true` — dimensioned scalar.
-#[test]
-fn type_compatible_error_wildcard_scalar() {
-    assert!(
-        type_compatible(&Type::Error, &length_scalar()),
-        "type_compatible(Error, Scalar[m]) must be true (anti-cascade guard, task-1912)"
-    );
-}
-
-/// `type_compatible(Error, List<Int>) == true` — compound type.
-#[test]
-fn type_compatible_error_wildcard_list() {
-    let x = Type::List(Box::new(Type::Int));
-    assert!(
-        type_compatible(&Type::Error, &x),
-        "type_compatible(Error, List<Int>) must be true (anti-cascade guard, task-1912)"
-    );
-}
-
-/// `type_compatible(Error, Option<Real>) == true` — compound type.
-#[test]
-fn type_compatible_error_wildcard_option() {
-    let x = Type::Option(Box::new(Type::Real));
-    assert!(
-        type_compatible(&Type::Error, &x),
-        "type_compatible(Error, Option<Real>) must be true (anti-cascade guard, task-1912)"
-    );
-}
-
-/// `type_compatible(Error, Vector<3,Real>) == true` — shape-carrying type.
-#[test]
-fn type_compatible_error_wildcard_vector() {
-    let x = Type::Vector {
-        n: 3,
-        quantity: Box::new(Type::Real),
-    };
-    assert!(
-        type_compatible(&Type::Error, &x),
-        "type_compatible(Error, Vector<3,Real>) must be true (anti-cascade guard, task-1912)"
-    );
-}
-
-/// `type_compatible(Error, Matrix<3,3,Real>) == true` — shape-carrying type.
-#[test]
-fn type_compatible_error_wildcard_matrix() {
-    let x = Type::Matrix {
-        m: 3,
-        n: 3,
-        quantity: Box::new(Type::Real),
-    };
-    assert!(
-        type_compatible(&Type::Error, &x),
-        "type_compatible(Error, Matrix<3,3,Real>) must be true (anti-cascade guard, task-1912)"
-    );
-}
-
-/// `type_compatible(Error, Error) == true`.
-/// Note: this case is also covered by the identity arm (`param_ty == arg_ty`), so it
-/// does NOT discriminate between guard-present and guard-removed. It is kept
-/// for completeness. The actual guard-pinning tests are
-/// `type_compatible_error_wildcard_real` and
-/// `type_compatible_error_wildcard_mirror_real`, which use types that are not
-/// compatible without the guard (task-1912).
-#[test]
-fn type_compatible_error_wildcard_error_error() {
-    assert!(
-        type_compatible(&Type::Error, &Type::Error),
-        "type_compatible(Error, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
+// ── Arg-side error-wildcard tests (producer path, task-1912) ─────────────────
+//
+// These pin the legitimate anti-cascade path where `arg_ty` is the poison
+// sentinel — the produced expression already emitted a diagnostic.
 
 /// Mirror: `type_compatible(Real, Error) == true` — guard checks BOTH params.
 #[test]
