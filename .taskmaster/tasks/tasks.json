@@ -40657,11 +40657,11 @@
         "description": "Three post-merge review suggestions on the task 1926 work (median-per-keystroke guard). All small, local, and touch only the editor-perf test and its shared test-utils helper.\n\n1) gui/src/__tests__/editor-perf.test.tsx:162 — enrich the Vitest second-arg failure message so CI triage doesn't require mentally computing the median from the raw sample list. Replace the current `samples=${JSON.stringify(perKeystroke)}` with something like:\n   `` `median=${median(perKeystroke).toFixed(2)}ms min=${Math.min(...perKeystroke).toFixed(2)} max=${Math.max(...perKeystroke).toFixed(2)} samples=${JSON.stringify(perKeystroke.map(v => +v.toFixed(2)))}` ``\n\n2) gui/src/__tests__/test-utils.ts:26 — `median()` currently rejects NaN but silently accepts ±Infinity. For an even-length array containing Infinity in a middle position the result is `(Infinity + x)/2 = Infinity`, which would fail a `toBeLessThan` with a misleading message (same NaN-propagation rationale the docstring already calls out). Replace `values.some(Number.isNaN)` with `values.some(v => !Number.isFinite(v))` and update the error text and docstring. Add a matching unit test in test-utils.test.ts for ±Infinity inputs.\n\n3) gui/src/__tests__/editor-perf.test.tsx:149 — wrap the measurement loop in `try { ... } finally { unmount(); }` so the 300ms debounce cleanup runs regardless of in-loop failures. Low-risk but makes the cleanup invariant explicit.\n\nSource: review of task 1926 (esc-1926-9).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:06:23.251Z",
+        "updatedAt": "2026-04-19T21:09:17.153Z",
         "metadata": {
           "files": [
             "gui/src/__tests__/editor-perf.test.tsx",
@@ -40923,7 +40923,7 @@
         "description": "Recovery audit task. Task 1959 was silently overwritten on 2026-04-17 during a fused-memory DB-lock storm (escalation esc-1959-52). Its original purpose was to act on a task-1744 review finding that DesignTree was still not instantiated in App.tsx as of 2026-04-17, despite task 1901 having been marked done earlier. This task (a) audits whether the 1901 wiring actually landed and (b) if not, restores it with the multi-selection bindings that were added by task 1744.",
         "details": "Origin: preserved content from the overwritten task 1959 — see /home/leo/src/dark-factory/data/backups/2026-04-18-wp-a/esc-1959-52.json for the full original spec.\n\n## Audit step\n1. Run `grep -R \"DesignTree\" gui/src/App.tsx` in /home/leo/src/reify.\n2. If DesignTree IS imported and rendered in App.tsx with selection state wired — mark this task done and re-verify task 1901 completion evidence.\n3. If DesignTree is NOT imported in App.tsx (the state task 1744 review observed) — proceed with implementation below.\n\n## Implementation scope (if audit finds wiring missing)\nRender <DesignTree> in gui/src/App.tsx inside the panel area, connected to:\n- tree from the current design-tree source\n- viewStateStore (existing binding)\n- selectedEntity (primary selection)\n- selectedEntities + anchorEntity from selectionStore state\n- onSelect(path, mods): mods.ctrl → selectionStore.toggleSelect(path); mods.shift → selectionStore.rangeSelect(path); else → existing handleViewportSelect(path, mods)\n- onRangeSelect(paths) → selectionStore.rangeSelect variant\n- onSelectAll(paths) → selectionStore.selectAll(paths)\n\n## Prerequisite (may need to be a separate task)\nOriginal 1959 spec included a prerequisite: \"Plumb entity-tree bridge + engineStore.entityTree to feed DesignTree\"\n- gui/src/bridge.ts — add getEntityTree() invoke wrapper around Tauri get_entity_tree command (backend: gui/src-tauri/src/main.rs:233, commands.rs:106; returns Vec<EntityTreeNode>)\n- gui/src/stores/engineStore.ts — add entityTree: EntityTreeNode[] state + setEntityTree mutation; call bridgeGetEntityTree() inside initFromState and after mesh/value/constraint mutations\n- tests for the bridge wrapper and engineStore field+refresh\nIf present state shows engineStore.state.entityTree already populated, skip this.\n\n## Acceptance\n- Audit outcome documented (wired or not).\n- If wiring missing: user can click, Ctrl+click, Shift+click, Ctrl+A inside rendered DesignTree with selection highlight + viewport sync.\n- App.test.tsx continues to pass; add smoke test for DesignTree render + click → selectionStore update.\n\n## Context\nFrom review of task 1744 (reviewer_comprehensive): \"grep for DesignTree outside test files shows only the panels/index.ts export. App.tsx does not instantiate it.\" Task 1901 had been marked done but is suspected incomplete or reverted.\n<info added on 2026-04-19T20:55:17.064Z>\n## Update 2026-04-19 — predecessor 1901 cancelled, this task is authoritative\n\nTask 1901 was cancelled on 2026-04-19 (not \"suspected incomplete\" — confirmed: the 2026-04-17 merge resolved only tasks.json and App.tsx was never touched). The dependency on 1901 has been removed; this task is fully unblocked.\n\n### Concrete current-main state (audit short-circuit)\n\n- `grep -n 'DesignTree' gui/src/App.tsx` returns **nothing** — wiring is definitively missing. Skip the audit branch and go straight to implementation.\n- Backend `get_entity_tree` Tauri command is already registered (gui/src-tauri/src/main.rs:233, commands.rs:106). Do NOT add it.\n- `getEntityTree()` / `onEntityTreeUpdate()` bridge wrappers are NOT in gui/src/bridge.ts. They must be added here — do NOT treat this as a separate prerequisite task.\n- Backend does NOT emit an `entity-tree-update` event. Do NOT add event plumbing here; instead refresh the tree client-side on engine updates (piggyback on the existing `engineStore.subscribeToEvents` callback or a `createEffect` keyed on `evalStatus.phase === 'idle'` transitions). Never poll on a timer.\n- `viewStateStore` (stores/viewStateStore.ts) is on main with full view/auto-view management (`regenerateAutoViews`, `getAllEffective`). Use it as the source of truth for visibility.\n- `DesignTree` already supports `selectedEntities`, `anchorEntity`, `onSelect(path, mods)`, `onRangeSelect(paths)`, `onSelectAll(paths)`, Ctrl+A, bulk visibility cycling.\n\n### Additional required step (missing from original spec)\n\n**Visibility → viewport propagation.** After `viewStateStore` state changes, push `viewStateStore.getAllEffective()` into `meshManager.setVisibility(path, state)` per entry. The meshManager is owned by `Viewport`; expose a new ref hook on `Viewport` mirroring the existing `flyToEntityRef`/`fitToViewRef` pattern, and drive it from a `createEffect` in App.tsx that reads `viewStateStore.state.explicit` and `viewStateStore.state.activeViewId`. Without this step the eye-icon clicks in DesignTree will mutate the store but the viewport will not respond — this is the defining end-to-end failure mode.\n\n### Scope discipline\n\nDo NOT edit: `DesignTree.tsx`, `DesignTreeContextMenu.tsx`, `viewStateStore.ts`, `autoViewGenerator.ts`, any Rust backend file. If you find yourself in those files, stop — you've drifted out of scope.\n\n### engineStore.entityTree note\n\nThe original spec suggests adding `entityTree` to `engineStore`. That's optional — keeping the tree as a local `createSignal` in App.tsx is equally fine and less invasive. Choose whichever fits best after reading current `engineStore.ts`. The test expectations should not assume either layout.\n</info added on 2026-04-19T20:55:17.064Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -40945,7 +40945,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-04-19T21:06:07.053Z"
+        "updatedAt": "2026-04-19T21:09:17.242Z"
       },
       {
         "id": "1957",
@@ -40953,11 +40953,11 @@
         "description": "regenerateAutoViews performs two sequential setState calls (setTree prunes explicit, then a second produce() block replaces explicit for auto:* active views). Each setState triggers reactive subscribers independently, exposing an intermediate state and wasting the initial prune. Separately, for user:* active views, edits made via setVisibility are written to state.explicit but never mirrored back into state.views[activeViewId].visibility, so the view's stored visibility drifts from the live edits — a later \"restore view\"/\"export view\" feature would surprise the user.",
         "details": "## Scope\n\ngui/src/stores/viewStateStore.ts\n\n### 1. Atomicity (lines 264-330)\n\nFold the setTree pruning into the same produce() pass as the view regeneration, OR skip the explicit-prune inside setTree when called from regenerateAutoViews (since explicit is replaced moments later on the auto:* branch anyway). Rebuild nodeByPath/parentByPath in the same step. Goal: one setState, one reactive notification.\n\n### 2. User-view write-back (lines 305-322)\n\nPick and document one semantic:\n- (a) `ViewDefinition.visibility` is a seed/template; live state lives only in `state.explicit`. Add a doc comment on ViewDefinition and seedView explaining this.\n- (b) Mirror setVisibility edits back into `state.views[activeViewId].visibility` when active view is `user:*` (and possibly stamp `modified=true` on auto views — see Task XXXX for `modified` cleanup).\n\nPrefer (b) so user views remain self-contained, but either is acceptable as long as it's documented.\n\n### Tests\n\nAdd a regression test that calls setVisibility while a user:* view is active, then asserts that either (a) state.views[activeViewId].visibility is unchanged and the store doc says so, or (b) state.views[activeViewId].visibility reflects the edit.\n\n### memory_hints\n- search: \"viewStateStore regenerateAutoViews\"\n- search: \"ViewDefinition visibility explicit\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:06:12.599Z",
+        "updatedAt": "2026-04-19T21:09:17.411Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/viewStateStore.test.ts",
@@ -41752,7 +41752,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:09:17.064Z",
+      "lastModified": "2026-04-19T21:09:17.411Z",
       "taskCount": 1987,
       "completedCount": 1696,
       "tags": [
