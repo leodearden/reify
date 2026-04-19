@@ -2677,4 +2677,11 @@ describe('App DesignTree wiring', () => {
     expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy();
     expect(screen.getByTestId('tree-row-Root.B')).toBeTruthy();
   });
+
+  it('fetches entity tree on init', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy();
+  });
 });
