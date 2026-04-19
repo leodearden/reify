@@ -259,16 +259,14 @@ describe('useKeyboardShortcuts', () => {
 });
 
 describe('ID_TO_CALLBACK wiring invariant', () => {
-  // Shortcuts that declare a `bind` but intentionally have no callback entry:
-  // the filter below already excludes shortcuts with no `bind` at all (e.g. fitToView).
-  const NO_CALLBACK_IDS = new Set<ShortcutId>([
-    'undo', // disabled: true — key reserved, no functional callback
-    'redo', // disabled: true — key reserved, no functional callback
-  ]);
-
   it('every shortcut with a bind — minus known no-callback IDs — has an ID_TO_CALLBACK entry', () => {
+    // Derive expected set directly from SHORTCUTS: every shortcut with a bind
+    // that is not disabled. This way the test self-updates when shortcuts gain
+    // or lose their `disabled` flag rather than requiring a parallel list.
+    // Shortcuts with no `bind` at all (e.g. fitToView) are excluded by the
+    // first predicate.
     const expected = SHORTCUTS
-      .filter((s) => s.bind !== undefined && !NO_CALLBACK_IDS.has(s.id as ShortcutId))
+      .filter((s) => s.bind !== undefined && !s.disabled)
       .map((s) => s.id)
       .sort();
     const actual = Object.keys(ID_TO_CALLBACK).sort();
