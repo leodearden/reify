@@ -7,7 +7,10 @@
 //! tests exercise (see step-12).
 
 use reify_test_support::compile_source;
-use reify_types::{CompiledExpr, CompiledExprKind, QuantifierKind, Severity, Type, Value, ValueCellId};
+use reify_types::{
+    CompiledExpr, CompiledExprKind, CompiledMatchArm, ContentHash, QuantifierKind, SelectorKind,
+    Severity, Type, Value, ValueCellId,
+};
 
 /// Walk a `CompiledExpr` tree and return the first node whose `result_type`
 /// satisfies the predicate, if any. Used to search for a `Type::Error`-typed
@@ -378,4 +381,129 @@ fn find_node_traverses_previously_unhandled_kinds() {
         "find_node failed to recurse into Quantifier collection; \
          previously fell through to `_ => None`",
     );
+}
+
+#[test]
+fn find_node_compound_variant_coverage() {
+    // Table-driven coverage: one case per compound CompiledExprKind variant
+    // (or per child position), embedding a Type::Error leaf in exactly the
+    // slot that find_node claims to recurse into. This complements the
+    // structural guarantee provided by the exhaustive match (no `_` wildcard)
+    // with semantic verification that each arm visits the correct children —
+    // a typo like visiting only `base` without `args` compiles fine but would
+    // silently miss error nodes, and only a test like this would catch it.
+
+    let error_leaf = || CompiledExpr::literal(Value::Bool(false), Type::Error);
+    let bool_leaf = || CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let pred = &|n: &CompiledExpr| n.result_type == Type::Error;
+
+    // Helpers for variants without public constructors.
+    let make_user_fn_call = |args: Vec<CompiledExpr>| CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: "f".to_string(),
+            args,
+        },
+        result_type: Type::Bool,
+        content_hash: ContentHash::of(&[0xf0]),
+    };
+    let make_match = |discriminant: CompiledExpr, arm_body: CompiledExpr| CompiledExpr {
+        kind: CompiledExprKind::Match {
+            discriminant: Box::new(discriminant),
+            arms: vec![CompiledMatchArm {
+                patterns: vec!["_".to_string()],
+                body: arm_body,
+            }],
+        },
+        result_type: Type::Bool,
+        content_hash: ContentHash::of(&[0xf1]),
+    };
+
+    let cases: Vec<(&str, CompiledExpr)> = vec![
+        // SetLiteral — error in an element.
+        (
+            "SetLiteral element",
+            CompiledExpr::set_literal(
+                vec![error_leaf()],
+                Type::Set(Box::new(Type::Error)),
+            ),
+        ),
+        // MapLiteral — error in the key position.
+        (
+            "MapLiteral key",
+            CompiledExpr::map_literal(
+                vec![(error_leaf(), bool_leaf())],
+                Type::Map(Box::new(Type::Error), Box::new(Type::Bool)),
+            ),
+        ),
+        // MapLiteral — error in the value position.
+        (
+            "MapLiteral value",
+            CompiledExpr::map_literal(
+                vec![(bool_leaf(), error_leaf())],
+                Type::Map(Box::new(Type::Bool), Box::new(Type::Error)),
+            ),
+        ),
+        // UserFunctionCall — error in an argument.
+        ("UserFunctionCall arg", make_user_fn_call(vec![error_leaf()])),
+        // Lambda — error in the body expression.
+        (
+            "Lambda body",
+            CompiledExpr::lambda(vec![], vec![], error_leaf(), vec![], Type::Error),
+        ),
+        // Match — error in the discriminant.
+        ("Match discriminant", make_match(error_leaf(), bool_leaf())),
+        // Match — error in an arm body.
+        ("Match arm body", make_match(bool_leaf(), error_leaf())),
+        // Quantifier — error in the predicate (collection is non-Error).
+        (
+            "Quantifier predicate",
+            CompiledExpr::quantifier(
+                QuantifierKind::Exists,
+                "x".to_string(),
+                ValueCellId::new("S", "x"),
+                bool_leaf(),  // collection — Type::Bool (no Error)
+                error_leaf(), // predicate  — Type::Error
+            ),
+        ),
+        // RangeConstructor — error in the lower bound.
+        (
+            "RangeConstructor lower",
+            CompiledExpr::range_constructor(
+                Some(error_leaf()),
+                None,
+                true,
+                true,
+                Type::Bool,
+            ),
+        ),
+        // RangeConstructor — error in the upper bound.
+        (
+            "RangeConstructor upper",
+            CompiledExpr::range_constructor(
+                None,
+                Some(error_leaf()),
+                true,
+                true,
+                Type::Bool,
+            ),
+        ),
+        // AdHocSelector — error in the base expression.
+        (
+            "AdHocSelector base",
+            CompiledExpr::ad_hoc_selector(error_leaf(), SelectorKind::Face, vec![]),
+        ),
+        // AdHocSelector — error in an argument (base is non-Error).
+        (
+            "AdHocSelector args",
+            CompiledExpr::ad_hoc_selector(bool_leaf(), SelectorKind::Face, vec![error_leaf()]),
+        ),
+    ];
+
+    for (label, fixture) in &cases {
+        assert!(
+            find_node(fixture, pred).is_some(),
+            "find_node failed to locate a Type::Error node in {label}: \
+             the arm for this variant may be visiting the wrong children",
+        );
+    }
 }
