@@ -3,6 +3,7 @@ import {
   generateDefaultView,
   generateAllGeometryView,
   generatePurposeViews,
+  defaultVisibilityFor,
 } from '../stores/autoViewGenerator';
 import type { EntityTreeNode } from '../types';
 
@@ -239,5 +240,117 @@ describe('generatePurposeViews', () => {
     // Generic purpose (falls back to defaultVisibilityFor)
     const [purposeView] = generatePurposeViews(tree, ['foo']);
     expect(purposeView.visibility['Root.untyped']).toBe('show');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// anchored type-name matching (regression for substring-match bug)
+// ---------------------------------------------------------------------------
+
+describe('anchored type-name matching (regression for substring-match bug)', () => {
+  // --- Negative cases (currently FAIL under .includes() — TDD drivers) ---
+
+  it('defaultVisibilityFor: let with type_name="Solidarity" → "show" (not a geometry type)', () => {
+    const node = makeNode({ entity_path: 'Root.x', kind: 'let', type_name: 'Solidarity' });
+    expect(defaultVisibilityFor(node)).toBe('show');
+  });
+
+  it('defaultVisibilityFor: let with type_name="SurfaceTreatment" → "show"', () => {
+    const node = makeNode({ entity_path: 'Root.x', kind: 'let', type_name: 'SurfaceTreatment' });
+    expect(defaultVisibilityFor(node)).toBe('show');
+  });
+
+  it('defaultVisibilityFor: let with type_name="CurveBall" → "show"', () => {
+    const node = makeNode({ entity_path: 'Root.x', kind: 'let', type_name: 'CurveBall' });
+    expect(defaultVisibilityFor(node)).toBe('show');
+  });
+
+  it('generateDefaultView: MySolid and SolidBody let-nodes should both be "show" (not hidden)', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.a', kind: 'let', type_name: 'MySolid' }),
+          makeNode({ entity_path: 'Root.b', kind: 'let', type_name: 'SolidBody' }),
+        ],
+      }),
+    ];
+    const view = generateDefaultView(tree);
+    expect(view.visibility['Root.a']).toBe('show');
+    expect(view.visibility['Root.b']).toBe('show');
+  });
+
+  it('generatePurposeViews manufacturing_ready: param with type_name="MaterialReference" → "ghost" (param fallthrough, not Material branch)', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.mat', kind: 'param', type_name: 'MaterialReference', trait_geometry: false }),
+        ],
+      }),
+    ];
+    const [view] = generatePurposeViews(tree, ['manufacturing_ready']);
+    expect(view.visibility['Root.mat']).toBe('ghost');
+  });
+
+  it('generatePurposeViews manufacturing_ready: let with type_name="SolidBody" → "show" (no longer classified as let-geometry)', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+        ],
+      }),
+    ];
+    const [view] = generatePurposeViews(tree, ['manufacturing_ready']);
+    expect(view.visibility['Root.body']).toBe('show');
+  });
+
+  // --- Positive regression guards (PASS under both old and new code) ---
+
+  it('defaultVisibilityFor: let with type_name="Solid" → "hidden" (exact match)', () => {
+    const node = makeNode({ entity_path: 'Root.x', kind: 'let', type_name: 'Solid' });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('defaultVisibilityFor: let with type_name="Option<Solid>" → "hidden" (wrapper tolerance)', () => {
+    const node = makeNode({ entity_path: 'Root.x', kind: 'let', type_name: 'Option<Solid>' });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('defaultVisibilityFor: let with type_name="List<Curve>" → "hidden" (wrapper tolerance)', () => {
+    const node = makeNode({ entity_path: 'Root.x', kind: 'let', type_name: 'List<Curve>' });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('generatePurposeViews manufacturing_ready: param with type_name="List<Material>" → "show" (Material wrapper tolerance)', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.mat', kind: 'param', type_name: 'List<Material>', trait_geometry: false }),
+        ],
+      }),
+    ];
+    const [view] = generatePurposeViews(tree, ['manufacturing_ready']);
+    expect(view.visibility['Root.mat']).toBe('show');
+  });
+
+  it('generatePurposeViews manufacturing_ready: let with type_name="Option<Surface>" → "ghost" (let-geometry wrapper still detected)', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.surf', kind: 'let', type_name: 'Option<Surface>' }),
+        ],
+      }),
+    ];
+    const [view] = generatePurposeViews(tree, ['manufacturing_ready']);
+    expect(view.visibility['Root.surf']).toBe('ghost');
   });
 });
