@@ -606,8 +606,8 @@ pub(crate) fn compile_geometry_call(
         }
         _ => {
             diagnostics.push(Diagnostic::error(format!(
-                "unsupported geometry function: {}",
-                name
+                "{}: {}",
+                UNSUPPORTED_GEOMETRY_FN_MSG, name
             )));
             None
         }
@@ -651,6 +651,12 @@ pub(crate) fn extract_collection_count(
     }
     None
 }
+
+/// Prefix of the diagnostic emitted by the wildcard arm in `compile_geometry_call`
+/// when a function name is not recognised.  Declared here (not inside `#[cfg(test)]`)
+/// so the production wildcard arm and the registry-cross-check test can share the
+/// same string — if the wording ever changes, both sites update together.
+pub(crate) const UNSUPPORTED_GEOMETRY_FN_MSG: &str = "unsupported geometry function";
 
 // ─── Registry cross-check (task-1733) ────────────────────────────────────────
 //
@@ -702,6 +708,17 @@ mod tests {
         "bezier",
         "nurbs",
     ];
+
+    /// Boolean set-operation functions — handled by the early-return path to
+    /// `compile_boolean_op` in `compile_geometry_call` before the main dispatch
+    /// match.  `geometry_arg_indices` is never consulted for these.
+    const BOOLEAN_OP_FUNCTIONS: &[&str] =
+        &["union", "intersection", "difference", "union_all", "intersection_all"];
+
+    /// Variadic solid-construction function handled via a dedicated arm in the
+    /// main dispatch match.  `geometry_arg_indices` returns empty for loft
+    /// (verified by `geometry_arg_indices_loft_is_empty_handled_specially`).
+    const LOFT_FUNCTIONS: &[&str] = &["loft"];
 
     /// Canary pin: the total number of distinct function names dispatched by
     /// `compile_geometry_call`, spread across the four category lists.
@@ -767,16 +784,12 @@ mod tests {
         // arm in compile_geometry_call.  If a new function is added there but not
         // listed here, this test should be updated (the developer will notice
         // because the new function is absent from both lists).
-        let boolean_ops: &[&str] =
-            &["union", "intersection", "difference", "union_all", "intersection_all"];
-        let loft: &[&str] = &["loft"];
-
         let mut all: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for &name in GEOM_ARG_FUNCTIONS
             .iter()
             .chain(NO_GEOM_ARG_FUNCTIONS.iter())
-            .chain(boolean_ops.iter())
-            .chain(loft.iter())
+            .chain(BOOLEAN_OP_FUNCTIONS.iter())
+            .chain(LOFT_FUNCTIONS.iter())
         {
             assert!(
                 all.insert(name),
@@ -789,7 +802,7 @@ mod tests {
         // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
         // correctness guardrail — they verify each function is in the right list.
         // `EXPECTED_DISPATCH_COUNT` is the canary pin for the four lists above.  If any of
-        // GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft changes,
+        // GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, BOOLEAN_OP_FUNCTIONS, or LOFT_FUNCTIONS changes,
         // bump that constant and verify that `compile_geometry_call` contains a matching
         // dispatch arm for the new entry.
         // NOTE: the reverse direction (an arm added to `compile_geometry_call` without
@@ -800,7 +813,7 @@ mod tests {
             EXPECTED_DISPATCH_COUNT,
             "total dispatched geometry function count changed — \
              bump EXPECTED_DISPATCH_COUNT and make sure the new function is added to \
-             GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft above"
+             GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, BOOLEAN_OP_FUNCTIONS, or LOFT_FUNCTIONS above"
         );
     }
 
@@ -814,18 +827,14 @@ mod tests {
         // `push_diagnostic + return None` on arg-count/type mismatches, so no arm
         // panics on empty args — each generates its own arm-specific diagnostic, NOT
         // the wildcard marker.
-        let boolean_ops: &[&str] =
-            &["union", "intersection", "difference", "union_all", "intersection_all"];
-        let loft: &[&str] = &["loft"];
-
         let enum_defs: Vec<reify_types::EnumDef> = vec![];
         let functions: Vec<CompiledFunction> = vec![];
 
         for &name in GEOM_ARG_FUNCTIONS
             .iter()
             .chain(NO_GEOM_ARG_FUNCTIONS.iter())
-            .chain(boolean_ops.iter())
-            .chain(loft.iter())
+            .chain(BOOLEAN_OP_FUNCTIONS.iter())
+            .chain(LOFT_FUNCTIONS.iter())
         {
             let expr = reify_syntax::Expr {
                 kind: reify_syntax::ExprKind::FunctionCall {
@@ -852,11 +861,12 @@ mod tests {
             assert!(
                 !diagnostics
                     .iter()
-                    .any(|d| d.message.contains("unsupported geometry function")),
+                    .any(|d| d.message.contains(UNSUPPORTED_GEOMETRY_FN_MSG)),
                 "registry name {:?} reached the wildcard arm in compile_geometry_call \
-                 (\"unsupported geometry function\" diagnostic was emitted) — \
+                 ({:?} diagnostic was emitted) — \
                  add a dispatch arm for this name or remove it from the registry lists",
-                name
+                name,
+                UNSUPPORTED_GEOMETRY_FN_MSG
             );
         }
     }
