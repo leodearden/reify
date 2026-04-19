@@ -424,7 +424,7 @@ impl EngineSession {
                     // Log each diagnostic before mapping so stderr/tracing output
                     // is available even when the GUI channel is not subscribed.
                     for diag in &result.diagnostics {
-                        warn!(severity = ?diag.severity, message = %diag.message, "tessellation diagnostic");
+                        warn!(severity = diag.severity.as_wire_str(), message = %diag.message, "tessellation diagnostic");
                     }
                     // Resolve source for span lookup.  When source is unavailable
                     // (e.g. break_*_for_test helpers), we still produce
@@ -1383,8 +1383,11 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
 /// # Severity format
 ///
 /// `DiagnosticInfo::severity` is serialized as PascalCase (`"Error"`,
-/// `"Warning"`, `"Info"`).  This is the canonical wire format for all
-/// callers — both `get_diagnostics` (compile-time) and the tessellation path.
+/// `"Warning"`, `"Info"`).  The canonical mapping lives on
+/// [`reify_types::Severity::as_wire_str`] and the `Serialize` derive on
+/// `Severity` — not in this helper.  Both `get_diagnostics` (compile-time)
+/// and the tessellation path use `as_wire_str()` so log and wire are
+/// structurally pinned to the same mapping.
 /// MCP consumers and TypeScript code must compare against PascalCase strings.
 fn diagnostics_to_info(diagnostics: &[Diagnostic], file_path: &str, source: &str) -> Vec<DiagnosticInfo> {
     if diagnostics.is_empty() {
@@ -1411,12 +1414,7 @@ fn diagnostics_to_info(diagnostics: &[Diagnostic], file_path: &str, source: &str
                 column,
                 end_line,
                 end_column,
-                severity: match diag.severity {
-                    Severity::Error => "Error",
-                    Severity::Warning => "Warning",
-                    Severity::Info => "Info",
-                }
-                .to_owned(),
+                severity: diag.severity.as_wire_str().to_owned(),
                 message: diag.message.clone(),
                 code: None,
             }
