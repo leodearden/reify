@@ -12,9 +12,11 @@ drift after Task 1866's string-ID normalization migration:
 
 A fourth invariant (subtask IDs and deps) is also enforced **by default**
 (``--check-subtasks``, on since Task 1989).  The upstream serializer guard in
-``normalize_tasks_json.py`` coerces numeric subtask IDs to strings on every
-commit, so enabling this invariant by default is safe.  Use
-``--no-check-subtasks`` as an explicit escape hatch if needed.
+``normalize_tasks_json.py`` coerces numeric subtask ``id`` fields to strings
+on every commit; it does **not** touch ``dependencies[]`` entries, but tm-core
+emits deps as strings in practice, so enabling both subtask invariants by
+default is safe.  Use ``--no-check-subtasks`` as an explicit escape hatch if
+upstream ever regresses.
 
 Top-level key convention:
 Tag namespaces are top-level keys whose names do **not** start with ``_``.
@@ -50,9 +52,11 @@ def main() -> None:
         default=True,
         help=(
             "Apply invariants to subtask arrays (default: on).  The upstream "
-            "normalize_tasks_json.py coerces numeric subtask IDs to strings on "
-            "every commit, so this guard is safe to keep enabled.  Use "
-            "--no-check-subtasks as an explicit escape hatch when needed."
+            "normalize_tasks_json.py coerces numeric subtask `id` fields to "
+            "strings on every commit but does not touch `dependencies[]` "
+            "entries; tm-core emits deps as strings in practice, so this guard "
+            "is safe to keep enabled.  Use --no-check-subtasks as an escape "
+            "hatch if upstream ever regresses."
         ),
     )
     args = parser.parse_args()
