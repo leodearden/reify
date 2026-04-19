@@ -151,7 +151,7 @@ structure def S : HasX {}
 /// searching for the cascade message, a Warning-severity offender would be
 /// invisible and the test would silently pass — the invariant inverted.
 #[test]
-#[should_panic(expected = "type mismatch for trait")]
+#[should_panic(expected = "unexpected 'type mismatch for trait' cascade")]
 fn helper_flags_cascade_at_warning_severity() {
     // CompiledModule has many fields; cheapest way to obtain a valid instance
     // is a trivial compile, then overwrite .diagnostics with synthetic entries.
