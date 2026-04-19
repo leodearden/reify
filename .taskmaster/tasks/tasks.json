@@ -40187,11 +40187,11 @@
         "description": "In crates/reify-compiler/src/type_compat.rs, both `implicitly_converts_to(from, to)` and `type_compatible(param_ty, arg_ty)` short-circuit to `true` when EITHER side is Type::Error. The producer-side guard (`from.is_error()` / `arg_ty.is_error()`) is the anti-cascade path: a poisoned expression feeds into a consumer and must not trigger a second diagnostic. The mirror direction (`to.is_error()` / `param_ty.is_error()`) is conceptually dubious — no legitimate call site should ever pass Type::Error as the *expected* type, so silently returning `true` can mask a bug where Type::Error leaks into a parameter position (e.g. registry lookup returning Error where a concrete type was expected). Evaluate whether the mirror direction can be tightened to only short-circuit on the producer side, with a `debug_assert` (or a `cfg(debug_assertions)` panic) on any call site that legitimately passes Type::Error as `to`/`param_ty`. If the mirror short-circuit stays, document which consumers depend on it. Review followup from task 1912; suggestion S2.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:50:29.992Z",
+        "updatedAt": "2026-04-19T17:40:45.568Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/type_compat.rs",
@@ -40239,11 +40239,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, the \"unknown member on self\" branch (~lines 731-737) now returns `CompiledExpr::literal(Value::Undef, Type::Error)` to activate the anti-cascade guard (task-448 / task-1912). However, other diagnostic-producing sites in `compile_expr_guarded` may still return `CompiledExpr::literal(Value::Undef, Type::Real)` alongside a `diagnostics.push(Diagnostic::error(...))`. Asymmetric producer coverage means cascades will still fire whenever those other producers run. Action: grep `crates/reify-compiler/src/expr.rs` for `Value::Undef, Type::Real` pairs adjacent to `Diagnostic::error` pushes, and either (a) convert each producer to emit `Type::Error`, or (b) document in the module header which producers intentionally keep `Type::Real` and why. Related: task 448 (parent anti-cascade work), task 936 (trait conformance sentinel). Review followup from task 1912; suggestion S5.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:27.802Z",
+        "updatedAt": "2026-04-19T17:40:45.674Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -40348,11 +40348,11 @@
         "description": "Two review suggestions from Task 1821 on `crates/reify-compiler/src/geometry.rs` (the `all_dispatch_functions_accounted_for` test block around lines 603-755):\n\n1. **Reduce breakdown-comment duplication (lines 657-665).** The doc comment on `EXPECTED_DISPATCH_COUNT` re-enumerates every function name already in `GEOM_ARG_FUNCTIONS` / `NO_GEOM_ARG_FUNCTIONS` / boolean_ops / loft, creating a fourth place to keep in sync. The maintenance rule only mentions updating one list and the constant, so the parenthetical names will silently drift. Fix: drop the parenthetical enumerations and keep only per-category counts (e.g. `- GEOM_ARG_FUNCTIONS   14`), or delete the breakdown entirely — the lists are the single source of truth.\n\n2. **Close the reverse-direction gap (lines 748-754).** The revised assertion still only cross-validates the lists against themselves plus a hand-maintained constant. Nothing touches the actual match arms in `compile_geometry_call`, so an arm added there without a corresponding list entry remains undetected — which is the failure mode the module-level comment (lines 603-609) and the test's doc (lines 714-718) explicitly motivate catching. Fix: add a companion test that scans the source of `compile_geometry_call` via `include_str!(\"geometry.rs\")` plus a simple regex over `\"name\" =>` patterns in the match block, then cross-checks the extracted dispatch set against the four lists. This closes the gap without a procedural macro.\n\nBoth suggestions come from reviewer_comprehensive on Task 1821.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:04:47.646Z",
+        "updatedAt": "2026-04-19T17:40:45.824Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs"
@@ -41660,7 +41660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T17:40:45.466Z",
+      "lastModified": "2026-04-19T17:40:45.824Z",
       "taskCount": 1985,
       "completedCount": 1684,
       "tags": [
