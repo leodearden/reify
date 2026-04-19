@@ -889,3 +889,229 @@ pub(crate) fn collect_all_requirements(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unit test for the Option B fix (task 1951).
+    ///
+    /// This test exercises the code path the integration-level
+    /// `phantom_let_advertisement_contract_for_future_parser_extension` test in
+    /// `trait_merge_tests.rs` CANNOT reach: it hand-builds a `RequirementKind::Let`
+    /// requirement (not parseable from reify source today — see
+    /// `let_type_disambiguation_tests.rs:470-497` and esc-1951-6) and verifies that
+    /// the Option B guard in `available_defaults` suppresses the phantom
+    /// `(name, Let) -> Type::Real` entry for names recorded in `pass2_skipped`.
+    ///
+    /// ## Scenario
+    ///
+    /// - **TraitX**: requires `let x : Length` (hand-built `RequirementKind::Let` — not
+    ///   parser-reachable today)
+    /// - **TraitY**: provides `param x : Length` — Pass 1 claims the scope slot for "x"
+    /// - **TraitZ**: provides `let x = 5.5` (unannotated; `cell_type: None`) — Pass 2
+    ///   sees the slot already claimed and records "x" in `pass2_skipped`
+    /// - **Structure S : TraitX + TraitY + TraitZ { }** — no member override
+    ///
+    /// ## Expected behavior (post-fix)
+    ///
+    /// The `pass2_skipped.contains(name)` guard in the `DefaultKind::Let` arm of
+    /// `available_defaults` returns `None` before reaching the `Type::Real` fallback.
+    /// The `RequirementKind::Let` lookup for "x" finds no entry → the `None` arm fires →
+    /// correct "missing required member" diagnostic (not the spurious "available default
+    /// has Real" phantom type-mismatch).
+    ///
+    /// ## Pre-fix behavior (should NOT happen after fix)
+    ///
+    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::Real`.
+    /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
+    /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
+    ///
+    /// This test **FAILS on the unpatched code** and **PASSES after the Option B fix**.
+    #[test]
+    fn option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name() {
+        // --- Build CompiledTrait fixtures ---
+
+        // TraitX: requires `let x : Length` (hand-built — not parser-reachable)
+        let trait_x = CompiledTrait {
+            name: "TraitX".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "x".to_string(),
+                kind: RequirementKind::Let(Type::length()),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // TraitY: `param x : Length` — no default expression needed.
+        // Pass 1 registers "x" → Type::length() in the scope.
+        let trait_y = CompiledTrait {
+            name: "TraitY".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Param {
+                    cell_type: Type::length(),
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "x".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None, // no default expression
+                        where_clause: None,
+                        annotations: vec![],
+                        span: SourceSpan::empty(0),
+                        content_hash: ContentHash(0),
+                    },
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // TraitZ: `let x = 5.5` (unannotated; cell_type: None).
+        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" already in scope,
+        // and records "x" in pass2_skipped (no inferred_let_exprs cache entry).
+        let trait_z = CompiledTrait {
+            name: "TraitZ".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: None,
+                    let_decl: reify_syntax::LetDecl {
+                        name: "x".to_string(),
+                        doc: None,
+                        is_pub: false,
+                        type_expr: None,
+                        value: reify_syntax::Expr {
+                            kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                            span: SourceSpan::empty(0),
+                        },
+                        where_clause: None,
+                        annotations: vec![],
+                        span: SourceSpan::empty(0),
+                        content_hash: ContentHash(0),
+                    },
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // Structure S : TraitX + TraitY + TraitZ { } — no member overrides
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![
+                reify_syntax::TraitBoundRef {
+                    name: "TraitX".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+                reify_syntax::TraitBoundRef {
+                    name: "TraitY".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+                reify_syntax::TraitBoundRef {
+                    name: "TraitZ".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+            ],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let trait_registry: HashMap<String, &CompiledTrait> = [
+            ("TraitX".to_string(), &trait_x),
+            ("TraitY".to_string(), &trait_y),
+            ("TraitZ".to_string(), &trait_z),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let enum_defs: &[reify_types::EnumDef] = &[];
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // --- Assertion 1: no phantom type-mismatch diagnostic ---
+        // Pre-fix: `available_defaults` had `("x", Let) -> Real`; the
+        // RequirementKind::Let lookup found it, `implicitly_converts_to(Real, Length)` was
+        // false, and a spurious "requirement expects …, available default has Real"
+        // diagnostic was emitted.
+        // Post-fix: no phantom entry → this filter collects nothing.
+        let phantom_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("available default")
+                    && d.message.contains("Real")
+                    && d.message.contains('x')
+            })
+            .collect();
+        assert!(
+            phantom_diags.is_empty(),
+            "Option B fix violated: phantom `(x, Let) -> Type::Real` advertisement caused \
+             a spurious type-mismatch diagnostic. Expected no phantom diagnostic. Got: {:?}",
+            phantom_diags
+        );
+
+        // --- Assertion 2: correct "missing required member" diagnostic IS present ---
+        // With the phantom entry absent, the None arm of the available_defaults lookup
+        // fires and emits the correct "missing required member" diagnostic.
+        let missing_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("missing required member") && d.message.contains("x")
+            })
+            .collect();
+        assert_eq!(
+            missing_diags.len(),
+            1,
+            "Expected exactly one 'missing required member' diagnostic for 'x' (Option B fix). \
+             Got: {:?}",
+            diagnostics
+        );
+    }
+}

@@ -1401,42 +1401,48 @@ structure def S : TraitA + TraitB {
     );
 }
 
-/// Regression test for task 1951: `pass2_skipped` names must not be advertised
-/// in the `available_defaults` map as phantom `(name, Let) -> Type::Real` entries.
+/// Forward-compatibility contract for task 1951: once `RequirementKind::Let` is
+/// parser-reachable, this test will start catching regressions against the Option B
+/// fix in `conformance.rs`.
 ///
-/// ## Background
+/// ## Why this is a forward-compat placeholder (not a behavioral regression test)
 ///
-/// The full scenario from task 1951 requires trait X with `let x : Length` (no `=
-/// expr`), which makes X emit a `RequirementKind::Let` for `x`. That syntax is
-/// NOT reachable from the reify parser today: `LetDecl.value` is `Expr`, not
-/// `Option<Expr>`, so `lower_let` always demands a value. The parser pins this
-/// behavior in `let_type_disambiguation_tests.rs:470-497`, and the comment at
-/// `trait_merge_tests.rs:280-284` acknowledges that `RequirementKind::Let` is
-/// unreachable from source. Consequently the literal 3-trait X+Y+Z reproducer
-/// from the task description cannot be written today (see esc-1951-6).
+/// The full 3-trait scenario from task 1951 requires trait X with `let x : Length`
+/// (no `= expr`), which emits `RequirementKind::Let` for `x`.  That syntax is NOT
+/// reachable from the reify parser today: `LetDecl.value` is `Expr`, not
+/// `Option<Expr>`, so `lower_let` always requires a value expression.  The parser
+/// pins this behavior in `let_type_disambiguation_tests.rs:470-497`, and the comment
+/// at `trait_merge_tests.rs:280-284` acknowledges that `RequirementKind::Let` is
+/// unreachable from source.  See also esc-1951-6.
+///
+/// Consequence: in the currently reachable universe, the phantom `(x, Let)` entry in
+/// `available_defaults` is dormant — no `RequirementKind::Let` lookup ever fires
+/// against it — so the phantom-signature guard (assertion 3) passes both before and
+/// after the Option B fix.  This test therefore **cannot distinguish** the patched
+/// binary from the unpatched one; all three assertions pass unconditionally today.
+///
+/// The behavioral unit test that **does** distinguish them (and fails on the unpatched
+/// code) lives in `conformance.rs::tests::option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`.
+/// It hand-builds a `RequirementKind::Let` requirement and verifies the phantom
+/// diagnostic is absent after the fix.
 ///
 /// ## What this test exercises
 ///
-/// The reachable Y+Z subset suffices to populate `pass2_skipped["x"]`: Pass 1
-/// claims the scope slot with Y's annotated Param; Pass 2 encounters Z's
-/// unannotated Let and records the name in `pass2_skipped` instead of caching
-/// the compiled expression. Without the fix, `available_defaults` would still
-/// emit `("x", Let) -> Type::Real` for Z's entry, advertising a Let default that
-/// has no backing injection cell. With the fix, the phantom entry is suppressed.
-///
-/// In the reachable universe the phantom entry is dormant (no `RequirementKind::Let`
-/// lookup ever reaches it), so the phantom-signature assertion (assertion 3 below)
-/// passes both before and after the fix. It serves as a forward-compatibility
-/// contract: if a parser extension later exposes `let x : Type` as a requirement,
-/// the no-spurious-diagnostic invariant is already locked in here.
+/// The reachable Y+Z subset suffices to populate `pass2_skipped["x"]`: Pass 1 claims
+/// the scope slot with Y's annotated Param; Pass 2 encounters Z's unannotated Let and
+/// records the name in `pass2_skipped` instead of caching the expression.  The
+/// assertions lock in the correct cell-shape (single Param cell, no spurious Let cell)
+/// and the phantom-signature wording contract, so they will automatically detect a
+/// regression if a parser extension later exposes `let x : Type` as a requirement.
 ///
 /// ## Assertions
 /// 1. Zero error diagnostics — structure compiles cleanly.
 /// 2. Exactly 1 `x` value cell, kind `Param`, type `Length` — no spurious Let cell.
 /// 3. No diagnostic combines the phrases "available default" and "Real" for member
-///    `x` — the phantom-signature wording guard.
+///    `x` — the phantom-signature wording guard (dormant today; activates when
+///    `RequirementKind::Let` becomes parser-reachable).
 #[test]
-fn pass2_skipped_name_omitted_from_available_defaults() {
+fn phantom_let_advertisement_contract_for_future_parser_extension() {
     // trait Y provides an annotated Param: claims the scope slot in Pass 1.
     // trait Z provides an unannotated Let: Pass 2 sees the slot occupied,
     // records "x" in pass2_skipped, and skips caching the expression.
