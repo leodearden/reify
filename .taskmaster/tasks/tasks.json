@@ -41044,6 +41044,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1963",
+        "title": "Wire \"Save views\" button into ViewSelector dropdown",
+        "description": "Add the \"Save views\" action into the ViewSelector dropdown (next to \"Manage views...\") that invokes the sidecar-write primitive shipped by Task 1749. Blocked until Task 1746 actually ships ViewSelector.tsx / ViewManageModal.tsx.",
+        "details": "Task 1749 shipped the persistence primitives (`gui/src/utils/sidecarPersistence.ts` + `read_view_sidecar`/`write_view_sidecar` Tauri commands) with a public API but could not wire the UI because `gui/src/panels/ViewSelector.tsx` was absent at the time. Once 1746's UI work lands for real, add a \"Save views\" button to the selector dropdown that calls the sidecar writer with the current `PersistentViewState`. Confirm visible user feedback (toast) on success/failure.\n\n### memory_hints\n- search: \"sidecarPersistence write_view_sidecar\"\n- search: \"ViewSelector dropdown Manage views\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1746,
+          1749
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -41053,7 +41067,10 @@
       "completedCount": 1683,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-19T06:55:46.586Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-19T06:55:46.611Z"
     }
   }
 }
