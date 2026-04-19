@@ -1315,4 +1315,64 @@ mod tests {
              top-level-only boundary; nested errors are not yet detected"
         );
     }
+
+    // ── TraitObject tests (task-1874) ───────────────────────────────────────
+    // The `Type::TraitObject(String)` variant represents a nominal reference to
+    // a trait name used as a type (e.g. `param material : Material`). It mirrors
+    // the `StructureRef`/`TypeParam`/`Enum` naming-variant pattern: Display emits
+    // the bare name, `as_name` returns `Some(name)`, `is_numeric` returns false.
+
+    #[test]
+    fn type_trait_object_display() {
+        assert_eq!(
+            format!("{}", Type::TraitObject("Material".into())),
+            "Material"
+        );
+        assert_eq!(
+            format!("{}", Type::TraitObject("Rigid".into())),
+            "Rigid"
+        );
+    }
+
+    #[test]
+    fn type_trait_object_as_name_some() {
+        assert_eq!(
+            Type::TraitObject("Material".into()).as_name(),
+            Some("Material")
+        );
+    }
+
+    #[test]
+    fn type_trait_object_not_numeric() {
+        assert!(!Type::TraitObject("Material".into()).is_numeric());
+    }
+
+    #[test]
+    fn type_trait_object_not_error() {
+        assert!(!Type::TraitObject("Material".into()).is_error());
+    }
+
+    #[test]
+    fn type_trait_object_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let t_a = Type::TraitObject("Material".into());
+        let t_b = Type::TraitObject("Material".into());
+        let t_other = Type::TraitObject("Rigid".into());
+
+        // Equality: same name equal, different name not equal
+        assert_eq!(t_a, t_b);
+        assert_ne!(t_a, t_other);
+
+        // Distinctness: TraitObject("Material") != StructureRef("Material"),
+        // because trait-typed values have different semantics than concrete
+        // structure references.
+        assert_ne!(t_a, Type::StructureRef("Material".into()));
+
+        // Hash consistency via HashMap
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(t_a.clone(), "material");
+        assert_eq!(map.get(&t_b), Some(&"material"));
+        assert_eq!(map.get(&t_other), None);
+    }
 }
