@@ -40596,11 +40596,11 @@
         "description": "The renamed test `compile_modify_op_chamfer_non_geometry_target_fallback` (crates/reify-compiler/src/lib.rs:2395) compiles at the top level with step_offset=0, so asserting `GeomRef::Step(0)` is indistinguishable from the old bug-preserving behavior. Add a companion test that places `chamfer(scalar_param, dist)` in a context where step_offset > 0 (e.g. nested inside a boolean op / let chain after prior ops in the same realization) and assert the target is `GeomRef::Step(step_offset)`, not `Step(0)`. This will catch a future regression where geom_ref fell back to `Step(0)` unconditionally. Follow-up from task 1823 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:11:39.141Z",
+        "updatedAt": "2026-04-19T06:04:22.166Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/lib.rs"
@@ -40613,11 +40613,11 @@
         "description": "The new `chamfer_let_bound_target_ops` / `fillet_let_bound_target_ops` tests in crates/reify-compiler/tests/let_scope_tests.rs:975-1018 cover the happy path (let-bound cylinder target resolves to Step(0)) but do not exercise an inline (non-let) geometry arg or a chained modifier. Add a test compiling `let result = chamfer(shell(body, 0.5mm), 2mm)` and assert the op sequence `[Cylinder, Modify(Shell, 0), Modify(Chamfer, 1)]` to cover nested modifier resolution and verify chamfer/fillet participate correctly in recursive geometry resolution (sub_ops extension). Follow-up from task 1823 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:12:17.126Z",
+        "updatedAt": "2026-04-19T06:04:22.260Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/let_scope_tests.rs"
@@ -40633,11 +40633,11 @@
         "description": "Review follow-up from Task 1938. After the multi-tag iteration landed in scripts/validate_tasks_json.py, three loose ends remain:\n\n1. Module docstring (scripts/validate_tasks_json.py line ~10) still says invariant 3 is \"No duplicate `id` values across `master.tasks[]`\". Update to reflect that invariants apply per-tag and tags are independent namespaces (e.g., \"No duplicate `id` values within any tag's `tasks[]`; tags are independent namespaces.\").\n\n2. Module docstring should also describe the top-level convention used by the loop at scripts/validate_tasks_json.py:64-66 — tags are top-level keys whose names do not start with `_`; any non-tag metadata must be underscore-prefixed. Alternative: replace the loose prefix check with an explicit allow-list of known metadata keys. Prefer documenting the underscore convention since it matches the existing code and will not noisily warn if tm-core adds an `_schemaVersion`-style key; but explicitly call out in the docstring why non-tag metadata must be underscored so future maintainers understand the invariant.\n\n3. Add test coverage in tests/infra/test_tasks_json_schema.sh (around lines 177-219 where unexpected-key WARN tests live) for two untested behavioral promises:\n   - A `_meta` (underscore-prefixed) sibling of `master` should produce exit 0 and NO \"WARN\" on stderr (i.e. underscore keys are silently skipped).\n   - The same task id (e.g. `\"1\"`) appearing in both `master` and a sibling tag (e.g. `feature-x`) must NOT be flagged as a duplicate (tags are independent namespaces — the positive counterpart of the existing cross-tag-orphan-dep test).\n\nFiles:\n- scripts/validate_tasks_json.py\n- tests/infra/test_tasks_json_schema.sh\n\nMemory hints: search for \"validate_tasks_json multi-tag\", get_task 1938 for the originating merged change. Relates to sibling task 1939 (malformed-schema hardening) — that task covers type-assertion gaps, not docstring/coverage gaps, so these are independent.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:13:02.822Z",
+        "updatedAt": "2026-04-19T06:04:22.474Z",
         "metadata": {
           "modules": [
             "scripts/validate_tasks_json.py",
@@ -40951,7 +40951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T06:04:22.068Z",
+      "lastModified": "2026-04-19T06:04:22.474Z",
       "taskCount": 1949,
       "completedCount": 1673,
       "tags": [
