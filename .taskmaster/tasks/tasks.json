@@ -41839,10 +41839,11 @@
         "description": "Review follow-up from task 1972 (suggestion 2, reviewer_comprehensive, non-blocking).\n\ncrates/reify-compiler/tests/constructor_hash_tests.rs:72-85 covers single-pattern/single-arg happy paths but not multi-arg UserFunctionCall or multi-arm / multi-pattern Match against the compiler's inline emission. A refactor that e.g. folds arms in reverse, or stops combining the second pattern in a multi-pattern arm, would be caught only by the unit test in expr.rs — not by these integration tests.\n\nFix: add one integration case per variant with ≥2 args and ≥2 arms / multi-pattern arms (e.g. `match c { Red | Blue => 1, _ => 2 }` and a two-arg function call) to pin per-iteration combine order end-to-end against the compiler.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-19T21:42:26.548Z"
       },
       {
         "id": "2002",
@@ -41852,7 +41853,7 @@
         "testStrategy": "",
         "status": "pending",
         "dependencies": [
-          1992
+          "1992"
         ],
         "priority": "low",
         "subtasks": []
@@ -41867,19 +41868,29 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2004",
+        "title": "OCCT flock gate: narrow scope from workspace-wide to OCCT-touching crates only",
+        "description": "Follow-up to task 1992 review. Current wrapper gates `cargo test --workspace` which serializes ALL crates, not just OCCT-touching ones. Split test_command into gated OCCT pass and ungated pass for other crates (tree-sitter, protocol, persistence, etc). Depends on 1992.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1992"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-19T21:40:46.091Z",
-      "taskCount": 1994,
+      "lastModified": "2026-04-19T21:42:26.549Z",
+      "taskCount": 1997,
       "completedCount": 1699,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-19T21:41:33.778Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-19T21:41:35.538Z"
+      ]
     }
   }
 }
