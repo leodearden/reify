@@ -18,8 +18,9 @@ export interface KeyboardShortcutCallbacks {
  * corresponding callback key on KeyboardShortcutCallbacks. Exported so the
  * invariant test can assert every bound shortcut has an entry here.
  *
- * Shortcuts without a callback (undo, redo, fitToView) are omitted —
- * the registry loop skips them when no entry is found here.
+ * A shortcut is absent when it is `disabled: true` on SHORTCUTS (undo, redo),
+ * or when it has no `bind` field (fitToView). The registry loop skips any id
+ * not found here.
  *
  * Keyed by ShortcutId so typos in shortcut IDs (e.g. 'toogleChat') are
  * caught at compile time rather than silently failing at runtime.
