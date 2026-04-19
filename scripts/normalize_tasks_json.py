@@ -30,6 +30,17 @@ def normalize(data: dict) -> bool:
     (so callers can skip a write).
     """
     changed = False
+
+    def _normalize_deps(holder: dict) -> bool:
+        deps = holder.get("dependencies")
+        if not isinstance(deps, list):
+            return False
+        new_deps = [str(d) if isinstance(d, int) else d for d in deps]
+        if new_deps != deps:
+            holder["dependencies"] = new_deps
+            return True
+        return False
+
     for tag_data in data.values():
         if not isinstance(tag_data, dict):
             continue
@@ -42,6 +53,8 @@ def normalize(data: dict) -> bool:
             if isinstance(task.get("id"), int):
                 task["id"] = str(task["id"])
                 changed = True
+            if _normalize_deps(task):
+                changed = True
             subtasks_list = task.get("subtasks", [])
             if not isinstance(subtasks_list, list):
                 continue
@@ -50,6 +63,8 @@ def normalize(data: dict) -> bool:
                     continue
                 if isinstance(subtask.get("id"), int):
                     subtask["id"] = str(subtask["id"])
+                    changed = True
+                if _normalize_deps(subtask):
                     changed = True
     return changed
 
