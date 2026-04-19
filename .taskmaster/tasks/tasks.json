@@ -41548,7 +41548,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            ".gitignore"
+          ],
+          "modules": [
+            "gui/dist"
+          ]
+        }
       },
       {
         "id": "1988",
@@ -41559,7 +41567,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": "1989",
