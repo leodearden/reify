@@ -165,6 +165,33 @@ pub enum GeometryOp {
         profile: GeometryHandleId,
         path: GeometryHandleId,
     },
+    /// Extrude a 2D profile symmetrically along Z axis — distance/2 each way.
+    ///
+    /// The extruded solid's centroid (along the extrusion direction) aligns
+    /// with the original profile's centroid. Implemented as a
+    /// `make_prism(profile, 0, 0, distance)` followed by a
+    /// `translate_shape(result, 0, 0, -distance/2)`.
+    ExtrudeSymmetric {
+        profile: GeometryHandleId,
+        distance: Value,
+    },
+    /// Sweep a profile along a spine path, with an auxiliary guide wire
+    /// constraining orientation (BRepOffsetAPI_MakePipeShell + SetMode(aux, false)).
+    SweepGuided {
+        profile: GeometryHandleId,
+        path: GeometryHandleId,
+        guide: GeometryHandleId,
+    },
+    /// Loft through multiple profile sections with one or more guide wires.
+    ///
+    /// Uses BRepOffsetAPI_MakePipeShell: first guide becomes the spine, each
+    /// profile is added as a section via `Add`, and an optional second guide
+    /// is applied via `SetMode(aux_wire, false)` as an auxiliary constraint.
+    /// Requires `profiles.len() >= 2` and `guides.len() >= 1`.
+    LoftGuided {
+        profiles: Vec<GeometryHandleId>,
+        guides: Vec<GeometryHandleId>,
+    },
     /// Create a line segment wire between two points.
     LineSegment {
         x1: f64,
