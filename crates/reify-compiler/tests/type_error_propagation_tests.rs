@@ -7,7 +7,7 @@
 //! tests exercise (see step-12).
 
 use reify_test_support::compile_source;
-use reify_types::{CompiledExpr, CompiledExprKind, Severity, Type};
+use reify_types::{CompiledExpr, CompiledExprKind, QuantifierKind, Severity, Type, Value, ValueCellId};
 
 /// Walk a `CompiledExpr` tree and return the first node whose `result_type`
 /// satisfies the predicate, if any. Used to search for a `Type::Error`-typed
@@ -281,5 +281,61 @@ structure S {
         "expected NO type-mismatch/incompatible cascade on top of the stub \
          (anti-cascade contract), got: {:?}",
         errors,
+    );
+}
+
+// ── task-1920: find_node helper exhaustivity ─────────────────────────────────
+
+#[test]
+fn find_node_traverses_previously_unhandled_kinds() {
+    // Compile-time exhaustivity (enforced by the exhaustive match in find_node,
+    // which has no `_` wildcard — see task-1920 / task-1912 S4 follow-up) is
+    // the primary guarantee that new CompiledExprKind variants won't silently
+    // return None. This test is a behavioral smoke check covering three
+    // representative structural shapes that previously fell through to `_ => None`:
+    //   1. container-of-children (ListLiteral)
+    //   2. single-child wrapper  (OptionSome)
+    //   3. two-child compound    (Quantifier, searched through its collection)
+
+    let error_leaf = || CompiledExpr::literal(Value::Bool(false), Type::Error);
+    let bool_leaf = || CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let pred = &|n: &CompiledExpr| n.result_type == Type::Error;
+
+    // 1. ListLiteral: find_node must recurse into list elements.
+    let list_expr = CompiledExpr::list_literal(
+        vec![error_leaf()],
+        Type::List(Box::new(Type::Error)),
+    );
+    assert!(
+        find_node(&list_expr, pred).is_some(),
+        "find_node failed to recurse into ListLiteral elements; \
+         previously fell through to `_ => None`",
+    );
+
+    // 2. OptionSome: find_node must recurse into the inner expression.
+    let some_expr = CompiledExpr::option_some(
+        error_leaf(),
+        Type::Option(Box::new(Type::Error)),
+    );
+    assert!(
+        find_node(&some_expr, pred).is_some(),
+        "find_node failed to recurse into OptionSome inner expression; \
+         previously fell through to `_ => None`",
+    );
+
+    // 3. Quantifier: find_node must recurse into the collection subtree.
+    //    The predicate is a non-Error Bool literal so any find_node result
+    //    must come from the collection, not the predicate.
+    let quant_expr = CompiledExpr::quantifier(
+        QuantifierKind::Exists,
+        "x".to_string(),
+        ValueCellId::new("S", "x"),
+        error_leaf(), // collection — Type::Error
+        bool_leaf(),  // predicate  — Type::Bool (no Error here)
+    );
+    assert!(
+        find_node(&quant_expr, pred).is_some(),
+        "find_node failed to recurse into Quantifier collection; \
+         previously fell through to `_ => None`",
     );
 }
