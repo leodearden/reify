@@ -880,4 +880,115 @@ mod tests {
             );
         }
     }
+
+    // ─── extrude_symmetric (task-322 step-5) ─────────────────────────────────
+
+    /// extrude_symmetric() with 1 arg (missing distance) should produce diagnostics.
+    #[test]
+    fn extrude_symmetric_compiler_rejects_one_arg() {
+        let source = r#"structure S {
+    param profile: Scalar = 5mm
+    let result = extrude_symmetric(profile)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_extsym1"),
+        );
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        let has_op = template.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::ExtrudeSymmetric,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected error diagnostic for wrong arg count (1 arg)"
+        );
+        assert!(
+            !has_op,
+            "should not produce Sweep(ExtrudeSymmetric) op with wrong arg count (1 arg)"
+        );
+    }
+
+    /// extrude_symmetric() with 3 args should produce diagnostics.
+    #[test]
+    fn extrude_symmetric_compiler_rejects_three_args() {
+        let source = r#"structure S {
+    param profile: Scalar = 5mm
+    param dist: Scalar = 10mm
+    let result = extrude_symmetric(profile, dist, dist)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_extsym3"),
+        );
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        let has_op = template.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::ExtrudeSymmetric,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected error diagnostic for wrong arg count (3 args)"
+        );
+        assert!(
+            !has_op,
+            "should not produce Sweep(ExtrudeSymmetric) op with wrong arg count (3 args)"
+        );
+    }
+
+    /// extrude_symmetric() with 2 args should produce a Sweep(ExtrudeSymmetric) realization.
+    #[test]
+    fn extrude_symmetric_compiler_accepts_two_args() {
+        let source = r#"structure S {
+    param profile: Scalar = 5mm
+    param dist: Scalar = 10mm
+    let result = extrude_symmetric(profile, dist)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_extsym2"),
+        );
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for extrude_symmetric call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(
+                op,
+                crate::CompiledGeometryOp::Sweep {
+                    kind: crate::SweepKind::ExtrudeSymmetric,
+                    ..
+                }
+            ),
+            "expected Sweep(ExtrudeSymmetric), got {:?}",
+            op
+        );
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "expected no diagnostics for extrude_symmetric(profile, dist), got: {:?}",
+            compiled.diagnostics
+        );
+    }
 }
