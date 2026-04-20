@@ -42568,11 +42568,11 @@
         "description": "Lock in the current behaviour that passing a Real (or other non-struct, non-trait) literal to a trait-typed param fires the 'does not conform to trait' diagnostic. The `_` fallthrough in `check_trait_arg_conformance` handles this case (arg_call_name is None so the suppression block does not apply). Adding a test guards against accidental regressions to the suppression heuristic.",
         "details": "## Scope\nReview suggestion on task 1874 (esc-1874-31, reviewer_comprehensive).\n\n## Location\ncrates/reify-compiler/src/conformance.rs:983-1000\n\n## Acceptance\n- New test in `crates/reify-compiler/tests/trait_typed_param_tests.rs` that:\n  - Declares a struct `Host` with `param m : Material` (Material is a trait).\n  - Instantiates `Host(m: 1.0)` (Real literal).\n  - Asserts the expected 'type 'real' does not conform to trait Material' (or equivalent) error fires.\n- Test does not regress on existing suppression paths.\n\n### memory_hints\n- search: \"check_trait_arg_conformance suppression arg_call_name\"\n- search: \"trait-typed param Real literal\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:20:25.182Z"
+        "updatedAt": "2026-04-20T12:49:25.779Z"
       },
       {
         "id": "2026",
@@ -42818,9 +42818,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T12:48:23.469Z",
+      "lastModified": "2026-04-20T12:49:25.779Z",
       "taskCount": 2030,
-      "completedCount": 1737,
+      "completedCount": 1738,
       "tags": [
         "master"
       ]
