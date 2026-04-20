@@ -36784,7 +36784,7 @@
         "description": "Implement two-layer view persistence. Layer 1: localStorage for ephemeral per-file view state. Layer 2: sidecar .ri.views.json for durable/shareable persistence. Entity path exact matching on re-evaluation, stale path preservation for undo/branch-switch restoration, and fuzzy path recovery with user confirmation for renames.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 8 (View Persistence).\n\n### Implementation\n\n1. **localStorage layer** (`stores/viewPersistence.ts`)\n   - Key: `reify:views:{absoluteFilePath}`\n   - Value: JSON-serialized `PersistentViewState`:\n     - `activeViewId: string`\n     - `userViews: ViewDefinition[]` (auto views are NOT persisted — they're regenerated)\n     - `viewportCameras: Map<string, CameraState>`\n     - `timestamp: string` (ISO 8601)\n   - Save: debounced (500ms) after any view state change\n   - Load: on file open, before auto view generation\n   - Priority: sidecar file > localStorage > fresh defaults\n\n2. **Sidecar file layer** (`stores/sidecarPersistence.ts`)\n   - File: `{filename}.ri.views.json` alongside the `.ri` file\n   - Same schema as localStorage value, plus:\n     - `version: string` (schema version for forward compat)\n   - Write: on explicit \"Save views\" action (button in view management UI) + on clean app exit\n   - Read: on file open (takes priority over localStorage)\n   - New Tauri commands:\n     - `read_view_sidecar(ri_path: string) -> Option<PersistentViewState>`\n     - `write_view_sidecar(ri_path: string, state: PersistentViewState) -> Result<()>`\n   - \"Save views\" button in view selector dropdown (next to \"Manage views...\")\n\n3. **Re-evaluation reconciliation** (extend `viewStateStore.ts`)\n   - On entity tree rebuild:\n     1. Exact match: stored paths that exist in new tree → keep visibility state\n     2. New paths: not in any stored view → apply active view's default rules\n     3. Missing paths: in stored view but not in new tree → mark as \"stale\"\n   - Stale entries: kept in view state, greyed out in tree panel (if shown at all)\n   - Auto-restoration: if a stale path reappears (undo, branch switch), its stored state is restored\n\n4. **Fuzzy path recovery** (`stores/fuzzyPathMatcher.ts`)\n   - On re-evaluation, for each stale path, attempt recovery:\n     - **Suffix match**: stale `\"Assembly.flange.geometry\"`, new `\"Assembly.bolt_flange.geometry\"` — match by shared suffix under renamed parent\n     - **Structural match**: same type name + same parent type + similar child structure\n   - Never auto-apply: if fuzzy match found, show a non-blocking notification:\n     - \"Entity 'flange' was renamed. Rebind view settings to 'bolt_flange'? [Yes] [No] [Ignore]\"\n   - \"Yes\" rebinds the stored visibility to the new path\n   - \"No\" keeps the stale entry\n   - \"Ignore\" dismisses without action\n\n5. **Camera state persistence**\n   - Per-viewport camera state saved in the same persistence layers\n   - Restored on file open\n\n### Requirements covered\nP-1, P-2, P-3, P-4, P-5, P-6\n\n### memory_hints\n- search: \"localStorage persist state\"\n- search: \"viewStateStore views active\"\n- search: \"Tauri read write file\"\n- search: \"notification toast UI\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1746",
           "1750"
@@ -36810,7 +36810,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-20T20:20:09.975Z"
+        "updatedAt": "2026-04-20T20:29:43.217Z"
       },
       {
         "id": "1750",
@@ -42593,11 +42593,11 @@
         "description": "gui/src/__tests__/App.test.tsx:642-670 asserts mockFlyToEntity was called and that one selected group appears in PropertyEditor, but does not check that the entity path routed to selectionStore.selectEntity is 'Bracket'. A regression that selected the wrong entity would still satisfy `selectedGroups.length === 1`.\n\nFix: Also assert the selected group's identity (e.g. that the data-selected element corresponds to 'Bracket', or inspect selectionStore state) so the test verifies the value routed through, not merely that something got selected.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T20:20:10.620Z",
+        "updatedAt": "2026-04-20T20:29:43.337Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -42768,7 +42768,7 @@
         "id": "2031",
         "title": "Move reify-compiler lib.rs `mod tests` to integration test file",
         "description": "Move the `mod tests` block from `crates/reify-compiler/src/lib.rs` (L1067-2656, 58 `#[test]` fns, ~1600 lines) into appropriate test files based on the type of API they test.\n\nThe `mod tests` block mixes two categories:\n\n1. **Public-API tests (~48)** — Move these to a new integration test file at `crates/reify-compiler/tests/compile_api_tests.rs`.\n2. **Internal-API tests (~10)** — Relocate each to a `#[cfg(test)] mod tests { ... }` block inside the file that owns the helper under test:\n   - Tests of `compile_curve_op` → `geometry_curve.rs`\n   - Tests of `compile_transform_op` → `geometry_transform.rs`\n   - Tests of `compile_modify_op` → `geometry_modify.rs`\n   - Tests of `compile_geometry_call` + `CompilationScope::new` → `geometry.rs` (or `scope.rs` if that's a cleaner fit — architect to decide)\n   - Tests referencing only `is_geometry_function` → `units.rs`\n\nRemove the now-empty or trimmed `mod tests` block in `lib.rs`.\n\nRevised success criteria:\n- `cargo test -p reify-compiler` runs the same total test count (all 58 + any pre-existing others) and they all pass.\n- `crates/reify-compiler/src/lib.rs` drops from 2656 → ≤ 1500 lines.\n- No visibility changes to `pub(crate)` items; no new `pub` surface; no `#[doc(hidden)]` re-exports.\n\nWhy: lib.rs is the #1 contended file (35 pending tasks serialized behind it). Shedding the test bulk unblocks wide parallelism, and this split keeps unit tests next to the units under test (standard Rust convention) while moving public-API tests out of the crate root.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "details": "",
@@ -42795,7 +42795,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-20T20:20:08.609Z"
+        "updatedAt": "2026-04-20T20:29:43.449Z"
       },
       {
         "id": "2032",
@@ -43500,7 +43500,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T20:29:43.102Z",
+      "lastModified": "2026-04-20T20:29:43.449Z",
       "taskCount": 2056,
       "completedCount": 1788,
       "tags": [
