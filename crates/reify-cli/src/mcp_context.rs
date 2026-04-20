@@ -163,9 +163,9 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
     if state.engine.is_none() {
         state.engine_construction_count += 1;
     }
-    state
-        .engine
-        .get_or_insert_with(|| reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None))
+    state.engine.get_or_insert_with(|| {
+        reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+    })
 }
 
 /// Re-apply tracked user overrides to the engine after `eval()` has rebuilt the snapshot
@@ -235,7 +235,10 @@ fn reapply_user_overrides(state: &mut CliState) {
     // Emit warn on first occurrence of a (cell_id, variant) pair; downgrade
     // repeats to debug to reduce log noise across repeated saves.
     for (cell_id, variant_tag, err_display) in mismatches {
-        if state.warned_overrides.insert((cell_id.clone(), variant_tag)) {
+        if state
+            .warned_overrides
+            .insert((cell_id.clone(), variant_tag))
+        {
             tracing::warn!(
                 cell_id = %cell_id,
                 error = %err_display,
@@ -310,8 +313,10 @@ impl ReifyToolContext for CliToolContext {
                 // Use the first label's span if available, otherwise default to (1,1)
                 let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
                 {
-                    let (l, c) = reify_types::byte_offset_to_line_col(source, label.span.start as usize);
-                    let (el, ec) = reify_types::byte_offset_to_line_col(source, label.span.end as usize);
+                    let (l, c) =
+                        reify_types::byte_offset_to_line_col(source, label.span.start as usize);
+                    let (el, ec) =
+                        reify_types::byte_offset_to_line_col(source, label.span.end as usize);
                     (l as u32, c as u32, el as u32, ec as u32)
                 } else {
                     (1, 1, 1, 1)
@@ -450,8 +455,10 @@ impl ReifyToolContext for CliToolContext {
             if template.name == entity_path {
                 // Return the span of the first value cell as a proxy for the entity
                 if let Some(cell) = template.value_cells.first() {
-                    let (line, column) = reify_types::byte_offset_to_line_col(source, cell.span.start as usize);
-                    let (end_line, end_column) = reify_types::byte_offset_to_line_col(source, cell.span.end as usize);
+                    let (line, column) =
+                        reify_types::byte_offset_to_line_col(source, cell.span.start as usize);
+                    let (end_line, end_column) =
+                        reify_types::byte_offset_to_line_col(source, cell.span.end as usize);
                     return Ok(SourceLocationInfo {
                         file_path,
                         line: line as u32,
@@ -466,8 +473,10 @@ impl ReifyToolContext for CliToolContext {
             for cell in &template.value_cells {
                 let cell_id_str = format!("{}", cell.id);
                 if cell_id_str == entity_path || cell.id.member == entity_path {
-                    let (line, column) = reify_types::byte_offset_to_line_col(source, cell.span.start as usize);
-                    let (end_line, end_column) = reify_types::byte_offset_to_line_col(source, cell.span.end as usize);
+                    let (line, column) =
+                        reify_types::byte_offset_to_line_col(source, cell.span.start as usize);
+                    let (end_line, end_column) =
+                        reify_types::byte_offset_to_line_col(source, cell.span.end as usize);
                     return Ok(SourceLocationInfo {
                         file_path,
                         line: line as u32,
@@ -607,7 +616,9 @@ impl ReifyToolContext for CliToolContext {
         // Track override so update_source can re-apply it after eval().
         // Only reached on success — edit_param failure returns early via `?`.
         state.user_overrides.retain(|(id, _)| id != &cell_id_obj);
-        state.user_overrides.push((cell_id_obj.clone(), new_value.clone()));
+        state
+            .user_overrides
+            .push((cell_id_obj.clone(), new_value.clone()));
 
         let unit = dimension_unit(&ty);
         Ok(SetParamResult {
@@ -628,7 +639,8 @@ impl ReifyToolContext for CliToolContext {
 
         // If it's a .ri file, parse/compile BEFORE committing state.
         // On parse failure, still register the file but don't update compiled/engine.
-        let pipeline_result: Option<reify_compiler::CompiledModule> = if file_path.ends_with(".ri") {
+        let pipeline_result: Option<reify_compiler::CompiledModule> = if file_path.ends_with(".ri")
+        {
             let module_name = std::path::Path::new(file_path)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -714,8 +726,7 @@ impl ReifyToolContext for CliToolContext {
 mod tests {
     use super::*;
 
-    const BRACKET_PATH: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+    const BRACKET_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
 
     // ── Source fixtures for reapply_user_overrides tests ─────────────────────
     // Each variant modifies bracket.ri's `param width` in a way that triggers a
@@ -804,8 +815,8 @@ structure Bracket {
     /// only warns from `reapply_user_overrides` are counted — unrelated warns
     /// from the compiler, engine, or constraint solver do not affect the result.
     fn run_reapply_with_source(replacement: &str) -> usize {
-        use std::sync::atomic::Ordering;
         use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
 
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::WARN)
@@ -814,12 +825,9 @@ structure Bracket {
         let _guard = tracing::subscriber::set_default(subscriber);
         let counter = counters[&tracing::Level::WARN].clone();
 
-        let project_dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures"
-        ));
-        let ctx = CliToolContext::new(project_dir);
-        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
         // Override width to 0.12 m — stores Value::Scalar[LENGTH].
         ctx.set_parameter("Bracket.width", "0.12")
             .expect("set_parameter should succeed");
@@ -829,7 +837,10 @@ structure Bracket {
         let result = ctx
             .update_source(BRACKET_PATH, replacement)
             .expect("update_source should return Ok even on override mismatch");
-        assert!(result.success, "update_source should succeed (parse/compile passed)");
+        assert!(
+            result.success,
+            "update_source should succeed (parse/compile passed)"
+        );
 
         counter.load(Ordering::Acquire) - before
     }
@@ -839,25 +850,27 @@ structure Bracket {
     /// `Engine::new` unconditionally, incrementing `engine_construction_count` to 2.
     #[test]
     fn update_source_reuses_engine_instance() {
-        let project_dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures"
-        ));
-        let ctx = CliToolContext::new(project_dir);
+        let ctx = fresh_ctx();
 
         // Establish an initial engine via load_file (count → 1).
-        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
         let count_after_load = ctx.engine_construction_count();
-        assert_eq!(count_after_load, 1, "load_file should construct exactly one engine");
+        assert_eq!(
+            count_after_load, 1,
+            "load_file should construct exactly one engine"
+        );
 
         // Minor valid edit: add a trailing space — topology is unchanged.
-        let source =
-            std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
         let modified = format!("{source} ");
         let result = ctx
             .update_source(BRACKET_PATH, &modified)
             .expect("update_source should not error");
-        assert!(result.success, "update_source should succeed with valid content");
+        assert!(
+            result.success,
+            "update_source should succeed with valid content"
+        );
 
         let count_after_update = ctx.engine_construction_count();
         assert_eq!(
@@ -872,19 +885,20 @@ structure Bracket {
     /// `load_file` calls `Engine::new` unconditionally.
     #[test]
     fn load_file_reuses_engine_across_subsequent_calls() {
-        let project_dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures"
-        ));
-        let ctx = CliToolContext::new(project_dir);
+        let ctx = fresh_ctx();
 
         // First load — engine is created (count → 1).
-        ctx.load_file(BRACKET_PATH).expect("first load_file should succeed");
+        ctx.load_file(BRACKET_PATH)
+            .expect("first load_file should succeed");
         let count_after_first = ctx.engine_construction_count();
-        assert_eq!(count_after_first, 1, "first load_file should construct exactly one engine");
+        assert_eq!(
+            count_after_first, 1,
+            "first load_file should construct exactly one engine"
+        );
 
         // Second load of the same path — engine must be reused (count stays at 1).
-        ctx.load_file(BRACKET_PATH).expect("second load_file should succeed");
+        ctx.load_file(BRACKET_PATH)
+            .expect("second load_file should succeed");
         let count_after_second = ctx.engine_construction_count();
         assert_eq!(
             count_after_second, 1,
@@ -898,19 +912,20 @@ structure Bracket {
     /// because `open_file` calls `Engine::new` unconditionally.
     #[test]
     fn open_file_reuses_engine_across_subsequent_calls() {
-        let project_dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures"
-        ));
-        let ctx = CliToolContext::new(project_dir);
+        let ctx = fresh_ctx();
 
         // First open — engine is created (count → 1).
-        ctx.open_file(BRACKET_PATH).expect("first open_file should succeed");
+        ctx.open_file(BRACKET_PATH)
+            .expect("first open_file should succeed");
         let count_after_first = ctx.engine_construction_count();
-        assert_eq!(count_after_first, 1, "first open_file should construct exactly one engine");
+        assert_eq!(
+            count_after_first, 1,
+            "first open_file should construct exactly one engine"
+        );
 
         // Second open of the same path — engine must be reused.
-        ctx.open_file(BRACKET_PATH).expect("second open_file should succeed");
+        ctx.open_file(BRACKET_PATH)
+            .expect("second open_file should succeed");
         let count_after_second = ctx.engine_construction_count();
         assert_eq!(
             count_after_second, 1,
@@ -919,8 +934,7 @@ structure Bracket {
         );
 
         // update_source after open_file must also reuse the same engine.
-        let source =
-            std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
         let modified = format!("{source} ");
         ctx.update_source(BRACKET_PATH, &modified)
             .expect("update_source should succeed");
@@ -938,13 +952,10 @@ structure Bracket {
     /// value survives a save/edit cycle.
     #[test]
     fn set_parameter_persists_across_topology_preserving_update_source() {
-        let project_dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures"
-        ));
-        let ctx = CliToolContext::new(project_dir);
+        let ctx = fresh_ctx();
 
-        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
 
         // Record the default width value.
         let params_default = ctx.get_parameters().expect("get_parameters should succeed");
@@ -973,8 +984,7 @@ structure Bracket {
         );
 
         // Topology-preserving update: append trailing whitespace.
-        let source =
-            std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
         let modified = format!("{source} ");
         ctx.update_source(BRACKET_PATH, &modified)
             .expect("topology-preserving update_source should succeed");
@@ -1050,13 +1060,10 @@ structure Bracket {
     /// set before it must not leak into the re-evaluated snapshot.
     #[test]
     fn load_file_clears_param_overrides() {
-        let project_dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures"
-        ));
-        let ctx = CliToolContext::new(project_dir);
+        let ctx = fresh_ctx();
 
-        ctx.load_file(BRACKET_PATH).expect("first load_file should succeed");
+        ctx.load_file(BRACKET_PATH)
+            .expect("first load_file should succeed");
 
         // Record the default width value.
         let params_default = ctx.get_parameters().expect("get_parameters should succeed");
@@ -1081,7 +1088,8 @@ structure Bracket {
         assert_ne!(overridden_width, default_width, "value must have changed");
 
         // Reload the file — overrides must be cleared.
-        ctx.load_file(BRACKET_PATH).expect("second load_file should succeed");
+        ctx.load_file(BRACKET_PATH)
+            .expect("second load_file should succeed");
 
         let params_reloaded = ctx.get_parameters().expect("get_parameters should succeed");
         let width_reloaded = params_reloaded
@@ -1108,8 +1116,10 @@ structure Bracket {
     #[test]
     fn invalid_parse_input_is_actually_unparseable() {
         // Check 1: the syntax parser itself reports errors.
-        let parsed =
-            reify_syntax::parse(INVALID_PARSE_INPUT, reify_types::ModulePath::single("probe"));
+        let parsed = reify_syntax::parse(
+            INVALID_PARSE_INPUT,
+            reify_types::ModulePath::single("probe"),
+        );
         assert!(
             !parsed.errors.is_empty(),
             "INVALID_PARSE_INPUT must produce a parse error; the grammar may have changed. \
@@ -1122,8 +1132,7 @@ structure Bracket {
         // contract the regression test depends on.  A grammar change that still
         // emits errors but that `update_source` treats as recoverable would pass
         // Check 1 yet break the regression test; this assertion catches it first.
-        let project_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"));
-        let ctx = CliToolContext::new(project_dir);
+        let ctx = fresh_ctx();
         let update_result = ctx
             .update_source(BRACKET_PATH, INVALID_PARSE_INPUT)
             .expect("update_source should return Ok (not Err) even for invalid content");
@@ -1143,14 +1152,11 @@ structure Bracket {
     /// parse failure.
     #[test]
     fn update_source_invalid_content_does_not_construct_new_engine() {
-        let project_dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures"
-        ));
-        let ctx = CliToolContext::new(project_dir);
+        let ctx = fresh_ctx();
 
         // Load a valid file to get known-good state.
-        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
         let count_before = ctx.engine_construction_count();
         assert_eq!(count_before, 1);
 
@@ -1166,7 +1172,10 @@ structure Bracket {
         let result = ctx
             .update_source(BRACKET_PATH, INVALID_PARSE_INPUT)
             .expect("update_source should return Ok (not Err) even on parse failure");
-        assert!(!result.success, "update_source should report failure for invalid content");
+        assert!(
+            !result.success,
+            "update_source should report failure for invalid content"
+        );
 
         // Engine must not have been (re)constructed.
         let count_after = ctx.engine_construction_count();
@@ -1177,7 +1186,9 @@ structure Bracket {
         );
 
         // Prior valid parameters must still be accessible.
-        let params_after = ctx.get_parameters().expect("get_parameters should still work");
+        let params_after = ctx
+            .get_parameters()
+            .expect("get_parameters should still work");
         assert_eq!(
             params_before.len(),
             params_after.len(),
