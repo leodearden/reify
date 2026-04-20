@@ -42571,6 +42571,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-20T11:21:53.146Z"
+      },
+      {
+        "id": "2029",
+        "title": "Remove low-value SweepKind variant-existence tests in types.rs",
+        "description": "Follow-up from task 322 review. The four tests added to crates/reify-compiler/src/types.rs (sweep_kind_extrude_symmetric_variant_exists, sweep_kind_sweep_guided_variant_exists, sweep_kind_loft_guided_variant_exists, sweep_kind_new_variants_distinct_from_existing, lines 643-689) exercise derived trait machinery (Copy, PartialEq, Eq, Hash) and enum-discriminant uniqueness that the Rust compiler already guarantees at build time. They add ~45 LoC of maintenance surface for zero behavioral coverage.</description>\n<parameter name=\"details\">Delete the four tests at crates/reify-compiler/src/types.rs:643-689. The enum declarations plus the real compile/eval tests elsewhere in the task-322 diff (extrude_symmetric_integration, sweep_guided_integration, loft_guided_integration) already cover behavior. If a single-line existence canary is desired, an inline `let _ = SweepKind::LoftGuided;` within an existing behavioral test suffices.\n\nRationale: if the variants vanish, the rest of the crate stops compiling long before these tests run; if #[derive(Hash)] were removed, every real call site would fail. Low-value canaries, not meta-doc tests.\n\nSource: reviewer_comprehensive suggestion from esc-322-22.\n\nmemory_hints: search \"SweepKind variant tests\" entity \"SweepKind\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -42580,7 +42591,10 @@
       "completedCount": 1725,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T11:27:31.521Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-20T11:27:31.537Z"
     }
   }
 }
