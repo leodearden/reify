@@ -146,6 +146,10 @@ fn resolve_loft_like_args(
     guide_suffix: bool,
 ) -> (Vec<GeomRef>, Vec<(String, CompiledExpr)>) {
     let n = compiled_args.len();
+    debug_assert!(
+        !guide_suffix || n >= 2,
+        "loft_guided requires at least 2 args: profiles + guide"
+    );
     let profiles: Vec<GeomRef> = (0..n)
         .map(|i| {
             geom_refs
