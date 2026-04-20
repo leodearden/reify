@@ -43069,15 +43069,20 @@
         "description": "Duplicated PathBuf+CliToolContext::new pattern across mcp_context.rs tests. Add fn fresh_ctx() helper in test module. From review of task 2015.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T16:02:54.789Z",
+        "updatedAt": "2026-04-20T16:07:50.139Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "89835e8faa01e64c0357a712a109a324c54f8c3c",
+            "commit_input": "89835e8fa",
+            "note": "fresh_ctx() helper + 8 call-site refactor + smoke test already landed on main via commits cb4146af7 (helper), 89835e8fa (refactor), 1d1ef1e5f (smoke test), 2f25b62ec (smoke-test trim). Revalidation confirmed: no duplicated PathBuf+CliToolContext::new pattern remains in crates/reify-cli/src/mcp_context.rs; fresh_ctx() defined at lines 801-806; smoke test at line 1202. The task/2048 branch contains one additional commit (33e27a031, behavior guard test) which is out-of-scope for this task and is not being merged."
+          }
         }
       },
       {
@@ -43290,9 +43295,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:04:43.058Z",
+      "lastModified": "2026-04-20T16:07:50.140Z",
       "taskCount": 2050,
-      "completedCount": 1770,
+      "completedCount": 1771,
       "tags": [
         "master"
       ]
