@@ -40438,7 +40438,13 @@
           "modules": [
             "gui/src-tauri/src/engine.rs",
             "gui/src-tauri/src/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Log release-mode warning on duplicate template names in get_entity_tree"
+            ]
+          }
         }
       },
       {
@@ -42942,11 +42948,11 @@
         "description": "Test `generic_constraint_def_with_type_param_type_compiles_cleanly` in crates/reify-compiler/tests/constraint_def_compile_tests.rs (~line 977, added by task 1964) only asserts absence of 'unknown type' errors. Add positive assertion that module.constraint_defs contains `Aligned` with 2 params + 1 type_param, to guard against silent drops.",
         "details": "Source esc-1964-55. CompiledConstraintDef fields (types.rs line ~612): name, type_params, params. Suggested: find Aligned def, assert params.len()==2, type_params.len()==1.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:59:10.877Z",
+        "updatedAt": "2026-04-20T14:59:18.893Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
@@ -43178,7 +43184,13 @@
           "modules": [
             "crates/reify-compiler/src/expr.rs",
             "crates/reify-types/src/expr.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Promote CompiledExpr hash tag bytes to named constants"
+            ]
+          }
         }
       },
       {
@@ -43267,9 +43279,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:59:15.134Z",
+      "lastModified": "2026-04-20T14:59:18.893Z",
       "taskCount": 2050,
-      "completedCount": 1762,
+      "completedCount": 1763,
       "tags": [
         "master"
       ]
