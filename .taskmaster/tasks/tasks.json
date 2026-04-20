@@ -42910,10 +42910,11 @@
         "description": "Add positive assertion to test at crates/reify-compiler/tests/constraint_def_compile_tests.rs line ~977: find `Aligned` in module.constraint_defs, assert params.len()==2, type_params.len()==1. Source: esc-1964-55.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:34:51.450Z"
       },
       {
         "id": "2045",
@@ -42969,19 +42970,27 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2050",
+        "title": "fresh_ctx() test helper in reify-cli mcp_context",
+        "description": "Dedup repeated CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"),\"/tests/fixtures\"))) in mcp_context.rs tests (lines ~807,832,865,891,931,1115,1136). Extract private fresh_ctx helper. Spawned from task 2015 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:28:41.786Z",
-      "taskCount": 2038,
+      "lastModified": "2026-04-20T13:34:51.456Z",
+      "taskCount": 2042,
       "completedCount": 1741,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T13:33:08.450Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T13:34:07.588Z"
+      ]
     }
   }
 }
