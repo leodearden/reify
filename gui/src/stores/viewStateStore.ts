@@ -181,7 +181,7 @@ export function createViewStateStore() {
         s.explicit[path] = vs;
         if (cascade) {
           for (const desc of walkDescendants(path, nodeByPath)) {
-            s.explicit[desc] = null;
+            delete s.explicit[desc];
           }
         }
         mirrorExplicitToActiveUserView(s);
@@ -203,9 +203,9 @@ export function createViewStateStore() {
   function resetToInherit(path: string): void {
     setState(
       produce((s) => {
-        s.explicit[path] = null;
+        delete s.explicit[path];
         for (const desc of walkDescendants(path, nodeByPath)) {
-          s.explicit[desc] = null;
+          delete s.explicit[desc];
         }
         mirrorExplicitToActiveUserView(s);
       }),
@@ -225,7 +225,7 @@ export function createViewStateStore() {
       produce((s) => {
         // Clear all ancestors so they don't override-hide the target.
         for (const anc of ancestors) {
-          s.explicit[anc] = null;
+          delete s.explicit[anc];
         }
         // Hide everything not in {target} ∪ ancestors.
         for (const p of nodeByPath.keys()) {
@@ -237,7 +237,7 @@ export function createViewStateStore() {
         s.explicit[path] = 'show';
         if (cascade) {
           for (const desc of walkDescendants(path, nodeByPath)) {
-            s.explicit[desc] = null;
+            delete s.explicit[desc];
           }
         }
         mirrorExplicitToActiveUserView(s);
