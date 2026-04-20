@@ -161,8 +161,8 @@ _ELAPSED14=$(( _END14 - _START14 ))
 kill "$_HOLDER14" 2>/dev/null || true
 wait "$_HOLDER14" 2>/dev/null || true
 
-assert "Test 14: wrapper exits non-zero when lock-wait limit exceeded (got $_EXIT14)" \
-    test "$_EXIT14" -ne 0
+assert "Test 14: wrapper exits 75 (EX_TEMPFAIL) when lock-wait limit exceeded (got $_EXIT14)" \
+    test "$_EXIT14" -eq 75
 
 assert "Test 14: wrapper exits within 3s, not blocked until outer safety timeout (elapsed=${_ELAPSED14}s)" \
     test "$_ELAPSED14" -le 3
@@ -178,8 +178,10 @@ echo "--- Test 15: REIFY_OCCT_TEST_TIMEOUT measured post-lock, not from wrapper 
 
 _LOCK15="$(mktemp)"
 
-# Spawn a holder that holds the lock for 2 seconds.
-( flock -x 9; sleep 2 ) 9>>"$_LOCK15" &
+# Spawn a holder that holds the lock for 3 seconds.
+# Using 3s (not 2s) to survive date +%s rounding: at 2s the truncated elapsed
+# can read as 2 and spuriously fail the lower-bound assertion on a busy CI.
+( flock -x 9; sleep 3 ) 9>>"$_LOCK15" &
 _HOLDER15=$!
 sleep 0.2  # give holder time to acquire
 
@@ -194,13 +196,14 @@ kill "$_HOLDER15" 2>/dev/null || true
 wait "$_HOLDER15" 2>/dev/null || true
 rm -f "$_LOCK15"
 
-# Expected: lock acquired after ~2s, then `timeout 1 sleep 5` kills after 1s → rc=124
-# elapsed ≈ 3s total.  Without internal timeout: sleep 5 runs fully → rc=0, elapsed ≈ 7s.
+# Expected: lock acquired after ~3s, then `timeout 1 sleep 5` kills after 1s → rc=124
+# elapsed ≈ 4s total.  Without internal timeout: sleep 5 runs fully → rc=0, elapsed ≈ 8s.
+# Lower bound ≥ 4 proves the timer could not have started at wrapper launch (~1s in that case).
 assert "Test 15: wrapper exits 124 (internal timeout killed the command, got $_EXIT15)" \
     test "$_EXIT15" -eq 124
 
-assert "Test 15: elapsed in [3,6]s — timer started post-lock, not at wrapper launch (elapsed=${_ELAPSED15}s)" \
-    bash -c "test '$_ELAPSED15' -ge 3 && test '$_ELAPSED15' -le 6"
+assert "Test 15: elapsed in [4,8]s — timer started post-lock, not at wrapper launch (elapsed=${_ELAPSED15}s)" \
+    bash -c "test '$_ELAPSED15' -ge 4 && test '$_ELAPSED15' -le 8"
 
 # -- Test 16: wrapper logs wait duration on lock acquisition -------------------
 echo ""
