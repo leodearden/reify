@@ -1454,6 +1454,11 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
         "sentinel: fast={:?} original={:?} — two convergent implementations must agree at u32::MAX",
         fast_sentinel, orig_sentinel
     );
+    assert_eq!(
+        fast_sentinel,
+        (1, 1),
+        "sentinel literal must be (1,1) on the fast path — guards against both implementations regressing identically"
+    );
 }
 
 /// offset_to_line_col_fast returns correct values at specific key offsets.
