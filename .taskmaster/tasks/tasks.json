@@ -40923,7 +40923,7 @@
         "description": "Recovery audit task. Task 1959 was silently overwritten on 2026-04-17 during a fused-memory DB-lock storm (escalation esc-1959-52). Its original purpose was to act on a task-1744 review finding that DesignTree was still not instantiated in App.tsx as of 2026-04-17, despite task 1901 having been marked done earlier. This task (a) audits whether the 1901 wiring actually landed and (b) if not, restores it with the multi-selection bindings that were added by task 1744.",
         "details": "Origin: preserved content from the overwritten task 1959 — see /home/leo/src/dark-factory/data/backups/2026-04-18-wp-a/esc-1959-52.json for the full original spec.\n\n## Audit step\n1. Run `grep -R \"DesignTree\" gui/src/App.tsx` in /home/leo/src/reify.\n2. If DesignTree IS imported and rendered in App.tsx with selection state wired — mark this task done and re-verify task 1901 completion evidence.\n3. If DesignTree is NOT imported in App.tsx (the state task 1744 review observed) — proceed with implementation below.\n\n## Implementation scope (if audit finds wiring missing)\nRender <DesignTree> in gui/src/App.tsx inside the panel area, connected to:\n- tree from the current design-tree source\n- viewStateStore (existing binding)\n- selectedEntity (primary selection)\n- selectedEntities + anchorEntity from selectionStore state\n- onSelect(path, mods): mods.ctrl → selectionStore.toggleSelect(path); mods.shift → selectionStore.rangeSelect(path); else → existing handleViewportSelect(path, mods)\n- onRangeSelect(paths) → selectionStore.rangeSelect variant\n- onSelectAll(paths) → selectionStore.selectAll(paths)\n\n## Prerequisite (may need to be a separate task)\nOriginal 1959 spec included a prerequisite: \"Plumb entity-tree bridge + engineStore.entityTree to feed DesignTree\"\n- gui/src/bridge.ts — add getEntityTree() invoke wrapper around Tauri get_entity_tree command (backend: gui/src-tauri/src/main.rs:233, commands.rs:106; returns Vec<EntityTreeNode>)\n- gui/src/stores/engineStore.ts — add entityTree: EntityTreeNode[] state + setEntityTree mutation; call bridgeGetEntityTree() inside initFromState and after mesh/value/constraint mutations\n- tests for the bridge wrapper and engineStore field+refresh\nIf present state shows engineStore.state.entityTree already populated, skip this.\n\n## Acceptance\n- Audit outcome documented (wired or not).\n- If wiring missing: user can click, Ctrl+click, Shift+click, Ctrl+A inside rendered DesignTree with selection highlight + viewport sync.\n- App.test.tsx continues to pass; add smoke test for DesignTree render + click → selectionStore update.\n\n## Context\nFrom review of task 1744 (reviewer_comprehensive): \"grep for DesignTree outside test files shows only the panels/index.ts export. App.tsx does not instantiate it.\" Task 1901 had been marked done but is suspected incomplete or reverted.\n<info added on 2026-04-19T20:55:17.064Z>\n## Update 2026-04-19 — predecessor 1901 cancelled, this task is authoritative\n\nTask 1901 was cancelled on 2026-04-19 (not \"suspected incomplete\" — confirmed: the 2026-04-17 merge resolved only tasks.json and App.tsx was never touched). The dependency on 1901 has been removed; this task is fully unblocked.\n\n### Concrete current-main state (audit short-circuit)\n\n- `grep -n 'DesignTree' gui/src/App.tsx` returns **nothing** — wiring is definitively missing. Skip the audit branch and go straight to implementation.\n- Backend `get_entity_tree` Tauri command is already registered (gui/src-tauri/src/main.rs:233, commands.rs:106). Do NOT add it.\n- `getEntityTree()` / `onEntityTreeUpdate()` bridge wrappers are NOT in gui/src/bridge.ts. They must be added here — do NOT treat this as a separate prerequisite task.\n- Backend does NOT emit an `entity-tree-update` event. Do NOT add event plumbing here; instead refresh the tree client-side on engine updates (piggyback on the existing `engineStore.subscribeToEvents` callback or a `createEffect` keyed on `evalStatus.phase === 'idle'` transitions). Never poll on a timer.\n- `viewStateStore` (stores/viewStateStore.ts) is on main with full view/auto-view management (`regenerateAutoViews`, `getAllEffective`). Use it as the source of truth for visibility.\n- `DesignTree` already supports `selectedEntities`, `anchorEntity`, `onSelect(path, mods)`, `onRangeSelect(paths)`, `onSelectAll(paths)`, Ctrl+A, bulk visibility cycling.\n\n### Additional required step (missing from original spec)\n\n**Visibility → viewport propagation.** After `viewStateStore` state changes, push `viewStateStore.getAllEffective()` into `meshManager.setVisibility(path, state)` per entry. The meshManager is owned by `Viewport`; expose a new ref hook on `Viewport` mirroring the existing `flyToEntityRef`/`fitToViewRef` pattern, and drive it from a `createEffect` in App.tsx that reads `viewStateStore.state.explicit` and `viewStateStore.state.activeViewId`. Without this step the eye-icon clicks in DesignTree will mutate the store but the viewport will not respond — this is the defining end-to-end failure mode.\n\n### Scope discipline\n\nDo NOT edit: `DesignTree.tsx`, `DesignTreeContextMenu.tsx`, `viewStateStore.ts`, `autoViewGenerator.ts`, any Rust backend file. If you find yourself in those files, stop — you've drifted out of scope.\n\n### engineStore.entityTree note\n\nThe original spec suggests adding `entityTree` to `engineStore`. That's optional — keeping the tree as a local `createSignal` in App.tsx is equally fine and less invasive. Choose whichever fits best after reading current `engineStore.ts`. The test expectations should not assume either layout.\n</info added on 2026-04-19T20:55:17.064Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -40945,7 +40945,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-04-19T21:14:37.206Z"
+        "updatedAt": "2026-04-20T05:43:06.073Z"
       },
       {
         "id": "1957",
@@ -40953,11 +40953,11 @@
         "description": "regenerateAutoViews performs two sequential setState calls (setTree prunes explicit, then a second produce() block replaces explicit for auto:* active views). Each setState triggers reactive subscribers independently, exposing an intermediate state and wasting the initial prune. Separately, for user:* active views, edits made via setVisibility are written to state.explicit but never mirrored back into state.views[activeViewId].visibility, so the view's stored visibility drifts from the live edits — a later \"restore view\"/\"export view\" feature would surprise the user.",
         "details": "## Scope\n\ngui/src/stores/viewStateStore.ts\n\n### 1. Atomicity (lines 264-330)\n\nFold the setTree pruning into the same produce() pass as the view regeneration, OR skip the explicit-prune inside setTree when called from regenerateAutoViews (since explicit is replaced moments later on the auto:* branch anyway). Rebuild nodeByPath/parentByPath in the same step. Goal: one setState, one reactive notification.\n\n### 2. User-view write-back (lines 305-322)\n\nPick and document one semantic:\n- (a) `ViewDefinition.visibility` is a seed/template; live state lives only in `state.explicit`. Add a doc comment on ViewDefinition and seedView explaining this.\n- (b) Mirror setVisibility edits back into `state.views[activeViewId].visibility` when active view is `user:*` (and possibly stamp `modified=true` on auto views — see Task XXXX for `modified` cleanup).\n\nPrefer (b) so user views remain self-contained, but either is acceptable as long as it's documented.\n\n### Tests\n\nAdd a regression test that calls setVisibility while a user:* view is active, then asserts that either (a) state.views[activeViewId].visibility is unchanged and the store doc says so, or (b) state.views[activeViewId].visibility reflects the edit.\n\n### memory_hints\n- search: \"viewStateStore regenerateAutoViews\"\n- search: \"ViewDefinition visibility explicit\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:40.553Z",
+        "updatedAt": "2026-04-20T05:43:06.160Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/viewStateStore.test.ts",
@@ -41266,11 +41266,11 @@
         "description": "Review follow-up from task 1920; suggestion S3 from reviewer_comprehensive (non-blocking).\n\nContext: task 1920's new `find_node_compound_variant_coverage` test in crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 400-419) has in-test raw struct-literal helpers `make_user_fn_call` and `make_match` because no public constructor exists for `CompiledExprKind::UserFunctionCall` or `CompiledExprKind::Match`. The other 10+ variants in the table use `CompiledExpr::list_literal`, `set_literal`, `map_literal`, `lambda`, `quantifier`, `range_constructor`, `ad_hoc_selector`, `option_some`, `literal`.\n\nThe ad-hoc helpers fabricate content-hash bytes (`ContentHash::of(&[0xf0])`, `0xf1`) which risks drifting from the real per-variant tag bytes used by the production constructors (7/8/9/10/12/13/14/15/16/18/19). Today `0xf0`/`0xf1` don't collide, but the risk grows as variants are added.\n\nFix: add `CompiledExpr::user_function_call(...)` and `CompiledExpr::match_expr(...)` constructors in `crates/reify-types/src/expr.rs` following the pattern of the existing per-variant constructors (with next-available tag bytes). Then update the test to use them and delete the ad-hoc helpers.\n\nNon-blocking — current in-test helpers work — but removes a small correctness hazard and matches the convention already established for other variants.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:41.029Z",
+        "updatedAt": "2026-04-20T05:43:06.311Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/expr.rs",
@@ -41592,7 +41592,7 @@
         "description": "Reviewer flagged that gui/dist/ bundle artifacts (content-hashed index-*.js/css/html) are committed to the repo. Every rebuild produces new hashed filenames, so stale cruft accumulates, history bloats, and diffs become unreviewable. gui/dist/ is not in .gitignore.",
         "details": "Confirmed: `git ls-files gui/dist/` lists 4 tracked files (index-B2FX6bgf.css, index-BzOqUXNy.js, index-EEPNKkzg.js, index.html). .gitignore already ignores gui/sidecar/dist/ but not gui/dist/.\n\nSteps:\n1. Add `gui/dist/` to .gitignore (alongside existing gui/sidecar/dist/ entry).\n2. `git rm -r --cached gui/dist/` to untrack the 4 files.\n3. Verify Tauri packaging does not require committed builds; if it does, pin to a single non-hashed output path or use git-lfs — do not track content-hashed bundles.\n\nSource: reviewer_comprehensive on task 1768 review.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41604,7 +41604,7 @@
             "gui/dist"
           ]
         },
-        "updatedAt": "2026-04-19T21:14:49.896Z"
+        "updatedAt": "2026-04-20T05:43:06.412Z"
       },
       {
         "id": "1988",
@@ -42084,7 +42084,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:43:05.969Z",
+      "lastModified": "2026-04-20T05:43:06.412Z",
       "taskCount": 2003,
       "completedCount": 1702,
       "tags": [
