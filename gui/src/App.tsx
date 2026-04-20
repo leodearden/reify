@@ -375,7 +375,7 @@ const App: Component = () => {
       }
       focusEntityUnsub = unlisten;
     } catch (_err) {
-      /* non-fatal; focus-entity events will no-op */
+      console.warn('Failed to subscribe to focus-entity events:', _err);
     }
 
     // Subscribe to navigate-to-source events (from MCP navigate_to_source tool)
@@ -389,7 +389,7 @@ const App: Component = () => {
       }
       navigateToSourceUnsub = unlisten;
     } catch (_err) {
-      /* non-fatal */
+      console.warn('Failed to subscribe to navigate-to-source events:', _err);
     }
 
     // Subscribe to Claude sidecar events

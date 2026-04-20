@@ -680,9 +680,19 @@ async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
         .await
         .unwrap();
 
-    // Allow reader task + spawned MCP handler to run
-    for _ in 0..200 {
-        tokio::task::yield_now().await;
+    // Allow reader task + spawned MCP handler to run (bounded-timeout poll avoids
+    // coupling to scheduler details — succeeds as soon as focus-entity arrives).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        if events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(n, _)| n == "focus-entity")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 
     // Verify the outbound claude-tool-call event was emitted (sanity: proves reader processed it)
