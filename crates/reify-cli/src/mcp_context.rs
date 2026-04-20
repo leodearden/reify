@@ -644,4 +644,43 @@ mod tests {
              (got engine_construction_count={count_after_second})"
         );
     }
+
+    /// Verify that repeated `open_file` calls reuse the Engine instance, and that
+    /// a subsequent `update_source` also reuses it.  Fails against pre-fix code
+    /// because `open_file` calls `Engine::new` unconditionally.
+    #[test]
+    fn open_file_reuses_engine_across_subsequent_calls() {
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        // First open — engine is created (count → 1).
+        ctx.open_file(BRACKET_PATH).expect("first open_file should succeed");
+        let count_after_first = ctx.engine_construction_count();
+        assert_eq!(count_after_first, 1, "first open_file should construct exactly one engine");
+
+        // Second open of the same path — engine must be reused.
+        ctx.open_file(BRACKET_PATH).expect("second open_file should succeed");
+        let count_after_second = ctx.engine_construction_count();
+        assert_eq!(
+            count_after_second, 1,
+            "second open_file must reuse the engine \
+             (got engine_construction_count={count_after_second})"
+        );
+
+        // update_source after open_file must also reuse the same engine.
+        let source =
+            std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let modified = format!("{source} ");
+        ctx.update_source(BRACKET_PATH, &modified)
+            .expect("update_source should succeed");
+        let count_after_update = ctx.engine_construction_count();
+        assert_eq!(
+            count_after_update, 1,
+            "update_source after open_file must reuse the engine \
+             (got engine_construction_count={count_after_update})"
+        );
+    }
 }
