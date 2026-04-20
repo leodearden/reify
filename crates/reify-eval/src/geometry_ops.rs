@@ -611,12 +611,45 @@ pub(crate) fn compile_geometry_op(
                         path: path_handle,
                     })
                 }
-                // NOTE: ExtrudeSymmetric/SweepGuided/LoftGuided arms are
-                // added in task-322 steps 12/14/16. The catch-all below keeps
-                // the eval lib compiling while the per-kind tests are written
-                // (TDD: tests fail at runtime until the impl arm lands).
-                reify_compiler::SweepKind::ExtrudeSymmetric
-                | reify_compiler::SweepKind::SweepGuided
+                reify_compiler::SweepKind::ExtrudeSymmetric => {
+                    let profile_handle =
+                        resolve_geom_ref(profiles.first()?, step_handles, diagnostics)?;
+                    let distance = eval_named_arg(
+                        "distance",
+                        kind,
+                        args,
+                        values,
+                        functions,
+                        meta_map,
+                        diagnostics,
+                    )?;
+                    // Reject sub-picometer magnitudes as degenerate geometry,
+                    // mirroring the standard Extrude arm above: a distance
+                    // near the f64 rounding floor cannot produce a meaningful
+                    // solid. Emit a warning so model authors see a specific
+                    // explanation instead of only the caller's generic error.
+                    match distance.as_f64() {
+                        Some(v) if v.is_finite() && v.abs() >= 1e-12 => {}
+                        Some(v) => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "extrude_symmetric dropped: distance={} is \
+                                 degenerate (|distance| must be finite and >= 1e-12 m)",
+                                v
+                            )));
+                            return None;
+                        }
+                        None => return None,
+                    }
+                    Some(reify_types::GeometryOp::ExtrudeSymmetric {
+                        profile: profile_handle,
+                        distance,
+                    })
+                }
+                // NOTE: SweepGuided/LoftGuided arms are added in task-322
+                // steps 14/16. The catch-all below keeps the eval lib
+                // compiling while the per-kind tests are written (TDD: tests
+                // fail at runtime until the impl arm lands).
+                reify_compiler::SweepKind::SweepGuided
                 | reify_compiler::SweepKind::LoftGuided => None,
             }
         }
