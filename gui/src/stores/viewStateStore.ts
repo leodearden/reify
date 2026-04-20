@@ -263,6 +263,10 @@ export function createViewStateStore() {
   // ---------------------------------------------------------------------------
 
   /**
+   * @internal Exposed on the returned store for test-only use; UI callers
+   * should use regenerateAutoViews so views go through the standard
+   * reconciliation path.
+   *
    * Seed a view into state.views (used by regenerateAutoViews and tests).
    * Overwrites any existing entry with the same id.
    *
