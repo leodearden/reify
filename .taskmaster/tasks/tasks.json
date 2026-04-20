@@ -43515,7 +43515,19 @@
             "gui/src/__tests__",
             "gui/src/stores",
             "gui/src/panels"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "userViewOrder",
+              "named views",
+              "view management"
+            ],
+            "queries": [
+              "metaKey guard keyboard event test named views",
+              "autofocus assertion view management UI",
+              "userViewOrder transactional invariant copy-on-write named views"
+            ]
+          }
         },
         "updatedAt": "2026-04-20T20:29:50.437Z"
       },
