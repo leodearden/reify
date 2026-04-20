@@ -42109,8 +42109,16 @@
             "gui/src-tauri/src/tests/engine_tests.rs"
           ],
           "modules": [
-            "gui/src-tauri/src",
-            "crates/reify-kernel-occt/src"
+            "gui/src-tauri/src/kernel_status.rs",
+            "gui/src-tauri/src/lib.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/tests",
+            "gui/src/App.module.css",
+            "gui/src/App.tsx",
+            "gui/src/__tests__/bridge.test.ts",
+            "gui/src/__tests__/engineStore.test.ts",
+            "gui/src/bridge.ts",
+            "gui/src/stores/engineStore.ts"
           ]
         },
         "updatedAt": "2026-04-20T05:52:34.672Z"
@@ -42172,7 +42180,9 @@
       "completedCount": 1708,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T06:02:41.212Z",
+      "description": "Tasks for master context"
     }
   }
 }
