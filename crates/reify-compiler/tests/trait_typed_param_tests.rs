@@ -391,6 +391,39 @@ fn sub_component_arg_for_trait_typed_param_accepts_conforming_struct() {
     );
 }
 
+/// TraitObject-arg pass-through: a param value that is itself trait-typed (e.g. a local
+/// `param p : Physical`) can be passed to a slot that requires `Material` when
+/// `Physical : Material`. The arg's compiled type is `Type::TraitObject("Physical")`; the
+/// check must use `trait_satisfies` to verify the refinement.
+///
+/// Will fail if the helper only handles `StructureRef` arg types and the `TraitObject`
+/// branch falls through to the "cannot conform" error.
+#[test]
+fn trait_object_arg_accepted_for_trait_typed_param_via_refinement() {
+    // Self-contained: no stdlib needed.
+    let source = r#"
+        trait Material {}
+        trait Physical : Material {}
+        structure def Host { param m : Material }
+        structure def Top {
+            param p : Physical
+            sub h = Host(m: p)
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: passing TraitObject(Physical) for param m : Material where Physical : Material, got: {:?}",
+        errors
+    );
+}
+
 /// Refinement test: a struct that conforms via a refinement chain is accepted.
 ///
 /// `Physical : Material` (refinement), `Rigid : Physical` (structure declares `: Physical`).
