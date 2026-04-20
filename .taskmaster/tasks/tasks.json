@@ -43449,23 +43449,27 @@
         "description": "scripts/cargo-test-occt-gated.sh opens fd 9 on the OCCT flock and then `exec timeout ... cargo ...`. Cargo fork-execs sccache as a detached daemon that inherits fd 9, daemonizes, and outlives cargo — so the flock persists forever after the wrapper exits. On 2026-04-20 this wedged the orchestrator merge queue: PID 2847997 (dead) held the lock via sccache PID 3082658, blocking seven queued verify retries. Fix: replace `exec timeout ... \"$@\"` with `timeout ... \"$@\" 9&lt;&amp;-` so cargo and its descendants do not inherit fd 9; parent bash continues to hold fd 9 (and thus the flock) until cargo exits.",
         "details": "File: scripts/cargo-test-occt-gated.sh, lines 92-109.\n\nTwo changes:\n1. Replace `exec timeout --kill-after=60 \"$TEST_TIMEOUT\" \"$@\"` with `timeout --kill-after=60 \"$TEST_TIMEOUT\" \"$@\" 9&lt;&amp;-`. The `9&lt;&amp;-` redirect closes fd 9 for the child (and all its descendants, including sccache). Dropping `exec` keeps the wrapper bash alive holding fd 9; when cargo exits, bash exits, fd 9 closes, flock releases.\n2. Update the design comment at lines 92-98 to document the new invariant: parent bash holds the lock via fd 9; children do NOT inherit the lock fd, to prevent fd-leak into daemons that outlive cargo (sccache being the concrete case).\n\nRegression test: append Test 18 to tests/infra/test_occt_flock_gate.sh. Spawn the wrapper on a command that forks a `setsid sleep 1000 &` daemon and exits; then verify `flock -n -x $LOCK true` succeeds after the wrapper returns. If fd 9 leaked into the daemon, the second flock would fail.\n\nExisting tests 1-17 must continue to pass. Serialization (Test 8) still holds because parent bash still owns fd 9. Exit-code propagation (Test 9) preserved via bash's last-command exit semantics. `exec` substring guard (Test 7) still satisfied by the surviving `exec 9&gt;&gt;\"$LOCK\"`.\n\nmemory_hints: search(\"OCCT flock sccache\"), search(\"cargo-test-occt-gated\"), get_entity(\"reify-kernel-occt\").",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "done_provenance": {
+            "commit": "10a80a1f9a62422a02b6720ae55a321fd8342578",
+            "commit_input": "10a80a1f9"
+          }
+        },
+        "updatedAt": "2026-04-20T19:45:28.983Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T18:07:50.351Z",
-      "taskCount": 2054,
-      "completedCount": 1785,
+      "lastModified": "2026-04-20T19:45:28.983Z",
+      "taskCount": 2056,
+      "completedCount": 1786,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T18:15:35.897Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T19:42:05.121Z"
+      ]
     }
   }
 }
