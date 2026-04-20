@@ -42053,7 +42053,7 @@
         "description": "Test-support builders emit content-hash tag bytes that diverge from production, causing any test comparing test-support-built expressions against compiler-produced hashes to silently mismatch:\n\n- `crates/reify-test-support/src/builders/expr.rs:159` — `conditional_expr` uses `ContentHash::of(&[4])`, but compiler emits Conditional with `[5]` at `crates/reify-compiler/src/expr.rs:1375`.\n- `crates/reify-test-support/src/builders/expr.rs:181` — `fn_call` uses `[5]`, which collides with Conditional in production.\n\nFix: align the test-support builder tag bytes with production values used in `reify-compiler/src/expr.rs`. Add a cross-crate tag-agreement test to reify-test-support that compiles a sample expression with the real compiler and asserts equal content_hash.\n\nThis is a correctness hazard for any content-hash-based assertion in tests.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42067,7 +42067,7 @@
             "crates/reify-compiler/src"
           ]
         },
-        "updatedAt": "2026-04-20T05:58:29.514Z"
+        "updatedAt": "2026-04-20T06:43:40.904Z"
       },
       {
         "id": "2007",
@@ -42199,9 +42199,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T06:42:49.108Z",
+      "lastModified": "2026-04-20T06:43:40.912Z",
       "taskCount": 2003,
-      "completedCount": 1712,
+      "completedCount": 1713,
       "tags": [
         "master"
       ]
