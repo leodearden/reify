@@ -42007,7 +42007,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/src/mcp_context.rs",
+            "crates/reify-cli/src/main.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/src"
+          ]
+        }
       },
       {
         "id": "2009",
@@ -42018,7 +42027,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/main.rs",
+            "crates/reify-kernel-occt/src/lib.rs",
+            "gui/src-tauri/src/tests/engine_tests.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src",
+            "crates/reify-kernel-occt/src"
+          ]
+        }
       },
       {
         "id": "2010",
@@ -42029,7 +42049,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/geometry_ops.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": "2011",
