@@ -40,10 +40,6 @@ impl SourceSpan {
     ///
     /// Prefer this constant over a bare `u32::MAX as usize` literal so the
     /// sentinel contract is expressed in one canonical location.
-    ///
-    /// Note: `source_location::byte_offset_to_line_col` currently uses the raw
-    /// literal directly (that file is a separate module); a follow-up can migrate
-    /// it to reference this constant.
     pub const PRELUDE_SENTINEL_OFFSET: usize = u32::MAX as usize;
 
     /// A sentinel span used for prelude-originated entries that have no
