@@ -42593,11 +42593,11 @@
         "description": "gui/src/__tests__/App.test.tsx:642-670 asserts mockFlyToEntity was called and that one selected group appears in PropertyEditor, but does not check that the entity path routed to selectionStore.selectEntity is 'Bracket'. A regression that selected the wrong entity would still satisfy `selectedGroups.length === 1`.\n\nFix: Also assert the selected group's identity (e.g. that the data-selected element corresponds to 'Bracket', or inspect selectionStore state) so the test verifies the value routed through, not merely that something got selected.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T20:20:07.228Z",
+        "updatedAt": "2026-04-20T20:20:10.620Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -42951,11 +42951,11 @@
         "description": "Two small cleanups in `crates/reify-cli/src/mcp_context.rs` `reapply_user_overrides`:\n\n1. (robustness, line ~192) The `warned_overrides` HashSet is only pruned on per-cell success and on `load_file`/`open_file`. Across a long MCP session with many transient mismatches on distinct cells, the set can accumulate entries bounded by |cells| × 3 variants — not a real leak, but harmless to prune. In the early-return branch when `state.user_overrides.is_empty()`, also clear `state.warned_overrides` (nothing left to dedupe against). Alternatively, add a one-line comment acknowledging the session-cells cap.\n\n2. (design/docs, line ~183) The docstring lists `NotInitialized` among the error variants `edit_param` might return. In practice this helper is only invoked after `eval()` has populated the snapshot, so the engine is always initialized at that point. `NotInitialized` is matched only to satisfy exhaustiveness. Tighten the docstring to state that `NotInitialized` is unreachable in this call path and is matched for exhaustiveness only — or fold it into the silent-skip branch alongside `CellNotFound` if a broader engine failure should also be silent here.\n\nKeep both changes in one commit — they are adjacent and editorial.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T20:20:07.464Z",
+        "updatedAt": "2026-04-20T20:20:10.363Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43499,7 +43499,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T20:20:09.975Z",
+      "lastModified": "2026-04-20T20:20:10.620Z",
       "taskCount": 2056,
       "completedCount": 1788,
       "tags": [
