@@ -1174,4 +1174,26 @@ structure Bracket {
             "parameter list must be unchanged after a failed update_source"
         );
     }
+
+    /// Smoke test: `fresh_ctx()` returns a usable `CliToolContext` rooted at the
+    /// real `tests/fixtures` directory.  Verifies (a) the helper compiles and
+    /// returns a context with zero engine constructions, and (b) the underlying
+    /// `project_dir` actually resolves to the fixtures directory so `bracket.ri`
+    /// is loadable.
+    #[test]
+    fn fresh_ctx_provides_default_fixture_dir_context() {
+        let ctx = fresh_ctx();
+        assert_eq!(
+            ctx.engine_construction_count(),
+            0,
+            "fresh context should not have constructed an engine yet"
+        );
+        ctx.load_file(BRACKET_PATH)
+            .expect("fresh_ctx must point at the real fixtures dir so bracket.ri is loadable");
+        assert_eq!(
+            ctx.engine_construction_count(),
+            1,
+            "load_file should construct exactly one engine"
+        );
+    }
 }
