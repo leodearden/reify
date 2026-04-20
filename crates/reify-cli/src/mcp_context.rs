@@ -113,6 +113,21 @@ impl CliToolContext {
     }
 }
 
+/// Lazily initialize `state.engine`, creating it at most once per context lifetime.
+///
+/// Returns a mutable reference to the engine.  Callers then call `.eval(&compiled)`
+/// on the returned reference — the same engine instance is reused on every subsequent
+/// call, preserving `prelude_functions` and avoiding repeated stdlib loading.
+fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
+    #[cfg(test)]
+    if state.engine.is_none() {
+        state.engine_construction_count += 1;
+    }
+    state
+        .engine
+        .get_or_insert_with(|| reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None))
+}
+
 /// Format a dimension as a human-readable unit string.
 fn dimension_unit(ty: &reify_types::ty::Type) -> String {
     match ty {
@@ -374,12 +389,9 @@ impl ReifyToolContext for CliToolContext {
         let compiled = reify_compiler::compile(&parsed);
         let diag_count = compiled.diagnostics.len() as u32;
 
-        let checker = reify_constraints::SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-        engine.eval(&compiled);
-
-        // Pipeline succeeded — commit file content alongside compiled/engine state.
+        // Pipeline succeeded — commit file content and eval on the long-lived engine.
         let mut state = self.lock_state();
+        ensure_engine(&mut state).eval(&compiled);
         if let Some(entry) = state.files.get_mut(&canonical) {
             entry.content = content.to_string();
             entry.dirty = true;
@@ -393,11 +405,6 @@ impl ReifyToolContext for CliToolContext {
             );
         }
         state.compiled = Some(compiled);
-        state.engine = Some(engine);
-        #[cfg(test)]
-        {
-            state.engine_construction_count += 1;
-        }
 
         Ok(UpdateResult {
             success: true,
