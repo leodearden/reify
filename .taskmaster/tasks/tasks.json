@@ -42216,7 +42216,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/src/mcp_context.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/src"
+          ]
+        }
       },
       {
         "id": "2013",
