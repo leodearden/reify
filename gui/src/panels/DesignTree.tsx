@@ -56,10 +56,6 @@ const DesignTree: Component<Props> = (props) => {
     return props.selectedEntity ? new Set([props.selectedEntity]) : new Set();
   });
 
-  createEffect(() => {
-    props.viewStateStore.setTree(props.tree);
-  });
-
   function toggleExpand(path: string) {
     setExpanded((prev) => {
       const next = new Set(prev);

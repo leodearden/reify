@@ -274,18 +274,9 @@ const App: Component = () => {
     },
     onClearSelection: () => selectionStore.clearSelection(),
     onSwitchViewByIndex: (i: number) => {
-      // Ordered: auto:default first, then other auto views alphabetically,
-      // then user views in userViewOrder.  Mirrors ViewSelector's sort order.
-      const sortedAutoIds = Object.values(viewStateStore.state.views)
-        .filter((v) => v.auto)
-        .sort((a, b) => {
-          if (a.id === 'auto:default') return -1;
-          if (b.id === 'auto:default') return 1;
-          return a.id.localeCompare(b.id);
-        })
-        .map((v) => v.id);
-      const allIds = [...sortedAutoIds, ...viewStateStore.state.userViewOrder];
-      const target = allIds[i];
+      // Delegate ordering to the store's single source of truth so that the
+      // number-key dispatch always matches what ViewSelector renders.
+      const target = viewStateStore.getOrderedViewIds()[i];
       if (target) viewStateStore.switchView(target);
     },
   });

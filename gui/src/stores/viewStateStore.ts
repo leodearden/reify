@@ -219,13 +219,16 @@ export function createViewStateStore() {
     // Generate a unique id for the COW user view.
     const id = `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-    // Create the COW view seeded from the source auto view's visibility snapshot.
+    // Start with an empty visibility map.  The `mirrorExplicitToActiveUserView`
+    // call at the tail of every mutation replaces this wholesale from s.explicit,
+    // so seeding from active.visibility here would be immediately overwritten and
+    // never observed.  An empty map makes the intent explicit.
     s.views[id] = {
       id,
       name: cowName,
       auto: false,
       modified: true,
-      visibility: { ...active.visibility },
+      visibility: {},
     };
     s.userViewOrder.push(id);
     s.activeViewId = id;
@@ -705,6 +708,30 @@ export function createViewStateStore() {
     return exp !== wouldInherit;
   }
 
+  /**
+   * Returns all view ids in canonical display order:
+   * 1. `auto:default` (pinned first),
+   * 2. Other auto views sorted alphabetically by id,
+   * 3. User views in `state.userViewOrder`.
+   *
+   * This is the **single source of truth** for display order.  Both
+   * `ViewSelector` (rendering) and `App.tsx`'s `onSwitchViewByIndex` callback
+   * (number-key dispatch) must derive their order from this function so that
+   * "press N to activate the N-th visible entry" is structurally enforced and
+   * the two call-sites cannot silently drift apart.
+   */
+  function getOrderedViewIds(): string[] {
+    const autoIds = Object.values(state.views)
+      .filter((v) => v.auto)
+      .sort((a, b) => {
+        if (a.id === 'auto:default') return -1;
+        if (b.id === 'auto:default') return 1;
+        return a.id.localeCompare(b.id);
+      })
+      .map((v) => v.id);
+    return [...autoIds, ...state.userViewOrder];
+  }
+
   return {
     state,
     // Tree
@@ -713,6 +740,7 @@ export function createViewStateStore() {
     getEffectiveVisibility,
     getAllEffective,
     hasOverride,
+    getOrderedViewIds,
     // Mutations
     setVisibility,
     setVisibilityWithoutCascade,

@@ -53,25 +53,33 @@ export const ViewSelector: Component<ViewSelectorProps> = (props) => {
   });
 
   /**
-   * Auto views in display order: "Default" first (auto:default is pinned),
-   * then the rest sorted alphabetically by id.
+   * All views in canonical display order via the store's single source of truth.
+   * Warns in dev when userViewOrder references an id absent from state.views,
+   * which would indicate a transactional inconsistency in deleteView /
+   * reorderUserViews.
    */
-  const autoViews = createMemo(() =>
-    Object.values(props.store.state.views)
-      .filter((v) => v.auto)
-      .sort((a, b) => {
-        if (a.id === 'auto:default') return -1;
-        if (b.id === 'auto:default') return 1;
-        return a.id.localeCompare(b.id);
-      }),
-  );
+  const orderedViews = createMemo(() => {
+    const ids = props.store.getOrderedViewIds();
+    const result = [];
+    for (const id of ids) {
+      const v = props.store.state.views[id];
+      if (v) {
+        result.push(v);
+      } else if (import.meta.env.DEV) {
+        console.warn(
+          `[ViewSelector] id "${id}" is in the ordered view list but missing from state.views — ` +
+            'this indicates a bug in deleteView or reorderUserViews.',
+        );
+      }
+    }
+    return result;
+  });
+
+  /** Auto views in display order (auto:default pinned first). */
+  const autoViews = createMemo(() => orderedViews().filter((v) => v.auto));
 
   /** User views in userViewOrder. */
-  const userViews = createMemo(() =>
-    props.store.state.userViewOrder
-      .map((id) => props.store.state.views[id])
-      .filter(Boolean),
-  );
+  const userViews = createMemo(() => orderedViews().filter((v) => !v.auto));
 
   const activeViewName = createMemo(() => {
     const v = props.store.state.views[props.store.state.activeViewId];
