@@ -42531,16 +42531,28 @@
         "description": "Lock in the current behaviour that passing a Real (or other non-struct, non-trait) literal to a trait-typed param fires the 'does not conform to trait' diagnostic. The `_` fallthrough in `check_trait_arg_conformance` handles this case (arg_call_name is None so the suppression block does not apply). Adding a test guards against accidental regressions to the suppression heuristic.",
         "details": "## Scope\nReview suggestion on task 1874 (esc-1874-31, reviewer_comprehensive).\n\n## Location\ncrates/reify-compiler/src/conformance.rs:983-1000\n\n## Acceptance\n- New test in `crates/reify-compiler/tests/trait_typed_param_tests.rs` that:\n  - Declares a struct `Host` with `param m : Material` (Material is a trait).\n  - Instantiates `Host(m: 1.0)` (Real literal).\n  - Asserts the expected 'type 'real' does not conform to trait Material' (or equivalent) error fires.\n- Test does not regress on existing suppression paths.\n\n### memory_hints\n- search: \"check_trait_arg_conformance suppression arg_call_name\"\n- search: \"trait-typed param Real literal\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-20T11:20:25.182Z"
+      },
+      {
+        "id": "2026",
+        "title": "Extend trait-arg conformance check to unwrap Option/collection wrappers on declared param types",
+        "description": "`check_trait_arg_conformance` currently bails out on any declared param type that is not a `Type::TraitObject`, so `param m : Option<Material>` (and collection-typed trait params like `List<Material>`) silently bypass the conformance check. This is a real correctness gap acknowledged by a TODO in the source. Unwrap wrapper types before deciding whether to enforce conformance.",
+        "details": "## Scope\nReview suggestion on task 1874 (esc-1874-31, reviewer_comprehensive).\n\n## Location\ncrates/reify-compiler/src/conformance.rs:920-924\n\n## Problem\nThe early return on `!Type::TraitObject` skips trait conformance for any wrapped form:\n- `param m : Option<Material>`\n- `param ms : List<Material>` / vec-typed\n- Any other wrapper over a trait object.\n\n## Approach\n- Recognise Option / collection wrappers on the declared param type.\n- When the inner type is a `TraitObject`, enforce conformance against the (possibly wrapped) argument.\n- For Option, accept `None` / unset values without emitting the error; otherwise check the Some-arm value type.\n- For collection types, ideally check each element; at minimum, check the element type if the argument is a literal collection.\n\n## Acceptance\n- Tests in `trait_typed_param_tests.rs` covering:\n  - `param m : Option<Material>` with non-conforming Some, conforming Some, and None.\n  - Collection-typed trait params with conforming / non-conforming elements (at least one negative test).\n- Existing trait-typed-param tests continue to pass.\n\n### memory_hints\n- search: \"check_trait_arg_conformance TraitObject Option\"\n- search: \"Option collection trait param conformance\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
         "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:19:45.401Z",
-      "taskCount": 2017,
+      "lastModified": "2026-04-20T11:20:25.182Z",
+      "taskCount": 2018,
       "completedCount": 1722,
       "tags": [
         "master"
