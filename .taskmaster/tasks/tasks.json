@@ -42556,11 +42556,17 @@
         "description": "`check_trait_arg_conformance` currently bails out on any declared param type that is not a `Type::TraitObject`, so `param m : Option<Material>` (and collection-typed trait params like `List<Material>`) silently bypass the conformance check. This is a real correctness gap acknowledged by a TODO in the source. Unwrap wrapper types before deciding whether to enforce conformance.",
         "details": "## Scope\nReview suggestion on task 1874 (esc-1874-31, reviewer_comprehensive).\n\n## Location\ncrates/reify-compiler/src/conformance.rs:920-924\n\n## Problem\nThe early return on `!Type::TraitObject` skips trait conformance for any wrapped form:\n- `param m : Option<Material>`\n- `param ms : List<Material>` / vec-typed\n- Any other wrapper over a trait object.\n\n## Approach\n- Recognise Option / collection wrappers on the declared param type.\n- When the inner type is a `TraitObject`, enforce conformance against the (possibly wrapped) argument.\n- For Option, accept `None` / unset values without emitting the error; otherwise check the Some-arm value type.\n- For collection types, ideally check each element; at minimum, check the element type if the argument is a literal collection.\n\n## Acceptance\n- Tests in `trait_typed_param_tests.rs` covering:\n  - `param m : Option<Material>` with non-conforming Some, conforming Some, and None.\n  - Collection-typed trait params with conforming / non-conforming elements (at least one negative test).\n- Existing trait-typed-param tests continue to pass.\n\n### memory_hints\n- search: \"check_trait_arg_conformance TraitObject Option\"\n- search: \"Option collection trait param conformance\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:38:05.996Z"
+        "updatedAt": "2026-04-20T11:38:06.482Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "49555f9a776c827b80625b44a42a48bdc9d8ab4a",
+            "note": "Task 2026 branch HEAD is a full ancestor of main (no commits unique to branch). All conformance.rs/type_resolution.rs changes already merged."
+          }
+        }
       },
       {
         "id": "2027",
@@ -42638,10 +42644,11 @@
         "description": "Move the `mod tests` block from `crates/reify-compiler/src/lib.rs` (L1067-2656, 58 `#[test]` fns, ~1600 lines) into a new integration test file at `crates/reify-compiler/tests/compile_api_tests.rs`.\n\nThe tests use only the public API (`compile`, `compile_with_stdlib`, `is_geometry_function`, `EntityKind`, etc.) — no internal-module access needed, so the relocation is mechanical.\n\nSuccess criteria:\n- `cargo test -p reify-compiler` runs the same test count (58 tests from lib.rs plus any others) and they all pass.\n- `crates/reify-compiler/src/lib.rs` drops from 2656 → ~1050 lines.\n\nWhy: lib.rs is currently the #1 contended file with 35 pending tasks serialized behind it. Shedding the test half unblocks wide-parallelism immediately and prepares the file for the structural split in the follow-up task.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T11:38:06.155Z"
       },
       {
         "id": "2032",
@@ -42657,9 +42664,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:38:05.997Z",
+      "lastModified": "2026-04-20T11:38:06.482Z",
       "taskCount": 2024,
-      "completedCount": 1729,
+      "completedCount": 1730,
       "tags": [
         "master"
       ]
