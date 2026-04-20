@@ -1,7 +1,7 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
 use reify_compiler::TopologyTemplate;
-use reify_types::{Diagnostic, ModulePath, Severity};
+use reify_types::{CompiledExpr, Diagnostic, ModulePath, Severity};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
@@ -479,6 +479,113 @@ pub fn run_modify_pipeline(
 
     let ops = ops_ref.lock().unwrap().clone();
     (result, ops)
+}
+
+/// Retrieve the compiled `default_expr` of a let binding by name from a named template.
+///
+/// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
+/// not be the desired template. `get_let_expr` delegates to this function.
+///
+/// # Panics
+/// - `"no template named '{template_name}'"` if no template with that name exists.
+/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+/// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+pub fn get_let_expr_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    template_name: &str,
+    cell_name: &str,
+) -> &'a CompiledExpr {
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == template_name)
+        .unwrap_or_else(|| panic!("no template named '{template_name}'"));
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == cell_name)
+        .unwrap_or_else(|| {
+            panic!("no value cell named '{cell_name}' in template '{template_name}'")
+        });
+    cell.default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("value cell '{cell_name}' in '{template_name}' has no default expr"))
+}
+
+/// Retrieve the compiled `default_expr` of a let binding by name from the first template.
+///
+/// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
+/// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
+/// templates and you need to target a specific one.
+///
+/// # Panics
+/// - `"expected at least one template in module"` if `templates` is empty.
+/// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+pub fn get_let_expr<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a CompiledExpr {
+    let template_name = module
+        .templates
+        .first()
+        .expect("expected at least one template in module")
+        .name
+        .as_str();
+    get_let_expr_in(module, template_name, name)
+}
+
+/// Assert the anti-cascade contract: exactly the expected root-cause error(s) are present
+/// and no unexpected additional errors appear.
+///
+/// # Parameters
+/// - `diagnostics`: All diagnostics from the compiled module.
+/// - `expected_root_fragments`: One or more substrings.  At least one
+///   `Severity::Error` diagnostic must contain at least one of the fragments
+///   (the root-cause error).  EVERY error must match at least one fragment;
+///   any error that matches none is treated as an unexpected cascade error and
+///   causes the assertion to fail.
+///
+/// ## Multi-fragment use case
+/// When a single compilation triggers more than one legitimate root-cause error
+/// (e.g. "duplicate function signature" and "ambiguous function call"), pass all
+/// expected fragments as a slice: `&["ambiguous", "duplicate"]`.  This avoids
+/// an inline cascade check and keeps all cascade assertions in one place.
+///
+/// ## Rationale
+/// The previous approach (`!message.contains("mismatch") || !message.contains("incompatible")`)
+/// is fragile: it misses cascade diagnostics with different wording.  The positive-whitelist
+/// approach here fails on ANY unexpected error, making it both stricter and easier to maintain
+/// from a single definition.
+///
+/// # Panics
+/// - `"expected root-cause error matching one of ..."` if no error matches any fragment.
+/// - `"unexpected cascade errors ..."` if any error matches no fragment.
+#[track_caller]
+pub fn assert_no_type_cascade(
+    diagnostics: &[Diagnostic],
+    expected_root_fragments: &[&str],
+) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    let matches_any = |msg: &str| expected_root_fragments.iter().any(|f| msg.contains(f));
+
+    assert!(
+        errors.iter().any(|d| matches_any(&d.message)),
+        "expected root-cause error matching one of {expected_root_fragments:?}; got: {errors:?}",
+    );
+
+    let unexpected: Vec<_> = errors
+        .iter()
+        .filter(|d| !matches_any(&d.message))
+        .collect();
+
+    assert!(
+        unexpected.is_empty(),
+        "unexpected cascade errors (must all match one of {expected_root_fragments:?}): {unexpected:?}",
+    );
 }
 
 #[cfg(test)]
@@ -1034,11 +1141,14 @@ mod tests {
 
     /// get_let_expr_in should return the default_expr of the named cell in the
     /// named template, even when the module has multiple templates.
+    /// Uses non-integer floats (1.5, 2.7) because whole-number float literals
+    /// (e.g. 1.0, 2.0) are compiled as Type::Int by the Reify compiler when
+    /// they satisfy `*v == (*v as i64) as f64`.
     #[test]
     fn test_get_let_expr_in_finds_named_template() {
         let source = r#"
-            structure Alpha { let v = 1.0 }
-            structure Beta  { let w = 2.0 }
+            structure Alpha { let v = 1.5 }
+            structure Beta  { let w = 2.7 }
         "#;
         let module = super::compile_source(source);
         let expr = super::get_let_expr_in(&module, "Beta", "w");
