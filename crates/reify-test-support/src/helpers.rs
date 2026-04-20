@@ -557,6 +557,16 @@ pub fn get_let_expr<'a>(
 /// approach here fails on ANY unexpected error, making it both stricter and easier to maintain
 /// from a single definition.
 ///
+/// ## Fragment selection
+/// Each fragment is matched using [`str::contains`], so a short or common word like
+/// `"ambiguous"` would also match an unrelated diagnostic that happens to contain it,
+/// silently treating that unrelated error as an expected root-cause and weakening the
+/// whitelist.  Callers should therefore prefer specific, distinctive phrases
+/// (e.g. `"unknown member"`, `"duplicate function signature"`, `"ambiguous function call"`)
+/// over standalone common English words.  If a fragment collision ever surfaces and causes
+/// a spurious assertion pass, the heavier alternative — accepting a predicate
+/// (`impl Fn(&str) -> bool`) instead of `&[&str]` — can be revisited at that point.
+///
 /// # Panics
 /// - `"expected root-cause error matching one of ..."` if no error matches any fragment.
 /// - `"unexpected cascade errors ..."` if any error matches no fragment.
@@ -1184,7 +1194,9 @@ mod tests {
     /// whose default_expr is None. Uses a builder-synthesized module with an
     /// auto_param (which always has default_expr = None) rather than a compiled
     /// source, since a source-level `param` always carries a default in well-formed
-    /// compiled output.
+    /// compiled output.  The inline `assert!` below makes the precondition explicit:
+    /// if `auto_param` ever changes to synthesize a placeholder default, the guard
+    /// will fire loudly rather than silently letting the test pass for the wrong reason.
     #[test]
     #[should_panic(expected = "has no default expr")]
     fn test_get_let_expr_in_panics_on_missing_default_expr() {
@@ -1192,6 +1204,18 @@ mod tests {
         let template = crate::builders::TopologyTemplateBuilder::new("S")
             .auto_param("S", "x", Type::Real)
             .build();
+        // Precondition: auto_param must produce default_expr = None; if that ever
+        // changes this guard fires before get_let_expr_in, surfacing the broken
+        // assumption clearly instead of silently exercising the wrong branch.
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "x")
+            .expect("auto_param should have added cell 'x'");
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param must produce default_expr = None for this test's intent"
+        );
         let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(template)
             .build();
