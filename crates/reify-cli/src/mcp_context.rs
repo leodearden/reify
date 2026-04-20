@@ -784,6 +784,16 @@ structure Bracket {
     /// regression test are guaranteed to exercise the exact same input string.
     const INVALID_PARSE_INPUT: &str = "{";
 
+    /// Returns a fresh `CliToolContext` rooted at the default `tests/fixtures`
+    /// directory.  Use this in unit tests that don't need a custom `project_dir`;
+    /// tests that do need one should call `CliToolContext::new(...)` directly.
+    fn fresh_ctx() -> CliToolContext {
+        CliToolContext::new(PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        )))
+    }
+
     /// Set up a fresh `CliToolContext` with `Bracket.width` overridden to
     /// `0.12` (a `Scalar[LENGTH]` value), then call `update_source` with the
     /// given `replacement` source string.  Returns the number of `WARN` events
