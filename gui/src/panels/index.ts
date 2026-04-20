@@ -11,3 +11,5 @@ export { MenuBar } from './MenuBar';
 export { DesignTree } from './DesignTree';
 export { DesignTreeContextMenu } from './DesignTreeContextMenu';
 export type { MenuAction } from './DesignTreeContextMenu';
+export { ViewSelector } from './ViewSelector';
+export type { ViewSelectorProps } from './ViewSelector';
