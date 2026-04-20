@@ -57,6 +57,44 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
     }
 }
 
+/// Resolve the geometry ref for a named positional argument of a sweep-family
+/// dispatch arm, emitting a per-argument diagnostic when the arg is not a
+/// geometry expression and falling back to `GeomRef::Step(step_offset + idx)`
+/// so the caller can still produce its op for downstream analysis.
+///
+/// Used by `sweep`, `sweep_guided`, and any future guided-sweep variant whose
+/// surface contract is to surface a numbered, labelled error for each bad
+/// argument (rather than the silent fallback used by single-geom-arg ops and
+/// the `loft` family). Centralising the resolve+diagnose+fallback in one place
+/// keeps the diagnostic wording (`"{name}() {label} (argument {n}) must be a
+/// geometry expression"`) and the fallback step index in sync across arms.
+fn resolve_named_geom_arg(
+    idx: usize,
+    fn_name: &str,
+    arg_label: &str,
+    args: &[reify_syntax::Expr],
+    geom_refs: &HashMap<usize, GeomRef>,
+    diagnostics: &mut Vec<Diagnostic>,
+    step_offset: usize,
+) -> GeomRef {
+    if let Some(r) = geom_refs.get(&idx).cloned() {
+        return r;
+    }
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "{}() {} (argument {}) must be a geometry expression",
+            fn_name,
+            arg_label,
+            idx + 1,
+        ))
+        .with_label(DiagnosticLabel::new(
+            args[idx].span,
+            "not a geometry expression",
+        )),
+    );
+    GeomRef::Step(step_offset + idx)
+}
+
 /// Compile a geometry function call expression into CompiledGeometryOps.
 ///
 /// Maps positional arguments to the named parameters expected by each primitive:
@@ -621,34 +659,15 @@ pub(crate) fn compile_geometry_call(
             // produced for downstream analysis.  (loft() differs: it falls back
             // silently per profile to preserve index uniqueness without
             // duplicating the type-check error category at each profile slot.)
-            let profile = if let Some(r) = geom_refs.get(&0).cloned() {
-                r
-            } else {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "sweep() profile (argument 1) must be a geometry expression".to_string(),
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        args[0].span,
-                        "not a geometry expression",
-                    )),
-                );
-                GeomRef::Step(step_offset)
-            };
-            let path = if let Some(r) = geom_refs.get(&1).cloned() {
-                r
-            } else {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "sweep() path (argument 2) must be a geometry expression".to_string(),
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        args[1].span,
-                        "not a geometry expression",
-                    )),
-                );
-                GeomRef::Step(step_offset + 1)
-            };
+            // Per-arg resolve+diagnose+fallback is centralised in
+            // `resolve_named_geom_arg` so this arm and `sweep_guided` (and any
+            // future guided variant) emit identically-shaped diagnostics.
+            let profile = resolve_named_geom_arg(
+                0, "sweep", "profile", args, &geom_refs, diagnostics, step_offset,
+            );
+            let path = resolve_named_geom_arg(
+                1, "sweep", "path", args, &geom_refs, diagnostics, step_offset,
+            );
             let mut it = compiled_args.into_iter();
             let sweep_args: Vec<(String, CompiledExpr)> = vec![
                 ("profile".to_string(), it.next().unwrap()),
@@ -677,52 +696,18 @@ pub(crate) fn compile_geometry_call(
             }
             // Like sweep(), sweep_guided() emits per-argument diagnostics when
             // an arg is not a geometry expression, falling back to GeomRef::Step
-            // so the op is still produced for downstream analysis.
-            let profile = if let Some(r) = geom_refs.get(&0).cloned() {
-                r
-            } else {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "sweep_guided() profile (argument 1) must be a geometry expression"
-                            .to_string(),
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        args[0].span,
-                        "not a geometry expression",
-                    )),
-                );
-                GeomRef::Step(step_offset)
-            };
-            let path = if let Some(r) = geom_refs.get(&1).cloned() {
-                r
-            } else {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "sweep_guided() path (argument 2) must be a geometry expression"
-                            .to_string(),
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        args[1].span,
-                        "not a geometry expression",
-                    )),
-                );
-                GeomRef::Step(step_offset + 1)
-            };
-            let guide = if let Some(r) = geom_refs.get(&2).cloned() {
-                r
-            } else {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "sweep_guided() guide (argument 3) must be a geometry expression"
-                            .to_string(),
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        args[2].span,
-                        "not a geometry expression",
-                    )),
-                );
-                GeomRef::Step(step_offset + 2)
-            };
+            // so the op is still produced for downstream analysis. Resolve via
+            // the shared `resolve_named_geom_arg` helper so each arg-slot uses
+            // the same diagnostic wording and fallback step index as `sweep`.
+            let profile = resolve_named_geom_arg(
+                0, "sweep_guided", "profile", args, &geom_refs, diagnostics, step_offset,
+            );
+            let path = resolve_named_geom_arg(
+                1, "sweep_guided", "path", args, &geom_refs, diagnostics, step_offset,
+            );
+            let guide = resolve_named_geom_arg(
+                2, "sweep_guided", "guide", args, &geom_refs, diagnostics, step_offset,
+            );
             let mut it = compiled_args.into_iter();
             let sweep_args: Vec<(String, CompiledExpr)> = vec![
                 ("profile".to_string(), it.next().unwrap()),
