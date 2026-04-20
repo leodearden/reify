@@ -40492,11 +40492,11 @@
         "description": "Follow-up to task 448 review. The `find_node` helper at crates/reify-compiler/tests/type_error_propagation_tests.rs:12-44 only recurses into BinOp, UnOp, FunctionCall, Conditional, MethodCall, and IndexAccess — returning None for everything else (Quantifier.predicate, ListLiteral elements, SetLiteral elements, Lambda body, Let/Block, etc.). The quantifier test currently works because it pattern-matches the top-level Quantifier out first, but any future refactor that wraps the quantifier or embeds the predicate inside an unhandled variant would cause the `Type::Error` search to silently return None and the assertion would fail in a misleading way.\n\nEither:\n- Extend `find_node` to recurse into all CompiledExprKind variants that contain sub-expressions (Quantifier.predicate, list/set element exprs, Lambda body, Let bindings/body, Block stmts, etc.), OR\n- Document the restricted scope at the top of the helper and panic on unknown recursive kinds so coverage gaps surface loudly instead of silently missing.\n\nPreferred: the extend-coverage approach so anti-cascade tests stay robust against AST/IR restructuring.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:28:37.338Z",
+        "updatedAt": "2026-04-20T07:31:41.099Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40506,6 +40506,10 @@
             "queries": [
               "resolution for: Broaden find_node test helper to cover all recursive CompiledExprKind variants"
             ]
+          },
+          "done_provenance": {
+            "commit": "a972a0f50ef1d31e90bc9e064ba196264cc6d27d",
+            "note": "All 5 steps completed by implementer. Tests pass: 1152/1152. find_node now covers all 21 CompiledExprKind variants with no _ wildcard."
           }
         }
       },
@@ -42345,9 +42349,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T07:28:38.015Z",
+      "lastModified": "2026-04-20T07:31:41.099Z",
       "taskCount": 2009,
-      "completedCount": 1714,
+      "completedCount": 1715,
       "tags": [
         "master"
       ]
