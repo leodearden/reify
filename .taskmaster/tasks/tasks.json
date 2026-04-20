@@ -42565,13 +42565,13 @@
         "description": "After task #2018, `s.explicit[path]` is never `null` at runtime — cleared overrides are deleted. But `gui/src/types.ts:162` still defines `export type ExplicitVisibility = VisibilityState | null`, which keeps a ghost sentinel in the type system that every reader of `state.explicit[path]` must reason about.",
         "details": "Scope:\n\n1. gui/src/types.ts line 162: consider changing `export type ExplicitVisibility = VisibilityState | null` → `export type ExplicitVisibility = VisibilityState`, OR delete the alias entirely if no non-trivial callers remain.\n\n2. gui/src/stores/viewStateStore.ts: tighten the `ViewState.explicit` field (currently `Record<string, ExplicitVisibility>`) to `Record<string, VisibilityState>`. The existing ViewState JSDoc (lines 16-21 on post-#2018 main) already acknowledges this type-vs-runtime gap and can be simplified.\n\n3. Simplify null-checks at call sites:\n   - `getEffectiveVisibility` — `exp != null` becomes `exp !== undefined` (or a truthiness check under `noUncheckedIndexedAccess`).\n   - `hasOverride` — same.\n   - `mirrorExplicitToActiveUserView` — the `val != null` guard becomes unnecessary; remove.\n\n4. Audit every importer of `ExplicitVisibility` across gui/src/ before narrowing. If any consumer relies on the `null` branch intentionally (e.g. a persisted/serialized shape that accepts null as \"clear\"), either:\n   - Carve out a separate serialization type, OR\n   - Leave `ExplicitVisibility` as-is and instead narrow only `ViewState.explicit` at the store level.\n\nVerification:\n- `cd gui && npm run typecheck` passes.\n- `cd gui && npx vitest run` passes.\n- Grep confirms no remaining `ExplicitVisibility | null` unions or `explicit[...] != null` checks where a simpler form would do.\n\nReviewer: reviewer_comprehensive (post-merge review of task #2018). Marked \"out of scope if `ExplicitVisibility` is used elsewhere with intentional null semantics\" — so audit first, and close as not-applicable if audit reveals legitimate null callers.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "2018"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:00:28.534Z",
+        "updatedAt": "2026-04-20T14:00:35.294Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -43177,9 +43177,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:00:34.598Z",
+      "lastModified": "2026-04-20T14:00:35.294Z",
       "taskCount": 2050,
-      "completedCount": 1751,
+      "completedCount": 1752,
       "tags": [
         "master"
       ]
