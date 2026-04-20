@@ -202,4 +202,22 @@ assert "Test 15: wrapper exits 124 (internal timeout killed the command, got $_E
 assert "Test 15: elapsed in [3,6]s — timer started post-lock, not at wrapper launch (elapsed=${_ELAPSED15}s)" \
     bash -c "test '$_ELAPSED15' -ge 3 && test '$_ELAPSED15' -le 6"
 
+# -- Test 16: wrapper logs wait duration on lock acquisition -------------------
+echo ""
+echo "--- Test 16: wrapper emits INFO log line with 'acquired' and numeric duration on stderr ---"
+
+_LOCK16="$(mktemp)"
+_ERR16="$(mktemp)"
+
+_EXIT16=0
+REIFY_OCCT_LOCK="$_LOCK16" "$WRAPPER" true 2>"$_ERR16" >/dev/null || _EXIT16=$?
+
+assert "Test 16: wrapper exits 0 (sanity check, got $_EXIT16)" \
+    test "$_EXIT16" -eq 0
+
+assert "Test 16: stderr contains log line with 'acquired', 'OCCT lock', and numeric duration (Ns)" \
+    grep -qiE 'acquired.*OCCT.*lock.*[0-9]+s' "$_ERR16"
+
+rm -f "$_LOCK16" "$_ERR16"
+
 test_summary
