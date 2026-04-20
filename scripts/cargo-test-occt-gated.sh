@@ -30,6 +30,11 @@
 #                         command is NOT executed.  A caller that sees exit 75
 #                         should interpret it as transient contention ("try
 #                         again, nothing ran") rather than a test failure.
+#                         Note: orchestrator.yaml currently treats exit 75
+#                         identically to any other non-zero exit (no
+#                         caller-side retry logic is implemented yet); this
+#                         semantics is documented here for future
+#                         differentiation.
 #
 #   REIFY_OCCT_TEST_TIMEOUT  Maximum seconds the command may run AFTER the lock
 #                            is acquired.  Default: 2700 (45 minutes).  The
@@ -39,15 +44,23 @@
 #                            SIGTERM; if still running after 60s it is sent
 #                            SIGKILL (--kill-after=60 convention used
 #                            project-wide in orchestrator.yaml).  Exit code
-#                            124 signals the command was killed by this
-#                            timeout (GNU timeout convention), distinct from
-#                            exit 75 which means the lock was never acquired.
+#                            124 signals the command was killed via SIGTERM
+#                            (GNU timeout convention); 137 (128+9) signals
+#                            --kill-after=60 escalated to SIGKILL because the
+#                            child ignored SIGTERM.  Either code indicates
+#                            this wrapper's timeout fired, distinct from exit
+#                            75 which means the lock was never acquired.
 
 set -euo pipefail
 
 if ! command -v flock >/dev/null 2>&1; then
     echo "ERROR: cargo-test-occt-gated.sh requires flock (util-linux) but it was not found on PATH." >&2
     echo "       Install util-linux or ensure /usr/bin/flock is accessible." >&2
+    exit 1
+fi
+if ! command -v timeout >/dev/null 2>&1; then
+    echo "ERROR: cargo-test-occt-gated.sh requires timeout (GNU coreutils) but it was not found on PATH." >&2
+    echo "       Install coreutils or ensure /usr/bin/timeout is accessible." >&2
     exit 1
 fi
 
@@ -68,6 +81,7 @@ fi
 # so the serialization guarantee is preserved.  We use ">>" (append) rather
 # than ">" to avoid truncating the lock file on every acquisition.
 exec 9>>"$LOCK"
+# date +%s has 1-second resolution; acquisitions under 1s are reported as 0s.
 _FLOCK_START="$(date +%s)"
 if ! flock -x -w "$LOCK_WAIT" 9; then
     echo "ERROR: cargo-test-occt-gated.sh: failed to acquire OCCT lock within ${LOCK_WAIT}s (LOCK=$LOCK)" >&2
