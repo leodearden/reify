@@ -42942,6 +42942,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2048",
+        "title": "Extract fresh_ctx() test helper in mcp_context.rs",
+        "description": "Duplicated PathBuf+CliToolContext::new pattern across mcp_context.rs tests. Add fn fresh_ctx() helper in test module. From review of task 2015.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -42954,7 +42965,7 @@
       ],
       "created": "2026-04-20T13:33:08.450Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-20T13:33:08.553Z"
+      "updated": "2026-04-20T13:33:40.447Z"
     }
   }
 }
