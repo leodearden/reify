@@ -551,7 +551,7 @@ pub(crate) fn compile_expr_guarded(
                     }
                     let result_type = matched_fn.return_type.clone();
                     let content_hash = {
-                        let mut h = ContentHash::of(&[6]).combine(ContentHash::of_str(name));
+                        let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL]).combine(ContentHash::of_str(name));
                         for arg in &compiled_args {
                             h = h.combine(arg.content_hash);
                         }
@@ -1313,9 +1313,9 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
 
-            // Content hash: tag [24] + discriminant + all arms
+            // Content hash: tag TAG_MATCH + discriminant + all arms
             let mut content_hash =
-                ContentHash::of(&[24]).combine(compiled_discriminant.content_hash);
+                ContentHash::of(&[TAG_MATCH]).combine(compiled_discriminant.content_hash);
             for arm in &compiled_arms {
                 for pattern in &arm.patterns {
                     content_hash = content_hash.combine(ContentHash::of_str(pattern));
