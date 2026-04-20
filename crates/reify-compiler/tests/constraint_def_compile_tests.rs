@@ -995,15 +995,4 @@ constraint def Aligned<T> {
         "expected no 'unknown type' errors for declared type param T, got: {:?}",
         unknown_type_errors
     );
-
-    // More specifically, no error must mention T as an unknown type.
-    let t_unknown: Vec<_> = errors
-        .iter()
-        .filter(|d| d.message.contains("unknown type 'T'"))
-        .collect();
-    assert!(
-        t_unknown.is_empty(),
-        "expected no 'unknown type T' error (T is a declared type param), got: {:?}",
-        t_unknown
-    );
 }
