@@ -14,12 +14,13 @@ vi.mock('@tauri-apps/api/event', () => ({
 // Capture Viewport props for navigation tests
 let capturedViewportProps: any = {};
 const mockViewportFitToView = vi.fn();
+const mockFlyToEntity = vi.fn();
 vi.mock('../viewport', () => ({
   Viewport: (props: any) => {
     capturedViewportProps = props;
-    // Invoke flyToEntityRef with a mock function if provided
+    // Invoke flyToEntityRef with a trackable mock function if provided
     if (props.flyToEntityRef) {
-      props.flyToEntityRef((_path: string) => {});
+      props.flyToEntityRef(mockFlyToEntity);
     }
     // Invoke fitToViewRef with a trackable mock function if provided
     if (props.fitToViewRef) {
@@ -32,13 +33,15 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store and onOpen for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, and scrollToLocation for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
+let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
     capturedEditorOnOpen = props.onOpen;
+    capturedEditorScrollToLocation = props.scrollToLocation;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -81,6 +84,8 @@ vi.mock('../bridge', () => ({
   onTessellationDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
   onSerializationError: vi.fn().mockResolvedValue(() => {}),
+  onFocusEntity: vi.fn().mockResolvedValue(() => {}),
+  onNavigateToSource: vi.fn().mockResolvedValue(() => {}),
   claudeSendMessage: vi.fn().mockResolvedValue(undefined),
   claudeAbort: vi.fn().mockResolvedValue(undefined),
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
@@ -99,6 +104,8 @@ beforeEach(() => {
   localStorage.clear();
   capturedEditorStore = null;
   capturedEditorOnOpen = undefined;
+  capturedEditorScrollToLocation = undefined;
+  mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
@@ -112,6 +119,8 @@ beforeEach(() => {
   vi.mocked(bridge.onTessellationDiagnostics).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
   vi.mocked(bridge.onSerializationError).mockResolvedValue(() => {});
+  vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
+  vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
   vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
 });
@@ -628,6 +637,65 @@ describe('App navigation wiring', () => {
       const container = screen.getByTestId('property-editor');
       const selectedGroups = container.querySelectorAll('[data-selected]');
       expect(selectedGroups.length).toBe(1);
+    });
+  });
+
+  it('App subscribes to focus-entity events and dispatches to flyToEntity + selectionStore.selectEntity', async () => {
+    let capturedFocusEntityCb: ((entityPath: string) => void) | undefined;
+    vi.mocked(bridge.onFocusEntity).mockImplementation(async (cb) => {
+      capturedFocusEntityCb = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+
+    await renderAndWaitForReady();
+
+    // The subscription must have been registered
+    expect(vi.mocked(bridge.onFocusEntity)).toHaveBeenCalled();
+    expect(capturedFocusEntityCb).toBeDefined();
+
+    // Simulate focus-entity event from backend
+    capturedFocusEntityCb!('Bracket');
+
+    // mockFlyToEntity should be called (flyToEntityFn was wired via flyToEntityRef in Viewport mock)
+    await waitFor(() => {
+      expect(mockFlyToEntity).toHaveBeenCalledWith('Bracket');
+    });
+
+    // selectionStore.selectEntity should also have been called — PropertyEditor shows Bracket as data-selected
+    await waitFor(() => {
+      const container = screen.getByTestId('property-editor');
+      const selectedGroups = container.querySelectorAll('[data-selected]');
+      expect(selectedGroups.length).toBe(1);
+    });
+  });
+
+  it('App subscribes to navigate-to-source events and updates Editor scrollToLocation signal', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number }) => void) | undefined;
+    vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
+      capturedNavigateCb = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+
+    await renderAndWaitForReady();
+
+    expect(vi.mocked(bridge.onNavigateToSource)).toHaveBeenCalled();
+    expect(capturedNavigateCb).toBeDefined();
+
+    // Simulate navigate-to-source event from backend
+    capturedNavigateCb!({ file: '/project/bracket.ri', line: 12, column: 4 });
+
+    // Editor's scrollToLocation signal should update with matching SourceLocation
+    await waitFor(() => {
+      const loc = capturedEditorScrollToLocation?.();
+      expect(loc).toEqual({
+        file_path: '/project/bracket.ri',
+        line: 12,
+        column: 4,
+        end_line: 12,
+        end_column: 4,
+      });
     });
   });
 });

@@ -637,6 +637,96 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
 }
 
 #[tokio::test]
+async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
+    use crate::engine::EngineSession;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use std::sync::Arc;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    // Set up engine for MCP dispatch
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+
+    // stdin_writer: Rust writes tool_result here (we don't read it in this test)
+    // stdout_writer: simulates sidecar writing tool_call → Rust reader task processes it
+    let (stdin_writer, _stdin_reader) = tokio::io::duplex(4096);
+    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
+    let reader = BufReader::new(stdout_reader);
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+
+    // Collect emitted events so we can assert on navigation events.
+    // A Notify signals deterministically when focus-entity arrives, avoiding
+    // wall-clock polling that can be flaky under CI load.
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let notify_clone = Arc::clone(&notify);
+    let events = Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
+    let _handle = SidecarHandle::from_parts_with_mcp(
+        stdin_writer,
+        reader,
+        state,
+        engine,
+        move |name: String, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name.clone(), payload));
+            if name == "focus-entity" {
+                notify_clone.notify_one();
+            }
+        },
+        selection,
+    );
+
+    // Register the waiter BEFORE writing the tool call to avoid a race where
+    // notify_one() fires before notified() starts listening.
+    let notified = notify.notified();
+
+    // Inject a reify_focus_entity tool_call from simulated sidecar stdout
+    let tool_call =
+        r#"{"type":"tool_call","id":"msg-focus","tool_name":"reify_focus_entity","tool_input":{"entity_path":"Bracket"}}"#;
+    stdout_writer
+        .write_all(format!("{}\n", tool_call).as_bytes())
+        .await
+        .unwrap();
+
+    // Wait deterministically for focus-entity to arrive (5 s is generous for CI).
+    tokio::time::timeout(std::time::Duration::from_secs(5), notified)
+        .await
+        .expect("timed out waiting for focus-entity event from MCP tool");
+
+    // Verify the outbound claude-tool-call event was emitted (sanity: proves reader processed it)
+    {
+        let emitted = events.lock().unwrap();
+        assert!(
+            emitted.iter().any(|(name, _)| name == "claude-tool-call"),
+            "Expected claude-tool-call event in sink, got: {:?}",
+            emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    // The regression guard: focus-entity event must reach the events sink via the wired emitter.
+    // This fails when TauriToolContext is built without .with_event_emitter(...).
+    {
+        let emitted = events.lock().unwrap();
+        assert!(
+            emitted
+                .iter()
+                .any(|(name, payload)| name == "focus-entity"
+                    && payload == &serde_json::json!("Bracket")),
+            "Expected focus-entity event with payload \"Bracket\" in sink, got: {:?}",
+            emitted
+                .iter()
+                .map(|(n, p)| format!("({n}, {p})"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    drop(stdout_writer);
+}
+
+#[tokio::test]
 async fn tool_result_write_failure_emits_claude_error_event() {
     use crate::engine::EngineSession;
     use reify_constraints::SimpleConstraintChecker;

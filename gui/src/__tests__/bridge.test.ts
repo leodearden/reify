@@ -30,6 +30,8 @@ import {
   onSerializationError,
   onTessellationDiagnostics,
   pickOpenPath,
+  onFocusEntity,
+  onNavigateToSource,
 } from '../bridge';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -344,5 +346,55 @@ describe('bridge event listeners', () => {
         expect.objectContaining({ severity: 'Error', message: 'geometry error: kernel failure' }),
       ])
     );
+  });
+
+  it("onFocusEntity calls listen with 'focus-entity' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onFocusEntity(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('focus-entity', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onFocusEntity passes string payload (entity_path) to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_name, handler) => {
+      (handler as (event: { payload: unknown }) => void)({ payload: 'Bracket' });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onFocusEntity(callback);
+
+    expect(callback).toHaveBeenCalledWith('Bracket');
+  });
+
+  it("onNavigateToSource calls listen with 'navigate-to-source' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onNavigateToSource(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('navigate-to-source', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onNavigateToSource passes {file, line, column} payload to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_name, handler) => {
+      (handler as (event: { payload: unknown }) => void)({
+        payload: { file: 'bracket.ri', line: 5, column: 3 },
+      });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onNavigateToSource(callback);
+
+    expect(callback).toHaveBeenCalledWith({ file: 'bracket.ri', line: 5, column: 3 });
   });
 });

@@ -277,6 +277,12 @@ impl SidecarHandle {
                                 let ctx =
                                     crate::mcp_context::TauriToolContext::builder(engine_clone)
                                         .with_selection(selection_clone)
+                                        .with_event_emitter({
+                                            let e = Arc::clone(&emitter_clone);
+                                            move |name: &str, payload: serde_json::Value| {
+                                                e(name.to_string(), payload);
+                                            }
+                                        })
                                         .build();
                                 let result = crate::mcp_context::mcp_tool_call_impl(
                                     &tool_name, tool_input, &ctx,

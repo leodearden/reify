@@ -36,6 +36,8 @@ import {
   saveFile as bridgeSaveFile,
   onFileChanged,
   onSerializationError,
+  onFocusEntity,
+  onNavigateToSource,
   getSourceLocation as bridgeGetSourceLocation,
   focusEntity as bridgeFocusEntity,
   claudeSendMessage,
@@ -269,6 +271,8 @@ const App: Component = () => {
   let unsub: (() => void) | undefined;
   let fileChangedUnsub: (() => void) | undefined;
   let serializationErrorUnsub: (() => void) | undefined;
+  let focusEntityUnsub: (() => void) | undefined;
+  let navigateToSourceUnsub: (() => void) | undefined;
   let claudeEventUnsub: (() => void) | undefined;
   let debugBridgeUnsub: (() => void) | undefined;
 
@@ -281,6 +285,10 @@ const App: Component = () => {
     fileChangedUnsub = undefined;
     serializationErrorUnsub?.();
     serializationErrorUnsub = undefined;
+    focusEntityUnsub?.();
+    focusEntityUnsub = undefined;
+    navigateToSourceUnsub?.();
+    navigateToSourceUnsub = undefined;
     claudeEventUnsub?.();
     claudeEventUnsub = undefined;
 
@@ -355,6 +363,47 @@ const App: Component = () => {
       showToast('Serialization error monitoring unavailable', 'error');
     }
 
+    // Subscribe to focus-entity events (from focus_entity Tauri command and MCP tool).
+    //
+    // OWNERSHIP: This handler is the authoritative terminal dispatcher for focus
+    // navigation. It handles two origins:
+    //   • MCP-originated: Claude calls reify_focus_entity → backend emits the event →
+    //     this listener fires. No other handler runs.
+    //   • User-initiated: handleGroupDoubleClick → navigateToEntity → bridgeFocusEntity
+    //     (Tauri command) → backend emits the event → this listener fires.
+    //     navigateToEntity then also calls flyToEntity/selectEntity directly, producing
+    //     an idempotent double-call. Both operations are stable under repetition, so no
+    //     observable bug arises. The clean fix — removing those calls from navigateToEntity
+    //     now that this listener owns them — requires modifying navigation.ts, which is
+    //     outside this task's locked modules; tracked as a follow-up cleanup.
+    try {
+      const unlisten = await onFocusEntity((entity) => {
+        flyToEntityFn?.(entity);
+        selectionStore.selectEntity(entity);
+      });
+      if (!alive) {
+        unlisten();
+        return;
+      }
+      focusEntityUnsub = unlisten;
+    } catch (_err) {
+      console.warn('Failed to subscribe to focus-entity events:', _err);
+    }
+
+    // Subscribe to navigate-to-source events (from MCP navigate_to_source tool)
+    try {
+      const unlisten = await onNavigateToSource(({ file, line, column }) => {
+        setScrollToLocation({ file_path: file, line, column, end_line: line, end_column: column });
+      });
+      if (!alive) {
+        unlisten();
+        return;
+      }
+      navigateToSourceUnsub = unlisten;
+    } catch (_err) {
+      console.warn('Failed to subscribe to navigate-to-source events:', _err);
+    }
+
     // Subscribe to Claude sidecar events
     try {
       const unlistenClaude = await subscribeToClaudeEvents(claudeStore.handleOutboundMessage);
@@ -402,6 +451,8 @@ const App: Component = () => {
     unsub?.();
     fileChangedUnsub?.();
     serializationErrorUnsub?.();
+    focusEntityUnsub?.();
+    navigateToSourceUnsub?.();
     serializationErrorCoalescer.cleanup();
     claudeEventUnsub?.();
     debugBridgeUnsub?.();
