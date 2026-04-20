@@ -776,13 +776,13 @@ structure Bracket {
 }
 ";
 
-    /// Obviously-nonsense Reify source: four unmatched `{` braces.  No token in
-    /// the Reify grammar begins a top-level declaration with `{`, so this input
-    /// is overwhelmingly unlikely to ever become parseable.  It is kept as a
-    /// named constant so the precondition self-check test and the
-    /// `update_source_invalid_content_does_not_construct_new_engine` regression
-    /// test are guaranteed to exercise the exact same input string.
-    const INVALID_PARSE_INPUT: &str = "{{{{";
+    /// Obviously-nonsense Reify source: a single top-level `{` with no matching
+    /// close brace.  No token in the Reify grammar begins a top-level declaration
+    /// with `{`, so this input is overwhelmingly unlikely to ever become
+    /// parseable.  It is kept as a named constant so the precondition self-check
+    /// test and the `update_source_invalid_content_does_not_construct_new_engine`
+    /// regression test are guaranteed to exercise the exact same input string.
+    const INVALID_PARSE_INPUT: &str = "{";
 
     /// Set up a fresh `CliToolContext` with `Bracket.width` overridden to
     /// `0.12` (a `Scalar[LENGTH]` value), then call `update_source` with the
@@ -1088,13 +1088,16 @@ structure Bracket {
     }
 
     /// Precondition guard: verifies that `INVALID_PARSE_INPUT` actually produces
-    /// a parse error under the current Reify grammar.  If this test ever fails it
-    /// means the grammar has changed and the constant must be updated — look for a
-    /// new "obviously nonsense" input.  Failing here is far preferable to the
-    /// downstream `update_source_invalid_content_does_not_construct_new_engine`
-    /// test silently exercising the wrong branch.
+    /// a parse error under the current Reify grammar, AND that `update_source`
+    /// treats it as a failure (returns `success=false`).  If this test ever fails
+    /// it means the grammar or `update_source` semantics have changed and the
+    /// constant must be updated — look for a new "obviously nonsense" input.
+    /// Failing here is far preferable to the downstream
+    /// `update_source_invalid_content_does_not_construct_new_engine` test
+    /// silently exercising the wrong branch.
     #[test]
     fn invalid_parse_input_is_actually_unparseable() {
+        // Check 1: the syntax parser itself reports errors.
         let parsed =
             reify_syntax::parse(INVALID_PARSE_INPUT, reify_types::ModulePath::single("probe"));
         assert!(
@@ -1103,6 +1106,22 @@ structure Bracket {
              parsed.errors={:?} declarations={:?}",
             parsed.errors,
             parsed.declarations,
+        );
+
+        // Check 2: `update_source` reports failure for this input — the real
+        // contract the regression test depends on.  A grammar change that still
+        // emits errors but that `update_source` treats as recoverable would pass
+        // Check 1 yet break the regression test; this assertion catches it first.
+        let project_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"));
+        let ctx = CliToolContext::new(project_dir);
+        let update_result = ctx
+            .update_source(BRACKET_PATH, INVALID_PARSE_INPUT)
+            .expect("update_source should return Ok (not Err) even for invalid content");
+        assert!(
+            !update_result.success,
+            "INVALID_PARSE_INPUT must cause update_source to return success=false; \
+             grammar or update_source semantics may have changed. result={:?}",
+            update_result,
         );
     }
 
