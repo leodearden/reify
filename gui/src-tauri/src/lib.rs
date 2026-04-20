@@ -2,7 +2,6 @@ pub mod claude_bridge;
 pub mod commands;
 #[cfg(feature = "gui")]
 pub mod debug;
-#[cfg(feature = "gui")]
 pub mod kernel_status;
 #[cfg(feature = "gui")]
 pub mod debug_server;
