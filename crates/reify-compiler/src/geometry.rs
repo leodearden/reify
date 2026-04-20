@@ -1480,4 +1480,77 @@ mod tests {
             "expected Sweep(LoftGuided) op produced with fallback refs"
         );
     }
+
+    /// Unit test for the `resolve_loft_like_args` helper (not yet implemented —
+    /// this test is expected to FAIL TO COMPILE until step-2 lands).
+    ///
+    /// Covers:
+    ///   (a) `guide_suffix=false` (loft shape): 3 CompiledExprs, geom_refs maps
+    ///       idx 1 → Step(42) only (0 and 2 missing), step_offset=10.
+    ///       Expected profiles: [Step(10), Step(42), Step(12)].
+    ///       Expected named-arg keys: ["profile_0", "profile_1", "profile_2"].
+    ///
+    ///   (b) `guide_suffix=true` (loft_guided shape): 3 CompiledExprs, geom_refs
+    ///       maps idx 0 → Step(7) only, step_offset=5.
+    ///       Expected profiles: [Step(7), Step(6), Step(7)].
+    ///       Expected named-arg keys: ["profile_0", "profile_1", "guide"].
+    #[test]
+    fn resolve_loft_like_args_builds_profiles_and_named_args() {
+        fn make_args(n: usize) -> Vec<CompiledExpr> {
+            (0..n)
+                .map(|_| {
+                    CompiledExpr::literal(
+                        Value::Real(1.0),
+                        reify_types::Type::Real,
+                    )
+                })
+                .collect()
+        }
+
+        // ── (a) guide_suffix = false (loft) ─────────────────────────────────
+        {
+            let mut geom_refs: HashMap<usize, GeomRef> = HashMap::new();
+            geom_refs.insert(1, GeomRef::Step(42));
+            let compiled_args = make_args(3);
+            let step_offset = 10;
+
+            let (profiles, named_args) =
+                resolve_loft_like_args(compiled_args, &geom_refs, step_offset, false);
+
+            assert_eq!(
+                profiles,
+                vec![GeomRef::Step(10), GeomRef::Step(42), GeomRef::Step(12)],
+                "loft: expected silent fallback for missing indices 0 and 2"
+            );
+            let keys: Vec<&str> = named_args.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(
+                keys,
+                vec!["profile_0", "profile_1", "profile_2"],
+                "loft: all keys should be profile_N"
+            );
+        }
+
+        // ── (b) guide_suffix = true (loft_guided) ───────────────────────────
+        {
+            let mut geom_refs: HashMap<usize, GeomRef> = HashMap::new();
+            geom_refs.insert(0, GeomRef::Step(7));
+            let compiled_args = make_args(3);
+            let step_offset = 5;
+
+            let (profiles, named_args) =
+                resolve_loft_like_args(compiled_args, &geom_refs, step_offset, true);
+
+            assert_eq!(
+                profiles,
+                vec![GeomRef::Step(7), GeomRef::Step(6), GeomRef::Step(7)],
+                "loft_guided: idx 0 from map, idx 1 fallback=5+1=6, idx 2 fallback=5+2=7"
+            );
+            let keys: Vec<&str> = named_args.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(
+                keys,
+                vec!["profile_0", "profile_1", "guide"],
+                "loft_guided: last key should be 'guide'"
+            );
+        }
+    }
 }
