@@ -8,7 +8,7 @@ use reify_types::{
 };
 
 use crate::geometry_ops::compile_geometry_op;
-use crate::{BuildResult, ConstraintCheckEntry, Engine, TessellateResult};
+use crate::{BuildResult, Engine, TessellateResult};
 
 impl Engine {
     /// Build geometry from the current snapshot values, without re-calling eval().
@@ -32,40 +32,8 @@ impl Engine {
         }
 
         // Check constraints (guard-aware)
-        let mut constraint_results = Vec::new();
-        let mut diagnostics = Vec::new();
-
-        for template in &module.templates {
-            let active_constraints = Self::collect_active_constraints(template, &values);
-
-            if !active_constraints.is_empty() {
-                let entries: Vec<_> = active_constraints
-                    .iter()
-                    .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
-                    .collect();
-
-                let (results, dispatch_diags) = self.dispatch_constraints(
-                    entries,
-                    &values,
-                    &self.functions,
-                    Some(&state.snapshot.values),
-                );
-                diagnostics.extend(dispatch_diags);
-
-                for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                    diagnostics.extend(Self::labeled_diagnostics(
-                        result.diagnostics.messages,
-                        &result.id,
-                        compiled.label.as_deref(),
-                    ));
-                    constraint_results.push(ConstraintCheckEntry {
-                        id: result.id,
-                        label: compiled.label.clone(),
-                        satisfaction: result.satisfaction,
-                    });
-                }
-            }
-        }
+        let (constraint_results, mut diagnostics) =
+            self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
         // Execute geometry operations
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
@@ -90,12 +58,14 @@ impl Engine {
                 }
             }
 
-            if !had_realization_ops {
-                None
-            } else if step_handles.is_empty() {
-                diagnostics.push(Diagnostic::error(
-                    "all geometry operations failed; no geometry output produced",
-                ));
+            if step_handles.is_empty() {
+                // Only emit the summary diagnostic when ops were actually declared
+                // but all failed; when no ops were declared there is simply no geometry.
+                if had_realization_ops {
+                    diagnostics.push(Diagnostic::error(
+                        "all geometry operations failed; no geometry output produced",
+                    ));
+                }
                 None
             } else {
                 let export_handle = *step_handles.last().unwrap();
@@ -352,40 +322,8 @@ impl Engine {
         }
 
         // Check constraints (guard-aware)
-        let mut constraint_results = Vec::new();
-        let mut diagnostics = Vec::new();
-
-        for template in &module.templates {
-            let active_constraints = Self::collect_active_constraints(template, &values);
-
-            if !active_constraints.is_empty() {
-                let entries: Vec<_> = active_constraints
-                    .iter()
-                    .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
-                    .collect();
-
-                let (results, dispatch_diags) = self.dispatch_constraints(
-                    entries,
-                    &values,
-                    &self.functions,
-                    Some(&state.snapshot.values),
-                );
-                diagnostics.extend(dispatch_diags);
-
-                for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                    diagnostics.extend(Self::labeled_diagnostics(
-                        result.diagnostics.messages,
-                        &result.id,
-                        compiled.label.as_deref(),
-                    ));
-                    constraint_results.push(ConstraintCheckEntry {
-                        id: result.id,
-                        label: compiled.label.clone(),
-                        satisfaction: result.satisfaction,
-                    });
-                }
-            }
-        }
+        let (constraint_results, mut diagnostics) =
+            self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
         // Execute geometry and tessellate
         let meshes = Self::tessellate_from_values(

@@ -8,7 +8,7 @@ use reify_types::{
     DeterminacyState, Diagnostic, OptimizedImplInput, PersistentMap, Value, ValueCellId, ValueMap,
 };
 
-use crate::{CheckResult, ConstraintCheckEntry, EngineError, Engine};
+use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
@@ -54,8 +54,7 @@ impl Engine {
         }
 
         // Results in input order. We fill slots as each path completes.
-        let mut results: Vec<Option<ConstraintResult>> =
-            (0..entries.len()).map(|_| None).collect();
+        let mut results: Vec<Option<ConstraintResult>> = (0..entries.len()).map(|_| None).collect();
 
         // Diagnostics emitted by this function (contract violations only —
         // per-constraint diagnostics remain inside ConstraintResult).
@@ -284,42 +283,8 @@ impl Engine {
             values.insert(id.clone(), val.clone());
         }
 
-        let mut constraint_results = Vec::new();
-        let mut diagnostics = Vec::new();
-
-        for template in &module.templates {
-            let active_constraints = Self::collect_active_constraints(template, &values);
-
-            if active_constraints.is_empty() {
-                continue;
-            }
-
-            let entries: Vec<_> = active_constraints
-                .iter()
-                .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
-                .collect();
-
-            let (results, dispatch_diags) = self.dispatch_constraints(
-                entries,
-                &values,
-                &self.functions,
-                Some(&state.snapshot.values),
-            );
-            diagnostics.extend(dispatch_diags);
-
-            for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                diagnostics.extend(Self::labeled_diagnostics(
-                    result.diagnostics.messages,
-                    &result.id,
-                    compiled.label.as_deref(),
-                ));
-                constraint_results.push(ConstraintCheckEntry {
-                    id: result.id,
-                    label: compiled.label.clone(),
-                    satisfaction: result.satisfaction,
-                });
-            }
-        }
+        let (constraint_results, diagnostics) =
+            self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
         Some(CheckResult {
             values,
@@ -368,20 +333,28 @@ impl Engine {
         active
     }
 
-    /// Evaluate and check constraints (guard-aware).
+    /// Check all active constraints across all templates against the given values.
     ///
-    /// Checks top-level (unguarded) constraints unconditionally, plus
-    /// guarded constraints whose guard is active (true→group.constraints,
-    /// false→group.else_constraints, Undef→neither).
-    pub fn check(&mut self, module: &CompiledModule) -> CheckResult {
-        let eval_result = self.eval(module);
+    /// Iterates over `module.templates`, collects active constraints via
+    /// [`collect_active_constraints`], dispatches them via [`dispatch_constraints`],
+    /// and accumulates [`ConstraintCheckEntry`] records and diagnostics. This is
+    /// the per-template constraint loop shared by [`check`], [`check_snapshot`],
+    /// `build_snapshot`, and `tessellate_snapshot` — the four sites that need
+    /// guard-aware constraint checking against an evaluated value set.
+    ///
+    /// `determinacy` is forwarded to [`dispatch_constraints`] (typically
+    /// `Some(&snapshot.values)` for determinacy-aware checking).
+    pub(crate) fn check_constraints_against_templates(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+        determinacy: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
         let mut constraint_results = Vec::new();
-        let mut diagnostics = eval_result.diagnostics;
+        let mut diagnostics = Vec::new();
 
         for template in &module.templates {
-            // Collect active constraints: top-level + guard-aware guarded
-            let active_constraints =
-                Self::collect_active_constraints(template, &eval_result.values);
+            let active_constraints = Self::collect_active_constraints(template, values);
 
             if active_constraints.is_empty() {
                 continue;
@@ -392,14 +365,8 @@ impl Engine {
                 .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                 .collect();
 
-            // After eval(), eval_state is always Some — unwrap is safe here.
-            let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
-            let (results, dispatch_diags) = self.dispatch_constraints(
-                entries,
-                &eval_result.values,
-                &self.functions,
-                Some(det_values),
-            );
+            let (results, dispatch_diags) =
+                self.dispatch_constraints(entries, values, &self.functions, determinacy);
             diagnostics.extend(dispatch_diags);
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
@@ -415,6 +382,24 @@ impl Engine {
                 });
             }
         }
+
+        (constraint_results, diagnostics)
+    }
+
+    /// Evaluate and check constraints (guard-aware).
+    ///
+    /// Checks top-level (unguarded) constraints unconditionally, plus
+    /// guarded constraints whose guard is active (true→group.constraints,
+    /// false→group.else_constraints, Undef→neither).
+    pub fn check(&mut self, module: &CompiledModule) -> CheckResult {
+        let eval_result = self.eval(module);
+        let mut diagnostics = eval_result.diagnostics;
+
+        // After eval(), eval_state is always Some — unwrap is safe here.
+        let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
+        let (constraint_results, constraint_diags) =
+            self.check_constraints_against_templates(module, &eval_result.values, Some(det_values));
+        diagnostics.extend(constraint_diags);
 
         CheckResult {
             values: eval_result.values,
