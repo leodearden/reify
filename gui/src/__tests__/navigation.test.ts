@@ -59,44 +59,28 @@ describe('navigation', () => {
   });
 
   describe('navigateToEntity', () => {
-    it('calls focusEntity and flyToEntity with entityPath, and selectEntity', async () => {
+    it('calls focusEntity exactly once with entityPath', async () => {
       const focusEntity = vi.fn().mockResolvedValue(undefined);
-      const flyToEntity = vi.fn();
-      const selectEntity = vi.fn();
 
-      await navigateToEntity('Bracket', {
-        focusEntity,
-        flyToEntity,
-        selectEntity,
-      });
+      await navigateToEntity('Bracket', { focusEntity });
 
+      expect(focusEntity).toHaveBeenCalledOnce();
       expect(focusEntity).toHaveBeenCalledWith('Bracket');
-      expect(flyToEntity).toHaveBeenCalledWith('Bracket');
-      expect(selectEntity).toHaveBeenCalledWith('Bracket');
     });
 
     it('handles focusEntity rejection gracefully', async () => {
       const focusEntity = vi.fn().mockRejectedValue(new Error('IPC failure'));
-      const flyToEntity = vi.fn();
-      const selectEntity = vi.fn();
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       // Should not throw
       await expect(
-        navigateToEntity('Unknown', {
-          focusEntity,
-          flyToEntity,
-          selectEntity,
-        }),
+        navigateToEntity('Unknown', { focusEntity }),
       ).resolves.not.toThrow();
 
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringMatching(/Failed to navigate to entity/),
         expect.any(Error),
       );
-      // flyToEntity and selectEntity should NOT be called since error occurs before them
-      expect(flyToEntity).not.toHaveBeenCalled();
-      expect(selectEntity).not.toHaveBeenCalled();
       consoleError.mockRestore();
     });
   });
