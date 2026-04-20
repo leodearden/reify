@@ -43337,18 +43337,31 @@
         "description": "Follow-up from task 1883 (merged). Four describe blocks in gui/src/__tests__/viewStateStore.test.ts still carry local `makeTree()` closures that overlap with named fixtures already exported from gui/src/__tests__/test-utils.ts. Consolidate where the shape already matches a named fixture.\n\nSites and mapping:\n- `setVisibility with cascade=true` — needs deeper `a1x` under Root.A.a1; no existing shared fixture matches. LEAVE LOCAL.\n- `showOnly` — shape is Root{A{a1,a2},B{b1,b2}}; replace with `makeTreeWithTwoSubtrees()`.\n- `getAllEffective` — shape is Root{A(trait_geometry=true){a1},B}; replace with `makeTreeWithGeometryA()`.\n- `full PRD integration scenario` — shape is Root{A{a1,a2},B{b1,b2}}; replace with `makeTreeWithTwoSubtrees()`.\n\nAcceptance: every assertion in those three describe blocks still passes; the three local `makeTree` closures are deleted; the `setVisibility with cascade=true` closure stays. No new fixtures needed.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T16:50:01.562Z"
+        "updatedAt": "2026-04-20T16:50:44.962Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Consolidate remaining viewStateStore.test.ts local makeTree closures onto shared fixtures"
+            ]
+          },
+          "done_provenance": {
+            "commit": "59399786ff2c3eeafd079f594e87a1befb5d84d5",
+            "commit_input": "59399786f",
+            "note": "Task 2060 subsumed by task 1883, commit 59399786f (refactor(gui-tests): extract makeNode/makeTree fixtures to shared test-utils). All three target describe blocks (showOnly, getAllEffective, full PRD integration scenario) already use shared fixtures makeTreeWithTwoSubtrees/makeTreeWithGeometryA; setVisibility-with-cascade closure remains local as specified. Commit is on main."
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:50:01.562Z",
+      "lastModified": "2026-04-20T16:50:44.962Z",
       "taskCount": 2052,
-      "completedCount": 1778,
+      "completedCount": 1779,
       "tags": [
         "master"
       ]
