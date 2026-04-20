@@ -43002,11 +43002,16 @@
         "description": "Dedup repeated CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"),\"/tests/fixtures\"))) in mcp_context.rs tests (lines ~807,832,865,891,931,1115,1136). Extract private fresh_ctx helper. Spawned from task 2015 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:38:18.045Z"
+        "updatedAt": "2026-04-20T13:39:33.824Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-cli/src/mcp_context.rs"
+          ]
+        }
       },
       {
         "id": "2051",
@@ -43050,10 +43055,11 @@
         "description": "Follow-up from task 1999. Define pub(crate) TAG_* const bytes in reify-types/src/expr.rs and reference them from both reify-types constructors and reify-compiler inline paths (src/expr.rs:554, :1318) so allocation table (expr.rs:212-235) stays in sync with call sites.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:39:33.569Z"
       },
       {
         "id": "2055",
@@ -43069,7 +43075,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:39:33.410Z",
+      "lastModified": "2026-04-20T13:39:33.824Z",
       "taskCount": 2047,
       "completedCount": 1744,
       "tags": [
