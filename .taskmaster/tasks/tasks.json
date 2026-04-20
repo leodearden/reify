@@ -42553,17 +42553,28 @@
         "description": "After task 2007 shipped the focus-entity event listener in App.tsx:365-391, user-initiated navigation still double-dispatches flyToEntity and selectEntity — once inside navigation.ts navigateToEntity, once via the listener. It's idempotent today but brittle: if selectEntity ever toggles or flyToEntity becomes non-idempotent, correctness silently breaks.\n\nFix: Strip the direct flyToEntity/selectEntity calls from navigateToEntity in gui/src/navigation.ts so the focus-entity listener is the sole terminal dispatcher in practice as well as in name.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T18:01:26.598Z",
+        "updatedAt": "2026-04-20T18:02:01.865Z",
         "metadata": {
           "modules": [
             "gui/src/App.tsx",
             "gui/src/__tests__/navigation.test.ts",
             "gui/src/navigation.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Remove double-dispatch from navigateToEntity so focus-entity listener is sole terminal dispatcher"
+            ]
+          },
+          "done_provenance": {
+            "commit": "eca0ea95c1f08faf5701f2bcbeb590dfb8861f52",
+            "commit_input": "eca0ea95c",
+            "note": "Refactor landed on main via eca0ea95c (remove double-dispatch) + 79d3d584c (clarifying JSDoc amend) before task/2020 branch was created. navigation.ts NavigateToEntityDeps now only exposes focusEntity; navigateToEntity body awaits deps.focusEntity only. App.tsx focus-entity listener is documented as the sole terminal dispatcher. navigation.test.ts already asserts focusEntity-called-once and graceful rejection handling."
+          }
         }
       },
       {
@@ -43413,9 +43424,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T18:01:26.599Z",
+      "lastModified": "2026-04-20T18:02:01.865Z",
       "taskCount": 2054,
-      "completedCount": 1783,
+      "completedCount": 1784,
       "tags": [
         "master"
       ]
