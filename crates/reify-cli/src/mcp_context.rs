@@ -1062,6 +1062,65 @@ structure Bracket {
         );
     }
 
+    /// Verify that `reapply_user_overrides` clears `warned_overrides` when
+    /// `user_overrides` is empty.
+    ///
+    /// The scenario: `warned_overrides` was populated by a prior `TypeKindMismatch`
+    /// reapply, then `user_overrides` was manually cleared (simulating a caller that
+    /// removes all overrides without going through `load_file`/`open_file`).  Calling
+    /// `update_source` with valid source drives `reapply_user_overrides` through its
+    /// early-return branch, which must also prune the now-stale `warned_overrides`.
+    ///
+    /// Fails against pre-fix code because the early-return branch does not call
+    /// `state.warned_overrides.clear()`.
+    #[test]
+    fn reapply_user_overrides_clears_warned_when_user_overrides_is_empty() {
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
+
+        // 1. Populate warned_overrides via the normal flow: set a Scalar[LENGTH]
+        //    override, then update_source with BRACKET_INT_WIDTH which changes
+        //    width to Int, triggering TypeKindMismatch → inserts into warned_overrides.
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter should succeed");
+        ctx.update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
+            .expect("update_source should return Ok even on override mismatch");
+
+        // 2. Precondition: warned_overrides must be non-empty after the mismatch.
+        {
+            let state = ctx.lock_state();
+            assert!(
+                !state.warned_overrides.is_empty(),
+                "test setup precondition: warned_overrides must be populated after a \
+                 type-mismatch reapply"
+            );
+        }
+
+        // 3. Clear user_overrides directly to create the "empty user_overrides with
+        //    populated warned_overrides" state that the early-return branch guards.
+        {
+            let mut state = ctx.lock_state();
+            state.user_overrides.clear();
+        }
+
+        // 4. Drive reapply_user_overrides through the early-return branch by
+        //    calling update_source with the original valid bracket source.
+        let source = std::fs::read_to_string(BRACKET_PATH)
+            .expect("bracket.ri fixture must be readable");
+        ctx.update_source(BRACKET_PATH, &source)
+            .expect("update_source with valid source should succeed");
+
+        // 5. Assert warned_overrides is now empty — the early-return branch must
+        //    clear the stale dedupe set when there is nothing left to dedupe against.
+        let state = ctx.lock_state();
+        assert!(
+            state.warned_overrides.is_empty(),
+            "reapply_user_overrides must clear warned_overrides when user_overrides is empty \
+             (nothing left to dedupe against)"
+        );
+    }
+
     /// Verify that `load_file` clears prior parameter overrides.  Because
     /// `load_file` semantically starts over with a fresh file, overrides
     /// set before it must not leak into the re-evaluated snapshot.
