@@ -1172,5 +1172,31 @@ mod tests {
             "\"Solid\" should resolve to Type::Geometry as a surface-syntax alias"
         );
     }
+
+    #[test]
+    fn resolve_enum_type_returns_some_for_matching_name() {
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+        assert_eq!(
+            resolve_enum_type("Direction", &enum_defs),
+            Some(Type::Enum("Direction".to_string())),
+        );
+    }
+
+    #[test]
+    fn resolve_enum_type_returns_none_for_non_matching_name() {
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+        assert_eq!(resolve_enum_type("Missing", &enum_defs), None);
+    }
+
+    #[test]
+    fn resolve_enum_type_returns_none_for_empty_slice() {
+        assert_eq!(resolve_enum_type("Direction", &[]), None);
+    }
 }
 
