@@ -1,0 +1,71 @@
+================================================================================
+Function call with a single named argument
+================================================================================
+
+structure S {
+  let x = Steel(density: 1000.0)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (function_call
+        name: (identifier)
+        (argument_list
+          (named_argument
+            name: (identifier)
+            value: (number_literal)))))))
+
+================================================================================
+Nested function call with named argument inside outer named argument
+================================================================================
+
+structure S {
+  let x = Host(m: Steel(density: 1000.0))
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (function_call
+        name: (identifier)
+        (argument_list
+          (named_argument
+            name: (identifier)
+            value: (function_call
+              name: (identifier)
+              (argument_list
+                (named_argument
+                  name: (identifier)
+                  value: (number_literal))))))))))
+
+================================================================================
+Function call mixing positional and named arguments
+================================================================================
+
+structure S {
+  let x = foo(1.0, b: 2.0)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (function_call
+        name: (identifier)
+        (argument_list
+          (number_literal)
+          (named_argument
+            name: (identifier)
+            value: (number_literal)))))))
