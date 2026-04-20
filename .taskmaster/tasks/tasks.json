@@ -42265,7 +42265,13 @@
             "gui/src/__tests__/engineStore.test.ts",
             "gui/src/bridge.ts",
             "gui/src/stores/engineStore.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Surface degraded-mode signal when GUI is built without OCCT"
+            ]
+          }
         },
         "updatedAt": "2026-04-20T14:02:25.868Z"
       },
@@ -43234,7 +43240,9 @@
       "completedCount": 1756,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T14:02:26.224Z",
+      "description": "Tasks for master context"
     }
   }
 }
