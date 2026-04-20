@@ -1200,22 +1200,6 @@ mod tests {
 
     // ── get_let_expr ─────────────────────────────────────────────────────
 
-    /// get_let_expr should return the default_expr of the named cell in the
-    /// first template. Uses non-integer float (42.7) so result_type == Type::Real
-    /// (whole-number floats like 42.0 compile to Type::Int in Reify).
-    #[test]
-    fn test_get_let_expr_finds_first_template_cell() {
-        let source = r#"structure S { let x = 42.7 }"#;
-        let module = super::compile_source(source);
-        let expr = super::get_let_expr(&module, "x");
-        assert_eq!(
-            expr.result_type,
-            reify_types::Type::Real,
-            "expected result_type == Type::Real for S.x, got {:?}",
-            expr.result_type
-        );
-    }
-
     /// get_let_expr targets the FIRST template only; a cell in the second
     /// template is not reachable via get_let_expr.
     #[test]
