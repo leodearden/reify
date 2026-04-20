@@ -1446,7 +1446,7 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
     // prelude sentinel (u32::MAX).  Without the sentinel short-circuit, the
     // fast path computes line_offsets.len() + 1 (a past-last-line value) while
     // byte_offset_to_line_col returns (1, 1).
-    let sentinel = u32::MAX as usize;
+    let sentinel = reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET;
     let fast_sentinel = offset_to_line_col_fast(source, &line_offsets, sentinel);
     let orig_sentinel = byte_offset_to_line_col(source, sentinel);
     assert_eq!(
@@ -1541,7 +1541,7 @@ fn offset_to_line_col_fast_prelude_sentinel_returns_fallback() {
     let source = "abc\ndef\nghi";
     let offsets = build_line_offsets(source);
     assert_eq!(
-        offset_to_line_col_fast(source, &offsets, u32::MAX as usize),
+        offset_to_line_col_fast(source, &offsets, reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET),
         (1, 1),
         "prelude sentinel must return (1, 1), not a past-last-line value"
     );
