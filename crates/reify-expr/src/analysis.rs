@@ -8,6 +8,8 @@
 //! in calculus.rs: the original field is stored in the lambda slot, and the sample
 //! handler in lib.rs dispatches to pointwise evaluation via reify_stdlib.
 
+use std::sync::Arc;
+
 use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
 
 use super::{EvalContext, apply_lambda_with_point_unpacking};
@@ -133,7 +135,7 @@ fn wrap_tensor_field(field_val: &Value, op: &str, source_kind: FieldSourceKind) 
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: source_kind,
-        lambda: Box::new(field_val.clone()),
+        lambda: Arc::new(field_val.clone()),
     }
 }
 
@@ -166,7 +168,7 @@ pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: FieldSourceKind::PrincipalStresses,
-        lambda: Box::new(field_val.clone()),
+        lambda: Arc::new(field_val.clone()),
     }
 }
 
@@ -212,7 +214,7 @@ pub(crate) fn compute_safety_factor(field_val: &Value, yield_val: &Value) -> Val
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: FieldSourceKind::SafetyFactor,
-        lambda: Box::new(captured),
+        lambda: Arc::new(captured),
     }
 }
 

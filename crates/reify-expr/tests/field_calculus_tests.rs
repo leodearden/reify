@@ -7,6 +7,8 @@
 //! Helpers are defined locally following the pattern in gradient_tests.rs
 //! and field_eval_tests.rs.
 
+use std::sync::Arc;
+
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
@@ -69,7 +71,7 @@ fn make_field_with_source(
         domain_type: domain.clone(),
         codomain_type: codomain.clone(),
         source,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
     let field_type = Type::Field {
         domain: Box::new(domain),

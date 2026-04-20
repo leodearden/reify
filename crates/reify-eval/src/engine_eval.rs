@@ -1,6 +1,7 @@
 // Split from lib.rs (task 2032) — eval methods.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellKind};
@@ -144,16 +145,16 @@ impl Engine {
                     let ctx =
                         reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
-                    Box::new(val)
+                    Arc::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Composed { expr } => {
                     let ctx =
                         reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
-                    Box::new(val)
+                    Arc::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Sampled { .. }
-                | reify_compiler::CompiledFieldSource::Imported => Box::new(Value::Undef),
+                | reify_compiler::CompiledFieldSource::Imported => Arc::new(Value::Undef),
             };
 
             let source_kind = match &field.source {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
     ResolvedFunction, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_USER_FUNCTION_CALL, Type, UnOp,
@@ -272,7 +274,7 @@ pub fn field_literal_expr(
         domain_type: domain.clone(),
         codomain_type: codomain.clone(),
         source,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
     let result_type = Type::Field {
         domain: Box::new(domain),

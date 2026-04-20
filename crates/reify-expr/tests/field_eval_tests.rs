@@ -4,6 +4,8 @@
 //! edge cases like constant fields, nested gradients, dimensioned domains,
 //! and non-numeric lambda outputs.
 
+use std::sync::Arc;
+
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
@@ -82,7 +84,7 @@ fn make_xyz_sum_field(domain_type: Type) -> (Value, Type) {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -116,7 +118,7 @@ fn build_string_codomain_grad_expr() -> CompiledExpr {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -149,7 +151,7 @@ fn sample_field_with_undef_lambda() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(Value::Undef),
+        lambda: Arc::new(Value::Undef),
     };
 
     let field_type = Type::Field {
@@ -205,7 +207,7 @@ fn sample_temperature_over_length_field() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -293,7 +295,7 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -391,7 +393,7 @@ fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -430,7 +432,7 @@ fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
         domain_type: Type::Real,
         codomain_type: Type::Real,
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda2),
+        lambda: Arc::new(lambda2),
     };
     let field2_type = Type::Field {
         domain: Box::new(Type::Real),
@@ -644,7 +646,7 @@ fn sample_one_param_lambda_binds_entire_vector_as_single_value() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -752,7 +754,7 @@ fn sample_gradient_of_constant_field_near_zero() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -861,7 +863,7 @@ fn gradient_of_gradient_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -920,7 +922,7 @@ fn gradient_field_with_undef_lambda() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(Value::Undef),
+        lambda: Arc::new(Value::Undef),
     };
 
     let field_type = Type::Field {
@@ -976,7 +978,7 @@ fn gradient_temperature_over_length_returns_field() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {

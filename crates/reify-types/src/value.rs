@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::dimension::DimensionVector;
 use crate::expr::CompiledExpr;
@@ -213,7 +214,7 @@ pub enum Value {
         /// | `Sampled`, `Imported`                                                       | `Value::Undef`       |
         /// | `Gradient`, `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear` | `Value::Field` (the original source field) |
         /// | `SafetyFactor`                                                              | `Value::List` containing `[original_field, yield_val]` |
-        lambda: Box<Value>,
+        lambda: Arc<Value>,
     },
     /// Lambda closure: captures environment values and body expression.
     Lambda {
@@ -3894,7 +3895,7 @@ mod tests {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(Value::Undef),
+            lambda: Arc::new(Value::Undef),
         };
         // Display
         let display = format!("{}", field_val);
@@ -3908,7 +3909,7 @@ mod tests {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(Value::Undef),
+            lambda: Arc::new(Value::Undef),
         };
         assert_eq!(field_val.content_hash(), field_val2.content_hash());
         // Not equal to Undef
@@ -6560,7 +6561,7 @@ mod tests {
                     domain_type: crate::ty::Type::Real,
                     codomain_type: crate::ty::Type::Real,
                     source: FieldSourceKind::Analytical,
-                    lambda: Box::new(Value::Undef),
+                    lambda: Arc::new(Value::Undef),
                 },
             ),
             (

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
 
 use super::{EvalContext, apply_lambda};
@@ -222,7 +224,7 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: FieldSourceKind::Gradient,
-        lambda: Box::new(field_val.clone()),
+        lambda: Arc::new(field_val.clone()),
     }
 }
 
@@ -291,7 +293,7 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: FieldSourceKind::Divergence,
-        lambda: Box::new(field_val.clone()),
+        lambda: Arc::new(field_val.clone()),
     }
 }
 
@@ -362,7 +364,7 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
         domain_type: domain_type.clone(),
         codomain_type: Type::vec3(result_component),
         source: FieldSourceKind::Curl,
-        lambda: Box::new(field_val.clone()),
+        lambda: Arc::new(field_val.clone()),
     }
 }
 
@@ -420,7 +422,7 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: FieldSourceKind::Laplacian,
-        lambda: Box::new(field_val.clone()),
+        lambda: Arc::new(field_val.clone()),
     }
 }
 
@@ -1832,7 +1834,7 @@ mod tests {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(lambda),
+            lambda: Arc::new(lambda),
         }
     }
 
@@ -1854,7 +1856,7 @@ mod tests {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Composed,
-            lambda: Box::new(lambda),
+            lambda: Arc::new(lambda),
         };
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_some());
@@ -1872,7 +1874,7 @@ mod tests {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Sampled,
-            lambda: Box::new(Value::Undef),
+            lambda: Arc::new(Value::Undef),
         };
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_none());
@@ -1887,7 +1889,7 @@ mod tests {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Gradient,
-            lambda: Box::new(original_field),
+            lambda: Arc::new(original_field),
         };
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_none());
@@ -1900,7 +1902,7 @@ mod tests {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Imported,
-            lambda: Box::new(lambda),
+            lambda: Arc::new(lambda),
         };
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_none());
@@ -1912,7 +1914,7 @@ mod tests {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(Value::Undef),
+            lambda: Arc::new(Value::Undef),
         };
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_none());
@@ -2242,7 +2244,7 @@ mod tests {
             domain_type: domain,
             codomain_type: codomain,
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(make_scalar_lambda("x")),
+            lambda: Arc::new(make_scalar_lambda("x")),
         }
     }
 
