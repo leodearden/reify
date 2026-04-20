@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRoot, createComputed } from 'solid-js';
@@ -1571,11 +1571,7 @@ describe('other mutations — user-view mirror to active user view', () => {
 });
 
 describe('viewStateStore — ViewStateStore type export', () => {
-  it('ViewStateStore is re-exported from the stores barrel and is compatible with createViewStateStore()', () => {
-    createRoot((dispose) => {
-      const s: ViewStateStore = createViewStateStore();
-      expect(typeof s.setTree).toBe('function');
-      dispose();
-    });
+  it('ViewStateStore type alias is structurally identical to ReturnType<typeof createViewStateStore>', () => {
+    expectTypeOf<ViewStateStore>().toEqualTypeOf<ReturnType<typeof createViewStateStore>>();
   });
 });
