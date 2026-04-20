@@ -669,6 +669,35 @@ describe('App navigation wiring', () => {
       expect(selectedGroups.length).toBe(1);
     });
   });
+
+  it('App subscribes to navigate-to-source events and updates Editor scrollToLocation signal', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number }) => void) | undefined;
+    vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
+      capturedNavigateCb = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+
+    await renderAndWaitForReady();
+
+    expect(vi.mocked(bridge.onNavigateToSource)).toHaveBeenCalled();
+    expect(capturedNavigateCb).toBeDefined();
+
+    // Simulate navigate-to-source event from backend
+    capturedNavigateCb!({ file: '/project/bracket.ri', line: 12, column: 4 });
+
+    // Editor's scrollToLocation signal should update with matching SourceLocation
+    await waitFor(() => {
+      const loc = capturedEditorScrollToLocation?.();
+      expect(loc).toEqual({
+        file_path: '/project/bracket.ri',
+        line: 12,
+        column: 4,
+        end_line: 12,
+        end_column: 4,
+      });
+    });
+  });
 });
 
 describe('App initialization loading state', () => {
