@@ -645,12 +645,24 @@ pub(crate) fn compile_geometry_op(
                         distance,
                     })
                 }
-                // NOTE: SweepGuided/LoftGuided arms are added in task-322
-                // steps 14/16. The catch-all below keeps the eval lib
-                // compiling while the per-kind tests are written (TDD: tests
-                // fail at runtime until the impl arm lands).
-                reify_compiler::SweepKind::SweepGuided
-                | reify_compiler::SweepKind::LoftGuided => None,
+                reify_compiler::SweepKind::SweepGuided => {
+                    let profile_handle =
+                        resolve_geom_ref(profiles.first()?, step_handles, diagnostics)?;
+                    let path_handle =
+                        resolve_geom_ref(profiles.get(1)?, step_handles, diagnostics)?;
+                    let guide_handle =
+                        resolve_geom_ref(profiles.get(2)?, step_handles, diagnostics)?;
+                    Some(reify_types::GeometryOp::SweepGuided {
+                        profile: profile_handle,
+                        path: path_handle,
+                        guide: guide_handle,
+                    })
+                }
+                // NOTE: LoftGuided arm is added in task-322 step 16. The
+                // catch-all below keeps the eval lib compiling while the
+                // test lands (TDD: test fails at runtime until the impl
+                // arm lands).
+                reify_compiler::SweepKind::LoftGuided => None,
             }
         }
         CompiledGeometryOp::Curve { kind, args } => {
