@@ -7,7 +7,10 @@
 /// the test-support builders and assert the hashes are equal.  Any tag-byte
 /// or string divergence between the two code paths will be caught immediately.
 use reify_test_support::builders::{conditional_expr, fn_call, literal, user_fn_call};
-use reify_types::{CompiledExprKind, ModulePath, Type, Value};
+use reify_types::{
+    CompiledExpr, CompiledExprKind, CompiledMatchArm, ContentHash, ModulePath, TAG_MATCH, Type,
+    Value,
+};
 
 /// Conditional: `fn t() -> Int { if true then 1 else 2 }`
 ///
@@ -228,5 +231,79 @@ fn nested_conditional_content_hash_matches_compiler() {
         compiler_expr.content_hash, expected.content_hash,
         "content_hash mismatch for nested Conditional: compiler produced {:?}, builder produced {:?}",
         compiler_expr.content_hash, expected.content_hash
+    );
+}
+
+/// Match: `fn t() -> Bool { match 1 { _ => true } }`
+///
+/// Locks the contract that the compiler emits a `Match` expression whose
+/// content-hash uses `TAG_MATCH` (= `[24]`) and combines in the order:
+/// tag → discriminant → per-arm pattern strings → arm body.
+///
+/// Two assertions:
+///  1. Builder-based: `CompiledExpr::match_expr(literal(1), [arm], Bool)`
+///     must produce the same hash as the compiler.
+///  2. TAG_MATCH-based: manually reconstructing with the constant must also
+///     match, pinning the cross-crate constant reference.
+#[test]
+fn match_expr_content_hash_matches_compiler() {
+    let source = "fn t() -> Bool { match 1 { _ => true } }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(compiled.functions.len(), 1);
+
+    let compiler_expr = &compiled.functions[0].body.result_expr;
+    // Extract disc hash, pattern strings, and body hash from the compiled output.
+    // Extracting patterns from the compiled output makes the test about
+    // hash-formula agreement rather than pattern-encoding conventions.
+    let (disc_hash, patterns, body_hash) = match &compiler_expr.kind {
+        CompiledExprKind::Match { discriminant, arms } => {
+            assert_eq!(arms.len(), 1, "expected 1 match arm");
+            (
+                discriminant.content_hash,
+                arms[0].patterns.clone(),
+                arms[0].body.content_hash,
+            )
+        }
+        other => panic!("expected Match kind, got {:?}", other),
+    };
+
+    // Assertion 1: builder-based.  Use literal(Value::Int(1)) as discriminant
+    // — the compiler emits a Literal for the `1` in the source — and the
+    // patterns extracted above as the arm pattern strings.
+    let expected = CompiledExpr::match_expr(
+        literal(Value::Int(1)),
+        vec![CompiledMatchArm {
+            patterns: patterns.clone(),
+            body: literal(Value::Bool(true)),
+        }],
+        Type::Bool,
+    );
+
+    assert_eq!(
+        compiler_expr.content_hash, expected.content_hash,
+        "content_hash mismatch for Match: compiler produced {:?}, builder produced {:?}",
+        compiler_expr.content_hash, expected.content_hash
+    );
+
+    // Assertion 2: TAG_MATCH-based reconstruction, pinning the cross-crate
+    // constant reference.  Combine order: tag → disc → patterns → body.
+    let mut expected_via_tag = ContentHash::of(&[TAG_MATCH]).combine(disc_hash);
+    for pattern in &patterns {
+        expected_via_tag = expected_via_tag.combine(ContentHash::of_str(pattern));
+    }
+    expected_via_tag = expected_via_tag.combine(body_hash);
+
+    assert_eq!(
+        compiler_expr.content_hash, expected_via_tag,
+        "content_hash mismatch for Match via TAG_MATCH: compiler produced {:?}, \
+         TAG_MATCH reconstruction produced {:?}",
+        compiler_expr.content_hash, expected_via_tag
     );
 }
