@@ -41444,7 +41444,7 @@
         "id": "1977",
         "title": "Refactor make_poison_literal to take Diagnostic and push internally (esc-1921-36 S1)",
         "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed Diagnostic and push internally, removing pre_push_len bookkeeping at ~25 call sites. Apply equivalently to make_poison_type. Source: review suggestion S1 in esc-1921-36 (api_ergonomics).",
-        "details": "",
+        "details": "<info added on 2026-04-20T07:54:19.927Z>\nCancelled as duplicate of task 1969. Both tasks derive from esc-1921-36 S1, have identical titles, identical source files (crates/reify-compiler/src/expr.rs), and identical scope (refactor make_poison_literal to take Diagnostic and push internally; apply equivalently to make_poison_type). Task 1969 correctly declares dependencies=[\"1921\"] and status=deferred. Task 1977 had neither. Premise artifacts (make_poison_literal(diagnostics, pre_push_len), make_poison_type, debug_assert_error_pushed_since, ~25 call sites) do not exist on main — they live on branch task/1921 which is not yet merged (task 1921 status=pending). Work to be carried out under task 1969 once task 1921 lands on main. See esc-1977-7 for full analysis.\n</info added on 2026-04-20T07:54:19.927Z>",
         "testStrategy": "",
         "status": "blocked",
         "dependencies": [],
@@ -42367,7 +42367,9 @@
       "completedCount": 1715,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T07:54:13.999Z",
+      "description": "Tasks for master context"
     }
   }
 }
