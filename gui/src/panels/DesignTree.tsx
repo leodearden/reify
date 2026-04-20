@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import type { Component } from 'solid-js';
 import { DesignTreeContextMenu } from './DesignTreeContextMenu';
 import type { MenuAction } from './DesignTreeContextMenu';
+import { ViewSelector } from './ViewSelector';
 import type { ViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
 import styles from './DesignTree.module.css';
@@ -15,6 +16,7 @@ interface Props {
   onSelect?: (path: string, modifiers: { ctrl: boolean; shift: boolean }) => void;
   onRangeSelect?: (paths: string[]) => void;
   onSelectAll?: (paths: string[]) => void;
+  onOpenManage?: () => void;
 }
 
 interface MenuState {
@@ -52,10 +54,6 @@ const DesignTree: Component<Props> = (props) => {
       return new Set(props.selectedEntities);
     }
     return props.selectedEntity ? new Set([props.selectedEntity]) : new Set();
-  });
-
-  createEffect(() => {
-    props.viewStateStore.setTree(props.tree);
   });
 
   function toggleExpand(path: string) {
@@ -218,6 +216,9 @@ const DesignTree: Component<Props> = (props) => {
       tabindex="0"
       onKeyDown={handleKeyDown}
     >
+      <Show when={props.onOpenManage !== undefined}>
+        <ViewSelector store={props.viewStateStore} onOpenManage={props.onOpenManage!} />
+      </Show>
       <For each={props.tree}>
         {(node) => renderNode(node)}
       </For>

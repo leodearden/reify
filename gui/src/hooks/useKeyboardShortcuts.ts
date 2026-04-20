@@ -11,6 +11,12 @@ export interface KeyboardShortcutCallbacks {
   onDismissReload?: () => void;
   onToggleChatPanel?: () => void;
   onClearSelection?: () => void;
+  /**
+   * Called when the user presses a bare digit key 1–9 (no modifiers, not in a
+   * text input context). The `index` argument is 0-based: key "1" → 0, "9" → 8.
+   * Consumers use this to switch to the N-th entry in the ViewSelector list.
+   */
+  onSwitchViewByIndex?: (index: number) => void;
 }
 
 /**
@@ -72,7 +78,11 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       const callbackKey = ID_TO_CALLBACK[shortcut.id];
       if (!callbackKey) continue;
       e.preventDefault();
-      callbacks[callbackKey]?.();
+      // All entries in ID_TO_CALLBACK map to zero-argument callbacks.
+      // Cast to silence TypeScript's union-type inference for the parameterised
+      // onSwitchViewByIndex callback (which is handled via its own special-case
+      // block below, not through this registry loop).
+      (callbacks[callbackKey] as (() => void) | undefined)?.();
       return;
     }
 
@@ -83,6 +93,16 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       e.preventDefault();
       callbacks.onDismissReload?.();
       callbacks.onClearSelection?.();
+      return;
+    }
+
+    // 1–9 number-key view switch (VM-6).
+    // Handled as a special case (no bind on the switchViewByIndex SHORTCUTS entry)
+    // because the key is a dynamic range, not a literal binding.  Only fires when
+    // no modifier is held, mirroring the restriction on the registry-driven loop.
+    if (/^[1-9]$/.test(e.key) && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      callbacks.onSwitchViewByIndex?.(parseInt(e.key, 10) - 1);
       return;
     }
   }

@@ -28,8 +28,14 @@ function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }):
 // ---------------------------------------------------------------------------
 
 describe('ViewDefinition shape contract', () => {
-  it('keyset is pinned to {auto, id, name, visibility}', () => {
-    expectTypeOf<keyof ViewDefinition>().toEqualTypeOf<'id' | 'name' | 'auto' | 'visibility'>();
+  it('keyset is pinned to {auto, id, modified, name, visibility}', () => {
+    expectTypeOf<keyof ViewDefinition>().toEqualTypeOf<'id' | 'name' | 'auto' | 'visibility' | 'modified'>();
+  });
+
+  it('generateDefaultView returns a view with modified === undefined for pristine auto views', () => {
+    const tree = [makeNode({ entity_path: 'Root' })];
+    const view = generateDefaultView(tree);
+    expect(view.modified).toBeUndefined();
   });
 });
 

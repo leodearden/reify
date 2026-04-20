@@ -1,0 +1,88 @@
+/* ViewSelector — dropdown for switching between named views */
+.container {
+  position: relative;
+  display: inline-block;
+  user-select: none;
+}
+
+/* Trigger button showing the currently active view name */
+.trigger {
+  background: transparent;
+  border: 1px solid var(--reify-border);
+  border-radius: 3px;
+  color: var(--reify-text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.trigger:hover,
+.triggerOpen {
+  background: var(--reify-surface-hover, var(--reify-surface));
+}
+
+/* Dropdown panel */
+.dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 180px;
+  background: var(--reify-surface, var(--reify-background));
+  border: 1px solid var(--reify-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  z-index: 200;
+  padding: 4px 0;
+}
+
+/* Separator between auto views and user views, or before footer */
+.separator {
+  border: none;
+  border-top: 1px solid var(--reify-border);
+  margin: 4px 0;
+}
+
+/* Individual view entry */
+.item {
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--reify-text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 12px;
+  width: 100%;
+  text-align: left;
+  gap: 6px;
+}
+
+.item:hover {
+  background: var(--reify-surface-hover, var(--reify-accent));
+}
+
+/* Active view item (bold indicator) */
+.itemActive {
+  font-weight: 600;
+}
+
+/* Modified marker: small dot indicating a COW user view */
+.modifiedMarker {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--reify-accent, #888);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Footer action item (Organize views…) */
+.footer {
+  color: var(--reify-text-secondary, var(--reify-text));
+  font-size: 11px;
+}

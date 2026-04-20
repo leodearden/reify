@@ -14,6 +14,10 @@ import type { EntityTreeNode, VisibilityState } from '../types';
  *   For auto views this is a full assignment (every node has an entry).
  *   For user views the map may be sparse; unset paths fall through to
  *   `defaultRuleFor` via walk-up.
+ * - `modified`: Optional flag set to `true` when this user view was created via
+ *   copy-on-write (COW) from an auto view. Pristine auto views leave this unset
+ *   (`undefined`). The UI may surface a visual indicator for COW-created views.
+ *   Semantically equivalent to `false` when absent.
  *
  * **Live user-view mirror**: When a `user:*` view is the active view in
  * `viewStateStore`, every explicit-state mutation (`setVisibility`,
@@ -30,6 +34,8 @@ export interface ViewDefinition {
   name: string;
   auto: boolean;
   visibility: Record<string, VisibilityState>;
+  /** Set to `true` on COW-created user views (auto→user on first edit). Absent on pristine auto views. */
+  modified?: boolean;
 }
 
 // ---------------------------------------------------------------------------

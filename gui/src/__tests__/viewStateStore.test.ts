@@ -1431,8 +1431,788 @@ describe('setActiveView — wholesale explicit replacement after resetToInherit'
   });
 });
 
+// ---------------------------------------------------------------------------
+// COW — copy-on-write via setVisibility
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — COW on setVisibility', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.A', kind: 'param' }),
+          makeNode({ entity_path: 'Root.B', kind: 'param' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) with auto view active, setVisibility creates a new user view named "{autoName} (modified)"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      // activeViewId defaults to auto:default
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      store.setVisibility('Root.A', 'hidden');
+      // A new user view should have been created
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      const cowView = store.state.views[userViewIds[0]];
+      expect(cowView.name).toBe('Default (modified)');
+      expect(cowView.modified).toBe(true);
+      dispose();
+    });
+  });
+
+  it('(a) with auto view active, setVisibility switches to the new COW user view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      store.setVisibility('Root.A', 'hidden');
+      const activeId = store.state.activeViewId;
+      expect(activeId).toMatch(/^user:/);
+      expect(store.state.views[activeId].name).toBe('Default (modified)');
+      dispose();
+    });
+  });
+
+  it('(a) the mutation is recorded in the COW view visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      store.setVisibility('Root.A', 'hidden');
+      const activeId = store.state.activeViewId;
+      expect(store.state.views[activeId].visibility['Root.A']).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(b) subsequent setVisibility calls on the now-active user view do NOT create additional COW views', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      store.setVisibility('Root.A', 'hidden');
+      const firstCowId = store.state.activeViewId;
+      const userViewCountAfterFirst = Object.keys(store.state.views).filter((k) =>
+        k.startsWith('user:'),
+      ).length;
+      expect(userViewCountAfterFirst).toBe(1);
+
+      // Second mutation — must NOT create another user view
+      store.setVisibility('Root.B', 'ghost');
+      const userViewCountAfterSecond = Object.keys(store.state.views).filter((k) =>
+        k.startsWith('user:'),
+      ).length;
+      expect(userViewCountAfterSecond).toBe(1);
+      // Still the same user view
+      expect(store.state.activeViewId).toBe(firstCowId);
+      dispose();
+    });
+  });
+
+  it('(c) the original auto view is untouched after COW', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const originalAutoVisibility = { ...store.state.views['auto:default'].visibility };
+
+      store.setVisibility('Root.A', 'hidden');
+      // The auto:default visibility must not have changed
+      expect(store.state.views['auto:default'].visibility).toEqual(originalAutoVisibility);
+      dispose();
+    });
+  });
+
+  it('(d) collision: if "{autoName} (modified)" already exists, uses "{autoName} (modified 2)"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      // First COW: creates "Default (modified)"
+      store.setVisibility('Root.A', 'hidden');
+      expect(store.state.views[store.state.activeViewId].name).toBe('Default (modified)');
+
+      // Switch back to auto:default and trigger another COW
+      store.setActiveView('auto:default');
+      store.setVisibility('Root.B', 'ghost');
+      // "Default (modified)" is already taken → should use "Default (modified 2)"
+      expect(store.state.views[store.state.activeViewId].name).toBe('Default (modified 2)');
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// COW — copy-on-write via remaining mutation entry points
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — COW on setVisibilityWithoutCascade, resetToInherit, showOnly, cycleCascading', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.A', kind: 'param' }),
+          makeNode({ entity_path: 'Root.B', kind: 'param' }),
+        ],
+      }),
+    ];
+  }
+
+  /**
+   * Common assertion: after calling a mutation while an auto view is active,
+   * exactly one user view should exist, it should be named "{autoName} (modified)",
+   * it should have modified: true, and it should be the active view.
+   */
+  function assertCowProduced(store: ReturnType<typeof createViewStateStore>, autoName = 'Default') {
+    const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+    expect(userViewIds).toHaveLength(1);
+    const cowView = store.state.views[userViewIds[0]];
+    expect(cowView.name).toBe(`${autoName} (modified)`);
+    expect(cowView.modified).toBe(true);
+    expect(store.state.activeViewId).toBe(userViewIds[0]);
+  }
+
+  it('setVisibilityWithoutCascade triggers COW when an auto view is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      store.setVisibilityWithoutCascade('Root.A', 'hidden');
+      assertCowProduced(store);
+      // Mutation is recorded in the COW view
+      expect(store.state.views[store.state.activeViewId].visibility['Root.A']).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('setVisibilityWithoutCascade does NOT trigger COW when a user view is already active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const uid = store.createView('My View');
+      store.switchView(uid);
+
+      store.setVisibilityWithoutCascade('Root.A', 'hidden');
+      // Still only one user view (the one we created, no new COW)
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      expect(store.state.activeViewId).toBe(uid);
+      dispose();
+    });
+  });
+
+  it('resetToInherit triggers COW when an auto view is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      store.resetToInherit('Root.A');
+      assertCowProduced(store);
+      // After COW + resetToInherit, Root.A should have no explicit entry
+      expect(store.state.explicit['Root.A']).toBeUndefined();
+      dispose();
+    });
+  });
+
+  it('resetToInherit does NOT trigger COW when a user view is already active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const uid = store.createView('My View');
+      store.switchView(uid);
+
+      store.resetToInherit('Root.A');
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      expect(store.state.activeViewId).toBe(uid);
+      dispose();
+    });
+  });
+
+  it('showOnly triggers COW when an auto view is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      store.showOnly('Root.A', true);
+      assertCowProduced(store);
+      // Target is explicit 'show' in the COW view
+      expect(store.state.views[store.state.activeViewId].visibility['Root.A']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('showOnly does NOT trigger COW when a user view is already active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const uid = store.createView('My View');
+      store.switchView(uid);
+
+      store.showOnly('Root.A', true);
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      expect(store.state.activeViewId).toBe(uid);
+      dispose();
+    });
+  });
+
+  it('cycleCascading triggers COW when an auto view is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      // Root.A default effective is 'show'; cycle → 'ghost'
+      store.cycleCascading('Root.A');
+      assertCowProduced(store);
+      expect(store.state.views[store.state.activeViewId].visibility['Root.A']).toBe('ghost');
+      dispose();
+    });
+  });
+
+  it('cycleCascading does NOT trigger COW when a user view is already active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const uid = store.createView('My View');
+      store.switchView(uid);
+
+      store.cycleCascading('Root.A');
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      expect(store.state.activeViewId).toBe(uid);
+      dispose();
+    });
+  });
+
+  it('original auto view is untouched after COW via setVisibilityWithoutCascade', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const originalAutoVisibility = { ...store.state.views['auto:default'].visibility };
+
+      store.setVisibilityWithoutCascade('Root.A', 'hidden');
+      expect(store.state.views['auto:default'].visibility).toEqual(originalAutoVisibility);
+      dispose();
+    });
+  });
+
+  it('original auto view is untouched after COW via showOnly', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const originalAutoVisibility = { ...store.state.views['auto:default'].visibility };
+
+      store.showOnly('Root.A', true);
+      expect(store.state.views['auto:default'].visibility).toEqual(originalAutoVisibility);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reorderUserViews
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — reorderUserViews', () => {
+  it('(a) replaces state.userViewOrder when given a valid permutation', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const id2 = store.createView('Second');
+      const id3 = store.createView('Third');
+      // Reorder: put Third first
+      const result = store.reorderUserViews([id3, id1, id2]);
+      expect(result).toBe(true);
+      expect(store.state.userViewOrder).toEqual([id3, id1, id2]);
+      dispose();
+    });
+  });
+
+  it('(b) rejects if any current user-view id is missing from the argument', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const id2 = store.createView('Second');
+      const before = [...store.state.userViewOrder];
+      // Missing id2
+      const result = store.reorderUserViews([id1]);
+      expect(result).toBe(false);
+      expect(store.state.userViewOrder).toEqual(before);
+      dispose();
+    });
+  });
+
+  it('(b) rejects if the argument contains unknown ids', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const before = [...store.state.userViewOrder];
+      const result = store.reorderUserViews([id1, 'user:nonexistent']);
+      expect(result).toBe(false);
+      expect(store.state.userViewOrder).toEqual(before);
+      dispose();
+    });
+  });
+
+  it('(b) rejects if the argument has duplicates', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const before = [...store.state.userViewOrder];
+      const result = store.reorderUserViews([id1, id1]);
+      expect(result).toBe(false);
+      expect(store.state.userViewOrder).toEqual(before);
+      dispose();
+    });
+  });
+
+  it('(b) rejects if the argument contains auto view ids', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const before = [...store.state.userViewOrder];
+      // auto:default is not a user view
+      const result = store.reorderUserViews(['auto:default', id1]);
+      expect(result).toBe(false);
+      expect(store.state.userViewOrder).toEqual(before);
+      dispose();
+    });
+  });
+
+  it('(a) empty array is valid when there are no user views', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // No user views created yet
+      const result = store.reorderUserViews([]);
+      expect(result).toBe(true);
+      expect(store.state.userViewOrder).toEqual([]);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// duplicateView
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — duplicateView', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.A', kind: 'param' }),
+          makeNode({ entity_path: 'Root.B', kind: 'param' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) auto→user duplication produces a user view with auto: false, modified: false, and visibility snapshot from source', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const autoView = store.state.views['auto:default'];
+
+      const newId = store.duplicateView('auto:default');
+      expect(newId).not.toBeNull();
+      expect(newId!).toMatch(/^user:/);
+
+      const dupView = store.state.views[newId!];
+      expect(dupView.auto).toBe(false);
+      expect(dupView.modified).toBe(false);
+      // Visibility snapshot equals source auto view's visibility
+      expect(dupView.visibility).toEqual(autoView.visibility);
+      dispose();
+    });
+  });
+
+  it('(b) user→user duplication copies visibility verbatim', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // Use seedView to set up a user view with non-empty visibility; direct
+      // property assignment on SolidJS store state proxies does not trigger
+      // reactive updates, so the proper store mutation path must be used.
+      const sourceId = 'user:source';
+      store.seedView({
+        id: sourceId,
+        name: 'Source',
+        auto: false,
+        visibility: { 'Root': 'hidden', 'Root.A': 'show' },
+      });
+
+      const newId = store.duplicateView(sourceId);
+      expect(newId).not.toBeNull();
+      const dupView = store.state.views[newId!];
+      expect(dupView.visibility).toEqual({ 'Root': 'hidden', 'Root.A': 'show' });
+      dispose();
+    });
+  });
+
+  it('(c) default name is {sourceName} (copy)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      const newId = store.duplicateView('auto:default');
+      expect(store.state.views[newId!].name).toBe('Default (copy)');
+      dispose();
+    });
+  });
+
+  it('(c) counter-suffix collision: if "{sourceName} (copy)" already exists, uses "{sourceName} (copy 2)"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      const id1 = store.duplicateView('auto:default');
+      expect(store.state.views[id1!].name).toBe('Default (copy)');
+
+      // Duplicate again — "Default (copy)" is taken, should get "Default (copy 2)"
+      const id2 = store.duplicateView('auto:default');
+      expect(store.state.views[id2!].name).toBe('Default (copy 2)');
+
+      // Duplicate a third time
+      const id3 = store.duplicateView('auto:default');
+      expect(store.state.views[id3!].name).toBe('Default (copy 3)');
+      dispose();
+    });
+  });
+
+  it('(c) explicit newName overrides the default copy name', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      const newId = store.duplicateView('auto:default', 'My Snapshot');
+      expect(store.state.views[newId!].name).toBe('My Snapshot');
+      dispose();
+    });
+  });
+
+  it('(d) returns the new id; unknown source returns null', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const result = store.duplicateView('user:nonexistent');
+      expect(result).toBeNull();
+      dispose();
+    });
+  });
+
+  it('(d) new id is appended to state.userViewOrder', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const newId = store.duplicateView('auto:default');
+      expect(store.state.userViewOrder).toContain(newId!);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteView
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — deleteView', () => {
+  it('(a) removes the view from state.views and state.userViewOrder', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('To Delete');
+      expect(store.state.views[id]).toBeDefined();
+      expect(store.state.userViewOrder).toContain(id);
+
+      const result = store.deleteView(id);
+      expect(result).toBe(true);
+      expect(store.state.views[id]).toBeUndefined();
+      expect(store.state.userViewOrder).not.toContain(id);
+      dispose();
+    });
+  });
+
+  it('(b) rejects auto views — returns false, no state change', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const result = store.deleteView('auto:default');
+      expect(result).toBe(false);
+      expect(store.state.views['auto:default']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('(c) rejects unknown ids — returns false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const result = store.deleteView('user:nonexistent');
+      expect(result).toBe(false);
+      dispose();
+    });
+  });
+
+  it('(d) deleting the active user view falls back to activeViewId === "auto:default"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [makeNode({ entity_path: 'Root.A', kind: 'param' })],
+        }),
+      ]);
+
+      const id = store.createView('Active View');
+      store.switchView(id);
+      expect(store.state.activeViewId).toBe(id);
+
+      const result = store.deleteView(id);
+      expect(result).toBe(true);
+      // Falls back to auto:default
+      expect(store.state.activeViewId).toBe('auto:default');
+      // Explicit state is re-seeded from auto:default
+      expect(store.state.explicit).toEqual(store.state.views['auto:default'].visibility);
+      dispose();
+    });
+  });
+
+  it('(d) deleting a non-active user view does NOT change activeViewId', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const id1 = store.createView('Active');
+      const id2 = store.createView('Inactive');
+      store.switchView(id1);
+      expect(store.state.activeViewId).toBe(id1);
+
+      store.deleteView(id2);
+      // activeViewId should not change
+      expect(store.state.activeViewId).toBe(id1);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renameView
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — renameView', () => {
+  function makeStoreWithUserView() {
+    let store: ReturnType<typeof createViewStateStore>;
+    let id: string;
+    createRoot((dispose) => {
+      store = createViewStateStore();
+      id = store.createView('Original Name');
+      // keep root alive — tests call dispose() themselves
+    });
+    return { store: store!, id: id! };
+  }
+
+  it('(a) updates views[id].name when given a valid new name', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Original');
+      const result = store.renameView(id, 'Updated');
+      expect(result).toBe(true);
+      expect(store.state.views[id].name).toBe('Updated');
+      dispose();
+    });
+  });
+
+  it('(b) rejects empty name — returns false, no state change', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Original');
+      const result = store.renameView(id, '');
+      expect(result).toBe(false);
+      expect(store.state.views[id].name).toBe('Original');
+      dispose();
+    });
+  });
+
+  it('(b) rejects whitespace-only name — returns false, no state change', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Original');
+      const result = store.renameView(id, '   ');
+      expect(result).toBe(false);
+      expect(store.state.views[id].name).toBe('Original');
+      dispose();
+    });
+  });
+
+  it('(c) rejects duplicate name (case-insensitive) — returns false, no state change', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('Alpha');
+      const id2 = store.createView('Beta');
+      // Try to rename id2 to "alpha" (duplicate of id1, case-insensitive)
+      const result = store.renameView(id2, 'alpha');
+      expect(result).toBe(false);
+      expect(store.state.views[id2].name).toBe('Beta');
+      dispose();
+    });
+  });
+
+  it('(c) allows renaming to same name (case-insensitive same-id is not a collision)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Alpha');
+      // Renaming Alpha to "Alpha" (same) should succeed
+      const result = store.renameView(id, 'Alpha');
+      expect(result).toBe(true);
+      expect(store.state.views[id].name).toBe('Alpha');
+      dispose();
+    });
+  });
+
+  it('(d) rejects renaming auto views — returns false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const result = store.renameView('auto:default', 'My Default');
+      expect(result).toBe(false);
+      // auto view name unchanged
+      expect(store.state.views['auto:default'].name).toBe('Default');
+      dispose();
+    });
+  });
+
+  it('(d) rejects renaming unknown ids — returns false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const result = store.renameView('user:nonexistent', 'New Name');
+      expect(result).toBe(false);
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — ViewStateStore type export', () => {
   it('ViewStateStore type alias is structurally identical to ReturnType<typeof createViewStateStore>', () => {
     expectTypeOf<ViewStateStore>().toEqualTypeOf<ReturnType<typeof createViewStateStore>>();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createView + switchView
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — createView', () => {
+  it('(a) returns a new id of the form user:<slug>', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('My View');
+      expect(id).toMatch(/^user:/);
+      dispose();
+    });
+  });
+
+  it('(b) adds the view to state.views with auto: false, modified: false, empty visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('My View');
+      const view = store.state.views[id];
+      expect(view).toBeDefined();
+      expect(view.auto).toBe(false);
+      expect(view.modified).toBe(false);
+      expect(view.visibility).toEqual({});
+      dispose();
+    });
+  });
+
+  it('(c) appends the new id to state.userViewOrder', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const id2 = store.createView('Second');
+      expect(store.state.userViewOrder).toContain(id1);
+      expect(store.state.userViewOrder).toContain(id2);
+      // id1 should come before id2 (appended in order)
+      expect(store.state.userViewOrder.indexOf(id1)).toBeLessThan(
+        store.state.userViewOrder.indexOf(id2),
+      );
+      dispose();
+    });
+  });
+
+  it('(d) the view does NOT become active automatically', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const previousActiveId = store.state.activeViewId;
+      store.createView('New View');
+      // activeViewId should not change
+      expect(store.state.activeViewId).toBe(previousActiveId);
+      dispose();
+    });
+  });
+
+  it('(e) name is reflected in the stored view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Custom Name');
+      expect(store.state.views[id].name).toBe('Custom Name');
+      dispose();
+    });
+  });
+
+  it('(f) state.userViewOrder is empty on fresh store creation', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      expect(store.state.userViewOrder).toEqual([]);
+      dispose();
+    });
+  });
+});
+
+describe('viewStateStore — switchView', () => {
+  it('(a) sets activeViewId to the given id and returns true', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const result = store.switchView('auto:default');
+      expect(result).toBe(true);
+      expect(store.state.activeViewId).toBe('auto:default');
+      dispose();
+    });
+  });
+
+  it('(b) returns false and does NOT change activeViewId for an unknown view id', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const prevActive = store.state.activeViewId;
+      const result = store.switchView('nonexistent:view');
+      expect(result).toBe(false);
+      expect(store.state.activeViewId).toBe(prevActive);
+      dispose();
+    });
+  });
+
+  it('(c) switching to a user view via switchView makes it active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const id = store.createView('My View');
+      const result = store.switchView(id);
+      expect(result).toBe(true);
+      expect(store.state.activeViewId).toBe(id);
+      dispose();
+    });
   });
 });

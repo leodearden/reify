@@ -22,6 +22,14 @@ export interface ViewState {
   explicit: Record<string, ExplicitVisibility>;
   views: Record<string, ViewDefinition>;
   activeViewId: string;
+  /**
+   * Ordered list of user view ids for display in the ViewSelector and
+   * ViewManageModal. Auto views always appear before user views in the
+   * selector; this array controls the order of the user-view segment.
+   * Re-initialized to `[]` each session; persistence is handled by a
+   * future task.
+   */
+  userViewOrder: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +81,7 @@ export function createViewStateStore() {
     explicit: {},
     views: {},
     activeViewId: 'auto:default',
+    userViewOrder: [],
   });
 
   // Internal non-reactive maps (rebuilt on setTree / rebuildTreeMaps).
@@ -176,12 +185,63 @@ export function createViewStateStore() {
   }
 
   // ---------------------------------------------------------------------------
+  // COW helper
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Copy-on-write helper: call as the **first** line inside any `produce(s => ...)`
+   * mutation block.
+   *
+   * When the currently active view is an auto view (`auto === true`), this helper:
+   * (a) derives a unique name `{autoName} (modified)` (with counter-suffix collision
+   *     handling via `uniqueName`),
+   * (b) creates a new user view whose `visibility` snapshot is seeded from the source
+   *     auto view's current `visibility` map,
+   * (c) sets `modified: true` on the new view,
+   * (d) appends the new id to `s.userViewOrder`,
+   * (e) switches `s.activeViewId` to the new user view.
+   *
+   * The subsequent mutation (setVisibility, etc.) then runs against the new active
+   * user view, and the `mirrorExplicitToActiveUserView(s)` tail call captures the
+   * post-mutation explicit state into the view's `visibility`.
+   *
+   * When the active view is already a user view this is a no-op.
+   */
+  function cowIfAuto(s: ViewState): void {
+    const active = s.views[s.activeViewId];
+    if (!active || !active.auto) return;
+
+    // Build candidate name and resolve collisions.
+    const base = `${active.name} (modified)`;
+    const existingNames = Object.values(s.views).map((v) => v.name);
+    const cowName = uniqueName(base, existingNames);
+
+    // Generate a unique id for the COW user view.
+    const id = `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Start with an empty visibility map.  The `mirrorExplicitToActiveUserView`
+    // call at the tail of every mutation replaces this wholesale from s.explicit,
+    // so seeding from active.visibility here would be immediately overwritten and
+    // never observed.  An empty map makes the intent explicit.
+    s.views[id] = {
+      id,
+      name: cowName,
+      auto: false,
+      modified: true,
+      visibility: {},
+    };
+    s.userViewOrder.push(id);
+    s.activeViewId = id;
+  }
+
+  // ---------------------------------------------------------------------------
   // Mutations
   // ---------------------------------------------------------------------------
 
   function setVisibility(path: string, vs: VisibilityState, cascade = true): void {
     setState(
       produce((s) => {
+        cowIfAuto(s);
         s.explicit[path] = vs;
         if (cascade) {
           for (const desc of walkDescendants(path, nodeByPath)) {
@@ -198,6 +258,7 @@ export function createViewStateStore() {
     // rather than introducing a separate setState call.
     setState(
       produce((s) => {
+        cowIfAuto(s);
         s.explicit[path] = vs;
         mirrorExplicitToActiveUserView(s);
       }),
@@ -207,6 +268,7 @@ export function createViewStateStore() {
   function resetToInherit(path: string): void {
     setState(
       produce((s) => {
+        cowIfAuto(s);
         delete s.explicit[path];
         for (const desc of walkDescendants(path, nodeByPath)) {
           delete s.explicit[desc];
@@ -227,6 +289,7 @@ export function createViewStateStore() {
 
     setState(
       produce((s) => {
+        cowIfAuto(s);
         // Clear all ancestors so they don't override-hide the target.
         for (const anc of ancestors) {
           delete s.explicit[anc];
@@ -303,6 +366,227 @@ export function createViewStateStore() {
       // Replace explicit with the view's full visibility map.
       s.explicit = { ...view.visibility };
     }));
+  }
+
+  /**
+   * Create a new empty user view with the given name.
+   *
+   * The view is added to `state.views` with `auto: false`, `modified: false`,
+   * and an empty `visibility` map.  Its id is appended to `state.userViewOrder`.
+   * The new view does NOT become active automatically — the caller should follow
+   * up with `switchView(id)` if activation is desired.
+   *
+   * @returns The new view's id (format: `user:<uuid-fragment>`).
+   */
+  function createView(name: string): string {
+    // Generate a short unique id using the high-res timestamp + random bits.
+    const id = `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    setState(
+      produce((s) => {
+        s.views[id] = {
+          id,
+          name,
+          auto: false,
+          modified: false,
+          visibility: {},
+        };
+        s.userViewOrder.push(id);
+      }),
+    );
+    return id;
+  }
+
+  /**
+   * Switch the active view, returning `true` on success or `false` if the view
+   * id is unknown (does not exist in `state.views`).
+   *
+   * This is a boolean-returning wrapper over the existing `setActiveView` so
+   * that callers (the number-key dispatcher, ViewSelector) can silently ignore
+   * out-of-range indices without inspecting store internals.
+   */
+  function switchView(viewId: string): boolean {
+    if (!state.views[viewId]) return false;
+    setActiveView(viewId);
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private naming helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns a unique name derived from `base` that doesn't collide with any
+   * name already present in `existingNames` (case-insensitive).
+   *
+   * Strategy:
+   * - If `base` itself is free, return it.
+   * - If `base` ends with a `(word)` parenthetical suffix, inject the counter
+   *   inside the parens: `"Default (copy)"` → `"Default (copy 2)"`, etc.
+   * - Otherwise append a bare counter: `"Foo 2"`, `"Foo 3"`, …
+   *
+   * Used by `duplicateView` (`base = "{sourceName} (copy)"`) and `cowIfAuto`
+   * (`base = "{autoName} (modified)"`).
+   */
+  function uniqueName(base: string, existingNames: string[]): string {
+    const lowerNames = existingNames.map((n) => n.toLowerCase());
+    if (!lowerNames.includes(base.toLowerCase())) return base;
+
+    // Try to inject counter inside the last parenthetical suffix.
+    // Matches e.g. "Default (copy)" → prefix="Default ", inner="copy"
+    const parenMatch = base.match(/^(.*)\(([^)]+)\)$/);
+    let counter = 2;
+    while (true) {
+      const candidate = parenMatch
+        ? `${parenMatch[1]}(${parenMatch[2]} ${counter})`
+        : `${base} ${counter}`;
+      if (!lowerNames.includes(candidate.toLowerCase())) return candidate;
+      counter++;
+    }
+  }
+
+  /**
+   * Duplicate a view (auto or user) into a new user view.
+   *
+   * - `sourceId`: must exist in `state.views`; returns `null` otherwise.
+   * - `newName`: optional explicit name; defaults to `{sourceName} (copy)` with
+   *   counter-suffix collision handling via `uniqueName`.
+   * - The duplicate has `auto: false`, `modified: false`, and a snapshot of
+   *   the source's `visibility` map.
+   * - The new id is appended to `state.userViewOrder`.
+   *
+   * @returns The new view's id, or `null` if `sourceId` is unknown.
+   */
+  function duplicateView(sourceId: string, newName?: string): string | null {
+    const source = state.views[sourceId];
+    if (!source) return null;
+
+    const existingNames = Object.values(state.views).map((v) => v.name);
+    const base = newName ?? `${source.name} (copy)`;
+    const resolvedName = newName ?? uniqueName(base, existingNames);
+
+    const id = `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    setState(
+      produce((s) => {
+        s.views[id] = {
+          id,
+          name: resolvedName,
+          auto: false,
+          modified: false,
+          visibility: { ...source.visibility },
+        };
+        s.userViewOrder.push(id);
+      }),
+    );
+    return id;
+  }
+
+  /**
+   * Replace `state.userViewOrder` with the given list, which must be a valid
+   * permutation of the current user-view ids:
+   * - Same length as current `userViewOrder`
+   * - Contains every current user-view id exactly once
+   * - Contains no unknown ids (not in `state.views`)
+   * - Contains no auto-view ids (starting with `auto:`)
+   * - Contains no duplicates
+   *
+   * @returns `true` on success, `false` on any validation failure (no state change).
+   */
+  function reorderUserViews(ids: string[]): boolean {
+    const current = state.userViewOrder;
+
+    // Must be the same length
+    if (ids.length !== current.length) return false;
+
+    // Check for duplicates in the incoming array
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (seen.has(id)) return false;
+      seen.add(id);
+    }
+
+    // Every id must be a known user view (not auto:*)
+    for (const id of ids) {
+      if (id.startsWith('auto:')) return false;
+      if (!state.views[id]) return false;
+    }
+
+    // Every current user-view id must be present in the incoming array
+    for (const id of current) {
+      if (!seen.has(id)) return false;
+    }
+
+    setState(
+      produce((s) => {
+        s.userViewOrder = ids;
+      }),
+    );
+    return true;
+  }
+
+  /**
+   * Delete a user view.  Validation rules:
+   * - id must exist in `state.views`
+   * - id must not start with `auto:` (auto views cannot be deleted)
+   *
+   * If the deleted view is currently active, falls back to `auto:default`
+   * and copies its `visibility` map into `state.explicit` so the viewport
+   * immediately reflects the fallback.
+   *
+   * @returns `true` on success, `false` on any validation failure (no state change).
+   */
+  function deleteView(id: string): boolean {
+    const view = state.views[id];
+    if (!view) return false;
+    if (id.startsWith('auto:')) return false;
+
+    const isActive = state.activeViewId === id;
+    setState(
+      produce((s) => {
+        delete s.views[id];
+        const idx = s.userViewOrder.indexOf(id);
+        if (idx !== -1) s.userViewOrder.splice(idx, 1);
+
+        if (isActive) {
+          s.activeViewId = 'auto:default';
+          const fallback = s.views['auto:default'];
+          s.explicit = fallback ? { ...fallback.visibility } : {};
+        }
+      }),
+    );
+    return true;
+  }
+
+  /**
+   * Rename a user view.  Validation rules (all return `false` on failure):
+   * - id must exist in `state.views`
+   * - id must not start with `auto:` (auto views cannot be renamed)
+   * - new name must not be empty or whitespace-only
+   * - new name must not duplicate an existing user view name (case-insensitive),
+   *   except when renaming the view to its own current name (identity rename)
+   *
+   * @returns `true` on success, `false` on any validation failure (no state change).
+   */
+  function renameView(id: string, newName: string): boolean {
+    // id must exist
+    const view = state.views[id];
+    if (!view) return false;
+    // auto views cannot be renamed
+    if (id.startsWith('auto:')) return false;
+    // name must not be empty/whitespace
+    const trimmed = newName.trim();
+    if (trimmed.length === 0) return false;
+    // check for name collision against other user views (case-insensitive)
+    const lowerNew = trimmed.toLowerCase();
+    for (const [otherId, otherView] of Object.entries(state.views)) {
+      if (otherId === id) continue; // skip self
+      if (otherView.name.toLowerCase() === lowerNew) return false;
+    }
+    setState(
+      produce((s) => {
+        s.views[id].name = trimmed;
+      }),
+    );
+    return true;
   }
 
   /**
@@ -424,6 +708,30 @@ export function createViewStateStore() {
     return exp !== wouldInherit;
   }
 
+  /**
+   * Returns all view ids in canonical display order:
+   * 1. `auto:default` (pinned first),
+   * 2. Other auto views sorted alphabetically by id,
+   * 3. User views in `state.userViewOrder`.
+   *
+   * This is the **single source of truth** for display order.  Both
+   * `ViewSelector` (rendering) and `App.tsx`'s `onSwitchViewByIndex` callback
+   * (number-key dispatch) must derive their order from this function so that
+   * "press N to activate the N-th visible entry" is structurally enforced and
+   * the two call-sites cannot silently drift apart.
+   */
+  function getOrderedViewIds(): string[] {
+    const autoIds = Object.values(state.views)
+      .filter((v) => v.auto)
+      .sort((a, b) => {
+        if (a.id === 'auto:default') return -1;
+        if (b.id === 'auto:default') return 1;
+        return a.id.localeCompare(b.id);
+      })
+      .map((v) => v.id);
+    return [...autoIds, ...state.userViewOrder];
+  }
+
   return {
     state,
     // Tree
@@ -432,6 +740,7 @@ export function createViewStateStore() {
     getEffectiveVisibility,
     getAllEffective,
     hasOverride,
+    getOrderedViewIds,
     // Mutations
     setVisibility,
     setVisibilityWithoutCascade,
@@ -442,6 +751,12 @@ export function createViewStateStore() {
     seedView,
     setActiveView,
     regenerateAutoViews,
+    createView,
+    switchView,
+    renameView,
+    deleteView,
+    duplicateView,
+    reorderUserViews,
   };
 }
 

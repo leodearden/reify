@@ -351,6 +351,123 @@ describe('useKeyboardShortcuts', () => {
   });
 });
 
+describe('useKeyboardShortcuts — onSwitchViewByIndex number-key dispatch (VM-6)', () => {
+  let dispose: () => void;
+
+  afterEach(() => {
+    dispose?.();
+  });
+
+  it('pressing "1" calls onSwitchViewByIndex with index 0', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }));
+    expect(onSwitchViewByIndex).toHaveBeenCalledOnce();
+    expect(onSwitchViewByIndex).toHaveBeenCalledWith(0);
+  });
+
+  it('pressing "5" calls onSwitchViewByIndex with index 4', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: '5', bubbles: true }));
+    expect(onSwitchViewByIndex).toHaveBeenCalledOnce();
+    expect(onSwitchViewByIndex).toHaveBeenCalledWith(4);
+  });
+
+  it('pressing "9" calls onSwitchViewByIndex with index 8', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: '9', bubbles: true }));
+    expect(onSwitchViewByIndex).toHaveBeenCalledOnce();
+    expect(onSwitchViewByIndex).toHaveBeenCalledWith(8);
+  });
+
+  it('Ctrl+1 does NOT call onSwitchViewByIndex (modifier guard)', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '1', ctrlKey: true, bubbles: true }),
+    );
+    expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+  });
+
+  it('Shift+1 does NOT call onSwitchViewByIndex (modifier guard)', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '1', shiftKey: true, bubbles: true }),
+    );
+    expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+  });
+
+  it('Alt+1 does NOT call onSwitchViewByIndex (modifier guard)', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '1', altKey: true, bubbles: true }),
+    );
+    expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+  });
+
+  it('number key in an <input> does NOT call onSwitchViewByIndex (isTypingContext guard)', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }));
+      expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('number key in a <textarea> does NOT call onSwitchViewByIndex (isTypingContext guard)', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    try {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: '3', bubbles: true }));
+      expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  });
+});
+
 describe('hasCallbackWiring invariant', () => {
   it('every enabled shortcut with a bind has a callback wiring', () => {
     // Derive expected set directly from SHORTCUTS: every shortcut with a bind
