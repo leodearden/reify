@@ -5,7 +5,7 @@ use reify_mcp::{ReifyToolContext, SelectionInfo};
 use reify_test_support::{MockGeometryKernel, bracket_source, warn_source_with_unknown_port_type};
 
 use crate::engine::EngineSession;
-use crate::mcp_context::TauriToolContext;
+use crate::mcp_context::{TauriToolContext, mcp_tool_call_impl};
 
 fn make_loaded_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
@@ -286,7 +286,7 @@ fn navigate_to_source_with_emitter_records_event() {
         .build();
 
     let result = ctx
-        .navigate_to_source("bracket.ri", 5, 1)
+        .navigate_to_source("bracket.ri", 5, 1, 20, 7)
         .expect("navigate_to_source should succeed");
     assert!(result);
 
@@ -296,6 +296,8 @@ fn navigate_to_source_with_emitter_records_event() {
     assert_eq!(recorded[0].1["file"], "bracket.ri");
     assert_eq!(recorded[0].1["line"], 5);
     assert_eq!(recorded[0].1["column"], 1);
+    assert_eq!(recorded[0].1["end_line"], 20);
+    assert_eq!(recorded[0].1["end_column"], 7);
 }
 
 #[test]
@@ -311,9 +313,62 @@ fn focus_entity_without_emitter_succeeds() {
 fn navigate_to_source_without_emitter_succeeds() {
     let ctx = make_tauri_context();
     let result = ctx
-        .navigate_to_source("bracket.ri", 5, 1)
+        .navigate_to_source("bracket.ri", 5, 1, 20, 7)
         .expect("navigate_to_source without emitter should succeed");
     assert!(result);
+}
+
+#[test]
+fn navigate_to_source_via_registry_emits_end_position() {
+    // Build a context with event emitter over the real bracket session
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .build();
+
+    // Get expected source location from the real engine
+    let loc = ctx
+        .get_source_location("Bracket.width")
+        .expect("get_source_location should succeed for Bracket.width");
+    assert!(
+        loc.end_line >= loc.line,
+        "end_line ({}) should be >= line ({})",
+        loc.end_line,
+        loc.line
+    );
+
+    // Dispatch through the tool registry (exercises the full tool-handler path)
+    let result = mcp_tool_call_impl(
+        "reify_navigate_to_source",
+        serde_json::json!({"entity_path": "Bracket.width"}),
+        &ctx,
+    )
+    .expect("mcp_tool_call_impl should succeed");
+    assert_eq!(result["success"], true);
+
+    // The emitted event payload must carry the full range, not just the start point
+    let recorded = events.lock().unwrap();
+    assert_eq!(recorded.len(), 1, "exactly one event should be emitted");
+    assert_eq!(recorded[0].0, "navigate-to-source");
+    assert_eq!(recorded[0].1["line"], loc.line);
+    assert_eq!(recorded[0].1["column"], loc.column);
+    assert_eq!(
+        recorded[0].1["end_line"], loc.end_line,
+        "end_line must propagate through tool handler"
+    );
+    assert_eq!(
+        recorded[0].1["end_column"], loc.end_column,
+        "end_column must propagate through tool handler"
+    );
 }
 
 // --- Selection state tests ---
