@@ -38966,7 +38966,7 @@
         "description": "Three improvements from task 385 review:\n\n1. conformance.rs:517-530 — When structure overrides a let-binding name, populate seen_let_hashes so 3+ traits providing same `let x` don't produce O(N) redundant entries. Bookkeeping consistency.\n\n2. trait_merge_tests.rs:1232-1251 (three_way_let_conflict_emits_single_diagnostic) — Assert errors[0].message contains both conflicting trait names (TraitX, TraitY), matching two-way conflict tests.\n\n3. trait_merge_eval.rs:154-218 (multi_trait_constraints_partial_violation) — Add assert_no_eval_errors(&result) for consistency with step-15 sibling test.\n\nFiles: crates/reify-compiler/src/conformance.rs, crates/reify-compiler/src/conformance/trait_merge_tests.rs, crates/reify-eval/tests/trait_merge_eval.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -38986,9 +38986,12 @@
             "queries": [
               "resolution for: Trait merge: seen_let_hashes bookkeeping + three-way conflict test + assert_no_eval_errors"
             ]
+          },
+          "done_provenance": {
+            "commit": "34c12ff78ee607af91c9469dbb34a666777cfc19"
           }
         },
-        "updatedAt": "2026-04-20T11:21:58.869Z"
+        "updatedAt": "2026-04-20T12:02:33.693Z"
       },
       {
         "id": "1860",
@@ -42802,14 +42805,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:56:34.699Z",
+      "lastModified": "2026-04-20T12:02:33.693Z",
       "taskCount": 2030,
-      "completedCount": 1733,
+      "completedCount": 1734,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T12:02:28.554Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
