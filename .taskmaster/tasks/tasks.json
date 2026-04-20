@@ -41404,13 +41404,13 @@
         "description": "Move the test introspection helpers `get_let_expr` / `get_let_expr_in` (and likely `assert_no_type_cascade`) from crates/reify-compiler/tests/expr_error_sentinel_tests.rs and crates/reify-compiler/tests/type_error_propagation_tests.rs into the existing `reify-test-support` crate (likely `helpers.rs`). Both integration-test binaries currently duplicate ~35 lines with a TODO acknowledging the duplication. Source: review suggestion S2 in esc-1921-36 (reviewer_comprehensive, code_duplication).",
         "details": "Files: crates/reify-test-support/src/helpers.rs (or new helper module), crates/reify-compiler/tests/expr_error_sentinel_tests.rs, crates/reify-compiler/tests/type_error_propagation_tests.rs. Risk: low; mechanical move + import update. Run `cargo test -p reify-compiler` to verify.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1921"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T16:38:24.178Z",
+        "updatedAt": "2026-04-20T17:15:13.472Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -43390,15 +43390,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:09:42.887Z",
-      "taskCount": 2052,
-      "completedCount": 1783,
+      "lastModified": "2026-04-20T17:15:13.472Z",
+      "taskCount": 2054,
+      "completedCount": 1784,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T17:13:43.961Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T17:15:06.311Z"
+      ]
     }
   }
 }
