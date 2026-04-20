@@ -20552,11 +20552,11 @@
         "description": "In crates/reify-compiler/src/lib.rs: (1) Extract resolve_enum_type(name, enum_defs) helper to replace 4+ inline occurrences. (2) Build HashSet of enum names before filter_map loop in check_trait_conformance. (3) Extract local closure for duplicated 22-line Param/Let blocks. (4) Add assertion when type_args is non-empty on enum match.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:59:00.917Z",
+        "updatedAt": "2026-04-20T14:59:11.962Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -42950,7 +42950,13 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen generic_constraint_def_with_type_param_type test with positive assertion"
+            ]
+          }
         }
       },
       {
@@ -43255,12 +43261,14 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:59:10.877Z",
+      "lastModified": "2026-04-20T14:59:11.962Z",
       "taskCount": 2050,
       "completedCount": 1762,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T14:59:12.181Z",
+      "description": "Tasks for master context"
     }
   }
 }
