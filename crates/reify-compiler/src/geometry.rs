@@ -124,21 +124,14 @@ fn resolve_named_geom_arg(
 /// Build the `(profiles, named_args)` pair for a loft-family dispatch arm.
 ///
 /// For each arg slot `0..n` (where `n = compiled_args.len()`):
-/// - `profiles[i]` is taken from `geom_refs[i]` when present, otherwise
-///   falls back silently to `GeomRef::Step(step_offset + i)`.
-/// - `named_args[i].0` is `"profile_{i}"` for all slots except the last
-///   when `guide_suffix` is `true`, in which case the last key is `"guide"`.
+/// - `profiles[i]` is `geom_refs[i]` when present, otherwise silently
+///   `GeomRef::Step(step_offset + i)`.
+/// - `named_args[i].0` is `"profile_{i}"` for all slots; when
+///   `guide_suffix` is `true` the last slot's key is `"guide"` instead.
 ///
-/// `compiled_args` is consumed by value because both call sites (`loft`,
-/// `loft_guided`) already move it into the helper.
+/// `compiled_args` is consumed by value.
 ///
-/// This helper is a **batch builder** and the loft-family counterpart of
-/// `resolve_named_geom_arg` (sweep family). Unlike `resolve_named_geom_arg`,
-/// which handles a single index and emits a diagnostic, this function
-/// processes all slots at once and emits **no diagnostic**: the loft family
-/// uses a silent fallback by design, so it does not call
-/// `resolve_named_geom_arg` per slot. See the module-level note on
-/// silent-fallback vs. labelled-per-arg policy.
+/// See the module-level "Silent-fallback vs. labelled-per-arg policy" note for rationale.
 fn resolve_loft_like_args(
     compiled_args: Vec<CompiledExpr>,
     geom_refs: &HashMap<usize, GeomRef>,
