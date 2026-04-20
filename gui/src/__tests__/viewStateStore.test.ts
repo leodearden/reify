@@ -5,6 +5,7 @@ import { createRoot, createComputed } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { EntityTreeNode } from '../types';
+import type { ViewStateStore } from '../stores';
 
 // ---------------------------------------------------------------------------
 // Local fixture builder
@@ -1564,6 +1565,16 @@ describe('other mutations — user-view mirror to active user view', () => {
 
       expect(store.state.views['user:mine'].visibility['Root.A']).toBe('ghost');
 
+      dispose();
+    });
+  });
+});
+
+describe('viewStateStore — ViewStateStore type export', () => {
+  it('ViewStateStore is re-exported from the stores barrel and is compatible with createViewStateStore()', () => {
+    createRoot((dispose) => {
+      const s: ViewStateStore = createViewStateStore();
+      expect(typeof s.setTree).toBe('function');
       dispose();
     });
   });
