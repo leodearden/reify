@@ -20552,11 +20552,11 @@
         "description": "In crates/reify-compiler/src/lib.rs: (1) Extract resolve_enum_type(name, enum_defs) helper to replace 4+ inline occurrences. (2) Build HashSet of enum names before filter_map loop in check_trait_conformance. (3) Extract local closure for duplicated 22-line Param/Let blocks. (4) Add assertion when type_args is non-empty on enum match.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:33:35.398Z",
+        "updatedAt": "2026-04-20T13:20:26.256Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -42877,10 +42877,11 @@
         "description": "Test `generic_constraint_def_with_type_param_type_compiles_cleanly` in crates/reify-compiler/tests/constraint_def_compile_tests.rs (~line 977, added by task 1964) only asserts absence of 'unknown type' errors. Add positive assertion that module.constraint_defs contains `Aligned` with 2 params + 1 type_param, to guard against silent drops.",
         "details": "Source esc-1964-55. CompiledConstraintDef fields (types.rs line ~612): name, type_params, params. Suggested: find Aligned def, assert params.len()==2, type_params.len()==1.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:20:26.341Z"
       },
       {
         "id": "2043",
@@ -42907,7 +42908,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:20:26.155Z",
+      "lastModified": "2026-04-20T13:20:26.341Z",
       "taskCount": 2036,
       "completedCount": 1741,
       "tags": [
