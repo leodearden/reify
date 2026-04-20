@@ -42413,23 +42413,32 @@
         "description": "The navigate-to-source Tauri event emitted from the MCP context (gui/src-tauri/src/mcp_context.rs:307-319) only carries {file, line, column}, dropping end_line/end_column that the reify-mcp tool handler computes. The App.tsx listener then reconstructs the range as {end_line: line, end_column: column}, collapsing to a single point — so a focus range emitted via the MCP navigate-to-source path can never highlight a range wider than one character. The tool's return JSON includes end_line/end_column, but the event emission throws them away.\n\nFix: Extend the ReifyToolContext::navigate_to_source signature (and the focus range fed to it in tools/navigation.rs) to carry end_line/end_column, include them in the emitted payload, and pass them through bridge.ts and App.tsx into scrollToLocation.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-20T11:04:44.832Z"
+      },
+      {
+        "id": "2020",
+        "title": "Remove double-dispatch from navigateToEntity so focus-entity listener is sole terminal dispatcher",
+        "description": "After task 2007 shipped the focus-entity event listener in App.tsx:365-391, user-initiated navigation still double-dispatches flyToEntity and selectEntity — once inside navigation.ts navigateToEntity, once via the listener. It's idempotent today but brittle: if selectEntity ever toggles or flyToEntity becomes non-idempotent, correctness silently breaks.\n\nFix: Strip the direct flyToEntity/selectEntity calls from navigateToEntity in gui/src/navigation.ts so the focus-entity listener is the sole terminal dispatcher in practice as well as in name.\n\nSource: reviewer_comprehensive on task 2007.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
         "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:02:44.717Z",
-      "taskCount": 2010,
+      "lastModified": "2026-04-20T11:04:44.832Z",
+      "taskCount": 2012,
       "completedCount": 1720,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T11:03:38.792Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T11:03:38.868Z"
+      ]
     }
   }
 }
