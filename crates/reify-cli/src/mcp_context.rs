@@ -626,4 +626,30 @@ mod tests {
              (got engine_construction_count={count_after_update})"
         );
     }
+
+    /// Verify that repeated `load_file` calls reuse the Engine instance rather
+    /// than constructing a new one each time.  Fails against pre-fix code because
+    /// `load_file` calls `Engine::new` unconditionally.
+    #[test]
+    fn load_file_reuses_engine_across_subsequent_calls() {
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        // First load — engine is created (count → 1).
+        ctx.load_file(BRACKET_PATH).expect("first load_file should succeed");
+        let count_after_first = ctx.engine_construction_count();
+        assert_eq!(count_after_first, 1, "first load_file should construct exactly one engine");
+
+        // Second load of the same path — engine must be reused (count stays at 1).
+        ctx.load_file(BRACKET_PATH).expect("second load_file should succeed");
+        let count_after_second = ctx.engine_construction_count();
+        assert_eq!(
+            count_after_second, 1,
+            "second load_file must reuse the engine, not construct a new one \
+             (got engine_construction_count={count_after_second})"
+        );
+    }
 }
