@@ -42572,11 +42572,11 @@
         "description": "gui/src/__tests__/App.test.tsx:642-670 asserts mockFlyToEntity was called and that one selected group appears in PropertyEditor, but does not check that the entity path routed to selectionStore.selectEntity is 'Bracket'. A regression that selected the wrong entity would still satisfy `selectedGroups.length === 1`.\n\nFix: Also assert the selected group's identity (e.g. that the data-selected element corresponds to 'Bracket', or inspect selectionStore state) so the test verifies the value routed through, not merely that something got selected.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T17:59:39.492Z",
+        "updatedAt": "2026-04-20T17:59:45.970Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -43413,7 +43413,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:59:45.038Z",
+      "lastModified": "2026-04-20T17:59:45.970Z",
       "taskCount": 2054,
       "completedCount": 1783,
       "tags": [
