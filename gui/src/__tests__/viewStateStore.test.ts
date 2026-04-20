@@ -1015,13 +1015,6 @@ describe('viewStateStore — setTree pruning', () => {
 // ---------------------------------------------------------------------------
 
 describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no flicker between views)', () => {
-  /**
-   * These tests must FAIL before step-16 because viewStateStore.defaultRuleFor
-   * only hides 'Solid' lets while autoViewGenerator.defaultVisibilityFor also
-   * hides 'Surface' and 'Curve' lets.  After step-16 they will pass because
-   * defaultRuleFor delegates to defaultVisibilityFor.
-   */
-
   it('(a) let node with type_name="Surface" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
