@@ -670,8 +670,8 @@ describe('App navigation wiring', () => {
     });
   });
 
-  it('App subscribes to navigate-to-source events and updates Editor scrollToLocation signal', async () => {
-    let capturedNavigateCb: ((data: { file: string; line: number; column: number }) => void) | undefined;
+  it('App subscribes to navigate-to-source events and updates Editor scrollToLocation signal with end_line/end_column from event', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number; end_line: number; end_column: number }) => void) | undefined;
     vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
       capturedNavigateCb = cb;
       return () => {};
@@ -683,18 +683,19 @@ describe('App navigation wiring', () => {
     expect(vi.mocked(bridge.onNavigateToSource)).toHaveBeenCalled();
     expect(capturedNavigateCb).toBeDefined();
 
-    // Simulate navigate-to-source event from backend
-    capturedNavigateCb!({ file: '/project/bracket.ri', line: 12, column: 4 });
+    // Simulate navigate-to-source event from backend with distinct end positions
+    capturedNavigateCb!({ file: '/project/bracket.ri', line: 12, column: 4, end_line: 18, end_column: 9 });
 
-    // Editor's scrollToLocation signal should update with matching SourceLocation
+    // Editor's scrollToLocation signal should update with the full range from the event,
+    // not end_line/end_column synthesized from line/column
     await waitFor(() => {
       const loc = capturedEditorScrollToLocation?.();
       expect(loc).toEqual({
         file_path: '/project/bracket.ri',
         line: 12,
         column: 4,
-        end_line: 12,
-        end_column: 4,
+        end_line: 18,
+        end_column: 9,
       });
     });
   });
