@@ -39513,11 +39513,11 @@
         "description": "`makeNode` is duplicated verbatim in `gui/src/__tests__/DesignTree.test.tsx` and `gui/src/__tests__/viewStateStore.test.ts`; most describe blocks also redefine a local `makeTree()` of the same Root/A/a1/a2/B shape. Any future change to `EntityTreeNode` schema would require edits in many places.",
         "details": "Create `gui/src/__tests__/test-utils.ts` (or `.tsx` if JSX needed) exporting `makeNode` and a canonical `makeTree`. Update DesignTree, DesignTreeContextMenu, and viewStateStore tests to import from the shared helper. Keep the per-test-file local overrides only where a test needs a non-canonical shape.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T15:28:55.933Z",
+        "updatedAt": "2026-04-20T16:46:14.140Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -39530,6 +39530,11 @@
             "queries": [
               "resolution for: Extract DesignTree test fixtures (makeNode/makeTree) to shared test-utils"
             ]
+          },
+          "done_provenance": {
+            "commit": "59399786ff2c3eeafd079f594e87a1befb5d84d5",
+            "commit_input": "59399786f",
+            "note": "Merged via merge_queue from fresh branch task/1883-clean (old task/1883 carried 17 orphan compiler commits). Follow-up #2060 covers S2."
           }
         }
       },
@@ -43336,15 +43341,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:38:24.178Z",
-      "taskCount": 2051,
-      "completedCount": 1776,
+      "lastModified": "2026-04-20T16:46:14.140Z",
+      "taskCount": 2052,
+      "completedCount": 1777,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T16:46:04.924Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T16:46:04.941Z"
+      ]
     }
   }
 }
