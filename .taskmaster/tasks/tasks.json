@@ -43431,6 +43431,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-20T17:31:53.208Z"
+      },
+      {
+        "id": "2063",
+        "title": "esc-1746-amend-1 residual suggestions S4/S5/S6: metaKey guard test, autofocus assertion, transactional userViewOrder invariant",
+        "description": "Follow-up from task 1746 amend-1 review (non-blocking suggestions not folded during /unblock because source files weren't touched by the blocker fix).\n\n**S4 — metaKey modifier guard test** (`gui/src/__tests__/useKeyboardShortcuts.test.ts`)\nExisting tests cover ctrlKey/shiftKey/altKey but not metaKey. Implementation at useKeyboardShortcuts.ts:103 guards on all four. Add `Meta+1 does NOT call onSwitchViewByIndex` test mirroring existing ctrl/shift/alt cases.\n\n**S5 — weak autofocus assertion** (`gui/src/__tests__/ViewManageModal.test.tsx:55-63`)\nTest titled \"first focusable element receives autofocus\" only asserts `focusable` is truthy — not that it received focus. After the `queueMicrotask` await, assert `expect(document.activeElement).toBe(focusable)` (or `dialog.contains(document.activeElement)` if jsdom focus is flaky; document the softening in that case).\n\n**S6 — transactional userViewOrder invariant** (`gui/src/stores/viewStateStore.ts`, `gui/src/panels/ViewSelector.tsx`)\nCurrently ViewSelector's `orderedViews` memo dev-warns when `userViewOrder` references an id missing from `state.views`, but silently filters in prod. Stronger fix: make `deleteView` and `reorderUserViews` transactionally consistent (they already are), then remove the defensive filter so any future bug surfaces loudly instead of being masked. Alternatively, assert invariant in the store and panic (dev) / log (prod).\n\nReviewer references: `.task/reviews-amend-1/reviewer_comprehensive.json` suggestions 4, 5, 6 in task 1746's worktree (preserved in task 1746's merge history).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -43440,7 +43451,10 @@
       "completedCount": 1785,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T18:15:35.897Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-20T18:15:35.922Z"
     }
   }
 }
