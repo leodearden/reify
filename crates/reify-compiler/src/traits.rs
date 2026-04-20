@@ -4,6 +4,7 @@ pub(crate) fn compile_trait(
     trait_decl: &reify_syntax::TraitDecl,
     enum_defs: &[reify_types::EnumDef],
     alias_registry: &TypeAliasRegistry,
+    trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledTrait {
     let empty_params = HashSet::new();
@@ -21,7 +22,9 @@ pub(crate) fn compile_trait(
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
                     };
                     if let Some(name) = name_opt {
-                        if let Some(t) = resolve_type_with_aliases(name, &empty_params, alias_registry) {
+                        if let Some(t) =
+                            resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
+                        {
                             t
                         } else if enum_defs.iter().any(|e| e.name == name) {
                             // Enum type defined in the same module
@@ -80,8 +83,12 @@ pub(crate) fn compile_trait(
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
                     };
                     if let Some(name) = name_opt {
-                        match resolve_type_with_aliases(name, &empty_params, alias_registry)
-                        {
+                        match resolve_type_with_aliases(
+                            name,
+                            &empty_params,
+                            alias_registry,
+                            trait_names,
+                        ) {
                             Some(t) => Some(t),
                             None => {
                                 diagnostics.push(

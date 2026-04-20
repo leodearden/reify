@@ -8,6 +8,9 @@ pub(crate) fn compile_function(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     let empty_params = HashSet::new();
+    // Functions are compiled before the trait registry is built, so trait-name
+    // resolution is not applied inside function signatures. Pass an empty set.
+    let empty_traits: HashSet<String> = HashSet::new();
     // Resolve parameter types
     let mut params = Vec::new();
     for p in &fn_def.params {
@@ -16,6 +19,7 @@ pub(crate) fn compile_function(
             &empty_params,
             alias_registry,
             diagnostics,
+            &empty_traits,
         ) {
             Some(t) => t,
             None => {
@@ -32,7 +36,13 @@ pub(crate) fn compile_function(
     // Resolve return type
     let return_type = match &fn_def.return_type {
         Some(te) => {
-            match resolve_type_expr_with_aliases(te, &empty_params, alias_registry, diagnostics) {
+            match resolve_type_expr_with_aliases(
+                te,
+                &empty_params,
+                alias_registry,
+                diagnostics,
+                &empty_traits,
+            ) {
                 Some(t) => t,
                 None => {
                     diagnostics.push(
@@ -117,7 +127,10 @@ pub(crate) fn resolve_field_type_name(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
     let empty_params = HashSet::new();
-    resolve_type_with_aliases(name, &empty_params, alias_registry).unwrap_or_else(|| {
+    // Field types do not currently resolve trait names into TraitObject; pass
+    // an empty trait-name set so behavior is unchanged for fields.
+    let empty_traits: HashSet<String> = HashSet::new();
+    resolve_type_with_aliases(name, &empty_params, alias_registry, &empty_traits).unwrap_or_else(|| {
         diagnostics.push(
             Diagnostic::warning(format!(
                 "unresolved field type '{}', treating as structure reference",

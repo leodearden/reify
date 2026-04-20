@@ -82,6 +82,7 @@ fn compile_constraint_def(
     c: &reify_syntax::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
     enum_defs: &[reify_types::EnumDef],
+    trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledConstraintDef {
     // Extract @optimized target from raw syntax annotations BEFORE lowering so the
@@ -118,6 +119,7 @@ fn compile_constraint_def(
                     &type_param_names,
                     alias_registry,
                     diagnostics,
+                    trait_names,
                 )
                 .is_none()
                 && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
@@ -542,6 +544,24 @@ pub(crate) fn compile_with_prelude_refs(
         }
     }
 
+    // Build the set of trait names known at compile time so the type resolver
+    // can resolve `param m : Material` (trait name) to Type::TraitObject(...).
+    //
+    // Collected from local trait declarations (syntax) and prelude trait defs
+    // (already compiled) BEFORE `compile_trait` runs, so trait members whose
+    // types reference other traits can resolve their siblings. Trait-name
+    // resolution is last in precedence (builtins → type params → alias → trait)
+    // so existing name-reuse stays backward compatible.
+    let trait_names: HashSet<String> = trait_refs
+        .iter()
+        .map(|t| t.name.clone())
+        .chain(
+            prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter().map(|t| t.name.clone())),
+        )
+        .collect();
+
     // 2. Traits (depend on resolution_enums for enum type resolution in params)
     let mut trait_defs = Vec::new();
     for trait_decl in &trait_refs {
@@ -549,6 +569,7 @@ pub(crate) fn compile_with_prelude_refs(
             trait_decl,
             &resolution_enums,
             &alias_registry,
+            &trait_names,
             &mut diagnostics,
         );
         trait_defs.push(compiled_trait);
@@ -610,7 +631,13 @@ pub(crate) fn compile_with_prelude_refs(
         .iter()
         .filter_map(|d| {
             if let reify_syntax::Declaration::Constraint(c) = d {
-                Some(compile_constraint_def(c, &alias_registry, &resolution_enums, &mut diagnostics))
+                Some(compile_constraint_def(
+                    c,
+                    &alias_registry,
+                    &resolution_enums,
+                    &trait_names,
+                    &mut diagnostics,
+                ))
             } else {
                 None
             }
@@ -668,6 +695,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &resolution_enums,
                         &functions,
                         &trait_registry,
+                        &trait_names,
                         &field_registry,
                         &constraint_def_registry,
                         &unit_registry,
@@ -717,6 +745,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &resolution_enums,
                         &functions,
                         &trait_registry,
+                        &trait_names,
                         &field_registry,
                         &constraint_def_registry,
                         &unit_registry,
