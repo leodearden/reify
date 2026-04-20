@@ -1212,26 +1212,6 @@ structure Bracket {
             .expect("fresh_ctx must point at the real fixtures dir so bracket.ri is loadable");
     }
 
-    /// Contract test for `fresh_ctx()`: the returned context must be genuinely
-    /// fresh (no engine constructed yet) *and* its `project_dir` must be wired
-    /// to the crate's `tests/fixtures` directory (so `BRACKET_PATH` is loadable).
-    #[test]
-    fn fresh_ctx_returns_fresh_fixtures_scoped_context() {
-        let ctx = fresh_ctx();
-        assert_eq!(
-            ctx.engine_construction_count(),
-            0,
-            "fresh_ctx must return a context whose engine has not been constructed yet"
-        );
-        ctx.load_file(BRACKET_PATH)
-            .expect("fresh_ctx must point at the fixtures dir so BRACKET_PATH loads");
-        assert_eq!(
-            ctx.engine_construction_count(),
-            1,
-            "load_file must trigger exactly one engine construction"
-        );
-    }
-
     /// Behavior guard: `fresh_ctx()` must return a context whose engine has
     /// not been constructed yet.  Guards against a future refactor that eagerly
     /// builds an engine inside `CliToolContext::new`, which would break the
