@@ -41533,7 +41533,7 @@
         "description": "Move get_let_expr / get_let_expr_in / assert_no_type_cascade from crates/reify-compiler/tests/expr_error_sentinel_tests.rs and type_error_propagation_tests.rs into the existing reify-test-support crate (likely helpers.rs) to deduplicate ~35 lines. Source: review suggestion S2 in esc-1921-36 (code_duplication).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41547,7 +41547,8 @@
             "crates/reify-test-support/src",
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-20T11:35:43.937Z"
       },
       {
         "id": "1981",
@@ -42628,7 +42629,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:35:19.680Z",
+      "lastModified": "2026-04-20T11:35:43.937Z",
       "taskCount": 2022,
       "completedCount": 1727,
       "tags": [
