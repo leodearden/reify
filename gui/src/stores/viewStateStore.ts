@@ -357,6 +357,39 @@ export function createViewStateStore() {
   }
 
   /**
+   * Delete a user view.  Validation rules:
+   * - id must exist in `state.views`
+   * - id must not start with `auto:` (auto views cannot be deleted)
+   *
+   * If the deleted view is currently active, falls back to `auto:default`
+   * and copies its `visibility` map into `state.explicit` so the viewport
+   * immediately reflects the fallback.
+   *
+   * @returns `true` on success, `false` on any validation failure (no state change).
+   */
+  function deleteView(id: string): boolean {
+    const view = state.views[id];
+    if (!view) return false;
+    if (id.startsWith('auto:')) return false;
+
+    const isActive = state.activeViewId === id;
+    setState(
+      produce((s) => {
+        delete s.views[id];
+        const idx = s.userViewOrder.indexOf(id);
+        if (idx !== -1) s.userViewOrder.splice(idx, 1);
+
+        if (isActive) {
+          s.activeViewId = 'auto:default';
+          const fallback = s.views['auto:default'];
+          s.explicit = fallback ? { ...fallback.visibility } : {};
+        }
+      }),
+    );
+    return true;
+  }
+
+  /**
    * Rename a user view.  Validation rules (all return `false` on failure):
    * - id must exist in `state.views`
    * - id must not start with `auto:` (auto views cannot be renamed)
@@ -529,6 +562,7 @@ export function createViewStateStore() {
     createView,
     switchView,
     renameView,
+    deleteView,
   };
 }
 

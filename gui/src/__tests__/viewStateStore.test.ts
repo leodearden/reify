@@ -1432,6 +1432,88 @@ describe('setActiveView — wholesale explicit replacement after resetToInherit'
 });
 
 // ---------------------------------------------------------------------------
+// deleteView
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — deleteView', () => {
+  it('(a) removes the view from state.views and state.userViewOrder', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('To Delete');
+      expect(store.state.views[id]).toBeDefined();
+      expect(store.state.userViewOrder).toContain(id);
+
+      const result = store.deleteView(id);
+      expect(result).toBe(true);
+      expect(store.state.views[id]).toBeUndefined();
+      expect(store.state.userViewOrder).not.toContain(id);
+      dispose();
+    });
+  });
+
+  it('(b) rejects auto views — returns false, no state change', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const result = store.deleteView('auto:default');
+      expect(result).toBe(false);
+      expect(store.state.views['auto:default']).toBeDefined();
+      dispose();
+    });
+  });
+
+  it('(c) rejects unknown ids — returns false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const result = store.deleteView('user:nonexistent');
+      expect(result).toBe(false);
+      dispose();
+    });
+  });
+
+  it('(d) deleting the active user view falls back to activeViewId === "auto:default"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [makeNode({ entity_path: 'Root.A', kind: 'param' })],
+        }),
+      ]);
+
+      const id = store.createView('Active View');
+      store.switchView(id);
+      expect(store.state.activeViewId).toBe(id);
+
+      const result = store.deleteView(id);
+      expect(result).toBe(true);
+      // Falls back to auto:default
+      expect(store.state.activeViewId).toBe('auto:default');
+      // Explicit state is re-seeded from auto:default
+      expect(store.state.explicit).toEqual(store.state.views['auto:default'].visibility);
+      dispose();
+    });
+  });
+
+  it('(d) deleting a non-active user view does NOT change activeViewId', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const id1 = store.createView('Active');
+      const id2 = store.createView('Inactive');
+      store.switchView(id1);
+      expect(store.state.activeViewId).toBe(id1);
+
+      store.deleteView(id2);
+      // activeViewId should not change
+      expect(store.state.activeViewId).toBe(id1);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // renameView
 // ---------------------------------------------------------------------------
 
