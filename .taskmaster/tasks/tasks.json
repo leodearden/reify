@@ -39448,11 +39448,11 @@
         "description": "`setTree` prunes stale paths via `delete s.explicit[path]` (→ undefined) while `setVisibility`/`resetToInherit` clear descendants via `s.explicit[desc] = null`. Consumers see a mix of undefined and null meaning the same thing. Tests encode both via `toBeUndefined()` vs `toBeNull()`, pinning the inconsistency. Any future code using `path in explicit` or `Object.keys(explicit)` will behave differently depending on path.\n\nAlso: DesignTree.tsx imports `createViewStateStore` solely to derive `ReturnType<typeof createViewStateStore>` for a prop type. Expose a named `ViewStateStore` type to decouple the consumer from the factory.",
         "details": "Scope:\n1. gui/src/stores/viewStateStore.ts:76-85 and 125-136 — pick one representation for \"no override\". Preferred: always `delete s.explicit[path]` (matches semantic \"no override\"). Update the `ViewState` type comment to document the invariant.\n2. gui/src/__tests__/viewStateStore.test.ts — update assertions to use only `toBeUndefined()` (or only `toBeNull()`) consistent with the chosen representation, and add a test that asserts `path in explicit` is false after reset.\n3. gui/src/stores/viewStateStore.ts — `export type ViewStateStore = ReturnType<typeof createViewStateStore>;`.\n4. gui/src/panels/DesignTree.tsx:6 — import only the type: `import type { ViewStateStore } from \"../stores/viewStateStore\";`.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:55:13.781Z",
+        "updatedAt": "2026-04-20T08:04:15.806Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -42378,7 +42378,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T08:04:14.954Z",
+      "lastModified": "2026-04-20T08:04:15.820Z",
       "taskCount": 2010,
       "completedCount": 1716,
       "tags": [
