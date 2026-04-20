@@ -358,3 +358,35 @@ fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
         errors
     );
 }
+
+/// Positive test: passing a conforming struct to a trait-typed param compiles
+/// without errors.
+///
+/// `Steel` declares `: Material` and provides `density` and `name`. The host
+/// structure declares `param m : Material`. Passing `Steel()` at the call-site
+/// should pass the conformance check.
+#[test]
+fn sub_component_arg_for_trait_typed_param_accepts_conforming_struct() {
+    let source = r#"
+        structure def Steel : Material {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param m : Material }
+        structure def Top {
+            sub x = Host(m: Steel())
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for conforming struct arg, got: {:?}",
+        errors
+    );
+}
