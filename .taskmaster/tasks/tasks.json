@@ -43070,11 +43070,17 @@
         "description": "Follow-up from task 1999. Define pub(crate) TAG_* const bytes in reify-types/src/expr.rs and reference them from both reify-types constructors and reify-compiler inline paths (src/expr.rs:554, :1318) so allocation table (expr.rs:212-235) stays in sync with call sites.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:39:33.569Z"
+        "updatedAt": "2026-04-20T13:48:53.600Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-types/src/expr.rs"
+          ]
+        }
       },
       {
         "id": "2055",
@@ -43110,14 +43116,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:48:29.902Z",
+      "lastModified": "2026-04-20T13:48:53.600Z",
       "taskCount": 2048,
       "completedCount": 1746,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T13:48:44.098Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
