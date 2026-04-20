@@ -389,8 +389,8 @@ const App: Component = () => {
 
     // Subscribe to navigate-to-source events (from MCP navigate_to_source tool)
     try {
-      const unlisten = await onNavigateToSource(({ file, line, column }) => {
-        setScrollToLocation({ file_path: file, line, column, end_line: line, end_column: column });
+      const unlisten = await onNavigateToSource(({ file, line, column, end_line, end_column }) => {
+        setScrollToLocation({ file_path: file, line, column, end_line, end_column });
       });
       if (!alive) {
         unlisten();
