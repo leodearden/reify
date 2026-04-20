@@ -43023,11 +43023,11 @@
         "description": "The `PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))` + `CliToolContext::new(project_dir)` pattern is duplicated across many tests in `crates/reify-cli/src/mcp_context.rs` (lines 807, 832, 865, 891, 931, 1115, 1136, etc.). Introduce a private test helper like `fn fresh_ctx() -> CliToolContext { CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))) }` in the test module and update existing tests to use it. Source: review_comprehensive on Task 2015 (code_reuse, \"Out of scope for this diff but worth a follow-up\"). Run `cargo test -p reify-cli` to verify.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:59:13.512Z",
+        "updatedAt": "2026-04-20T14:59:19.677Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43279,9 +43279,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:59:18.893Z",
+      "lastModified": "2026-04-20T14:59:19.677Z",
       "taskCount": 2050,
-      "completedCount": 1763,
+      "completedCount": 1764,
       "tags": [
         "master"
       ]
