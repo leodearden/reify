@@ -1552,6 +1552,51 @@ describe('other mutations — user-view mirror to active user view', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// setActiveView — wholesale explicit replacement after resetToInherit
+// ---------------------------------------------------------------------------
+
+describe('setActiveView — wholesale explicit replacement after resetToInherit', () => {
+  it('setActiveView replaces state.explicit wholesale, destroying prior resetToInherit absent-key markers', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      const vA: ViewDefinition = {
+        id: 'user:vA',
+        name: 'View A',
+        auto: false,
+        visibility: { 'Root': 'hidden', 'Root.A': 'ghost' },
+      };
+      const vB: ViewDefinition = {
+        id: 'user:vB',
+        name: 'View B',
+        auto: false,
+        visibility: { 'Root': 'show', 'Root.A': 'show', 'Root.B': 'hidden' },
+      };
+
+      store.seedView(vA);
+      store.seedView(vB);
+      store.setActiveView('user:vA');
+
+      // vA is active; Root.A enters explicit as 'ghost'.
+      expect(store.state.activeViewId).toBe('user:vA');
+      expect(store.state.explicit['Root.A']).toBe('ghost');
+
+      // resetToInherit deletes the key — absence-of-key invariant.
+      store.resetToInherit('Root.A');
+      expect('Root.A' in store.state.explicit).toBe(false);
+
+      // Switching to vB must wholesale-replace explicit, restoring Root.A = 'show'
+      // and destroying the prior absent-key (inherit) marker for Root.A.
+      store.setActiveView('user:vB');
+      expect(store.state.explicit).toEqual(vB.visibility);
+      expect(store.state.explicit['Root.A']).toBe('show');
+
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — ViewStateStore type export', () => {
   it('ViewStateStore type alias is structurally identical to ReturnType<typeof createViewStateStore>', () => {
     expectTypeOf<ViewStateStore>().toEqualTypeOf<ReturnType<typeof createViewStateStore>>();
