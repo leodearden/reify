@@ -139,6 +139,10 @@ fn resolve_loft_like_args(
     guide_suffix: bool,
 ) -> (Vec<GeomRef>, Vec<(String, CompiledExpr)>) {
     let n = compiled_args.len();
+    // Helper-level precondition: guide_suffix=true requires ≥ 2 args (profile + guide).
+    // Current callers (loft_guided arm) enforce n >= 3 upstream, so this assert only fires
+    // for hypothetical future call sites that bypass those arity guards.  It is intentionally
+    // weaker than the caller contract — the helper owns n >= 2, callers own user-visible arity.
     debug_assert!(
         !guide_suffix || n >= 2,
         "loft_guided requires at least 2 args: profiles + guide"
@@ -1484,18 +1488,6 @@ mod tests {
         );
     }
 
-    /// Unit test for the `resolve_loft_like_args` helper.
-    ///
-    /// Covers:
-    ///   (a) `guide_suffix=false` (loft shape): 3 CompiledExprs, geom_refs maps
-    ///       idx 1 → Step(42) only (0 and 2 missing), step_offset=10.
-    ///       Expected profiles: [Step(10), Step(42), Step(12)].
-    ///       Expected named-arg keys: ["profile_0", "profile_1", "profile_2"].
-    ///
-    ///   (b) `guide_suffix=true` (loft_guided shape): 3 CompiledExprs, geom_refs
-    ///       maps idx 0 → Step(7) only, step_offset=5.
-    ///       Expected profiles: [Step(7), Step(6), Step(7)].
-    ///       Expected named-arg keys: ["profile_0", "profile_1", "guide"].
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "loft_guided requires at least 2 args")]
@@ -1509,6 +1501,18 @@ mod tests {
         resolve_loft_like_args(compiled_args, &geom_refs, 0, true);
     }
 
+    /// Unit test for the `resolve_loft_like_args` helper.
+    ///
+    /// Covers:
+    ///   (a) `guide_suffix=false` (loft shape): 3 CompiledExprs, geom_refs maps
+    ///       idx 1 → Step(42) only (0 and 2 missing), step_offset=10.
+    ///       Expected profiles: [Step(10), Step(42), Step(12)].
+    ///       Expected named-arg keys: ["profile_0", "profile_1", "profile_2"].
+    ///
+    ///   (b) `guide_suffix=true` (loft_guided shape): 3 CompiledExprs, geom_refs
+    ///       maps idx 0 → Step(7) only, step_offset=5.
+    ///       Expected profiles: [Step(7), Step(6), Step(7)].
+    ///       Expected named-arg keys: ["profile_0", "profile_1", "guide"].
     #[test]
     fn resolve_loft_like_args_builds_profiles_and_named_args() {
         // Each slot carries a distinct Real marker (slot index as f64) so that
@@ -1552,7 +1556,7 @@ mod tests {
                 match &expr.kind {
                     CompiledExprKind::Literal(Value::Real(f)) => {
                         assert!(
-                            (f - i as f64).abs() < f64::EPSILON,
+                            *f == i as f64,
                             "loft: named_args[{i}] has marker {f}, expected {i} — ordering broken"
                         );
                     }
@@ -1587,7 +1591,7 @@ mod tests {
                 match &expr.kind {
                     CompiledExprKind::Literal(Value::Real(f)) => {
                         assert!(
-                            (f - i as f64).abs() < f64::EPSILON,
+                            *f == i as f64,
                             "loft_guided: named_args[{i}] has marker {f}, expected {i} — ordering broken"
                         );
                     }
