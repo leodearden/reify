@@ -41805,11 +41805,11 @@
         "description": "Every call to `Engine::eval()` and `Engine::edit_param()` clones the entire merged function table (`self.functions: Vec<CompiledFunction>`). `CompiledFunction` contains boxed expression trees, so cost is O(|user_fns + prelude_fns| * avg_tree_size) per call — a significant allocation for modules with a large prelude.",
         "details": "Change `Engine::functions` from `Vec<CompiledFunction>` to `Arc<Vec<CompiledFunction>>` so the borrow-checker workaround clone in `eval()` and `edit_param()` becomes O(1).\n\nKey sites:\n- `crates/reify-eval/src/lib.rs` near `let functions: Vec<CompiledFunction> = self.functions.clone();` inside `eval()` (the PERFORMANCE NOTE comment describes the fix)\n- `crates/reify-eval/src/lib.rs` near line ~1548: `let functions = self.functions.clone();` inside `edit_param()` — same pattern\n- `crates/reify-eval/src/concurrent.rs`: `ConcurrentEditSetup::functions` field is typed `Vec<CompiledFunction>` and assigned via `functions: self.functions.clone()` — needs the type change to `Arc<Vec<CompiledFunction>>`\n\nThe desired end state:\n```rust\nself.functions = Arc::new({ let mut v = module.functions.clone(); v.extend(prelude); v });\nlet functions = Arc::clone(&self.functions);   // O(1)\n```\n\nThe `concurrent.rs` change is the blocker that prevented this fix in task 515 (it lies outside that task's scope lock). This task should scope both files together.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:37:55.708Z",
+        "updatedAt": "2026-04-20T05:43:06.821Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/lib.rs",
@@ -41849,11 +41849,11 @@
         "description": "Review follow-up from task 1972 (suggestion 1, reviewer_comprehensive, non-blocking).\n\nBoth `CompiledExpr::user_function_call` (crates/reify-types/src/expr.rs:887) and `CompiledExpr::match_expr` (:917) use hash tag byte `[6]`. The collision is pre-existing in production: the compiler's inline emission at crates/reify-compiler/src/expr.rs:554 (UserFunctionCall) and :1318 (Match) also both use `[6]`. This creates a latent hash-collision risk between structurally equivalent UserFunctionCall and Match expressions.\n\nFix: retag one variant (e.g. Match → `[7]`) with coordinated changes to both the constructor in reify-types and the compiler inline path (reify-compiler/src/expr.rs:1318). Confirm no on-disk hashes depend on the current tag byte before changing, and update any golden fixtures / hash-pinning tests.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:40:46.091Z",
+        "updatedAt": "2026-04-20T05:43:06.910Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/expr.rs",
@@ -42084,7 +42084,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:43:06.733Z",
+      "lastModified": "2026-04-20T05:43:06.910Z",
       "taskCount": 2003,
       "completedCount": 1702,
       "tags": [
