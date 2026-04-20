@@ -13,6 +13,12 @@ import type { ViewDefinition } from './autoViewGenerator';
 // ---------------------------------------------------------------------------
 
 export interface ViewState {
+  /**
+   * Absence of a key means "no override" (inherits from nearest explicit
+   * ancestor, or falls back to the default rule).  Entries are **deleted**
+   * on clear; `null` is never stored at runtime even though
+   * `ExplicitVisibility` admits it as a type.
+   */
   explicit: Record<string, ExplicitVisibility>;
   views: Record<string, ViewDefinition>;
   activeViewId: string;
