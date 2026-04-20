@@ -39974,11 +39974,11 @@
         "description": "Post-merge polish for the tessellation-diagnostics wiring added in task 1764. Covers performance, API-contract consistency, and doc clarification in engine.rs and diff.rs.",
         "details": "From reviewer_comprehensive suggestions on task 1764:\n\n1. **Avoid cloning source on every diagnostic-producing tessellation** (engine.rs:433-438).\n   - `resolve_source()` result is currently `.map(|(f, s)| (f.to_owned(), s.to_owned()))`, cloning the entire source file each time diagnostics are produced.\n   - `diagnostics_to_info` only needs `&str`. Rework to keep borrows, only allocating the fallback `(\"<unknown>\", \"\")` strings when `resolve_source()` returns `None`.\n   - Suggested form: `let (file_path, source): (&str, &str) = self.resolve_source().unwrap_or((\"<unknown>\", \"\")); let unresolved = file_path == \"<unknown>\";`\n\n2. **Derive Serialize on Severity to centralize PascalCase formatting** (engine.rs:1370-1383, diagnostics_to_info).\n   - The change from lowercase (`Severity`'s Display impl) to PascalCase (hand-rolled match in `diagnostics_to_info`) is an observable wire-format break for MCP `get_diagnostics` consumers.\n   - Preferred: derive `Serialize` on `Severity` with `#[serde(rename_all = \"PascalCase\")]` (or equivalent) and use that everywhere instead of duplicating the mapping. Keeps `DiagnosticInfo.severity` string and other serialized Severity sites in lock-step.\n   - Alternative (if derive is infeasible): add a release/migration note documenting the PascalCase change.\n\n3. **Align log and wire format for diagnostic severity** (engine.rs:427).\n   - `warn!(severity = ?diag.severity, ...)` uses Debug format while the emitted wire `DiagnosticInfo.severity` uses the PascalCase match. They happen to look similar today but will drift.\n   - Use `%diag.severity` (Display) or the same mapping used by `diagnostics_to_info` so log and wire formats stay pinned together.\n\n4. **Clarify StateDelta::full tessellation_diagnostics asymmetry comment** (diff.rs:33-49).\n   - Current comment (line ~41) only explains why the initial full-emission collapses empty→None. It does not mention that `diff_gui_state` still emits `Some(vec![])` when clearing a previously non-empty list.\n   - Expand comment to: \"Initial full emission: skip when empty (the frontend default is already []). Subsequent diffs (diff_gui_state) still emit Some(vec![]) when clearing a previously non-empty list so subscribers can clear their view.\"\n\nVerification: run `cargo test -p gui` (or the workspace equivalent) to ensure MCP and GUI tests still pass; also spot-check any serde tests that cover Severity/DiagnosticInfo serialization.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:44.879Z",
+        "updatedAt": "2026-04-20T05:43:05.706Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -40233,11 +40233,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, the \"unknown member on self\" branch (~lines 731-737) now returns `CompiledExpr::literal(Value::Undef, Type::Error)` to activate the anti-cascade guard (task-448 / task-1912). However, other diagnostic-producing sites in `compile_expr_guarded` may still return `CompiledExpr::literal(Value::Undef, Type::Real)` alongside a `diagnostics.push(Diagnostic::error(...))`. Asymmetric producer coverage means cascades will still fire whenever those other producers run. Action: grep `crates/reify-compiler/src/expr.rs` for `Value::Undef, Type::Real` pairs adjacent to `Diagnostic::error` pushes, and either (a) convert each producer to emit `Type::Error`, or (b) document in the module header which producers intentionally keep `Type::Real` and why. Related: task 448 (parent anti-cascade work), task 936 (trait conformance sentinel). Review followup from task 1912; suggestion S5.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:39.944Z",
+        "updatedAt": "2026-04-20T05:43:05.815Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -40802,11 +40802,11 @@
         "description": "`Value::Field`'s doc in crates/reify-types/src/value.rs:205 references `reify_expr::calculus::detect_single_point_param`, but that function is a private `fn` (not `pub fn`) in crates/reify-expr/src/calculus.rs:526. Readers outside reify-expr cannot jump to it from rustdoc, and any intra-doc link would not resolve.",
         "details": "Pick one of:\n1. Make `detect_single_point_param` `pub(crate)` plus a `#[doc(hidden)] pub` re-export so the rustdoc link resolves across crates, or\n2. Soften the cross-reference in value.rs:205 to clarify it's an internal helper — e.g. \"See the private `detect_single_point_param` helper in `crates/reify-expr/src/calculus.rs` for the reference implementation of this heuristic; keep this doc in sync with that function.\"\n\nOption 2 is lower-risk and preserves encapsulation; option 1 enables navigation at the cost of widening the surface.\n\nSource: review escalation esc-1002-30, suggestion 2.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:36:21.907Z",
+        "updatedAt": "2026-04-20T05:43:05.969Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -42084,7 +42084,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:43:05.613Z",
+      "lastModified": "2026-04-20T05:43:05.969Z",
       "taskCount": 2003,
       "completedCount": 1702,
       "tags": [
