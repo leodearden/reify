@@ -42883,13 +42883,13 @@
         "description": "After task #2033 lands (tests moved out), extract the `MergeContext` struct and `collect_all_requirements` fn (L697-926, ~230 lines) from `crates/reify-compiler/src/conformance.rs` into a new sibling file `crates/reify-compiler/src/trait_requirements.rs`.\n\nThese functions are conceptually distinct from `check_trait_conformance`: they walk the trait refinement hierarchy (handling diamond patterns, depth guards, MAX_TRAIT_DEPTH) to collect all requirements and defaults — an independent responsibility from comparing structure members against a flattened requirement set.\n\nImplementation:\n- Create `crates/reify-compiler/src/trait_requirements.rs` with `MergeContext` struct + `impl MergeContext` + `collect_all_requirements` fn. Add `pub(crate) mod trait_requirements;` and `pub(crate) use trait_requirements::*;` to lib.rs.\n- Update `conformance.rs` — the remaining `check_trait_conformance` call site already uses `collect_all_requirements` as a free fn, so re-export makes the move transparent.\n- Keep `MAX_TRAIT_DEPTH` const with `collect_all_requirements` (it's only used there).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically.\n- `conformance.rs` drops to ~830 lines with only `check_trait_conformance` and `check_trait_arg_conformance`.\n\nWhy: separates the hierarchy-walk responsibility from the conformance-check responsibility, reducing the set of tasks that need to touch conformance.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2033"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T17:59:39.758Z",
+        "updatedAt": "2026-04-20T21:08:21.078Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -43577,7 +43577,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T21:08:20.140Z",
+      "lastModified": "2026-04-20T21:08:21.079Z",
       "taskCount": 2057,
       "completedCount": 1791,
       "tags": [
