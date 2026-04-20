@@ -202,8 +202,9 @@ pub enum Value {
     /// when `lambda.params.len() == 1 && n > 1`; otherwise convention (i)
     /// applies.  The source of `n` is `domain_type`.
     ///
-    /// See `reify_expr::calculus::detect_single_point_param` for the reference
-    /// implementation of this heuristic; keep this doc in sync with that function.
+    /// See the private `detect_single_point_param` helper in
+    /// `crates/reify-expr/src/calculus.rs` for the reference implementation of
+    /// this heuristic; keep this doc in sync with that function.
     Field {
         domain_type: crate::ty::Type,
         codomain_type: crate::ty::Type,
