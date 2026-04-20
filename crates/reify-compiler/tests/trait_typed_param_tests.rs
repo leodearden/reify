@@ -424,6 +424,50 @@ fn trait_object_arg_accepted_for_trait_typed_param_via_refinement() {
     );
 }
 
+/// End-to-end acceptance test: instantiate BoltFlange (from examples/m5_geometry_flange.ri)
+/// with a conforming `Steel` material struct via `sub f = BoltFlange(material: Steel())`.
+///
+/// This is the acceptance-criterion end-to-end test for task 1874. It verifies that
+/// the call-site conformance check allows `Steel : Material` to satisfy the `material : Material`
+/// typed param in BoltFlange.
+#[test]
+fn flange_instantiated_with_conforming_material_struct_compiles() {
+    let flange_source = std::fs::read_to_string(format!(
+        "{}/../../examples/m5_geometry_flange.ri",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("examples/m5_geometry_flange.ri should exist");
+
+    // Append a Steel material struct that conforms to Material (density + name),
+    // and an Assembly that instantiates BoltFlange with Steel.
+    // All other BoltFlange params have defaults, so only material needs supplying.
+    let full_source = format!(
+        r#"{}
+structure def Steel : Material {{
+    param density : Real = 7850.0
+    param name : String = "steel"
+}}
+structure def Assembly {{
+    sub f = BoltFlange(material: Steel())
+}}
+"#,
+        flange_source
+    );
+
+    let module = parse_and_compile_with_stdlib(&full_source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for BoltFlange(material: Steel()) where Steel : Material, got: {:?}",
+        errors
+    );
+}
+
 /// Refinement test: a struct that conforms via a refinement chain is accepted.
 ///
 /// `Physical : Material` (refinement), `Rigid : Physical` (structure declares `: Physical`).
