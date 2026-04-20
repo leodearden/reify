@@ -524,7 +524,7 @@ fn make_domain_arg(val: f64, domain_dim: Option<DimensionVector>) -> Value {
 ///
 /// Returns `false` for non-Lambda values or when `n <= 1` (single-coordinate domain).
 ///
-/// See [`reify_types::Value::FieldXXX`] for the authoritative calling-convention contract.
+/// See [`reify_types::Value::Field`] for the authoritative calling-convention contract this helper enforces.
 fn detect_single_point_param(lambda: &Value, n: usize) -> bool {
     match lambda {
         Value::Lambda { params, .. } => params.len() == 1 && n > 1,
