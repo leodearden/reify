@@ -910,6 +910,13 @@ pub(crate) fn collect_all_requirements(
 /// known structure in the template registry we treat it as `StructureRef(name)` for
 /// the conformance check.
 ///
+/// Conformance strategy (step-6 verified):
+/// - `Type::StructureRef` args: uses `satisfies_trait_bound` to walk the structure's declared
+///   trait bounds, following refinement chains transitively (e.g. `Rigid : Physical : Material`
+///   satisfies a `Material` param).
+/// - `Type::TraitObject` args: uses `trait_satisfies` to check equality-or-refinement between
+///   the arg trait and the required trait.
+///
 /// Skips silently when:
 /// - The target template is not found (external/unknown structure).
 /// - The arg name is not found in the target's value cells (positional arg or error).
