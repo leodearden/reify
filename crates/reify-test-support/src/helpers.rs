@@ -557,6 +557,16 @@ pub fn get_let_expr<'a>(
 /// approach here fails on ANY unexpected error, making it both stricter and easier to maintain
 /// from a single definition.
 ///
+/// ## Fragment selection
+/// Each fragment is matched using [`str::contains`], so a short or common word like
+/// `"ambiguous"` would also match an unrelated diagnostic that happens to contain it,
+/// silently treating that unrelated error as an expected root-cause and weakening the
+/// whitelist.  Callers should therefore prefer specific, distinctive phrases
+/// (e.g. `"unknown member"`, `"duplicate function signature"`, `"ambiguous function call"`)
+/// over standalone common English words.  If a fragment collision ever surfaces and causes
+/// a spurious assertion pass, the heavier alternative — accepting a predicate
+/// (`impl Fn(&str) -> bool`) instead of `&[&str]` — can be revisited at that point.
+///
 /// # Panics
 /// - `"expected root-cause error matching one of ..."` if no error matches any fragment.
 /// - `"unexpected cascade errors ..."` if any error matches no fragment.
