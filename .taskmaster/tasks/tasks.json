@@ -40304,15 +40304,20 @@
         "description": "In crates/reify-eval/src/lib.rs (~line 101-143, `value_type_kind_matches`), every value/type predicate (e.g. `Value::Real(_) => matches!(ty, Type::Real | Type::Int)`) enumerates concrete Type variants but never accepts Type::Error. Since Type::Error now propagates further into compiled expressions (task-448, task-1912), a CompiledExpr carrying Type::Error could reach evaluation during incremental/LSP scenarios and produce spurious TypeKindMismatch diagnostics or panics. Either add an explicit Type::Error arm in each predicate (returning true as \"don't second-guess a poisoned type\"), or guard the evaluator to refuse evaluation when diagnostics contain errors, and document the contract. Related: tasks 1867, 1893, 1913. Review followup from task 1912 (S6).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:35:19.678Z",
+        "updatedAt": "2026-04-20T11:35:53.622Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "a8f5cfcc7c1531de78d04fecc7c03f4bbe1f9c89",
+            "commit_input": "a8f5cfcc7",
+            "note": "Task 1924 premise already satisfied on base commit 8e932317a. The Type::Error defensive arm in value_type_kind_matches (crates/reify-eval/src/lib.rs:109-114) was landed under task-1922 via commits f51e51ff0 (failing tests) and a8f5cfcc7 (guard). Docstring at lines 102-108 cross-references reify_compiler::type_compat and task-448/task-1922. Tests include 4 positive cases (Real/Bool/List/Undef vs Type::Error) plus a negative lock (Bool vs Int). Duplicate of task 1922."
+          }
         }
       },
       {
@@ -42629,9 +42634,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:35:43.937Z",
+      "lastModified": "2026-04-20T11:35:53.622Z",
       "taskCount": 2022,
-      "completedCount": 1727,
+      "completedCount": 1728,
       "tags": [
         "master"
       ]
