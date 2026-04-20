@@ -209,28 +209,52 @@ pub struct CompiledFnBody {
     pub result_expr: CompiledExpr,
 }
 
+/// Content-hash tag bytes for each `CompiledExprKind` variant —
+/// see allocation table below for the full layout.
+pub const TAG_LITERAL: u8 = 0;
+pub const TAG_VALUE_REF: u8 = 1;
+pub const TAG_BIN_OP: u8 = 2;
+pub const TAG_UN_OP: u8 = 3;
+pub const TAG_FUNCTION_CALL: u8 = 4;
+pub const TAG_CONDITIONAL: u8 = 5;
+pub const TAG_USER_FUNCTION_CALL: u8 = 6;
+pub const TAG_LAMBDA: u8 = 7;
+pub const TAG_LIST_LITERAL: u8 = 8;
+pub const TAG_SET_LITERAL: u8 = 9;
+pub const TAG_MAP_LITERAL: u8 = 10;
+pub const TAG_INDEX_ACCESS: u8 = 11;
+pub const TAG_METHOD_CALL: u8 = 12;
+pub const TAG_QUANTIFIER: u8 = 13;
+pub const TAG_OPTION_SOME: u8 = 14;
+pub const TAG_OPTION_NONE: u8 = 15;
+pub const TAG_META_ACCESS: u8 = 16;
+pub const TAG_DETERMINACY_PREDICATE: u8 = 17;
+pub const TAG_RANGE_CONSTRUCTOR: u8 = 18;
+pub const TAG_AD_HOC_SELECTOR: u8 = 19;
+pub const TAG_MATCH: u8 = 24;
+
 // Content-hash tag-byte allocation for `CompiledExpr` constructors
 // ---------------------------------------------------------------
 // Each constructor seeds its hash with a unique tag byte so that
 // structurally-different expression kinds can never collide on the same
 // `ContentHash` for identical sub-hashes.  Current allocation:
 //
-//   [0]  Literal            [10] MapLiteral
-//   [1]  ValueRef           [11] IndexAccess
-//   [2]  BinOp              [12] MethodCall
-//   [3]  UnOp               [13] Quantifier
-//   [4]  FunctionCall       [14] OptionSome
-//   [5]  Conditional        [15] OptionNone
-//   [6]  UserFunctionCall   [16] MetaAccess
-//   [7]  Lambda             [17] DeterminacyPredicate
-//   [8]  ListLiteral        [18] RangeConstructor
-//   [9]  SetLiteral         [19] AdHocSelector
+//   [0]  Literal            (TAG_LITERAL)             [10] MapLiteral          (TAG_MAP_LITERAL)
+//   [1]  ValueRef           (TAG_VALUE_REF)            [11] IndexAccess         (TAG_INDEX_ACCESS)
+//   [2]  BinOp              (TAG_BIN_OP)               [12] MethodCall          (TAG_METHOD_CALL)
+//   [3]  UnOp               (TAG_UN_OP)                [13] Quantifier          (TAG_QUANTIFIER)
+//   [4]  FunctionCall       (TAG_FUNCTION_CALL)        [14] OptionSome          (TAG_OPTION_SOME)
+//   [5]  Conditional        (TAG_CONDITIONAL)          [15] OptionNone          (TAG_OPTION_NONE)
+//   [6]  UserFunctionCall   (TAG_USER_FUNCTION_CALL)   [16] MetaAccess          (TAG_META_ACCESS)
+//   [7]  Lambda             (TAG_LAMBDA)               [17] DeterminacyPredicate(TAG_DETERMINACY_PREDICATE)
+//   [8]  ListLiteral        (TAG_LIST_LITERAL)         [18] RangeConstructor    (TAG_RANGE_CONSTRUCTOR)
+//   [9]  SetLiteral         (TAG_SET_LITERAL)          [19] AdHocSelector       (TAG_AD_HOC_SELECTOR)
 //
 //   [20]–[23] — intentionally skipped; used by `CachedResult::content_hash`
 //               in `reify-eval/src/cache.rs` (a distinct hash domain, but
 //               sharing bytes with it would confuse future readers)
 //
-//   [24] Match
+//   [24] Match              (TAG_MATCH)
 //
 // Next new `CompiledExpr` variant: use [25].
 impl CompiledExpr {
