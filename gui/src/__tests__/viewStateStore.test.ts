@@ -1432,6 +1432,89 @@ describe('setActiveView — wholesale explicit replacement after resetToInherit'
 });
 
 // ---------------------------------------------------------------------------
+// reorderUserViews
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — reorderUserViews', () => {
+  it('(a) replaces state.userViewOrder when given a valid permutation', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const id2 = store.createView('Second');
+      const id3 = store.createView('Third');
+      // Reorder: put Third first
+      const result = store.reorderUserViews([id3, id1, id2]);
+      expect(result).toBe(true);
+      expect(store.state.userViewOrder).toEqual([id3, id1, id2]);
+      dispose();
+    });
+  });
+
+  it('(b) rejects if any current user-view id is missing from the argument', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const id2 = store.createView('Second');
+      const before = [...store.state.userViewOrder];
+      // Missing id2
+      const result = store.reorderUserViews([id1]);
+      expect(result).toBe(false);
+      expect(store.state.userViewOrder).toEqual(before);
+      dispose();
+    });
+  });
+
+  it('(b) rejects if the argument contains unknown ids', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const before = [...store.state.userViewOrder];
+      const result = store.reorderUserViews([id1, 'user:nonexistent']);
+      expect(result).toBe(false);
+      expect(store.state.userViewOrder).toEqual(before);
+      dispose();
+    });
+  });
+
+  it('(b) rejects if the argument has duplicates', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const before = [...store.state.userViewOrder];
+      const result = store.reorderUserViews([id1, id1]);
+      expect(result).toBe(false);
+      expect(store.state.userViewOrder).toEqual(before);
+      dispose();
+    });
+  });
+
+  it('(b) rejects if the argument contains auto view ids', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const before = [...store.state.userViewOrder];
+      // auto:default is not a user view
+      const result = store.reorderUserViews(['auto:default', id1]);
+      expect(result).toBe(false);
+      expect(store.state.userViewOrder).toEqual(before);
+      dispose();
+    });
+  });
+
+  it('(a) empty array is valid when there are no user views', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // No user views created yet
+      const result = store.reorderUserViews([]);
+      expect(result).toBe(true);
+      expect(store.state.userViewOrder).toEqual([]);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // duplicateView
 // ---------------------------------------------------------------------------
 

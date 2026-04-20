@@ -427,6 +427,49 @@ export function createViewStateStore() {
   }
 
   /**
+   * Replace `state.userViewOrder` with the given list, which must be a valid
+   * permutation of the current user-view ids:
+   * - Same length as current `userViewOrder`
+   * - Contains every current user-view id exactly once
+   * - Contains no unknown ids (not in `state.views`)
+   * - Contains no auto-view ids (starting with `auto:`)
+   * - Contains no duplicates
+   *
+   * @returns `true` on success, `false` on any validation failure (no state change).
+   */
+  function reorderUserViews(ids: string[]): boolean {
+    const current = state.userViewOrder;
+
+    // Must be the same length
+    if (ids.length !== current.length) return false;
+
+    // Check for duplicates in the incoming array
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (seen.has(id)) return false;
+      seen.add(id);
+    }
+
+    // Every id must be a known user view (not auto:*)
+    for (const id of ids) {
+      if (id.startsWith('auto:')) return false;
+      if (!state.views[id]) return false;
+    }
+
+    // Every current user-view id must be present in the incoming array
+    for (const id of current) {
+      if (!seen.has(id)) return false;
+    }
+
+    setState(
+      produce((s) => {
+        s.userViewOrder = ids;
+      }),
+    );
+    return true;
+  }
+
+  /**
    * Delete a user view.  Validation rules:
    * - id must exist in `state.views`
    * - id must not start with `auto:` (auto views cannot be deleted)
@@ -634,6 +677,7 @@ export function createViewStateStore() {
     renameView,
     deleteView,
     duplicateView,
+    reorderUserViews,
   };
 }
 
