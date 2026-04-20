@@ -9,7 +9,7 @@ use reify_mcp::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
     SelectionInfo, SetParamResult, SourceContent, SourceLocationInfo, ToolError, UpdateResult,
 };
-use reify_types::{DeterminacyState, Value};
+use reify_types::{DeterminacyState, Value, ValueCellId};
 
 /// Tracks the state of an open file.
 struct FileEntry {
@@ -24,6 +24,11 @@ struct CliState {
     files: HashMap<String, FileEntry>,
     active_file: Option<String>,
     _project_dir: PathBuf,
+    /// User-set parameter overrides, tracked so they can be re-applied after
+    /// `eval()` (which rebuilds the snapshot from module defaults and does not
+    /// consult `Engine::param_overrides`).  Cleared by `load_file` and
+    /// `open_file` which semantically start over with a new file.
+    user_overrides: Vec<(ValueCellId, Value)>,
     /// Counts how many times `Engine::new(...)` has been called during this
     /// context's lifetime.  Only compiled in test builds; used to assert that
     /// engine construction happens at most once (lazy-init) rather than on
@@ -48,10 +53,19 @@ impl CliToolContext {
                 files: HashMap::new(),
                 active_file: None,
                 _project_dir: project_dir,
+                user_overrides: Vec::new(),
                 #[cfg(test)]
                 engine_construction_count: 0,
             }),
         }
+    }
+
+    /// Return the number of times `Engine::new(...)` has been called during this
+    /// context's lifetime.  Used in unit tests to assert that engine construction
+    /// occurs at most once (lazy-init) rather than on every load/update/open call.
+    #[cfg(test)]
+    pub fn engine_construction_count(&self) -> usize {
+        self.lock_state().engine_construction_count
     }
 
     /// Lock the internal state, recovering from a poisoned mutex.
@@ -90,6 +104,9 @@ impl CliToolContext {
             .to_string();
 
         let mut state = self.lock_state();
+        // load_file semantically starts over with a new file — clear any prior
+        // user overrides so get_parameters() returns fresh module defaults.
+        state.user_overrides.clear();
         ensure_engine(&mut state).eval(&compiled);
         state.files.insert(
             abs_path.clone(),
@@ -110,6 +127,28 @@ impl CliToolContext {
 /// Returns a mutable reference to the engine.  Callers then call `.eval(&compiled)`
 /// on the returned reference — the same engine instance is reused on every subsequent
 /// call, preserving `prelude_functions` and avoiding repeated stdlib loading.
+///
+/// # Locking note
+///
+/// This function is always called while `CliState` is already held under the `Mutex`.
+/// The first call (when `state.engine` is `None`) constructs the engine, which loads
+/// the stdlib prelude via `reify_compiler::stdlib_loader::load_stdlib()`.  Any
+/// concurrent MCP request will therefore block on that first construction.  In practice
+/// the CLI MCP server has low concurrent traffic and the stdlib is parsed only once per
+/// context lifetime, so this is acceptable.  If warm-start latency becomes a concern,
+/// move `Engine::new(...)` into `CliToolContext::new()` so the stdlib load happens
+/// before any request arrives.
+///
+/// # param_overrides semantics
+///
+/// `Engine::eval()` rebuilds the snapshot from module defaults and does **not** read
+/// the engine's internal `param_overrides` map.  Consequently, after every `eval()`
+/// call `get_parameters()` returns module defaults, not user-set overrides.  The
+/// internal `param_overrides` map is only consulted by `eval_cached()`, which is not
+/// used by the MCP context.  User overrides are instead tracked in
+/// `CliState::user_overrides` and re-applied explicitly after `eval()` via
+/// `reapply_user_overrides()`.  `load_file` and `open_file` clear `user_overrides`
+/// because those operations semantically start over with a fresh file.
 fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
     #[cfg(test)]
     if state.engine.is_none() {
@@ -118,6 +157,31 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
     state
         .engine
         .get_or_insert_with(|| reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None))
+}
+
+/// Re-apply tracked user overrides to the engine after `eval()` has rebuilt the snapshot
+/// from module defaults.
+///
+/// Any override whose cell no longer exists in the current topology is silently
+/// skipped rather than removed — this handles topology-changing edits gracefully and
+/// allows overrides to reappear if the topology reverts (e.g. a user deletes a param
+/// and immediately undoes it).
+fn reapply_user_overrides(state: &mut CliState) {
+    if state.user_overrides.is_empty() {
+        return;
+    }
+    let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
+    if let Some(engine) = state.engine.as_mut() {
+        for (cell_id, value) in overrides {
+            // edit_param validates that the cell exists in the current snapshot graph.
+            // CellNotFound means topology changed — skip silently without removing
+            // the override from user_overrides so it can be re-applied if the cell
+            // returns to the topology in a subsequent edit.
+            if engine.edit_param(cell_id.clone(), value.clone()).is_ok() {
+                engine.set_param_and_invalidate(&cell_id, value);
+            }
+        }
+    }
 }
 
 /// Format a dimension as a human-readable unit string.
@@ -384,6 +448,11 @@ impl ReifyToolContext for CliToolContext {
         // Pipeline succeeded — commit file content and eval on the long-lived engine.
         let mut state = self.lock_state();
         ensure_engine(&mut state).eval(&compiled);
+        // Re-apply user overrides for cells that still exist in the new topology.
+        // This preserves parameter values set via set_parameter across topology-
+        // preserving edits (e.g. whitespace changes, comment updates).  Overrides
+        // for cells removed by a topology-changing edit are silently skipped.
+        reapply_user_overrides(&mut state);
         if let Some(entry) = state.files.get_mut(&canonical) {
             entry.content = content.to_string();
             entry.dirty = true;
@@ -463,6 +532,12 @@ impl ReifyToolContext for CliToolContext {
             .edit_param(cell_id_obj.clone(), new_value.clone())
             .map_err(|e| ToolError::EngineError(format!("incremental eval failed: {e}")))?;
         engine.set_param_and_invalidate(&cell_id_obj, new_value.clone());
+        // NLL: `engine` borrow of `state.engine` ends here (last use above).
+
+        // Track override so update_source can re-apply it after eval().
+        // Only reached on success — edit_param failure returns early via `?`.
+        state.user_overrides.retain(|(id, _)| id != &cell_id_obj);
+        state.user_overrides.push((cell_id_obj.clone(), new_value.clone()));
 
         let unit = dimension_unit(&ty);
         Ok(SetParamResult {
@@ -511,6 +586,9 @@ impl ReifyToolContext for CliToolContext {
         state.active_file = Some(abs_path.clone());
 
         if let Some(compiled) = pipeline_result {
+            // open_file semantically starts over with a new file — clear any
+            // prior user overrides so get_parameters() returns fresh module defaults.
+            state.user_overrides.clear();
             ensure_engine(&mut state).eval(&compiled);
             state.compiled = Some(compiled);
         }
@@ -558,16 +636,6 @@ impl ReifyToolContext for CliToolContext {
 
     fn navigate_to_source(&self, _file: &str, _line: u32, _column: u32) -> Result<bool, ToolError> {
         Ok(false)
-    }
-}
-
-impl CliToolContext {
-    /// Return the number of times `Engine::new(...)` has been called during this
-    /// context's lifetime.  Used in unit tests to assert that engine construction
-    /// occurs at most once (lazy-init) rather than on every load/update/open call.
-    #[cfg(test)]
-    pub fn engine_construction_count(&self) -> usize {
-        self.lock_state().engine_construction_count
     }
 }
 
@@ -673,6 +741,120 @@ mod tests {
             count_after_update, 1,
             "update_source after open_file must reuse the engine \
              (got engine_construction_count={count_after_update})"
+        );
+    }
+
+    /// Verify that a parameter override set via `set_parameter` persists across
+    /// a topology-preserving `update_source` (e.g. adding trailing whitespace).
+    /// This documents the "reuse" benefit of the long-lived Engine: the user's
+    /// value survives a save/edit cycle.
+    #[test]
+    fn set_parameter_persists_across_topology_preserving_update_source() {
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+
+        // Record the default width value.
+        let params_default = ctx.get_parameters().expect("get_parameters should succeed");
+        let default_width = params_default
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("bracket.ri should have a 'width' param")
+            .value
+            .clone();
+
+        // Override width (120mm in SI = 0.12 m).
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter should succeed");
+
+        let params_overridden = ctx.get_parameters().expect("get_parameters should succeed");
+        let overridden_width = params_overridden
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("width should still exist")
+            .value
+            .clone();
+
+        assert_ne!(
+            overridden_width, default_width,
+            "set_parameter should change the value from the module default"
+        );
+
+        // Topology-preserving update: append trailing whitespace.
+        let source =
+            std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let modified = format!("{source} ");
+        ctx.update_source(BRACKET_PATH, &modified)
+            .expect("topology-preserving update_source should succeed");
+
+        // Override must survive the update.
+        let params_after = ctx.get_parameters().expect("get_parameters should succeed");
+        let width_after = params_after
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("width should exist after topology-preserving edit")
+            .value
+            .clone();
+
+        assert_eq!(
+            width_after, overridden_width,
+            "set_parameter override must persist across topology-preserving update_source"
+        );
+    }
+
+    /// Verify that `load_file` clears prior parameter overrides.  Because
+    /// `load_file` semantically starts over with a fresh file, overrides
+    /// set before it must not leak into the re-evaluated snapshot.
+    #[test]
+    fn load_file_clears_param_overrides() {
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        ctx.load_file(BRACKET_PATH).expect("first load_file should succeed");
+
+        // Record the default width value.
+        let params_default = ctx.get_parameters().expect("get_parameters should succeed");
+        let default_width = params_default
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("bracket.ri should have a 'width' param")
+            .value
+            .clone();
+
+        // Override width.
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter should succeed");
+
+        let params_overridden = ctx.get_parameters().expect("get_parameters should succeed");
+        let overridden_width = params_overridden
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("width should exist")
+            .value
+            .clone();
+        assert_ne!(overridden_width, default_width, "value must have changed");
+
+        // Reload the file — overrides must be cleared.
+        ctx.load_file(BRACKET_PATH).expect("second load_file should succeed");
+
+        let params_reloaded = ctx.get_parameters().expect("get_parameters should succeed");
+        let width_reloaded = params_reloaded
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("width should exist after reload")
+            .value
+            .clone();
+
+        assert_eq!(
+            width_reloaded, default_width,
+            "load_file must clear param overrides and restore module defaults"
         );
     }
 
