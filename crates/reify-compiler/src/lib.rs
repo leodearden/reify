@@ -123,7 +123,6 @@ fn compile_constraint_def(
                 )
                 .is_none()
                 && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
-                && !type_param_names.contains(name.as_str())
                 && !enum_defs.iter().any(|e| e.name == *name)
             {
                 diagnostics.push(
