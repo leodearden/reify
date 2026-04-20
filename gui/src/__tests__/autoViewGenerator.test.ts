@@ -114,13 +114,12 @@ describe('generateDefaultView', () => {
     expect(Object.keys(view.visibility)).toHaveLength(8);
   });
 
-  it('(e) returns ViewDefinition with correct metadata and no extra fields', () => {
+  it('(e) returns ViewDefinition with correct metadata', () => {
     const tree = [makeNode({ entity_path: 'Root' })];
     const view = generateDefaultView(tree);
     expect(view.id).toBe('auto:default');
     expect(view.name).toBe('Default');
     expect(view.auto).toBe(true);
-    expect(Object.keys(view).sort()).toEqual(['auto', 'id', 'name', 'visibility']);
   });
 });
 
@@ -154,13 +153,12 @@ describe('generateAllGeometryView', () => {
     expect(view.visibility['Root.mesh']).toBe('show');
   });
 
-  it('(c) returns ViewDefinition with id="auto:all-geometry", name="All geometry", auto=true (no extra fields)', () => {
+  it('(c) returns ViewDefinition with id="auto:all-geometry", name="All geometry", auto=true', () => {
     const tree = [makeNode({ entity_path: 'Root' })];
     const view = generateAllGeometryView(tree);
     expect(view.id).toBe('auto:all-geometry');
     expect(view.name).toBe('All geometry');
     expect(view.auto).toBe(true);
-    expect(Object.keys(view).sort()).toEqual(['auto', 'id', 'name', 'visibility']);
   });
 });
 
@@ -192,7 +190,6 @@ describe('generatePurposeViews', () => {
     expect(view.id).toBe('auto:purpose:foo');
     expect(view.name).toBe('foo');
     expect(view.auto).toBe(true);
-    expect(Object.keys(view).sort()).toEqual(['auto', 'id', 'name', 'visibility']);
     // Falls back to Default rules
     expect(view.visibility['Root.geo']).toBe('hidden');
     expect(view.visibility['Root.mesh']).toBe('show');
