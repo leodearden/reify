@@ -318,10 +318,24 @@ pub(crate) fn compile_entity(
                         Some(t) => t,
                         None => {
                             // Check if it's an enum type defined in the same module or prelude
-                            if let reify_syntax::TypeExprKind::Named { name, .. } = &type_expr.kind
-                                && enum_defs.iter().any(|e| e.name == *name)
+                            if let reify_syntax::TypeExprKind::Named { name, type_args } = &type_expr.kind
+                                && let Some(t) = resolve_enum_type(name, enum_defs)
                             {
-                                Type::Enum(name.clone())
+                                // Reify enums are non-parametric. Emit a user-facing diagnostic
+                                // if type_args are present so the error is visible in release builds too.
+                                if !type_args.is_empty() {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "enum `{}` does not accept type arguments",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "enum types are not generic",
+                                        )),
+                                    );
+                                }
+                                t
                             } else {
                                 diagnostics.push(
                                     Diagnostic::error(format!(

@@ -21,92 +21,35 @@ pub(crate) fn check_trait_conformance(
 ) {
     // Collect all structure member names for conformance checking.
     let empty_params: HashSet<String> = HashSet::new();
-    let structure_members: HashMap<String, Type> = structure
-        .members
-        .iter()
-        .filter_map(|m| match m {
-            reify_syntax::MemberDecl::Param(p) => {
-                let ty = p
-                    .type_expr
-                    .as_ref()
-                    .map(|te| {
-                        // Extract name from Named variant; DimensionalOp can't be a param type.
-                        let name_opt = match &te.kind {
-                            reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
-                            reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
-                        };
-                        if let Some(name) = name_opt {
-                            resolve_type_with_aliases(
-                                name,
-                                &empty_params,
-                                alias_registry,
-                                trait_names,
-                            )
-                                .or_else(|| {
-                                    if enum_defs.iter().any(|e| e.name == name) {
-                                        Some(Type::Enum(name.to_string()))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or_else(|| {
+    // Build a HashSet of enum names once (O(E)) so the filter_map below performs
+    // O(1) membership checks per member instead of a fresh O(E) scan each time.
+    let enum_names: HashSet<&str> = enum_defs.iter().map(|e| e.name.as_str()).collect();
+
+    // Shared resolution logic for Param and Let type annotations in the filter_map.
+    // Receives `diagnostics` as an explicit parameter (rather than capturing it) so
+    // the filter_map closure can also push to `diagnostics` for the "missing annotation"
+    // case without a mutable-borrow conflict.
+    let resolve_member_annotation_type =
+        |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
+            match &te.kind {
+                reify_syntax::TypeExprKind::Named { name, type_args } => {
+                    resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
+                        .or_else(|| {
+                            enum_names.contains(name.as_str()).then(|| {
+                                if !type_args.is_empty() {
                                     diagnostics.push(
                                         Diagnostic::error(format!(
-                                            "unresolved type in conformance check: {}",
+                                            "enum `{}` does not accept type arguments",
                                             name
                                         ))
-                                        .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                                        .with_label(DiagnosticLabel::new(
+                                            te.span,
+                                            "enum types are not generic",
+                                        )),
                                     );
-                                    Type::Real
-                                })
-                        } else {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type in conformance check: {}",
-                                    te
-                                ))
-                                .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
-                            );
-                            Type::Real
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "trait member '{}' has no type annotation; cannot infer type",
-                                p.name
-                            ))
-                            .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
-                        );
-                        Type::Real
-                    });
-                Some((p.name.clone(), ty))
-            }
-            reify_syntax::MemberDecl::Let(l) => {
-                // let bindings get their type from expression inference, not annotations.
-                // Only include in structure_members when there is an explicit type annotation;
-                // omitting is safe because if a trait requires this member, the conformance
-                // check will report "missing required member" rather than a spurious
-                // "no type annotation" error.
-                let te = l.type_expr.as_ref()?;
-                // Extract name from Named variant; DimensionalOp can't be a let type annotation.
-                let name_opt = match &te.kind {
-                    reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
-                    reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
-                };
-                if let Some(name) = name_opt {
-                    let ty = resolve_type_with_aliases(
-                        name,
-                        &empty_params,
-                        alias_registry,
-                        trait_names,
-                    )
-                        .or_else(|| {
-                            if enum_defs.iter().any(|e| e.name == name) {
-                                Some(Type::Enum(name.to_string()))
-                            } else {
-                                None
-                            }
+                                }
+                                Type::Enum(name.to_string())
+                            })
                         })
                         .unwrap_or_else(|| {
                             diagnostics.push(
@@ -117,9 +60,9 @@ pub(crate) fn check_trait_conformance(
                                 .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                             );
                             Type::Real
-                        });
-                    Some((l.name.clone(), ty))
-                } else {
+                        })
+                }
+                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "unresolved type in conformance check: {}",
@@ -127,8 +70,39 @@ pub(crate) fn check_trait_conformance(
                         ))
                         .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
                     );
-                    Some((l.name.clone(), Type::Real))
+                    Type::Real
                 }
+            }
+        };
+
+    let structure_members: HashMap<String, Type> = structure
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            reify_syntax::MemberDecl::Param(p) => {
+                let ty = match p.type_expr.as_ref() {
+                    Some(te) => resolve_member_annotation_type(te, diagnostics),
+                    None => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "trait member '{}' has no type annotation; cannot infer type",
+                                p.name
+                            ))
+                            .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
+                        );
+                        Type::Real
+                    }
+                };
+                Some((p.name.clone(), ty))
+            }
+            reify_syntax::MemberDecl::Let(l) => {
+                // let bindings get their type from expression inference, not annotations.
+                // Only include in structure_members when there is an explicit type annotation;
+                // omitting is safe because if a trait requires this member, the conformance
+                // check will report "missing required member" rather than a spurious
+                // "no type annotation" error.
+                let te = l.type_expr.as_ref()?;
+                Some((l.name.clone(), resolve_member_annotation_type(te, diagnostics)))
             }
             _ => None,
         })
@@ -1080,7 +1054,175 @@ mod tests {
     /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
     /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
     ///
-    /// This test **FAILS on the unpatched code** and **PASSES after the Option B fix**.
+    /// Characterization test that enum-typed `param` and `let` members resolve to
+    /// `Type::Enum` through `check_trait_conformance`.
+    ///
+    /// Serves as a tripwire for the step-4 refactor (HashSet + closure extraction):
+    /// any drift in enum resolution or diagnostic messages in the filter_map is caught
+    /// immediately.
+    ///
+    /// ## Why negative assertions?
+    ///
+    /// `structure_members` is a local binding inside `check_trait_conformance` and is not
+    /// directly observable from outside the function.  Rather than restructuring the API,
+    /// this test uses three negative-assertion sentinels as a proxy for correct
+    /// `Type::Enum("Direction")` resolution:
+    ///
+    /// - Absence of **"unresolved type"** → both `dir` and `kind` were resolved (not fallen
+    ///   back to `Type::Real`)
+    /// - Absence of **"type mismatch"** → the resolved types matched the trait's
+    ///   `Type::Enum("Direction")` requirements
+    /// - Absence of **"missing required member"** → both members appeared in `structure_members`
+    ///
+    /// Together these three imply `Type::Enum("Direction")` was produced.  A regression that
+    /// accidentally resolves enum params to `Type::Real` would trip "type mismatch", and one
+    /// that omits a member from `structure_members` would trip "missing required member".
+    #[test]
+    fn check_trait_conformance_resolves_enum_typed_param_and_let() {
+        // Direction enum defined in the same module
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+
+        // TypeExpr for `Direction` (bare named type, no type_args)
+        let direction_type_expr = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Direction".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::empty(0),
+        };
+
+        // TraitDir: requires `param dir : Direction` and `let kind : Direction`
+        let trait_dir = CompiledTrait {
+            name: "TraitDir".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![
+                TraitRequirement {
+                    name: "dir".to_string(),
+                    kind: RequirementKind::Param(Type::Enum("Direction".to_string())),
+                    span: SourceSpan::empty(0),
+                },
+                TraitRequirement {
+                    name: "kind".to_string(),
+                    kind: RequirementKind::Let(Type::Enum("Direction".to_string())),
+                    span: SourceSpan::empty(0),
+                },
+            ],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // Structure S : TraitDir { param dir : Direction; let kind : Direction = 0.0; }
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_syntax::TraitBoundRef {
+                name: "TraitDir".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members: vec![
+                reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                    name: "dir".to_string(),
+                    doc: None,
+                    type_expr: Some(direction_type_expr.clone()),
+                    default: None,
+                    where_clause: None,
+                    annotations: vec![],
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                }),
+                reify_syntax::MemberDecl::Let(reify_syntax::LetDecl {
+                    name: "kind".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    type_expr: Some(direction_type_expr),
+                    value: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                        span: SourceSpan::empty(0),
+                    },
+                    where_clause: None,
+                    annotations: vec![],
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                }),
+            ],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let trait_registry: HashMap<String, &CompiledTrait> =
+            [("TraitDir".to_string(), &trait_dir)].into_iter().collect();
+
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // No "unresolved type" → both dir and kind resolved successfully (to Type::Enum)
+        let unresolved_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("unresolved type"))
+            .collect();
+        assert!(
+            unresolved_diags.is_empty(),
+            "Expected no 'unresolved type' diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // No "type mismatch" → both resolved to Type::Enum("Direction"), satisfying the trait
+        let mismatch_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("type mismatch"))
+            .collect();
+        assert!(
+            mismatch_diags.is_empty(),
+            "Expected no 'type mismatch' diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // No "missing required member" → both dir and kind were found in structure_members
+        let missing_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("missing required member"))
+            .collect();
+        assert!(
+            missing_diags.is_empty(),
+            "Expected no 'missing required member' diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name() {
         // --- Build CompiledTrait fixtures ---
@@ -1268,5 +1410,182 @@ mod tests {
              Got: {:?}",
             diagnostics
         );
+    }
+
+    /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) emits a
+    /// user-facing `Diagnostic::error` with the message
+    /// "enum `Direction` does not accept type arguments".
+    ///
+    /// Unlike a `debug_assert!`, the diagnostic is emitted in both debug and release builds,
+    /// so this test validates the error is always surfaced to users regardless of build profile.
+    #[test]
+    fn enum_with_type_args_emits_error_diagnostic() {
+        // Direction<Something> — non-empty type_args that should trigger the diagnostic
+        let bogus_type_arg = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Something".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::empty(0),
+        };
+        let direction_with_args = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Direction".to_string(),
+                type_args: vec![bogus_type_arg],
+            },
+            span: SourceSpan::empty(0),
+        };
+
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                name: "dir".to_string(),
+                doc: None,
+                type_expr: Some(direction_with_args),
+                default: None,
+                where_clause: None,
+                annotations: vec![],
+                span: SourceSpan::empty(0),
+                content_hash: ContentHash(0),
+            })],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = HashSet::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // Expect exactly one diagnostic reporting the type-args error.
+        let type_args_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("does not accept type arguments"))
+            .collect();
+        assert_eq!(
+            type_args_errors.len(),
+            1,
+            "Expected exactly one 'does not accept type arguments' diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// A non-enum type name with non-empty type_args (e.g. `NotAnEnum<Something>`) should
+    /// produce exactly one "unresolved type" diagnostic — the same outcome as `NotAnEnum`
+    /// without type_args, because enum-resolution is gated on the name matching an enum.
+    ///
+    /// The positive assertion (`unresolved.len() == 1`) is the load-bearing check here:
+    /// it verifies that an unknown parameterized type name falls through to the
+    /// "unresolved type" diagnostic rather than silently resolving to `Type::Real` or
+    /// emitting a spurious "does not accept type arguments" error.
+    #[test]
+    fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
+        // NotAnEnum<Something> — non-empty type_args but "NotAnEnum" is not in enum_defs
+        let bogus_type_arg = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Something".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::empty(0),
+        };
+        let non_enum_with_args = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "NotAnEnum".to_string(),
+                type_args: vec![bogus_type_arg],
+            },
+            span: SourceSpan::empty(0),
+        };
+
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                name: "p".to_string(),
+                doc: None,
+                type_expr: Some(non_enum_with_args),
+                default: None,
+                where_clause: None,
+                annotations: vec![],
+                span: SourceSpan::empty(0),
+                content_hash: ContentHash(0),
+            })],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = HashSet::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        // Should NOT panic — "NotAnEnum" is not in enum_defs, so the enum-match arm
+        // (where the debug_assert lives) is never taken.
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // The unknown type produces an "unresolved type" diagnostic — not a panic.
+        let unresolved: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("unresolved type"))
+            .collect();
+        assert_eq!(unresolved.len(), 1, "Expected exactly one 'unresolved type' diagnostic");
     }
 }

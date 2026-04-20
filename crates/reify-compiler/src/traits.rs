@@ -18,17 +18,31 @@ pub(crate) fn compile_trait(
                     // Extract the name from the Named variant; DimensionalOp can't appear
                     // as a trait param type annotation.
                     let name_opt = match &type_expr.kind {
-                        reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
+                        reify_syntax::TypeExprKind::Named { name, type_args } => Some((name.as_str(), type_args.as_slice())),
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
                     };
-                    if let Some(name) = name_opt {
+                    if let Some((name, type_args)) = name_opt {
                         if let Some(t) =
                             resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
                         {
                             t
-                        } else if enum_defs.iter().any(|e| e.name == name) {
-                            // Enum type defined in the same module
-                            Type::Enum(name.to_string())
+                        } else if let Some(t) = resolve_enum_type(name, enum_defs) {
+                            // Enum type defined in the same module; reify enums are
+                            // non-parametric. Emit a user-facing diagnostic if type_args
+                            // are present so the error is visible in release builds too.
+                            if !type_args.is_empty() {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "enum `{}` does not accept type arguments",
+                                        name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        type_expr.span,
+                                        "enum types are not generic",
+                                    )),
+                                );
+                            }
+                            t
                         } else {
                             diagnostics.push(
                                 Diagnostic::error(format!(

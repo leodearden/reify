@@ -521,6 +521,27 @@ pub(crate) fn resolve_type_with_aliases(
     None
 }
 
+/// Resolve a simple name to a `Type::Enum` if it matches a declared enum; `None` otherwise.
+///
+/// Does NOT perform builtin/alias/trait fallback — use `resolve_type_with_aliases` first
+/// and chain with `.or_else(|| resolve_enum_type(...))`.
+///
+/// # Hot-path note
+///
+/// This function performs an O(N) scan over `enum_defs` on every call.
+/// In tight loops iterating over many type expressions (e.g. `check_trait_conformance`'s
+/// `structure_members` filter_map), callers should instead build a `HashSet<&str>` once
+/// before the loop and use `set.contains(name).then(|| Type::Enum(name.to_string()))`
+/// directly — the same lookup but O(1) per call.  This helper remains the right choice
+/// at callsites that resolve a single name.
+pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_types::EnumDef]) -> Option<Type> {
+    if enum_defs.iter().any(|e| e.name == name) {
+        Some(Type::Enum(name.to_string()))
+    } else {
+        None
+    }
+}
+
 /// Resolve a type alias's RHS `TypeExpr` to a `Type`.
 ///
 /// Handles three cases:
@@ -1171,6 +1192,32 @@ mod tests {
             Some(Type::Geometry),
             "\"Solid\" should resolve to Type::Geometry as a surface-syntax alias"
         );
+    }
+
+    #[test]
+    fn resolve_enum_type_returns_some_for_matching_name() {
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+        assert_eq!(
+            resolve_enum_type("Direction", &enum_defs),
+            Some(Type::Enum("Direction".to_string())),
+        );
+    }
+
+    #[test]
+    fn resolve_enum_type_returns_none_for_non_matching_name() {
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+        assert_eq!(resolve_enum_type("Missing", &enum_defs), None);
+    }
+
+    #[test]
+    fn resolve_enum_type_returns_none_for_empty_slice() {
+        assert_eq!(resolve_enum_type("Direction", &[]), None);
     }
 }
 
