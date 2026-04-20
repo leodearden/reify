@@ -1299,4 +1299,74 @@ mod tests {
         });
         assert_eq!(refs.len(), 4);
     }
+
+    /// Assert that every TAG_* constant carries the expected byte value.
+    ///
+    /// This test is the "red" step: it fails to compile until the 21 `TAG_*`
+    /// constants are defined (step 2).  Once they exist, the assertions lock
+    /// their values so no future edit can silently change the byte assigned to
+    /// a variant.
+    #[test]
+    fn tag_byte_constants_have_expected_values() {
+        use super::{
+            TAG_AD_HOC_SELECTOR, TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE,
+            TAG_FUNCTION_CALL, TAG_INDEX_ACCESS, TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL,
+            TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS, TAG_METHOD_CALL, TAG_OPTION_NONE,
+            TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR, TAG_SET_LITERAL,
+            TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
+        };
+
+        assert_eq!(TAG_LITERAL, 0u8);
+        assert_eq!(TAG_VALUE_REF, 1u8);
+        assert_eq!(TAG_BIN_OP, 2u8);
+        assert_eq!(TAG_UN_OP, 3u8);
+        assert_eq!(TAG_FUNCTION_CALL, 4u8);
+        assert_eq!(TAG_CONDITIONAL, 5u8);
+        assert_eq!(TAG_USER_FUNCTION_CALL, 6u8);
+        assert_eq!(TAG_LAMBDA, 7u8);
+        assert_eq!(TAG_LIST_LITERAL, 8u8);
+        assert_eq!(TAG_SET_LITERAL, 9u8);
+        assert_eq!(TAG_MAP_LITERAL, 10u8);
+        assert_eq!(TAG_INDEX_ACCESS, 11u8);
+        assert_eq!(TAG_METHOD_CALL, 12u8);
+        assert_eq!(TAG_QUANTIFIER, 13u8);
+        assert_eq!(TAG_OPTION_SOME, 14u8);
+        assert_eq!(TAG_OPTION_NONE, 15u8);
+        assert_eq!(TAG_META_ACCESS, 16u8);
+        assert_eq!(TAG_DETERMINACY_PREDICATE, 17u8);
+        assert_eq!(TAG_RANGE_CONSTRUCTOR, 18u8);
+        assert_eq!(TAG_AD_HOC_SELECTOR, 19u8);
+        assert_eq!(TAG_MATCH, 24u8);
+
+        // Lock: constructing via the public API and reconstructing via TAG_*
+        // must produce the same content hash.
+
+        // user_function_call with no args: tag + function name.
+        let ufc = CompiledExpr::user_function_call("f".to_string(), vec![], Type::Bool);
+        let expected_ufc = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
+            .combine(ContentHash::of_str("f"));
+        assert_eq!(
+            ufc.content_hash, expected_ufc,
+            "user_function_call hash must equal TAG_USER_FUNCTION_CALL-based reconstruction"
+        );
+
+        // match_expr with one wildcard arm: tag + disc + pattern + body.
+        let disc = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let disc_hash = disc.content_hash;
+        let body_hash = body.content_hash;
+        let arm = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body,
+        };
+        let match_e = CompiledExpr::match_expr(disc, vec![arm], Type::Bool);
+        let expected_match = ContentHash::of(&[TAG_MATCH])
+            .combine(disc_hash)
+            .combine(ContentHash::of_str("_"))
+            .combine(body_hash);
+        assert_eq!(
+            match_e.content_hash, expected_match,
+            "match_expr hash must equal TAG_MATCH-based reconstruction"
+        );
+    }
 }
