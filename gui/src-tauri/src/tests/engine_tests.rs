@@ -1459,6 +1459,11 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
         (1, 1),
         "sentinel literal must be (1,1) on the fast path — guards against both implementations regressing identically"
     );
+    assert_eq!(
+        orig_sentinel,
+        (1, 1),
+        "sentinel literal must be (1,1) on the original path — makes the invariant explicit on each side"
+    );
 }
 
 /// offset_to_line_col_fast returns correct values at specific key offsets.
