@@ -363,7 +363,19 @@ const App: Component = () => {
       showToast('Serialization error monitoring unavailable', 'error');
     }
 
-    // Subscribe to focus-entity events (from focus_entity Tauri command and MCP tool)
+    // Subscribe to focus-entity events (from focus_entity Tauri command and MCP tool).
+    //
+    // OWNERSHIP: This handler is the authoritative terminal dispatcher for focus
+    // navigation. It handles two origins:
+    //   • MCP-originated: Claude calls reify_focus_entity → backend emits the event →
+    //     this listener fires. No other handler runs.
+    //   • User-initiated: handleGroupDoubleClick → navigateToEntity → bridgeFocusEntity
+    //     (Tauri command) → backend emits the event → this listener fires.
+    //     navigateToEntity then also calls flyToEntity/selectEntity directly, producing
+    //     an idempotent double-call. Both operations are stable under repetition, so no
+    //     observable bug arises. The clean fix — removing those calls from navigateToEntity
+    //     now that this listener owns them — requires modifying navigation.ts, which is
+    //     outside this task's locked modules; tracked as a follow-up cleanup.
     try {
       const unlisten = await onFocusEntity((entity) => {
         flyToEntityFn?.(entity);

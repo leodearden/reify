@@ -657,7 +657,11 @@ async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
     let reader = BufReader::new(stdout_reader);
     let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
 
-    // Collect emitted events so we can assert on navigation events
+    // Collect emitted events so we can assert on navigation events.
+    // A Notify signals deterministically when focus-entity arrives, avoiding
+    // wall-clock polling that can be flaky under CI load.
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let notify_clone = Arc::clone(&notify);
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
     let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
@@ -667,10 +671,17 @@ async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
         state,
         engine,
         move |name: String, payload: serde_json::Value| {
-            events_clone.lock().unwrap().push((name, payload));
+            events_clone.lock().unwrap().push((name.clone(), payload));
+            if name == "focus-entity" {
+                notify_clone.notify_one();
+            }
         },
         selection,
     );
+
+    // Register the waiter BEFORE writing the tool call to avoid a race where
+    // notify_one() fires before notified() starts listening.
+    let notified = notify.notified();
 
     // Inject a reify_focus_entity tool_call from simulated sidecar stdout
     let tool_call =
@@ -680,20 +691,10 @@ async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
         .await
         .unwrap();
 
-    // Allow reader task + spawned MCP handler to run (bounded-timeout poll avoids
-    // coupling to scheduler details — succeeds as soon as focus-entity arrives).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while std::time::Instant::now() < deadline {
-        if events
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(n, _)| n == "focus-entity")
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    // Wait deterministically for focus-entity to arrive (5 s is generous for CI).
+    tokio::time::timeout(std::time::Duration::from_secs(5), notified)
+        .await
+        .expect("timed out waiting for focus-entity event from MCP tool");
 
     // Verify the outbound claude-tool-call event was emitted (sanity: proves reader processed it)
     {
