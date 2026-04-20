@@ -712,10 +712,7 @@ fn mcp_server_set_parameter_error_preserves_state() {
 
 #[test]
 fn mcp_server_get_parameters_distinguishes_auto_free_kind() {
-    let fixture = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/auto_kinds.ri"
-    );
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/auto_kinds.ri");
 
     let requests = vec![
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
