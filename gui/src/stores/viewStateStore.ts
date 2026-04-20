@@ -152,14 +152,11 @@ export function createViewStateStore() {
 
   /**
    * When the active view is a user view (`activeViewId` starts with `'user:'`),
-   * mirror the current (non-null) entries in `s.explicit` back into
-   * `s.views[activeViewId].visibility`.
+   * mirror the current entries in `s.explicit` (cleared keys are simply absent)
+   * back into `s.views[activeViewId].visibility`.
    *
    * Call this at the END of every mutation's `produce(s => ...)` block so that
-   * the stored user view always reflects what the user currently sees.  Null
-   * entries in `s.explicit` (cascade-clears that signal "inherit") are NOT
-   * mirrored because `ViewDefinition.visibility` is typed
-   * `Record<string, VisibilityState>` (non-null values only).
+   * the stored user view always reflects what the user currently sees.
    *
    * Early-returns for auto:* and unknown active views — those are not targets
    * of the live mirror.
@@ -170,6 +167,7 @@ export function createViewStateStore() {
     if (!view) return;
     const mirrored: Record<string, VisibilityState> = {};
     for (const [path, val] of Object.entries(s.explicit)) {
+      // Type narrowing: ExplicitVisibility admits null at the type level; runtime never stores null (see ViewState.explicit JSDoc).
       if (val != null) {
         mirrored[path] = val;
       }
