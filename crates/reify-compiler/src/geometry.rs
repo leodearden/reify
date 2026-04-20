@@ -1600,4 +1600,199 @@ mod tests {
             }
         }
     }
+
+    // --- Step 11: Directly test the catch-all branch in compile_geometry_call ---
+
+    #[test]
+    fn unsupported_geometry_fn_emits_diagnostic() {
+        // Fabricate a FunctionCall expr with a name that is NOT in the
+        // compile_geometry_call match arms (e.g., "make_cube").  This directly
+        // exercises the `_ =>` catch-all branch added in step-4.
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "make_cube".to_string(),
+                args: vec![reify_syntax::Expr {
+                    kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                    span: reify_types::SourceSpan::new(0, 1),
+                }],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "unrecognized geometry fn should return None"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("unsupported geometry function")),
+            "expected 'unsupported geometry function' diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // --- Bug fix tests: GeomRef::Step(0) fallback hardcoding (task-612/task-1732) ---
+
+    #[test]
+    fn sweep_non_geom_profile_fallback_uses_step_offset() {
+        // sweep() where the profile arg is a literal number (not a geometry expression).
+        // When step_offset=3, the profile GeomRef fallback should be Step(3), not Step(0).
+        // The path arg is also a literal, so it falls back to Step(step_offset + 1) = Step(4).
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "sweep".to_string(),
+                args: vec![
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                ],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            3, // step_offset = 3
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("sweep() should produce ops even with non-geometry args");
+        let sweep_op = ops.last().expect("should have at least one op");
+        match sweep_op {
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Sweep,
+                profiles,
+                ..
+            } => {
+                assert_eq!(profiles.len(), 2, "sweep should have 2 profiles (profile, path)");
+                assert_eq!(
+                    profiles[0],
+                    GeomRef::Step(3),
+                    "sweep profile fallback should be Step(step_offset=3), not {:?}",
+                    profiles[0]
+                );
+            }
+            other => panic!("expected Sweep(Sweep), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn loft_non_geom_args_fallback_uses_step_offset() {
+        // loft() with 3 literal-number args (not geometry expressions).
+        // When step_offset=5:
+        //   - The fallback GeomRef for profile i is GeomRef::Step(5 + i) — unique per
+        //     profile, preserving loft's "distinct cross-sections" semantics in the
+        //     fallback (consistent with sweep()'s profile=step_offset, path=step_offset+1
+        //     convention applied per profile).
+        //   - The fallback is silent: no per-argument diagnostic is emitted, matching
+        //     the geom_ref convention used by extrude/revolve/translate/etc.
+        //   - Ops are still produced (fallback refs allow compilation to continue).
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "loft".to_string(),
+                args: vec![
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(3.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                ],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            5, // step_offset = 5
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        // loft() with non-geometry args should still produce an op (with fallback refs)
+        let ops = result.expect("loft() should produce ops even with non-geometry args");
+        let loft_op = ops.last().expect("should have at least one op");
+        match loft_op {
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Loft,
+                profiles,
+                ..
+            } => {
+                assert_eq!(profiles.len(), 3, "loft should have 3 profiles");
+                for (i, profile) in profiles.iter().enumerate() {
+                    assert_eq!(
+                        *profile,
+                        GeomRef::Step(5 + i),
+                        "loft fallback for profile {} should be Step(step_offset + {0} = {}), not {:?}",
+                        i,
+                        5 + i,
+                        profile
+                    );
+                }
+            }
+            other => panic!("expected Sweep(Loft), got {:?}", other),
+        }
+
+        // No per-argument geometry-expression diagnostics should be emitted by the
+        // loft fallback path — silent fallback matches the geom_ref convention.
+        let geom_expr_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("must be a geometry expression"))
+            .collect();
+        assert!(
+            geom_expr_diags.is_empty(),
+            "expected silent fallback (no per-arg diagnostics), got: {:?}",
+            geom_expr_diags
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
 }
