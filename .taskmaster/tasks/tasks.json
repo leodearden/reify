@@ -41472,11 +41472,11 @@
         "description": "S1: Lambda-body row in find_node_compound_variant_coverage uses Type::Error as the outer lambda's result_type so the test passes even if the Lambda match arm is broken. Change last arg to Type::Bool. S2: find_node_traverses_previously_unhandled_kinds and find_node_compound_variant_coverage overlap on ListLiteral/OptionSome/Quantifier — consolidate into one source of truth. File: crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 330-509). Review followup from task 1920, suggestions S1+S2.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T09:35:37.878Z",
+        "updatedAt": "2026-04-20T09:38:29.043Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -42383,7 +42383,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T09:35:37.878Z",
+      "lastModified": "2026-04-20T09:38:29.043Z",
       "taskCount": 2010,
       "completedCount": 1717,
       "tags": [
