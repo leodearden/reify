@@ -58,7 +58,7 @@ fi
 while IFS= read -r crate; do
     [ -z "$crate" ] && continue
     assert "declared crate '$crate' is a real workspace member" \
-        bash -c "echo \"\$WORKSPACE_MEMBERS\" | grep -qxF '$crate'" <<< "$WORKSPACE_MEMBERS"
+        grep -qxF "$crate" <<< "$WORKSPACE_MEMBERS"
 done <<< "$DECLARED_CRATES"
 
 # ---------------------------------------------------------------------------

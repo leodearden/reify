@@ -1,0 +1,32 @@
+# occt-touching-crates.txt — declared set of workspace crates that touch reify-kernel-occt
+#
+# Purpose:
+#   This file is the single source of truth for which crates require the OCCT
+#   serialization gate when running tests.  orchestrator.yaml's test_command
+#   passes exactly these crates to the gated invocation via -p flags, and
+#   excludes them from the ungated workspace-wide pass via --exclude flags.
+#
+# How to verify:
+#   Run `cargo tree --prefix none -p <crate>` for each workspace member and
+#   check whether reify-kernel-occt appears in the output.  A crate is
+#   OCCT-touching iff that output includes reify-kernel-occt (direct or
+#   transitive normal/dev dep).  Note that optional deps gated behind
+#   non-default features (e.g. reify-gui's gui feature) do NOT count —
+#   cargo tree with default features is the ground truth, matching how
+#   `cargo test --workspace` compiles the workspace.
+#
+# Cross-references:
+#   scripts/cargo-test-occt-gated.sh — the flock wrapper used for gated passes
+#   tests/infra/test_occt_gated_scope.sh — drift catcher: asserts this list
+#     equals the cargo-tree-derived touching set and that orchestrator.yaml's
+#     -p/-exclude flags are in sync
+#
+# When to update:
+#   Add a crate here when it gains a dependency on reify-kernel-occt (direct
+#   or transitive via a normal/dev dep, not optional-feature-only).  Remove
+#   a crate when it no longer has any such edge.  The infra test will fail
+#   (blocking CI) if this list drifts from the cargo-tree-derived set.
+
+reify-kernel-occt
+reify-eval
+reify-cli
