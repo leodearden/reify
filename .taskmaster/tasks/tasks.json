@@ -39487,11 +39487,11 @@
         "description": "`makeNode` is duplicated verbatim in `gui/src/__tests__/DesignTree.test.tsx` and `gui/src/__tests__/viewStateStore.test.ts`; most describe blocks also redefine a local `makeTree()` of the same Root/A/a1/a2/B shape. Any future change to `EntityTreeNode` schema would require edits in many places.",
         "details": "Create `gui/src/__tests__/test-utils.ts` (or `.tsx` if JSX needed) exporting `makeNode` and a canonical `makeTree`. Update DesignTree, DesignTreeContextMenu, and viewStateStore tests to import from the shared helper. Keep the per-test-file local overrides only where a test needs a non-canonical shape.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:55:14.988Z",
+        "updatedAt": "2026-04-20T08:02:42.448Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -42372,7 +42372,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T08:00:19.003Z",
+      "lastModified": "2026-04-20T08:02:42.448Z",
       "taskCount": 2010,
       "completedCount": 1716,
       "tags": [
