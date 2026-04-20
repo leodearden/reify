@@ -149,6 +149,14 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide);
 
+/// Loft through >= 2 section profiles along a guide wire spine, via
+/// BRepOffsetAPI_MakePipeShell. The first guide is the spine; each
+/// profile is added as a section via `.Add(...)`. If a second guide is
+/// present, it is applied via `SetMode(aux, /*KeepContact=*/false)`
+/// as an auxiliary-orientation constraint.
+std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
+                                                const OcctShapeVec& guides);
+
 // --- Sweep / Extrude / Revolve ---
 
 /// Extrude a profile shape by a direction vector (dx, dy, dz).

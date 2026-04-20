@@ -1099,6 +1099,42 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
     }
 }
 
+std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
+                                                const OcctShapeVec& guides) {
+    try {
+        // DEFENSE-IN-DEPTH: Rust layer validates; this catches direct FFI paths.
+        if (profiles.shapes.size() < 2) {
+            throw std::runtime_error("loft_guided_profiles: requires at least 2 profiles");
+        }
+        if (guides.shapes.empty()) {
+            throw std::runtime_error("loft_guided_profiles: requires at least 1 guide");
+        }
+        // The first guide is the spine; each profile is added as a
+        // section. An optional second guide provides auxiliary
+        // orientation via SetMode(aux, /*KeepContact=*/false).
+        BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(guides.shapes[0]));
+        for (const auto& profile : profiles.shapes) {
+            maker.Add(profile);
+        }
+        if (guides.shapes.size() >= 2) {
+            maker.SetMode(TopoDS::Wire(guides.shapes[1]), Standard_False);
+        }
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakePipeShell (loft_guided) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT loft_guided_profiles: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT loft_guided_profiles: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT loft_guided_profiles: unknown C++ exception");
+    }
+}
+
 // --- Sweep / Extrude ---
 
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {

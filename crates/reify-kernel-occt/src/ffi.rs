@@ -202,6 +202,15 @@ pub mod ffi {
             guide: &OcctShape,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        /// Loft through >= 2 section profiles using the first guide as
+        /// the spine (BRepOffsetAPI_MakePipeShell). An optional second
+        /// guide is applied as an auxiliary-orientation constraint via
+        /// SetMode(aux, /*KeepContact=*/false).
+        fn loft_guided_profiles(
+            profiles: &OcctShapeVec,
+            guides: &OcctShapeVec,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Sweep / Extrude / Revolve ---
         fn make_prism(
             profile: &OcctShape,

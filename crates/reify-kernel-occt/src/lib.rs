@@ -556,13 +556,29 @@ impl OcctKernel {
                 ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            // NOTE: LoftGuided lands in step 22 of task-322. The catch-all
-            // below keeps the kernel lib compiling while e2e tests are
-            // authored (TDD).
-            GeometryOp::LoftGuided { .. } => {
-                return Err(GeometryError::OperationFailed(
-                    "geometry op not yet implemented in kernel (task-322 step 22)".into(),
-                ));
+            GeometryOp::LoftGuided { profiles, guides } => {
+                if profiles.len() < 2 {
+                    return Err(GeometryError::OperationFailed(
+                        "loft_guided requires at least 2 profiles".into(),
+                    ));
+                }
+                if guides.is_empty() {
+                    return Err(GeometryError::OperationFailed(
+                        "loft_guided requires at least 1 guide".into(),
+                    ));
+                }
+                let mut profile_vec = ffi::ffi::new_shape_vec();
+                for &pid in profiles {
+                    let shape = self.get_shape(pid)?;
+                    ffi::ffi::shape_vec_push(profile_vec.pin_mut(), shape);
+                }
+                let mut guide_vec = ffi::ffi::new_shape_vec();
+                for &gid in guides {
+                    let shape = self.get_shape(gid)?;
+                    ffi::ffi::shape_vec_push(guide_vec.pin_mut(), shape);
+                }
+                ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::LineSegment {
                 x1, y1, z1, x2, y2, z2,
