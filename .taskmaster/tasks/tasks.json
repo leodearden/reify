@@ -37600,7 +37600,13 @@
             "crates/reify-compiler/src/geometry.rs",
             "crates/reify-compiler/src/guards.rs",
             "crates/reify-compiler/tests/let_scope_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Bundle: geometry-let classify helper dedup + forward-alias regression test"
+            ]
+          }
         }
       },
       {
@@ -42866,11 +42872,11 @@
         "description": "The Reify parser currently rejects nested struct-instantiation calls with arguments in sub arg value positions (e.g. `sub x = Host(m: Steel(density: 1000.0))`). This task tracks the acceptance criterion so that when the parser is extended, the end-to-end compilation path can be verified.",
         "details": "Acceptance criterion: compiling the following source (with appropriate stdlib Material trait in scope) produces zero Error-severity diagnostics:\n\n```\nstructure def Steel : Material {\n    param density : Real = 7850.0\n}\nstructure def Host { param m : Material }\nstructure def Top {\n    sub x = Host(m: Steel(density: 1000.0))\n}\n```\n\nBackground: The ignored test `sub_component_arg_structure_instantiation_with_args_accepted` was deleted from `crates/reify-compiler/tests/trait_typed_param_tests.rs` (task 2028) because it pinned an uncertain failure mode (parse-level vs. semantic). The entity.rs code is already defensively widened to `FunctionCall { function, .. }` (any args) rather than an is_empty() guard. The tree-sitter grammar's `sub_declaration` + `named_argument` both accept `_expression` which includes `function_call` — suggesting the failure may be semantic rather than syntactic. Investigate by checking if the parser actually rejects this construct and if so, extend the grammar rule for sub arg values to accept function calls with named arguments.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:54:24.095Z",
+        "updatedAt": "2026-04-20T14:01:36.664Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_typed_param_tests.rs",
@@ -43217,7 +43223,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:01:32.988Z",
+      "lastModified": "2026-04-20T14:01:36.664Z",
       "taskCount": 2050,
       "completedCount": 1754,
       "tags": [
