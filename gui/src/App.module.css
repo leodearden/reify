@@ -7,6 +7,15 @@
   color: var(--reify-text, #cdd6f4);
 }
 
+.kernelBanner {
+  background: var(--reify-warning, #f38ba8);
+  color: var(--reify-background, #1e1e2e);
+  padding: 6px 12px;
+  font-weight: 600;
+  text-align: center;
+  flex-shrink: 0;
+}
+
 .main {
   display: grid;
   /* grid-template-columns set inline via style for resizable panels */

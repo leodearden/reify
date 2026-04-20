@@ -91,6 +91,8 @@ vi.mock('../bridge', () => ({
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
+  getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
+  onKernelStatus: vi.fn().mockResolvedValue(() => {}),
 }));
 
 import App from '../App';

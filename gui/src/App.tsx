@@ -44,6 +44,8 @@ import {
   claudeAbort,
   subscribeToClaudeEvents,
   isDebugEnabled,
+  getKernelStatus,
+  onKernelStatus,
 } from './bridge';
 import {
   navigateToSource,
@@ -275,6 +277,7 @@ const App: Component = () => {
   let navigateToSourceUnsub: (() => void) | undefined;
   let claudeEventUnsub: (() => void) | undefined;
   let debugBridgeUnsub: (() => void) | undefined;
+  let kernelStatusUnsub: (() => void) | undefined;
 
   async function initApp() {
     // Clean up existing subscriptions before proceeding (defensive against
@@ -291,6 +294,8 @@ const App: Component = () => {
     navigateToSourceUnsub = undefined;
     claudeEventUnsub?.();
     claudeEventUnsub = undefined;
+    kernelStatusUnsub?.();
+    kernelStatusUnsub = undefined;
 
     setInitPhase('loading');
 
@@ -387,6 +392,30 @@ const App: Component = () => {
       console.warn('Failed to subscribe to focus-entity events:', _err);
     }
 
+    // Fetch initial kernel status. Wrapped in try/catch (not .catch) so that if
+    // the bridge import is mocked without getKernelStatus, the synchronous
+    // `undefined()` TypeError is captured rather than escaping the async context.
+    try {
+      const status = await getKernelStatus();
+      if (!alive) return;
+      engineStore.setKernelStatus(status);
+    } catch (err) {
+      console.warn('[kernel-status] fetch failed:', err);
+    }
+
+    // Subscribe to kernel-status events (so late-binding kernel-availability
+    // changes — e.g. future dynamic dylib loading — propagate to the banner).
+    try {
+      const unlisten = await onKernelStatus((s) => engineStore.setKernelStatus(s));
+      if (!alive) {
+        unlisten();
+        return;
+      }
+      kernelStatusUnsub = unlisten;
+    } catch (_err) {
+      console.warn('Failed to subscribe to kernel-status events:', _err);
+    }
+
     // Subscribe to navigate-to-source events (from MCP navigate_to_source tool)
     try {
       const unlisten = await onNavigateToSource(({ file, line, column, end_line, end_column }) => {
@@ -453,6 +482,7 @@ const App: Component = () => {
     serializationErrorCoalescer.cleanup();
     claudeEventUnsub?.();
     debugBridgeUnsub?.();
+    kernelStatusUnsub?.();
     delete window.__REIFY_DEBUG__;
   });
 
@@ -660,6 +690,11 @@ const App: Component = () => {
       </Show>
       <Show when={initPhase() === 'ready'}>
         <div data-testid="app-layout" class={styles.layout}>
+          <Show when={engineStore.state.kernelStatus && !engineStore.state.kernelStatus.available}>
+            <div data-testid="kernel-degraded-banner" class={styles.kernelBanner} role="alert">
+              {engineStore.state.kernelStatus!.message}
+            </div>
+          </Show>
           <MenuBar
             onOpen={handleOpen}
             onSave={handleSave}
