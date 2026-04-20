@@ -139,14 +139,15 @@ pub(crate) fn compile_geometry_call(
     // Short-circuit for primitives and curves (no geometry args) to avoid
     // unnecessary allocations on the hot path for the majority of calls.
     let static_indices = geometry_arg_indices(name);
-    let needs_geom_resolution = name == "loft" || !static_indices.is_empty();
+    let needs_geom_resolution =
+        name == "loft" || name == "loft_guided" || !static_indices.is_empty();
 
     let mut sub_ops: Vec<CompiledGeometryOp> = Vec::new();
     let mut geom_refs: HashMap<usize, GeomRef> = HashMap::new();
     let mut current_offset = step_offset;
 
     if needs_geom_resolution {
-        let effective_indices: Vec<usize> = if name == "loft" {
+        let effective_indices: Vec<usize> = if name == "loft" || name == "loft_guided" {
             (0..args.len()).collect()
         } else {
             static_indices.to_vec()
@@ -429,6 +430,52 @@ pub(crate) fn compile_geometry_call(
                 kind: SweepKind::Loft,
                 profiles,
                 args: loft_args,
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
+        // loft_guided(profile_1, profile_2, ..., guide) — pipe-shell loft
+        // with a trailing guide wire. Variadic profiles (>= 2) + 1 guide,
+        // so total args.len() must be >= 3.
+        "loft_guided" => {
+            if compiled_args.len() < 3 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "loft_guided() expects at least 3 arguments \
+                     (profile_1, profile_2, ..., guide), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            // Resolve a GeomRef per arg, falling back to step_offset+i like loft
+            // (silent fallback preserves per-profile index uniqueness).
+            let mut refs = Vec::with_capacity(args.len());
+            for i in 0..args.len() {
+                let r = geom_refs
+                    .get(&i)
+                    .cloned()
+                    .unwrap_or(GeomRef::Step(step_offset + i));
+                refs.push(r);
+            }
+            // Convention: last arg is the guide wire; preceding args are
+            // profiles (at least 2). Key the last named arg as "guide", the
+            // earlier ones as "profile_0", "profile_1", ...
+            let last_idx = compiled_args.len() - 1;
+            let loft_guided_args: Vec<(String, CompiledExpr)> = compiled_args
+                .into_iter()
+                .enumerate()
+                .map(|(i, expr)| {
+                    let key = if i == last_idx {
+                        "guide".to_string()
+                    } else {
+                        format!("profile_{}", i)
+                    };
+                    (key, expr)
+                })
+                .collect();
+            let op = CompiledGeometryOp::Sweep {
+                kind: SweepKind::LoftGuided,
+                profiles: refs,
+                args: loft_guided_args,
             };
             sub_ops.push(op);
             Some(sub_ops)
@@ -826,18 +873,18 @@ mod tests {
     /// Variadic solid-construction function handled via a dedicated arm in the
     /// main dispatch match.  `geometry_arg_indices` returns empty for loft
     /// (verified by `geometry_arg_indices_loft_is_empty_handled_specially`).
-    const LOFT_FUNCTIONS: &[&str] = &["loft"];
+    const LOFT_FUNCTIONS: &[&str] = &["loft", "loft_guided"];
 
     /// Canary pin: the total number of distinct function names dispatched by
     /// `compile_geometry_call`, spread across the four category lists.
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    17
+    /// GEOM_ARG_FUNCTIONS    18
     /// NO_GEOM_ARG_FUNCTIONS 11
     /// boolean ops            5
-    /// loft                   1
-    /// Total                 34
+    /// loft-variadic          2  (loft, loft_guided)
+    /// Total                 36
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -849,7 +896,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 35;
+    const EXPECTED_DISPATCH_COUNT: usize = 36;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -877,13 +924,17 @@ mod tests {
 
     #[test]
     fn geometry_arg_indices_loft_is_empty_handled_specially() {
-        // loft is variadic — handled with special logic in compile_geometry_call,
-        // not via geometry_arg_indices. Verify it returns empty (the wildcard arm)
-        // so we know the special path is the only handler.
-        assert!(
-            geometry_arg_indices("loft").is_empty(),
-            "loft should not be in geometry_arg_indices — it uses variadic handling"
-        );
+        // loft and loft_guided are variadic — handled with special logic in
+        // compile_geometry_call, not via geometry_arg_indices. Verify they
+        // return empty (the wildcard arm) so we know the special path is the
+        // only handler.
+        for &name in LOFT_FUNCTIONS {
+            assert!(
+                geometry_arg_indices(name).is_empty(),
+                "{} should not be in geometry_arg_indices — it uses variadic handling",
+                name
+            );
+        }
     }
 
     #[test]

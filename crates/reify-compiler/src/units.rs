@@ -12,6 +12,7 @@ pub(crate) fn is_geometry_function(name: &str) -> bool {
             | "mirror"
             | "arbitrary_pattern"
             | "loft"
+            | "loft_guided"
             | "extrude"
             | "revolve"
             | "revolve_full"
