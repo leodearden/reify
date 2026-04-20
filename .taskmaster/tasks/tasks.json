@@ -43144,13 +43144,13 @@
         "description": "Follow-up to task 2000 review. Three test_quality suggestions on the OCCT-gate infra tests share a theme: brittle grep/sed patterns that pass today but have latent failure modes as orchestrator.yaml evolves.",
         "details": "## Context\n\nTask 2000 review flagged three latent fragilities in the OCCT-gate infra tests. All three pass against the current orchestrator.yaml but are sensitive to edits that are otherwise legitimate.\n\n## Issues\n\n### 1. `tests/infra/test_occt_flock_gate.sh:130-135` — order-sensitive sed strip\n\n```sh\nSTRIPPED=$(echo \"$LINE\" | sed 's|cargo test --workspace --exclude[^&]*||g')\n```\n\nThis pattern pins `--exclude` directly after `--workspace`. If someone adds e.g. `cargo test --workspace --release --exclude ...`, the strip won't match and Test 12 will falsely flag a bare ungated workspace invocation.\n\n**Fix options:** (a) make the regex tolerate flag interleaving — match `cargo test --workspace` segments that contain `--exclude` anywhere before the next ` && `; or (b) add a comment that Test 12 intentionally pins flag order and reorderings must update it.\n\n### 2. `tests/infra/test_occt_gated_scope.sh:148,161` — prefix-match without word boundary\n\n```sh\ngrep -qF \" -p $crate\"\ngrep -qF \" --exclude $crate\"\n```\n\n`grep -qF` with a space prefix has no trailing boundary. If a future crate named `reify-cli-extra` is added while `reify-cli` is already declared, the `-p reify-cli` assertion matches `-p reify-cli-extra` spuriously.\n\n**Fix:** switch to `grep -qE \" -p ${crate}( |$)\"` / `\" --exclude ${crate}( |$)\"`.\n\n### 3. `tests/infra/test_occt_flock_gate.sh:241` — partial debug-timeout assertion\n\nThe current assertion only greps up to `-p reify-kernel-occt`, so dropping `-p reify-eval -p reify-cli` from the debug invocation (but leaving them on release) would still pass Test 17. test_occt_gated_scope.sh's Test 4 covers the full per-crate assertion.\n\n**Fix options:** (a) tighten the grep string to `REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli --`; or (b) add a comment that Test 17 intentionally only pins timeout+first-crate adjacency and delegates per-crate coverage to test_occt_gated_scope.sh.\n\n## Acceptance\n\n- Test 12's allowed-form strip tolerates `--release` (or other flags) appearing between `--workspace` and `--exclude`, or documents the pinned order explicitly.\n- Tests 4/5/8 in test_occt_gated_scope.sh use word-boundary matching so crate-name prefix collisions cannot produce false positives.\n- Test 17 either pins the full per-crate sequence or explicitly documents its narrowed scope.\n- All existing tests still pass.\n\n## Memory hints\n\n- See task 2000 for the two-pass gate design. Files touched: tests/infra/test_occt_flock_gate.sh, tests/infra/test_occt_gated_scope.sh.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "2000"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:54:40.789Z"
+        "updatedAt": "2026-04-20T14:00:48.207Z"
       },
       {
         "id": "2058",
@@ -43177,7 +43177,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:00:35.294Z",
+      "lastModified": "2026-04-20T14:00:48.207Z",
       "taskCount": 2050,
       "completedCount": 1752,
       "tags": [
