@@ -42084,7 +42084,7 @@
         "description": "Follow-up to task 1992 review. The wrapper currently serializes the entire `cargo test --workspace` invocation across all concurrent worktrees. Only a subset of workspace crates actually touches OCCT (reify-kernel-occt, reify-eval, reify-compiler geometry tests) — the rest (tree-sitter bindings, protocol, persistence, etc.) run one-at-a-time under the gate for no safety reason.",
         "details": "## Context\n\nTask 1992 applied the flock gate at the `cargo test --workspace` level — coarse but simple. Under N concurrent worktrees this forces verify to run ~O(N) in wall-clock time for *all* crates, not just OCCT-touching ones.\n\n## Options\n\n- (a) Two-pass test_command — `cargo test -p <occt-crates...>` gated, then `cargo test --workspace --exclude <occt-crates...>` ungated. Preserves parallelism for non-OCCT crates.\n- (b) Per-test `serial_test` marking — defense-in-depth but doesn't address cross-process contention.\n- (c) Document the trade-off and defer.\n\nRecommend (a) once the OCCT-touching crate list is stable.\n\n## Acceptance\n\n- test_command splits into gated (OCCT crates) and ungated (all other crates) invocations.\n- A test in tests/infra asserts the split covers every OCCT-touching crate.\n- Header in scripts/cargo-test-occt-gated.sh documents the scoping.\n\n## Modules\n\norchestrator.yaml, scripts/cargo-test-occt-gated.sh, tests/infra\n\n## Memory hints\n\n- search: \"OCCT thread safety\" \"flock gate\"\n- Depends on task 1992 landing first.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "1992"
         ],
@@ -42099,7 +42099,7 @@
             "scripts"
           ]
         },
-        "updatedAt": "2026-04-20T13:54:40.194Z"
+        "updatedAt": "2026-04-20T13:58:30.017Z"
       },
       {
         "id": "2004",
@@ -43154,7 +43154,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:54:40.789Z",
+      "lastModified": "2026-04-20T13:58:30.017Z",
       "taskCount": 2050,
       "completedCount": 1748,
       "tags": [
