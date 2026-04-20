@@ -1384,4 +1384,169 @@ mod tests {
             diagnostics
         );
     }
+
+    /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) triggers the
+    /// `debug_assert!(type_args.is_empty(), "enum types do not accept type args: ...")` added
+    /// in step-6.
+    ///
+    /// In the current code (post step-4, pre step-6) this silently discards the type_args and
+    /// resolves to `Type::Enum("Direction")` without panicking — so this test FAILS until step-6
+    /// adds the debug_assert.
+    #[test]
+    #[should_panic(expected = "enum types do not accept type args")]
+    fn enum_with_type_args_triggers_debug_assert() {
+        // Direction<Something> — non-empty type_args that should trigger the assert
+        let bogus_type_arg = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Something".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::empty(0),
+        };
+        let direction_with_args = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Direction".to_string(),
+                type_args: vec![bogus_type_arg],
+            },
+            span: SourceSpan::empty(0),
+        };
+
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                name: "dir".to_string(),
+                doc: None,
+                type_expr: Some(direction_with_args),
+                default: None,
+                where_clause: None,
+                annotations: vec![],
+                span: SourceSpan::empty(0),
+                content_hash: ContentHash(0),
+            })],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = HashSet::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        // Should panic with the debug_assert in the enum-resolution arm (step-6).
+        // Pre-step-6 this silently returns Type::Enum("Direction") — no panic — so
+        // the #[should_panic] test FAILS until step-6 is applied.
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+    }
+
+    /// Companion test confirming that the debug_assert does NOT fire when a non-enum
+    /// named type (e.g., an unknown name) appears with non-empty type_args.  The assert
+    /// is gated inside the enum-match arm, so non-enum names never reach it.
+    #[test]
+    fn non_enum_named_with_type_args_does_not_panic() {
+        // NotAnEnum<Something> — non-empty type_args but "NotAnEnum" is not in enum_defs
+        let bogus_type_arg = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Something".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::empty(0),
+        };
+        let non_enum_with_args = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "NotAnEnum".to_string(),
+                type_args: vec![bogus_type_arg],
+            },
+            span: SourceSpan::empty(0),
+        };
+
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                name: "p".to_string(),
+                doc: None,
+                type_expr: Some(non_enum_with_args),
+                default: None,
+                where_clause: None,
+                annotations: vec![],
+                span: SourceSpan::empty(0),
+                content_hash: ContentHash(0),
+            })],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = HashSet::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        // Should NOT panic — "NotAnEnum" is not in enum_defs, so the enum-match arm
+        // (where the debug_assert lives) is never taken.
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // The unknown type produces an "unresolved type" diagnostic — not a panic.
+        let unresolved: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("unresolved type"))
+            .collect();
+        assert_eq!(unresolved.len(), 1, "Expected exactly one 'unresolved type' diagnostic");
+    }
 }
