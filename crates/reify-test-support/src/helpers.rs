@@ -1030,6 +1030,64 @@ mod tests {
         super::assert_no_diagnostics(&diags, "guard compile");
     }
 
+    // ── get_let_expr_in ───────────────────────────────────────────────────
+
+    /// get_let_expr_in should return the default_expr of the named cell in the
+    /// named template, even when the module has multiple templates.
+    #[test]
+    fn test_get_let_expr_in_finds_named_template() {
+        let source = r#"
+            structure Alpha { let v = 1.0 }
+            structure Beta  { let w = 2.0 }
+        "#;
+        let module = super::compile_source(source);
+        let expr = super::get_let_expr_in(&module, "Beta", "w");
+        assert_eq!(
+            expr.result_type,
+            reify_types::Type::Real,
+            "expected result_type == Type::Real for Beta.w, got {:?}",
+            expr.result_type
+        );
+    }
+
+    /// get_let_expr_in should panic with "no template named" when the template
+    /// name does not match any template in the module.
+    #[test]
+    #[should_panic(expected = "no template named")]
+    fn test_get_let_expr_in_panics_on_missing_template() {
+        let source = r#"structure S { let v = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_let_expr_in(&module, "DoesNotExist", "v");
+    }
+
+    /// get_let_expr_in should panic with "no value cell named" when the cell
+    /// name does not match any value cell in the named template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_let_expr_in_panics_on_missing_cell() {
+        let source = r#"structure S { let x = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_let_expr_in(&module, "S", "y");
+    }
+
+    /// get_let_expr_in should panic with "has no default expr" for a value cell
+    /// whose default_expr is None. Uses a builder-synthesized module with an
+    /// auto_param (which always has default_expr = None) rather than a compiled
+    /// source, since a source-level `param` always carries a default in well-formed
+    /// compiled output.
+    #[test]
+    #[should_panic(expected = "has no default expr")]
+    fn test_get_let_expr_in_panics_on_missing_default_expr() {
+        use reify_types::{ModulePath, Type};
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", Type::Real)
+            .build();
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        super::get_let_expr_in(&module, "S", "x");
+    }
+
     // ── run_modify_pipeline smoke ─────────────────────────────────────────
 
     /// Smoke test for `run_modify_pipeline`: verifies the helper produces 2 ops
