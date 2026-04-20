@@ -41656,7 +41656,7 @@
         "description": "Task 1920 followup S1+S2. File: crates/reify-compiler/tests/type_error_propagation_tests.rs. S1: Lambda-body row uses Type::Error as outer lambda result_type so test passes trivially; change to Type::Bool. S2: two tests overlap on ListLiteral/OptionSome/Quantifier; consolidate.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41666,9 +41666,20 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix Lambda-body fixture and dedupe find_node tests (1920 followup)"
+            ]
+          },
+          "done_provenance": {
+            "commit": "e367258a31a703777df96910b0fffdfdca7dd997",
+            "commit_input": "e367258a3",
+            "note": "Task 1984 S1+S2 already landed on main via d6a1e6f17 (S1: Lambda-body outer result_type Error→Bool) and e367258a3 (S2: fold find_node duplicate into case table). Current branch task/1984 is ancestor of main with no diff for the file."
+          }
         },
-        "updatedAt": "2026-04-20T12:51:37.716Z"
+        "updatedAt": "2026-04-20T12:52:02.279Z"
       },
       {
         "id": "1985",
@@ -42818,9 +42829,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T12:51:37.716Z",
+      "lastModified": "2026-04-20T12:52:02.279Z",
       "taskCount": 2030,
-      "completedCount": 1738,
+      "completedCount": 1739,
       "tags": [
         "master"
       ]
