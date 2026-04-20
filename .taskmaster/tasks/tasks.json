@@ -42489,23 +42489,34 @@
         "description": "Task #2018 changed `s.explicit[path]` clearing from `= null` to `delete`, but two JSDoc blocks still describe the old null-sentinel contract and will mislead future readers.",
         "details": "Two stale comments identified in the post-merge review of #2018:\n\n1. gui/src/stores/viewStateStore.ts lines 153-166 (JSDoc on `mirrorExplicitToActiveUserView`):\n   - Rewrite \"mirror the current (non-null) entries in `s.explicit`\" → \"mirror the current entries in `s.explicit` (cleared keys are simply absent)\".\n   - Drop the paragraph starting \"Null entries in `s.explicit`...\" — no null entries ever exist at runtime under the new convention established in #2018.\n   - Decide whether to keep the `val != null` guard in the body (around line 173): since `Object.entries` never yields undefined values for present keys, the guard is dead under the new invariant. Either remove it, or keep it as defensive redundancy with a one-line comment explaining why. Recommendation: remove, since keeping defensive code without a reason leaks the old model.\n\n2. gui/src/stores/autoViewGenerator.ts around line 25 (module doc comment on live user-view mirror):\n   - Replace \"dropping null (inherit-cleared) entries\" with \"omitting cleared (deleted/absent) entries\" (or equivalent wording) to match the #2018 convention.\n\nVerification:\n- `cd gui && npm run typecheck` passes.\n- `cd gui && npx vitest run src/__tests__/viewStateStore.test.ts src/__tests__/autoViewGenerator.test.ts` passes.\n- Grep to confirm no remaining references to \"null entries\" / \"non-null entries\" in the viewStateStore or autoViewGenerator doc comments.\n\nReviewer: reviewer_comprehensive (post-merge review of task #2018).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-20T11:13:25.313Z"
+      },
+      {
+        "id": "2024",
+        "title": "Tighten ExplicitVisibility type: drop `| null` now that absence-of-key is the sole \"no override\" signal",
+        "description": "After task #2018, `s.explicit[path]` is never `null` at runtime — cleared overrides are deleted. But `gui/src/types.ts:162` still defines `export type ExplicitVisibility = VisibilityState | null`, which keeps a ghost sentinel in the type system that every reader of `state.explicit[path]` must reason about.",
+        "details": "Scope:\n\n1. gui/src/types.ts line 162: consider changing `export type ExplicitVisibility = VisibilityState | null` → `export type ExplicitVisibility = VisibilityState`, OR delete the alias entirely if no non-trivial callers remain.\n\n2. gui/src/stores/viewStateStore.ts: tighten the `ViewState.explicit` field (currently `Record<string, ExplicitVisibility>`) to `Record<string, VisibilityState>`. The existing ViewState JSDoc (lines 16-21 on post-#2018 main) already acknowledges this type-vs-runtime gap and can be simplified.\n\n3. Simplify null-checks at call sites:\n   - `getEffectiveVisibility` — `exp != null` becomes `exp !== undefined` (or a truthiness check under `noUncheckedIndexedAccess`).\n   - `hasOverride` — same.\n   - `mirrorExplicitToActiveUserView` — the `val != null` guard becomes unnecessary; remove.\n\n4. Audit every importer of `ExplicitVisibility` across gui/src/ before narrowing. If any consumer relies on the `null` branch intentionally (e.g. a persisted/serialized shape that accepts null as \"clear\"), either:\n   - Carve out a separate serialization type, OR\n   - Leave `ExplicitVisibility` as-is and instead narrow only `ViewState.explicit` at the store level.\n\nVerification:\n- `cd gui && npm run typecheck` passes.\n- `cd gui && npx vitest run` passes.\n- Grep confirms no remaining `ExplicitVisibility | null` unions or `explicit[...] != null` checks where a simpler form would do.\n\nReviewer: reviewer_comprehensive (post-merge review of task #2018). Marked \"out of scope if `ExplicitVisibility` is used elsewhere with intentional null semantics\" — so audit first, and close as not-applicable if audit reveals legitimate null callers.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2018"
+        ],
         "priority": "low",
         "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:11:17.403Z",
-      "taskCount": 2014,
+      "lastModified": "2026-04-20T11:13:25.313Z",
+      "taskCount": 2016,
       "completedCount": 1721,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T11:12:47.841Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T11:12:47.856Z"
+      ]
     }
   }
 }
