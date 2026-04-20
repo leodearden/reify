@@ -41472,18 +41472,29 @@
         "description": "S1: Lambda-body row in find_node_compound_variant_coverage uses Type::Error as the outer lambda's result_type so the test passes even if the Lambda match arm is broken. Change last arg to Type::Bool. S2: find_node_traverses_previously_unhandled_kinds and find_node_compound_variant_coverage overlap on ListLiteral/OptionSome/Quantifier — consolidate into one source of truth. File: crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 330-509). Review followup from task 1920, suggestions S1+S2.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T09:38:29.043Z",
+        "updatedAt": "2026-04-20T09:38:56.316Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix Lambda-body fixture and dedupe find_node coverage tests (task 1920 followup)"
+            ]
+          },
+          "done_provenance": {
+            "commit": "e367258a31a703777df96910b0fffdfdca7dd997",
+            "commit_input": "e367258a3",
+            "note": "S1 applied in d6a1e6f17 (Lambda row outer type changed to Type::Bool at line 395); S2 applied in e367258a3 (find_node_traverses_previously_unhandled_kinds deleted, fixtures folded into find_node_compound_variant_coverage). HEAD is ancestor of main; file now 478 lines."
+          }
         }
       },
       {
@@ -42383,9 +42394,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T09:38:29.043Z",
+      "lastModified": "2026-04-20T09:38:56.316Z",
       "taskCount": 2010,
-      "completedCount": 1717,
+      "completedCount": 1718,
       "tags": [
         "master"
       ]
