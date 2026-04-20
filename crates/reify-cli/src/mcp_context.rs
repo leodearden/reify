@@ -180,16 +180,22 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 /// - **`Err(CellNotFound)`** — topology changed (the param was deleted or renamed);
 ///   skip silently and keep the override in `user_overrides` so it can reappear if
 ///   the topology reverts in a subsequent edit.
-/// - **Any other `Err`** (`TypeKindMismatch`, `DimensionMismatch`, `NotInitialized`) —
+/// - **Any other `Err`** (`TypeKindMismatch`, `DimensionMismatch`) —
 ///   the cell exists but the stored value is incompatible with its current type.  The
 ///   **first** occurrence emits a `tracing::warn!` event with the cell id and error for
 ///   diagnostic inspection; subsequent occurrences of the same `(cell_id, error_variant)`
 ///   pair are downgraded to `tracing::debug!` to avoid log spam when a stale override
 ///   persists across repeated saves.  The override is kept in `user_overrides` so the
 ///   user's intent survives a transient mismatch and reapplies when the type becomes
-///   compatible again.
+///   compatible again.  `NotInitialized` is matched only to satisfy exhaustiveness —
+///   it is unreachable here because `reapply_user_overrides` is only invoked from
+///   `update_source` immediately after `ensure_engine(...).eval(...)` populates the
+///   snapshot.
 fn reapply_user_overrides(state: &mut CliState) {
     if state.user_overrides.is_empty() {
+        // Nothing left to dedupe against — prune warned_overrides so stale
+        // entries from earlier mismatches on cleared overrides don't linger.
+        state.warned_overrides.clear();
         return;
     }
     let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
