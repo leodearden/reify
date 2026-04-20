@@ -40820,11 +40820,11 @@
         "description": "Two review follow-ups from task 1930:\n\n(1) Code reuse: Replace the raw `u32::MAX as usize` literal at `crates/reify-types/src/source_location.rs:45` with `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (both symbols live in the same `reify-types` crate, so the migration is trivial). Update the companion test `byte_offset_to_line_col_prelude_sentinel_returns_fallback` to reference the constant. Drop the \"a follow-up can migrate it to reference this constant\" caveat from the `PRELUDE_SENTINEL_OFFSET` rustdoc at `crates/reify-types/src/diagnostics.rs:44-46` once done.\n\n(2) Test quality: In `offset_to_line_col_fast_matches_original_every_offset` (`gui/src-tauri/src/tests/engine_tests.rs:1397-1411`), the sentinel convergence assertion `fast_sentinel == orig_sentinel` is effectively `(1,1) == (1,1)` by construction — a regression that broke both functions identically (e.g. someone changed both early-return values) would still pass. Strengthen by also asserting the literal `assert_eq!(fast_sentinel, (1, 1))` so the expected value is pinned in the convergence test too.\n\nAcceptance:\n- `source_location.rs` imports/uses `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (no remaining `u32::MAX as usize` literal at the sentinel check).\n- Caveat removed from `PRELUDE_SENTINEL_OFFSET` rustdoc.\n- Convergence test pins the literal `(1, 1)` for the sentinel in addition to the cross-check.\n- `cargo test -p reify-types` and GUI engine tests green.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T16:13:01.029Z",
+        "updatedAt": "2026-04-20T16:31:20.683Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src/diagnostics.rs",
@@ -43312,9 +43312,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:31:16.389Z",
+      "lastModified": "2026-04-20T16:31:20.683Z",
       "taskCount": 2051,
-      "completedCount": 1772,
+      "completedCount": 1773,
       "tags": [
         "master"
       ]
