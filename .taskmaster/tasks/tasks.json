@@ -42914,11 +42914,11 @@
         "description": "The Reify parser currently rejects nested struct-instantiation calls with arguments in sub arg value positions (e.g. `sub x = Host(m: Steel(density: 1000.0))`). This task tracks the acceptance criterion so that when the parser is extended, the end-to-end compilation path can be verified.",
         "details": "Acceptance criterion: compiling the following source (with appropriate stdlib Material trait in scope) produces zero Error-severity diagnostics:\n\n```\nstructure def Steel : Material {\n    param density : Real = 7850.0\n}\nstructure def Host { param m : Material }\nstructure def Top {\n    sub x = Host(m: Steel(density: 1000.0))\n}\n```\n\nBackground: The ignored test `sub_component_arg_structure_instantiation_with_args_accepted` was deleted from `crates/reify-compiler/tests/trait_typed_param_tests.rs` (task 2028) because it pinned an uncertain failure mode (parse-level vs. semantic). The entity.rs code is already defensively widened to `FunctionCall { function, .. }` (any args) rather than an is_empty() guard. The tree-sitter grammar's `sub_declaration` + `named_argument` both accept `_expression` which includes `function_call` — suggesting the failure may be semantic rather than syntactic. Investigate by checking if the parser actually rejects this construct and if so, extend the grammar rule for sub arg values to accept function calls with named arguments.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:02:33.560Z",
+        "updatedAt": "2026-04-20T17:07:52.181Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_typed_param_tests.rs",
@@ -42932,6 +42932,11 @@
             "queries": [
               "resolution for: Parser: accept nested struct-instantiation calls with args in sub arg positions"
             ]
+          },
+          "done_provenance": {
+            "commit": "0e0f1b560dbca3ec7f66e5163408dda3db96c583",
+            "commit_input": "0e0f1b560",
+            "note": "Manual unblock: steps 4-6 (lower named args in ts_parser, widen Int promotion in conformance, acceptance test + TODO removal, grammar prec.dynamic on constraint_instantiation) implemented and merged. 4 commits on main: bd1bb4eee, aac22dd56, b21e86ce4, 0e0f1b560."
           }
         }
       },
@@ -43359,9 +43364,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:05:25.257Z",
+      "lastModified": "2026-04-20T17:07:52.182Z",
       "taskCount": 2052,
-      "completedCount": 1781,
+      "completedCount": 1782,
       "tags": [
         "master"
       ]
