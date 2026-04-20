@@ -1132,9 +1132,10 @@ structure Bracket {
             "should have parameters after loading bracket.ri"
         );
 
-        // Attempt an update with invalid content (parse error).
+        // Attempt an update with content guaranteed-unparseable by
+        // `invalid_parse_input_is_actually_unparseable`.
         let result = ctx
-            .update_source(BRACKET_PATH, "enum { }")
+            .update_source(BRACKET_PATH, INVALID_PARSE_INPUT)
             .expect("update_source should return Ok (not Err) even on parse failure");
         assert!(!result.success, "update_source should report failure for invalid content");
 
