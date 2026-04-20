@@ -365,17 +365,14 @@ const App: Component = () => {
 
     // Subscribe to focus-entity events (from focus_entity Tauri command and MCP tool).
     //
-    // OWNERSHIP: This handler is the authoritative terminal dispatcher for focus
-    // navigation. It handles two origins:
+    // OWNERSHIP: This handler is the sole terminal dispatcher for focus navigation
+    // regardless of origin:
     //   • MCP-originated: Claude calls reify_focus_entity → backend emits the event →
     //     this listener fires. No other handler runs.
     //   • User-initiated: handleGroupDoubleClick → navigateToEntity → bridgeFocusEntity
     //     (Tauri command) → backend emits the event → this listener fires.
-    //     navigateToEntity then also calls flyToEntity/selectEntity directly, producing
-    //     an idempotent double-call. Both operations are stable under repetition, so no
-    //     observable bug arises. The clean fix — removing those calls from navigateToEntity
-    //     now that this listener owns them — requires modifying navigation.ts, which is
-    //     outside this task's locked modules; tracked as a follow-up cleanup.
+    //     navigateToEntity's only side effect is triggering the backend command;
+    //     flyToEntity and selectEntity run exclusively here.
     try {
       const unlisten = await onFocusEntity((entity) => {
         flyToEntityFn?.(entity);
@@ -622,8 +619,6 @@ const App: Component = () => {
   function handleGroupDoubleClick(groupName: string) {
     navigateToEntity(groupName, {
       focusEntity: bridgeFocusEntity,
-      flyToEntity: (ep) => flyToEntityFn?.(ep),
-      selectEntity: (ep) => selectionStore.selectEntity(ep),
     });
   }
 

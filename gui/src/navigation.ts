@@ -34,13 +34,12 @@ export async function navigateToSource(
 
 export interface NavigateToEntityDeps {
   focusEntity: (entityPath: string) => Promise<void>;
-  flyToEntity: (entityPath: string) => void;
-  selectEntity: (entityPath: string | null) => void;
 }
 
 /**
- * Navigate to an entity in the viewport.
- * Calls bridge.focusEntity, flies viewport camera, and updates selection.
+ * Trigger the backend focus_entity command.
+ * The focus-entity event listener in App.tsx handles viewport fly + selection
+ * for both MCP-originated and user-initiated (double-click) paths.
  */
 export async function navigateToEntity(
   entityPath: string,
@@ -48,8 +47,6 @@ export async function navigateToEntity(
 ): Promise<void> {
   try {
     await deps.focusEntity(entityPath);
-    deps.flyToEntity(entityPath);
-    deps.selectEntity(entityPath);
   } catch (err) {
     console.error('Failed to navigate to entity:', err);
   }
