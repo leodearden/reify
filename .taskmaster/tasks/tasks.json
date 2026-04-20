@@ -42721,7 +42721,14 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:44:03.744Z"
+        "updatedAt": "2026-04-20T11:44:03.744Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/trait_requirements.rs"
+          ]
+        }
       },
       {
         "id": "2035",
@@ -42783,7 +42790,9 @@
       "completedCount": 1733,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T11:54:18.611Z",
+      "description": "Tasks for master context"
     }
   }
 }
