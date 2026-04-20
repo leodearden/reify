@@ -42622,11 +42622,11 @@
         "description": "Two small polish items in `crates/reify-compiler/tests/trait_typed_param_tests.rs`:\n1. The `#[ignore]`d test at 407-453 guards a parser-limitation path that is already covered indirectly by the defensively-widened entity.rs capture logic. Either delete it (and move the acceptance criterion to an explicit parser follow-up task) or convert it to an explicit parse-rejection test asserting current behaviour.\n2. The negative test at 339-346 mentions an expected Warning-severity 'cannot infer return type of zero-arg function NotAMaterial' in a comment but does not assert it. Either add an explicit assertion (and filter the warning from error counts) or drop the comment.",
         "details": "## Scope\nTwo review suggestions on task 1874 (esc-1874-31, reviewer_comprehensive).\n\n## Locations\n- crates/reify-compiler/tests/trait_typed_param_tests.rs:407-453 (ignored nested-call test)\n- crates/reify-compiler/tests/trait_typed_param_tests.rs:339-346 (warning-severity comment)\n\n## Acceptance\n- Ignored test either deleted or replaced with an assertive parse-rejection test.\n- If deleted, follow-up task is filed that captures the parser limitation + its acceptance criterion.\n- Warning comment in negative test either becomes an explicit assertion or is removed; the test keeps passing either way.\n- Full `cargo test -p reify-compiler` still green.\n\n### memory_hints\n- search: \"trait_typed_param_tests ignored nested call\"\n- search: \"NotAMaterial zero-arg function warning\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:29:44.508Z",
+        "updatedAt": "2026-04-20T12:49:27.514Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
@@ -42818,7 +42818,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T12:49:25.779Z",
+      "lastModified": "2026-04-20T12:49:27.514Z",
       "taskCount": 2030,
       "completedCount": 1738,
       "tags": [
