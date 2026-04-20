@@ -158,7 +158,7 @@ describe('DesignTree — eye icon cycle', () => {
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
     const eyeBtn = screen.getByTestId('eye-icon-Root.A');
     fireEvent.click(eyeBtn); // show → ghost, cascade
-    expect(store.state.explicit['Root.A.a1']).toBeNull();
+    expect(store.state.explicit['Root.A.a1']).toBeUndefined();
     expect(store.getEffectiveVisibility('Root.A.a1')).toBe('ghost');
   });
 });
@@ -189,7 +189,7 @@ describe('DesignTree — context menu', () => {
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
     fireEvent.contextMenu(screen.getByTestId('tree-row-Root.A'));
     fireEvent.click(screen.getByTestId('ctx-reset'));
-    expect(store.state.explicit['Root.A']).toBeNull();
+    expect(store.state.explicit['Root.A']).toBeUndefined();
   });
 
   it('"Show only this" calls showOnly(path, true)', () => {
