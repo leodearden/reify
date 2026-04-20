@@ -1432,6 +1432,123 @@ describe('setActiveView — wholesale explicit replacement after resetToInherit'
 });
 
 // ---------------------------------------------------------------------------
+// COW — copy-on-write via setVisibility
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — COW on setVisibility', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.A', kind: 'param' }),
+          makeNode({ entity_path: 'Root.B', kind: 'param' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) with auto view active, setVisibility creates a new user view named "{autoName} (modified)"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      // activeViewId defaults to auto:default
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      store.setVisibility('Root.A', 'hidden');
+      // A new user view should have been created
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      const cowView = store.state.views[userViewIds[0]];
+      expect(cowView.name).toBe('Default (modified)');
+      expect(cowView.modified).toBe(true);
+      dispose();
+    });
+  });
+
+  it('(a) with auto view active, setVisibility switches to the new COW user view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      store.setVisibility('Root.A', 'hidden');
+      const activeId = store.state.activeViewId;
+      expect(activeId).toMatch(/^user:/);
+      expect(store.state.views[activeId].name).toBe('Default (modified)');
+      dispose();
+    });
+  });
+
+  it('(a) the mutation is recorded in the COW view visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      store.setVisibility('Root.A', 'hidden');
+      const activeId = store.state.activeViewId;
+      expect(store.state.views[activeId].visibility['Root.A']).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(b) subsequent setVisibility calls on the now-active user view do NOT create additional COW views', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      store.setVisibility('Root.A', 'hidden');
+      const firstCowId = store.state.activeViewId;
+      const userViewCountAfterFirst = Object.keys(store.state.views).filter((k) =>
+        k.startsWith('user:'),
+      ).length;
+      expect(userViewCountAfterFirst).toBe(1);
+
+      // Second mutation — must NOT create another user view
+      store.setVisibility('Root.B', 'ghost');
+      const userViewCountAfterSecond = Object.keys(store.state.views).filter((k) =>
+        k.startsWith('user:'),
+      ).length;
+      expect(userViewCountAfterSecond).toBe(1);
+      // Still the same user view
+      expect(store.state.activeViewId).toBe(firstCowId);
+      dispose();
+    });
+  });
+
+  it('(c) the original auto view is untouched after COW', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const originalAutoVisibility = { ...store.state.views['auto:default'].visibility };
+
+      store.setVisibility('Root.A', 'hidden');
+      // The auto:default visibility must not have changed
+      expect(store.state.views['auto:default'].visibility).toEqual(originalAutoVisibility);
+      dispose();
+    });
+  });
+
+  it('(d) collision: if "{autoName} (modified)" already exists, uses "{autoName} (modified 2)"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      // First COW: creates "Default (modified)"
+      store.setVisibility('Root.A', 'hidden');
+      expect(store.state.views[store.state.activeViewId].name).toBe('Default (modified)');
+
+      // Switch back to auto:default and trigger another COW
+      store.setActiveView('auto:default');
+      store.setVisibility('Root.B', 'ghost');
+      // "Default (modified)" is already taken → should use "Default (modified 2)"
+      expect(store.state.views[store.state.activeViewId].name).toBe('Default (modified 2)');
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // reorderUserViews
 // ---------------------------------------------------------------------------
 
