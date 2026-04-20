@@ -91,11 +91,26 @@ fi
 
 # FD-mode flock: open the lock file on FD 9 and acquire an exclusive lock with
 # a bounded wait.  Using FD-mode (rather than command-mode) lets us interleave
-# logic between lock acquisition and exec — specifically, the elapsed-time log
-# line and the internal post-lock timeout applied in the next step.  The lock
-# stays held for the lifetime of FD 9, which is inherited by exec'd children,
-# so the serialization guarantee is preserved.  We use ">>" (append) rather
-# than ">" to avoid truncating the lock file on every acquisition.
+# logic between lock acquisition and the child invocation — specifically, the
+# elapsed-time log line and the internal post-lock timeout.  We use ">>"
+# (append) rather than ">" to avoid truncating the lock file on every
+# acquisition.
+#
+# FD 9 must NOT be inherited by the child process.  cargo spawns sccache
+# (via RUSTC_WRAPPER) as a detached background daemon that outlives cargo;
+# an inherited FD 9 would pin the open file description, keeping the flock
+# held forever after this wrapper exits — wedging the OCCT gate host-wide.
+# On 2026-04-20 this bug wedged the orchestrator merge queue: the exclusive
+# flock was held by a dead PID via a still-live sccache daemon that had
+# inherited FD 9.
+#
+# Invariant: the lock fd is held by THIS shell process only.  The child
+# (timeout → cargo → rustc → sccache, etc.) runs with FD 9 closed via
+# "9<&-", so no descendant can leak the lock beyond this wrapper's lifetime.
+# Because this shell remains alive (we do not exec) waiting on the child,
+# FD 9 stays open for the full duration of the cargo run — preserving
+# cross-worktree serialization — and closes on wrapper exit, releasing the
+# flock immediately.
 exec 9>>"$LOCK"
 # date +%s has 1-second resolution; acquisitions under 1s are reported as 0s.
 _FLOCK_START="$(date +%s)"
@@ -106,4 +121,7 @@ fi
 _ELAPSED=$(( $(date +%s) - _FLOCK_START ))
 echo "INFO: cargo-test-occt-gated.sh: acquired OCCT lock after ${_ELAPSED}s (LOCK=$LOCK)" >&2
 
-exec timeout --kill-after=60 "$TEST_TIMEOUT" "$@"
+# Run the child with FD 9 closed (9<&-).  set -e + bash's implicit
+# last-command exit-status propagation preserves the command's exit code
+# (including 124 for SIGTERM-on-timeout and 137 for SIGKILL escalation).
+timeout --kill-after=60 "$TEST_TIMEOUT" "$@" 9<&-
