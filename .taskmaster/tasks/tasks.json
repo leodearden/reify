@@ -42448,7 +42448,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:05:32.521Z"
+        "updatedAt": "2026-04-20T11:05:32.521Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/App.test.tsx"
+          ]
+        }
       },
       {
         "id": "2022",
