@@ -24,6 +24,12 @@ struct CliState {
     files: HashMap<String, FileEntry>,
     active_file: Option<String>,
     _project_dir: PathBuf,
+    /// Counts how many times `Engine::new(...)` has been called during this
+    /// context's lifetime.  Only compiled in test builds; used to assert that
+    /// engine construction happens at most once (lazy-init) rather than on
+    /// every load/update/open call.
+    #[cfg(test)]
+    engine_construction_count: usize,
 }
 
 /// CLI-mode implementation of ReifyToolContext.
@@ -42,6 +48,8 @@ impl CliToolContext {
                 files: HashMap::new(),
                 active_file: None,
                 _project_dir: project_dir,
+                #[cfg(test)]
+                engine_construction_count: 0,
             }),
         }
     }
@@ -96,6 +104,10 @@ impl CliToolContext {
         state.active_file = Some(abs_path);
         state.compiled = Some(compiled);
         state.engine = Some(engine);
+        #[cfg(test)]
+        {
+            state.engine_construction_count += 1;
+        }
 
         Ok(())
     }
@@ -382,6 +394,10 @@ impl ReifyToolContext for CliToolContext {
         }
         state.compiled = Some(compiled);
         state.engine = Some(engine);
+        #[cfg(test)]
+        {
+            state.engine_construction_count += 1;
+        }
 
         Ok(UpdateResult {
             success: true,
@@ -502,6 +518,10 @@ impl ReifyToolContext for CliToolContext {
         if let Some((compiled, engine)) = pipeline_result {
             state.compiled = Some(compiled);
             state.engine = Some(engine);
+            #[cfg(test)]
+            {
+                state.engine_construction_count += 1;
+            }
         }
 
         Ok(OpenFileInfo {
@@ -547,5 +567,56 @@ impl ReifyToolContext for CliToolContext {
 
     fn navigate_to_source(&self, _file: &str, _line: u32, _column: u32) -> Result<bool, ToolError> {
         Ok(false)
+    }
+}
+
+impl CliToolContext {
+    /// Return the number of times `Engine::new(...)` has been called during this
+    /// context's lifetime.  Used in unit tests to assert that engine construction
+    /// occurs at most once (lazy-init) rather than on every load/update/open call.
+    #[cfg(test)]
+    pub fn engine_construction_count(&self) -> usize {
+        self.lock_state().engine_construction_count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BRACKET_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    /// Verify that `update_source` reuses the Engine instance rather than constructing
+    /// a new one.  Fails against pre-fix code because `update_source` calls
+    /// `Engine::new` unconditionally, incrementing `engine_construction_count` to 2.
+    #[test]
+    fn update_source_reuses_engine_instance() {
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        // Establish an initial engine via load_file (count → 1).
+        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        let count_after_load = ctx.engine_construction_count();
+        assert_eq!(count_after_load, 1, "load_file should construct exactly one engine");
+
+        // Minor valid edit: add a trailing space — topology is unchanged.
+        let source =
+            std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let modified = format!("{source} ");
+        let result = ctx
+            .update_source(BRACKET_PATH, &modified)
+            .expect("update_source should not error");
+        assert!(result.success, "update_source should succeed with valid content");
+
+        let count_after_update = ctx.engine_construction_count();
+        assert_eq!(
+            count_after_update, 1,
+            "update_source must reuse the engine, not construct a new one \
+             (got engine_construction_count={count_after_update})"
+        );
     }
 }
