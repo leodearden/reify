@@ -863,6 +863,62 @@ impl CompiledExpr {
             content_hash,
         }
     }
+
+    /// Create a user-defined function call expression.
+    ///
+    /// Hash tag byte: `[6]`, matching the inline implementation in
+    /// `reify-compiler/src/expr.rs`. Combines the function name then each
+    /// argument's content hash in order, following the same pattern as
+    /// `method_call`.
+    pub fn user_function_call(
+        function_name: String,
+        args: Vec<CompiledExpr>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash =
+            ContentHash::of(&[6]).combine(ContentHash::of_str(&function_name));
+        for arg in &args {
+            content_hash = content_hash.combine(arg.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::UserFunctionCall { function_name, args },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a match expression.
+    ///
+    /// Hash tag byte: `[6]`, matching the inline implementation in
+    /// `reify-compiler/src/expr.rs`. Combines the discriminant hash then, for
+    /// each arm, each pattern string followed by the arm body hash — the same
+    /// combine order as the production inline code.
+    ///
+    /// **Note:** the compiler uses tag `[6]` for both `UserFunctionCall` and
+    /// `Match` (a pre-existing collision in the production path); this
+    /// constructor preserves that behaviour so hashes agree with what the
+    /// compiler emits.
+    pub fn match_expr(
+        discriminant: CompiledExpr,
+        arms: Vec<CompiledMatchArm>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash = ContentHash::of(&[6]).combine(discriminant.content_hash);
+        for arm in &arms {
+            for pattern in &arm.patterns {
+                content_hash = content_hash.combine(ContentHash::of_str(pattern));
+            }
+            content_hash = content_hash.combine(arm.body.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+            result_type,
+            content_hash,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -958,6 +1014,189 @@ mod tests {
         let mut count = 0;
         expr.walk(&mut |_| count += 1);
         assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn user_function_call_constructs_expected_expr() {
+        let arg1 = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let arg2 = CompiledExpr::literal(Value::Int(2), Type::Int);
+        let expr =
+            CompiledExpr::user_function_call("f".to_string(), vec![arg1, arg2], Type::Bool);
+
+        // Kind and fields.
+        match &expr.kind {
+            CompiledExprKind::UserFunctionCall { function_name, args } => {
+                assert_eq!(function_name, "f");
+                assert_eq!(args.len(), 2);
+                // Verify arg contents are preserved (not swapped or dropped).
+                assert!(
+                    matches!(&args[0].kind, CompiledExprKind::Literal(Value::Int(1))),
+                    "args[0] should be Literal(Int(1))"
+                );
+                assert!(
+                    matches!(&args[1].kind, CompiledExprKind::Literal(Value::Int(2))),
+                    "args[1] should be Literal(Int(2))"
+                );
+            }
+            other => panic!("expected UserFunctionCall, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::Bool);
+
+        // Content hash differs for different function names.
+        let other_name =
+            CompiledExpr::user_function_call("g".to_string(), vec![], Type::Bool);
+        assert_ne!(
+            expr.content_hash, other_name.content_hash,
+            "hash should differ for different function names"
+        );
+
+        // Content hash differs for different args.
+        let no_args = CompiledExpr::user_function_call("f".to_string(), vec![], Type::Bool);
+        assert_ne!(
+            expr.content_hash, no_args.content_hash,
+            "hash should differ for different args"
+        );
+    }
+
+    #[test]
+    fn match_expr_constructs_expected_expr() {
+        let discriminant = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let arm_body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let arm = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: arm_body,
+        };
+        let expr = CompiledExpr::match_expr(discriminant.clone(), vec![arm], Type::Bool);
+
+        // Kind and fields.
+        match &expr.kind {
+            CompiledExprKind::Match { discriminant: d, arms } => {
+                assert_eq!(arms.len(), 1);
+                assert_eq!(arms[0].patterns, vec!["_".to_string()]);
+                // Verify the discriminant was preserved (not dropped or replaced).
+                assert!(
+                    matches!(&d.kind, CompiledExprKind::Literal(Value::Int(1))),
+                    "discriminant should be Literal(Int(1))"
+                );
+                assert_eq!(d.result_type, Type::Int, "discriminant result_type should be Int");
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::Bool);
+
+        // Content hash differs when discriminant changes.
+        let different_discriminant = CompiledExpr::literal(Value::Int(99), Type::Int);
+        let arm2 = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let expr2 =
+            CompiledExpr::match_expr(different_discriminant, vec![arm2], Type::Bool);
+        assert_ne!(
+            expr.content_hash, expr2.content_hash,
+            "hash should differ when discriminant changes"
+        );
+
+        // Content hash differs when arm body changes.
+        let arm3 = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        };
+        let expr3 = CompiledExpr::match_expr(discriminant.clone(), vec![arm3], Type::Bool);
+        assert_ne!(
+            expr.content_hash, expr3.content_hash,
+            "hash should differ when arm body changes"
+        );
+
+        // Content hash differs when arm patterns change.
+        let arm4 = CompiledMatchArm {
+            patterns: vec!["A".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let arm5 = CompiledMatchArm {
+            patterns: vec!["B".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let expr4 = CompiledExpr::match_expr(discriminant.clone(), vec![arm4], Type::Bool);
+        let expr5 = CompiledExpr::match_expr(discriminant.clone(), vec![arm5], Type::Bool);
+        assert_ne!(
+            expr4.content_hash, expr5.content_hash,
+            "hash should differ when arm patterns change"
+        );
+
+        // Reproducibility: two constructions with identical inputs yield equal hashes.
+        let arm_a = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let arm_b = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        };
+        let expr_a = CompiledExpr::match_expr(discriminant.clone(), vec![arm_a], Type::Bool);
+        let expr_b = CompiledExpr::match_expr(discriminant, vec![arm_b], Type::Bool);
+        assert_eq!(
+            expr_a.content_hash, expr_b.content_hash,
+            "identical inputs should produce identical hashes"
+        );
+    }
+
+    /// Lock in the combine order for arms with multiple patterns.
+    ///
+    /// The hash for a match arm is: `pattern[0]` → `pattern[1]` → … → `body`.
+    /// Swapping pattern order must produce a different hash; adding a second
+    /// pattern must differ from the single-pattern case.  This test pins that
+    /// behaviour so a refactor that accidentally collapses or reorders combines
+    /// fails here rather than silently emitting wrong hashes.
+    #[test]
+    fn match_expr_multi_pattern_arm_combine_order() {
+        let discriminant = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+
+        // Arm with patterns ["A", "B"]
+        let arm_ab = CompiledMatchArm {
+            patterns: vec!["A".to_string(), "B".to_string()],
+            body: body.clone(),
+        };
+        let expr_ab = CompiledExpr::match_expr(discriminant.clone(), vec![arm_ab], Type::Bool);
+
+        // Arm with patterns ["B", "A"] — same set, reversed order.
+        let arm_ba = CompiledMatchArm {
+            patterns: vec!["B".to_string(), "A".to_string()],
+            body: body.clone(),
+        };
+        let expr_ba = CompiledExpr::match_expr(discriminant.clone(), vec![arm_ba], Type::Bool);
+
+        assert_ne!(
+            expr_ab.content_hash, expr_ba.content_hash,
+            "hash should differ when multi-pattern arm order is reversed: \
+             pattern combine order must be stable"
+        );
+
+        // Arm with only ["A"] — a strict prefix of ["A", "B"].
+        let arm_a_only = CompiledMatchArm {
+            patterns: vec!["A".to_string()],
+            body: body.clone(),
+        };
+        let expr_a_only =
+            CompiledExpr::match_expr(discriminant.clone(), vec![arm_a_only], Type::Bool);
+
+        assert_ne!(
+            expr_ab.content_hash, expr_a_only.content_hash,
+            "hash should differ between arm [\"A\",\"B\"] and arm [\"A\"]: \
+             second pattern must actually be combined"
+        );
+
+        // Reproducibility: same multi-pattern arm twice → equal hashes.
+        let arm_ab2 = CompiledMatchArm {
+            patterns: vec!["A".to_string(), "B".to_string()],
+            body: body.clone(),
+        };
+        let expr_ab2 = CompiledExpr::match_expr(discriminant, vec![arm_ab2], Type::Bool);
+        assert_eq!(
+            expr_ab.content_hash, expr_ab2.content_hash,
+            "identical multi-pattern arm inputs should produce identical hashes"
+        );
     }
 
     #[test]

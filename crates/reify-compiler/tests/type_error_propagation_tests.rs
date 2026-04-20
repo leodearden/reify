@@ -8,8 +8,8 @@
 
 use reify_test_support::compile_source;
 use reify_types::{
-    CompiledExpr, CompiledExprKind, CompiledMatchArm, ContentHash, QuantifierKind, SelectorKind,
-    Severity, Type, Value, ValueCellId,
+    CompiledExpr, CompiledExprKind, CompiledMatchArm, QuantifierKind, SelectorKind, Severity,
+    Type, Value, ValueCellId,
 };
 
 /// Walk a `CompiledExpr` tree and return the first node whose `result_type`
@@ -397,27 +397,6 @@ fn find_node_compound_variant_coverage() {
     let bool_leaf = || CompiledExpr::literal(Value::Bool(true), Type::Bool);
     let pred = &|n: &CompiledExpr| n.result_type == Type::Error;
 
-    // Helpers for variants without public constructors.
-    let make_user_fn_call = |args: Vec<CompiledExpr>| CompiledExpr {
-        kind: CompiledExprKind::UserFunctionCall {
-            function_name: "f".to_string(),
-            args,
-        },
-        result_type: Type::Bool,
-        content_hash: ContentHash::of(&[0xf0]),
-    };
-    let make_match = |discriminant: CompiledExpr, arm_body: CompiledExpr| CompiledExpr {
-        kind: CompiledExprKind::Match {
-            discriminant: Box::new(discriminant),
-            arms: vec![CompiledMatchArm {
-                patterns: vec!["_".to_string()],
-                body: arm_body,
-            }],
-        },
-        result_type: Type::Bool,
-        content_hash: ContentHash::of(&[0xf1]),
-    };
-
     let cases: Vec<(&str, CompiledExpr)> = vec![
         // SetLiteral — error in an element.
         (
@@ -444,16 +423,33 @@ fn find_node_compound_variant_coverage() {
             ),
         ),
         // UserFunctionCall — error in an argument.
-        ("UserFunctionCall arg", make_user_fn_call(vec![error_leaf()])),
+        (
+            "UserFunctionCall arg",
+            CompiledExpr::user_function_call("f".to_string(), vec![error_leaf()], Type::Bool),
+        ),
         // Lambda — error in the body expression.
         (
             "Lambda body",
             CompiledExpr::lambda(vec![], vec![], error_leaf(), vec![], Type::Error),
         ),
         // Match — error in the discriminant.
-        ("Match discriminant", make_match(error_leaf(), bool_leaf())),
+        (
+            "Match discriminant",
+            CompiledExpr::match_expr(
+                error_leaf(),
+                vec![CompiledMatchArm { patterns: vec!["_".to_string()], body: bool_leaf() }],
+                Type::Bool,
+            ),
+        ),
         // Match — error in an arm body.
-        ("Match arm body", make_match(bool_leaf(), error_leaf())),
+        (
+            "Match arm body",
+            CompiledExpr::match_expr(
+                bool_leaf(),
+                vec![CompiledMatchArm { patterns: vec!["_".to_string()], body: error_leaf() }],
+                Type::Bool,
+            ),
+        ),
         // Quantifier — error in the predicate (collection is non-Error).
         (
             "Quantifier predicate",

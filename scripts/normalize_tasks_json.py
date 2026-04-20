@@ -31,15 +31,19 @@ def normalize(data: dict) -> bool:
     """
     changed = False
 
-    def _normalize_deps(holder: dict) -> bool:
-        deps = holder.get("dependencies")
+    def _normalize_deps(node: dict) -> bool:
+        # dependencies lists are emitted by the Taskmaster CLI as JSON integers
+        # when a newly-added task's deps were passed as numerics; the schema
+        # validator (scripts/validate_tasks_json.py, invariant 2) rejects those.
+        deps = node.get("dependencies")
         if not isinstance(deps, list):
             return False
-        new_deps = [str(d) if isinstance(d, int) else d for d in deps]
-        if new_deps != deps:
-            holder["dependencies"] = new_deps
-            return True
-        return False
+        local = False
+        for i, dep in enumerate(deps):
+            if isinstance(dep, int):
+                deps[i] = str(dep)
+                local = True
+        return local
 
     for tag_data in data.values():
         if not isinstance(tag_data, dict):

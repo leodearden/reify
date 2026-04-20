@@ -69,7 +69,7 @@ export function createViewStateStore() {
     activeViewId: 'auto:default',
   });
 
-  // Internal non-reactive maps (rebuilt on setTree).
+  // Internal non-reactive maps (rebuilt on setTree / rebuildTreeMaps).
   let nodeByPath = new Map<string, EntityTreeNode>();
   let parentByPath = new Map<string, string | null>();
 
@@ -77,10 +77,20 @@ export function createViewStateStore() {
   // Tree registration
   // ---------------------------------------------------------------------------
 
-  function setTree(nodes: EntityTreeNode[]): void {
+  /**
+   * Internal helper: refresh nodeByPath / parentByPath without touching reactive
+   * state.  Used by regenerateAutoViews so the map rebuild does not produce a
+   * separate setState call; the stale-explicit prune is instead folded into the
+   * same produce block as the view replacement.
+   */
+  function rebuildTreeMaps(nodes: EntityTreeNode[]): void {
     nodeByPath = new Map();
     parentByPath = new Map();
     buildMaps(nodes, nodeByPath, parentByPath, null);
+  }
+
+  function setTree(nodes: EntityTreeNode[]): void {
+    rebuildTreeMaps(nodes);
     // Prune explicit overrides for paths that no longer exist in the tree.
     // Stale entries can accumulate when nodes are deleted or renamed upstream,
     // causing hasOverride / getEffectiveVisibility to return stale values for
@@ -131,6 +141,37 @@ export function createViewStateStore() {
   }
 
   // ---------------------------------------------------------------------------
+  // User-view mirror helper
+  // ---------------------------------------------------------------------------
+
+  /**
+   * When the active view is a user view (`activeViewId` starts with `'user:'`),
+   * mirror the current (non-null) entries in `s.explicit` back into
+   * `s.views[activeViewId].visibility`.
+   *
+   * Call this at the END of every mutation's `produce(s => ...)` block so that
+   * the stored user view always reflects what the user currently sees.  Null
+   * entries in `s.explicit` (cascade-clears that signal "inherit") are NOT
+   * mirrored because `ViewDefinition.visibility` is typed
+   * `Record<string, VisibilityState>` (non-null values only).
+   *
+   * Early-returns for auto:* and unknown active views — those are not targets
+   * of the live mirror.
+   */
+  function mirrorExplicitToActiveUserView(s: ViewState): void {
+    if (!s.activeViewId.startsWith('user:')) return;
+    const view = s.views[s.activeViewId];
+    if (!view) return;
+    const mirrored: Record<string, VisibilityState> = {};
+    for (const [path, val] of Object.entries(s.explicit)) {
+      if (val != null) {
+        mirrored[path] = val;
+      }
+    }
+    view.visibility = mirrored;
+  }
+
+  // ---------------------------------------------------------------------------
   // Mutations
   // ---------------------------------------------------------------------------
 
@@ -143,12 +184,20 @@ export function createViewStateStore() {
             s.explicit[desc] = null;
           }
         }
+        mirrorExplicitToActiveUserView(s);
       }),
     );
   }
 
   function setVisibilityWithoutCascade(path: string, vs: VisibilityState): void {
-    setState('explicit', path, vs);
+    // Use produce so the mirror step runs in the same reactive notification
+    // rather than introducing a separate setState call.
+    setState(
+      produce((s) => {
+        s.explicit[path] = vs;
+        mirrorExplicitToActiveUserView(s);
+      }),
+    );
   }
 
   function resetToInherit(path: string): void {
@@ -158,6 +207,7 @@ export function createViewStateStore() {
         for (const desc of walkDescendants(path, nodeByPath)) {
           s.explicit[desc] = null;
         }
+        mirrorExplicitToActiveUserView(s);
       }),
     );
   }
@@ -190,6 +240,7 @@ export function createViewStateStore() {
             s.explicit[desc] = null;
           }
         }
+        mirrorExplicitToActiveUserView(s);
       }),
     );
   }
@@ -208,6 +259,12 @@ export function createViewStateStore() {
   /**
    * Seed a view into state.views (used by regenerateAutoViews and tests).
    * Overwrites any existing entry with the same id.
+   *
+   * NOTE: When a `user:*` view is the active view, subsequent mutations
+   * (`setVisibility`, `setVisibilityWithoutCascade`, `resetToInherit`,
+   * `showOnly`, `cycleCascading`) will overwrite whatever this seed writes
+   * via the live-mirror mechanism.  Callers that need to preserve seeded
+   * state should switch away from a user view before calling mutations.
    */
   function seedView(view: ViewDefinition): void {
     setState(produce((s) => {
@@ -248,12 +305,22 @@ export function createViewStateStore() {
    * - active is `auto:*` and view was removed (purpose deactivated) → fall back
    *   to `auto:default` and copy its visibility.
    * - active is `user:*` and view exists → keep explicit entries for paths that
-   *   are still in the tree; leave NEW paths unset so defaultRuleFor handles them.
+   *   are still in the tree; leave NEW paths unset so defaultRuleFor handles them;
+   *   then mirror the pruned explicit back into the user view's stored visibility.
    * - active references a missing view → fall back to `auto:default`.
    *
-   * This function calls `setTree(tree)` internally so the internal nodeByPath /
-   * parentByPath maps stay in sync with the tree passed here.  Callers do not
-   * need to call `setTree` separately, though doing so is harmless (idempotent).
+   * This function keeps the internal nodeByPath / parentByPath maps in sync with
+   * the provided tree so callers do not need a separate `setTree` call.
+   *
+   * NOTE: This function performs exactly one `setState` — all work (stale-explicit
+   * prune, auto-view replacement, active-view reconciliation, user-view mirror) is
+   * batched into a single reactive notification.  Do NOT add a `setTree(tree)` call
+   * here; use `rebuildTreeMaps` instead to keep the map refresh non-reactive.
+   *
+   * NOTE on stale-explicit pruning: the prune loop runs only for the `user:*`
+   * branch (the only branch that preserves `s.explicit` rather than replacing it
+   * wholesale).  Auto:* and unknown branches overwrite `s.explicit` with a fresh
+   * view map, so a prior prune pass would be wasted work.
    *
    * NOTE on the `modified` flag: `ViewDefinition.modified` is tracked in the
    * type but `regenerateAutoViews` does not yet inspect it.  Auto-view edits
@@ -262,16 +329,16 @@ export function createViewStateStore() {
    * should preserve the user's edits when `modified === true`.
    */
   function regenerateAutoViews(tree: EntityTreeNode[], activePurposes: string[] = []): void {
-    // Keep the internal nodeByPath/parentByPath maps in sync so that
-    // getEffectiveVisibility works correctly after regeneration without
-    // requiring a separate setTree() call from the caller.
-    setTree(tree);
+    // Rebuild the internal maps without triggering a reactive setState so that
+    // the stale-explicit prune below can be folded into the same produce block
+    // as the view replacement — one reactive notification total.
+    rebuildTreeMaps(tree);
 
     const freshDefault = generateDefaultView(tree);
     const freshAllGeo = generateAllGeometryView(tree);
     const freshPurpose = generatePurposeViews(tree, activePurposes);
 
-    // Build set of all paths in the new tree for user-view pruning.
+    // Build set of all paths in the new tree — used by the user:* prune loop.
     const treePathSet = new Set(Object.keys(freshDefault.visibility));
 
     setState(produce((s) => {
@@ -306,6 +373,8 @@ export function createViewStateStore() {
         // Active is a user view. Keep entries for paths still in the tree;
         // remove entries for paths that are no longer in the tree;
         // leave new paths unset so defaultRuleFor applies via walk-up.
+        // NOTE: this is the only branch that preserves s.explicit rather than
+        // replacing it wholesale, so stale-path pruning is only needed here.
         const userView = s.views[activeId];
         if (!userView) {
           // User view was somehow deleted — fall back to default.
@@ -326,6 +395,14 @@ export function createViewStateStore() {
         s.activeViewId = 'auto:default';
         s.explicit = { ...freshDefault.visibility };
       }
+
+      // ------------------------------------------------------------------
+      // 3. Mirror user-view if applicable.
+      //    Runs after reconcile so that a user view's stored visibility stays
+      //    in sync with the (possibly pruned) explicit map after a tree change.
+      //    Early-returns for auto:* and unknown active views.
+      // ------------------------------------------------------------------
+      mirrorExplicitToActiveUserView(s);
     }));
   }
 

@@ -352,7 +352,7 @@ fn checkpoint_m11_field_sample_at_three() {
 
 // ── Type / Value variant coverage ────────────────────────────────────────────
 
-/// Compile-time exhaustiveness guard for all 27 `Type` variants.
+/// Compile-time exhaustiveness guard for all 28 `Type` variants.
 ///
 /// This function is NEVER called at runtime. Its only purpose is to force a
 /// compile error if a new `Type` variant is added without updating this list.
@@ -375,8 +375,11 @@ fn assert_all_type_variants_listed(t: &reify_types::Type) {
         Type::Enum(_) => true,
         // Collection types
         Type::List(_) | Type::Set(_) | Type::Map(..) | Type::Option(_) => true,
-        // Callable / generic
-        Type::Function { .. } | Type::TypeParam(_) | Type::StructureRef(_) => true,
+        // Callable / generic / nominal references
+        Type::Function { .. }
+        | Type::TypeParam(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_) => true,
         // Field mapping
         Type::Field { .. } => true,
         // Geometry handle

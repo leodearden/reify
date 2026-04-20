@@ -15,16 +15,18 @@ export interface KeyboardShortcutCallbacks {
 
 /**
  * Source of truth for bind→callback wiring: maps each shortcut id to the
- * corresponding callback key on KeyboardShortcutCallbacks. Exported so the
- * invariant test can assert every bound shortcut has an entry here.
+ * corresponding callback key on KeyboardShortcutCallbacks.
  *
- * Shortcuts without a callback (undo, redo, fitToView) are omitted —
- * the registry loop skips them when no entry is found here.
+ * A shortcut is absent when it is `disabled: true` on SHORTCUTS (undo, redo),
+ * or when it has no `bind` field (fitToView). The registry loop skips any id
+ * not found here.
  *
  * Keyed by ShortcutId so typos in shortcut IDs (e.g. 'toogleChat') are
  * caught at compile time rather than silently failing at runtime.
+ *
+ * Use `hasCallbackWiring(id)` to check membership from outside this module.
  */
-export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks>> = {
+const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks>> = {
   open:        'onOpen',
   save:        'onSave',
   export:      'onExportDialog',
@@ -33,6 +35,16 @@ export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCa
   reload:      'onReloadShortcut',
   help:        'onHelp',
 };
+
+/**
+ * Returns true when `id` has a callback wiring entry in ID_TO_CALLBACK, i.e.
+ * the shortcut is neither `disabled: true` on SHORTCUTS nor missing a `bind`.
+ * This is the narrow predicate the invariant test uses to check membership
+ * without depending on the mapping's value shape.
+ */
+export function hasCallbackWiring(id: ShortcutId): boolean {
+  return ID_TO_CALLBACK[id] !== undefined;
+}
 
 /**
  * Registers global keyboard shortcuts on mount and removes them on cleanup.

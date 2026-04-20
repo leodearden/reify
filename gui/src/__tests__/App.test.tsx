@@ -60,6 +60,7 @@ vi.mock('../editor/FileTabs', () => ({
 const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] };
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
+  getEntityTree: vi.fn().mockResolvedValue([]),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
@@ -100,6 +101,7 @@ beforeEach(() => {
   capturedEditorOnOpen = undefined;
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
+  vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
@@ -1862,7 +1864,12 @@ describe('App splitter max bounds', () => {
     // Property height should be clamped so constraint panel remains visible
     // containerHeight(600) - MIN_PANEL_HEIGHT(80) - 4(splitter) = 516
     const rows = sidePanel.style.gridTemplateRows;
-    const heightPx = parseInt(rows.split('px')[0], 10);
+    // Verify the DesignTree minmax track is still at the front and the layout shape is intact:
+    // minmax(120px, 1fr) <propertyHeight>px 4px <constraintTrack> <chatTrack>
+    expect(rows).toMatch(/^minmax\(120px, 1fr\) \d+px 4px/);
+    // Extract the standalone Npx tokens (not inside function parens) to read propertyHeight:
+    const standaloneMatches = rows.match(/\b(\d+)px(?=\s)/g)!;
+    const heightPx = parseInt(standaloneMatches[0], 10);
     expect(heightPx).toBeLessThanOrEqual(600 - 80 - 4);
     expect(heightPx).toBeGreaterThan(0);
   });
@@ -2651,5 +2658,171 @@ describe('App viewport multi-selection modifier routing', () => {
     await waitFor(() => {
       expect(bridge.getSourceLocation).toHaveBeenCalledWith('EntityD');
     });
+  });
+});
+
+describe('App DesignTree wiring', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+  }
+
+  it('renders DesignTree in the side panel', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode('Root.A'),
+      makeNode('Root.B'),
+    ]);
+    await renderAndWaitForReady();
+    expect(screen.getByTestId('design-tree')).toBeTruthy();
+    expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy();
+    expect(screen.getByTestId('tree-row-Root.B')).toBeTruthy();
+  });
+
+  it('fetches entity tree on init', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy();
+  });
+
+  it('re-fetches entity tree when evalStatus transitions from non-idle to idle', async () => {
+    let evalStatusCallback: ((data: any) => void) | undefined;
+    vi.mocked(bridge.onEvaluationStatus).mockImplementation(async (cb: any) => {
+      evalStatusCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalStatusCallback).toBeDefined());
+    // Initial fetch on mount
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
+
+    // Transition non-idle → idle triggers a re-fetch
+    evalStatusCallback!({ phase: 'evaluating' });
+    evalStatusCallback!({ phase: 'idle' });
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(2));
+
+    // Redundant idle → idle should NOT trigger another fetch
+    evalStatusCallback!({ phase: 'idle' });
+    // Give any potential spurious fetch a chance to fire
+    await new Promise((r) => setTimeout(r, 50));
+    expect(bridge.getEntityTree).toHaveBeenCalledTimes(2);
+  });
+
+  it('error phase → idle also triggers re-fetch', async () => {
+    let evalStatusCallback: ((data: any) => void) | undefined;
+    vi.mocked(bridge.onEvaluationStatus).mockImplementation(async (cb: any) => {
+      evalStatusCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalStatusCallback).toBeDefined());
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
+
+    // Transition error → idle should trigger a re-fetch (not just evaluating → idle)
+    evalStatusCallback!({ phase: 'error' });
+    evalStatusCallback!({ phase: 'idle' });
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(2));
+  });
+
+  it('initial idle phase does not cause spurious refetch beyond initApp fetch', async () => {
+    // The phase-tracking createEffect must NOT fire a fetch on its first run when the
+    // engine starts in idle — only initApp's explicit fetch should occur.
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    // Allow any spurious async effects to settle
+    await new Promise((r) => setTimeout(r, 50));
+    expect(bridge.getEntityTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('plain click on a DesignTree row navigates to source and selects the entity', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue({
+      file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5,
+    });
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+
+    await waitFor(() => expect(bridge.getSourceLocation).toHaveBeenCalledWith('Root.A'));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+  });
+
+  it('Ctrl+click on a DesignTree row toggles multi-selection without navigating to source', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A'), makeNode('Root.B')]);
+    await renderAndWaitForReady();
+
+    // Plain click on Root.A to seed selection and anchor
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+    vi.mocked(bridge.getSourceLocation).mockClear();
+
+    // Ctrl+click on Root.B to add to selection
+    fireEvent.click(screen.getByTestId('tree-row-Root.B'), { ctrlKey: true });
+
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toContain('Root.A');
+      expect(capturedViewportProps.selectedEntities).toContain('Root.B');
+    });
+    // getSourceLocation should NOT have been called for the Ctrl+click
+    expect(bridge.getSourceLocation).not.toHaveBeenCalled();
+  });
+
+  it('Shift+click with an anchor performs a range-select', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode('Root.A'),
+      makeNode('Root.B'),
+      makeNode('Root.C'),
+    ]);
+    await renderAndWaitForReady();
+
+    // Plain click Root.A to set anchor
+    fireEvent.click(screen.getByTestId('tree-row-Root.A'));
+    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+    vi.mocked(bridge.getSourceLocation).mockClear();
+
+    // Shift+click Root.C to range-select A…C
+    fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
+
+    await waitFor(() => {
+      const sel = capturedViewportProps.selectedEntities as string[];
+      expect(sel).toContain('Root.A');
+      expect(sel).toContain('Root.B');
+      expect(sel).toContain('Root.C');
+    });
+    // getSourceLocation should NOT have been called for the Shift+click (no source navigation)
+    expect(bridge.getSourceLocation).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+A inside the tree selects all visible paths', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A'), makeNode('Root.B')]);
+    await renderAndWaitForReady();
+
+    fireEvent.keyDown(screen.getByTestId('design-tree'), { key: 'a', ctrlKey: true });
+
+    await waitFor(() => {
+      const sel = capturedViewportProps.selectedEntities as string[];
+      expect(sel).toContain('Root.A');
+      expect(sel).toContain('Root.B');
+    });
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-selected')).toBe('true');
+  });
+
+  it('eye-icon click in DesignTree propagates to Viewport.entityVisibility', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+
+    // Wait for tree to populate: structure node default is 'show'
+    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('show'));
+
+    // First eye-icon click: show → ghost
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('ghost'));
+
+    // Second eye-icon click: ghost → hidden
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('hidden'));
   });
 });

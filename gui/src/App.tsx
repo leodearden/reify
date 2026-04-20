@@ -1,4 +1,4 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect, Show, For } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For } from 'solid-js';
 import { Viewport } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
@@ -13,6 +13,7 @@ import {
   ReloadPrompt,
   ChatPanel,
   MenuBar,
+  DesignTree,
 } from './panels';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -21,8 +22,10 @@ import { createEngineStore } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
+import { createViewStateStore } from './stores/viewStateStore';
 import {
   getInitialState,
+  getEntityTree as bridgeGetEntityTree,
   setParameter as bridgeSetParameter,
   exportGeometry as bridgeExportGeometry,
   pickSavePath,
@@ -45,7 +48,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, EntityTreeNode } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
@@ -80,6 +83,48 @@ const App: Component = () => {
       });
     },
   });
+
+  const viewStateStore = createViewStateStore();
+  const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
+
+  // Reactive counter incremented each time viewStateStore.setTree is called.
+  // This lets the effectiveVisibility memo re-evaluate AFTER nodeByPath is rebuilt,
+  // avoiding a race where the memo re-runs before the createEffect below has executed.
+  const [treeGeneration, setTreeGeneration] = createSignal(0);
+
+  // Keep viewStateStore's internal path-map in sync with the latest entity tree.
+  // Increment treeGeneration AFTER setTree so that effectiveVisibility always
+  // evaluates getAllEffective() with an up-to-date nodeByPath.
+  createEffect(() => {
+    viewStateStore.setTree(entityTree());
+    setTreeGeneration((v) => v + 1);
+  });
+
+  // Effective visibility memo: re-evaluates whenever explicit overrides or treeGeneration
+  // changes.  treeGeneration is incremented by the effect above after setTree runs, which
+  // guarantees that getAllEffective() sees the up-to-date nodeByPath on every call.
+  const effectiveVisibility = createMemo(() => {
+    void treeGeneration(); // track treeGeneration so the memo re-runs after setTree
+    return viewStateStore.getAllEffective();
+  });
+
+  // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
+  // prevPhase starts as undefined so the first effect run (which just reads the
+  // initial phase) never triggers a fetch — only genuine non-idle→idle transitions
+  // do. This avoids races with initApp's explicit fetch regardless of what phase
+  // the engine reports during initialisation.
+  {
+    let prevPhase: string | undefined;
+    createEffect(() => {
+      const phase = engineStore.state.evalStatus.phase;
+      if (prevPhase !== undefined && phase === 'idle' && prevPhase !== 'idle') {
+        bridgeGetEntityTree()
+          .then((t) => { if (alive) setEntityTree(t); })
+          .catch((err) => console.error('[entity-tree] refresh failed:', err));
+      }
+      prevPhase = phase;
+    });
+  }
 
   const savedLayout = loadPanelLayout();
   const [editorWidth, setEditorWidth] = createSignal(savedLayout?.editorWidth ?? DEFAULT_EDITOR_WIDTH);
@@ -252,6 +297,15 @@ const App: Component = () => {
       console.error('getInitialState failed:', err);
       setInitPhase('error');
       return;
+    }
+
+    // Fetch the initial entity tree after the engine state is loaded.
+    try {
+      const tree = await bridgeGetEntityTree();
+      if (!alive) return;
+      setEntityTree(tree);
+    } catch (err) {
+      console.error('[entity-tree] initial fetch failed:', err);
     }
 
     if (!alive) return;
@@ -502,6 +556,18 @@ const App: Component = () => {
     });
   }
 
+  function handleDesignTreeSelect(path: string, mods: { ctrl: boolean; shift: boolean }) {
+    if (mods.ctrl) {
+      selectionStore.toggleSelect(path);
+      return;
+    }
+    if (mods.shift) {
+      selectionStore.rangeSelect([path]);
+      return;
+    }
+    handleViewportSelect(path, mods);
+  }
+
   function handleGroupDoubleClick(groupName: string) {
     navigateToEntity(groupName, {
       focusEntity: bridgeFocusEntity,
@@ -590,6 +656,7 @@ const App: Component = () => {
                 evalStatus={engineStore.state.evalStatus}
                 flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
                 fitToViewRef={(fn) => { fitToViewFn = fn; }}
+                entityVisibility={effectiveVisibility()}
               />
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />
@@ -597,8 +664,18 @@ const App: Component = () => {
               ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
-              style={{ 'grid-template-rows': `${propertyHeight()}px 4px 1fr 1fr` }}
+              style={{ 'grid-template-rows': `minmax(120px, 1fr) ${propertyHeight()}px 4px 1fr ${chatOpen() ? '1fr' : '0'}` }}
             >
+              <DesignTree
+                tree={entityTree()}
+                viewStateStore={viewStateStore}
+                selectedEntity={selectionStore.state.selectedEntity}
+                selectedEntities={selectionStore.state.selectedEntities}
+                anchorEntity={selectionStore.state.anchorEntity}
+                onSelect={handleDesignTreeSelect}
+                onRangeSelect={selectionStore.rangeSelect}
+                onSelectAll={selectionStore.selectAll}
+              />
               <PropertyEditor
                 values={engineStore.state.values}
                 selectedEntity={selectionStore.state.selectedEntity}
