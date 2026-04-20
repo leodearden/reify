@@ -886,6 +886,7 @@ pub(crate) fn compile_with_prelude_refs(
                     target_name,
                     arg_name,
                     arg_type,
+                    arg_call_name,
                     sub_name: _,
                     span,
                 } => {
@@ -893,6 +894,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &target_name,
                         &arg_name,
                         &arg_type,
+                        arg_call_name.as_deref(),
                         span,
                         &template_registry,
                         &trait_registry,

@@ -904,6 +904,12 @@ pub(crate) fn collect_all_requirements(
 /// Verify that a compiled arg value's type conforms to the declared param type
 /// in the target structure when the declared type is `Type::TraitObject(trait_name)`.
 ///
+/// `arg_call_name` carries the callee name when the arg expression was a zero-arg
+/// `FunctionCall` (e.g. `Steel()` → `Some("Steel")`).  The expression compiler
+/// defaults to `Type::Real` for unknown zero-arg calls, but if `arg_call_name` is a
+/// known structure in the template registry we treat it as `StructureRef(name)` for
+/// the conformance check.
+///
 /// Skips silently when:
 /// - The target template is not found (external/unknown structure).
 /// - The arg name is not found in the target's value cells (positional arg or error).
@@ -915,6 +921,7 @@ pub(crate) fn check_trait_arg_conformance(
     target_name: &str,
     arg_name: &str,
     arg_type: &Type,
+    arg_call_name: Option<&str>,
     span: SourceSpan,
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
@@ -940,8 +947,34 @@ pub(crate) fn check_trait_arg_conformance(
         return; // Non-trait param — existing type_compatible path handles it.
     };
 
-    // Check conformance based on arg_type.
-    match arg_type {
+    // Resolve the effective arg type: when the compiled arg_type defaulted to
+    // Type::Real from a zero-arg FunctionCall and the call name is a known
+    // structure template, promote to StructureRef so the conformance check can
+    // walk the structure's trait bounds.
+    let promoted_struct_name: Option<String> =
+        if matches!(arg_type, Type::Real) {
+            arg_call_name.and_then(|call_name| {
+                if template_registry.contains_key(call_name) {
+                    Some(call_name.to_string())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
+    let effective_arg_type: &Type;
+    let promoted_type: Type;
+    if let Some(ref struct_name) = promoted_struct_name {
+        promoted_type = Type::StructureRef(struct_name.clone());
+        effective_arg_type = &promoted_type;
+    } else {
+        effective_arg_type = arg_type;
+    }
+
+    // Check conformance based on effective_arg_type.
+    match effective_arg_type {
         Type::StructureRef(struct_name) => {
             // Look up the arg's structure template and walk its trait bounds.
             let Some(arg_template) = template_registry.get(struct_name.as_str()) else {
@@ -988,6 +1021,8 @@ pub(crate) fn check_trait_arg_conformance(
         }
         _ => {
             // Neither StructureRef nor TraitObject — cannot conform to a trait.
+            // The original arg_type is used in the message (not the effective type,
+            // which equals arg_type here since promotion didn't apply).
             diagnostics.push(
                 Diagnostic::error(format!(
                     "type '{}' does not conform to trait '{}' required by param '{}'",

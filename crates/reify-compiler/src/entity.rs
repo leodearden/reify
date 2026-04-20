@@ -841,10 +841,23 @@ pub(crate) fn compile_entity(
                 // forward-referenced target structures (and their param types)
                 // are available in the template registry during the post-pass.
                 for (arg_name, compiled_arg) in &compiled_args {
+                    // When the arg was compiled from a zero-arg FunctionCall
+                    // expression (e.g. `Steel()`), capture the callee name so
+                    // the post-pass can recognise structure-instantiation calls
+                    // whose result_type defaulted to Type::Real.
+                    let arg_call_name = match &compiled_arg.kind {
+                        CompiledExprKind::FunctionCall { function, args }
+                            if args.is_empty() =>
+                        {
+                            Some(function.name.clone())
+                        }
+                        _ => None,
+                    };
                     pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
                         target_name: sub.structure_name.clone(),
                         arg_name: arg_name.clone(),
                         arg_type: compiled_arg.result_type.clone(),
+                        arg_call_name,
                         sub_name: sub.name.clone(),
                         span: sub.span,
                     });
@@ -1716,10 +1729,19 @@ pub(crate) enum PendingBoundCheck {
     /// Deferred call-site conformance check for a trait-typed param slot.
     /// Enqueued at the sub-compile site; dispatched in the post-compilation
     /// pass where both the template registry and trait registry are available.
+    ///
+    /// `arg_call_name` captures the function-call name when the arg was compiled
+    /// from a zero-arg `FunctionCall` expression (e.g. `Steel()` → Some("Steel")).
+    /// The post-pass uses this to recognise structure-instantiation calls whose
+    /// `arg_type` resolved to `Type::Real` (the expression compiler's fallback
+    /// for zero-arg unknown functions) and look them up in the template registry.
     TraitArgConformance {
         target_name: String,
         arg_name: String,
         arg_type: Type,
+        /// When the compiled arg was a zero-arg FunctionCall (potential structure
+        /// instantiation), the callee name. `None` for non-call expressions.
+        arg_call_name: Option<String>,
         sub_name: String,
         span: SourceSpan,
     },
