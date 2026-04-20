@@ -40393,11 +40393,11 @@
         "description": "In gui/src-tauri/src/engine.rs `get_entity_tree` (around lines 496-504), the template-name uniqueness invariant is currently enforced only via `debug_assert!`. In release builds, duplicates silently fall back to first-match behavior via `build_sub_node`'s lookup, which could produce silently inconsistent entity trees if a future refactor (macros, synthetic templates, module merging) breaks the compiler's well-formed-module guarantee.\n\nAdd a release-mode `tracing::warn!` (log-and-skip / log-and-continue) on first duplicate detection so the misbehaviour surfaces in logs rather than producing silently wrong trees. Keep the existing `debug_assert!` as well, or replace it with the runtime check.\n\nSource: reviewer_comprehensive on task 1783 (suggestion, optional graceful-degradation hardening).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:16:40.215Z",
+        "updatedAt": "2026-04-20T13:48:20.918Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/engine.rs",
@@ -43103,9 +43103,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:45:30.382Z",
+      "lastModified": "2026-04-20T13:48:20.925Z",
       "taskCount": 2048,
-      "completedCount": 1745,
+      "completedCount": 1746,
       "tags": [
         "master"
       ]
