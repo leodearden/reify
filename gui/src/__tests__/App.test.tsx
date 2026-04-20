@@ -669,6 +669,10 @@ describe('App navigation wiring', () => {
       const container = screen.getByTestId('property-editor');
       const selectedGroups = container.querySelectorAll('[data-selected]');
       expect(selectedGroups.length).toBe(1);
+      // Primary identity check: exact entity path routed through selectionStore to Viewport prop
+      expect(capturedViewportProps.selectedEntity).toBe('Bracket');
+      // DOM-reflected identity check: the selected group header text must be 'Bracket'
+      expect(selectedGroups[0].textContent).toContain('Bracket');
     });
   });
 
