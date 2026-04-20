@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRoot } from 'solid-js';
-import { useKeyboardShortcuts, ID_TO_CALLBACK } from '../hooks/useKeyboardShortcuts';
-import { SHORTCUTS, type ShortcutId } from '../shortcuts';
+import { useKeyboardShortcuts, hasCallbackWiring } from '../hooks/useKeyboardShortcuts';
+import { SHORTCUTS } from '../shortcuts';
 
 describe('useKeyboardShortcuts', () => {
   let dispose: () => void;
@@ -351,8 +351,8 @@ describe('useKeyboardShortcuts', () => {
   });
 });
 
-describe('ID_TO_CALLBACK wiring invariant', () => {
-  it('every shortcut with a bind — minus known no-callback IDs — has an ID_TO_CALLBACK entry', () => {
+describe('hasCallbackWiring invariant', () => {
+  it('every enabled shortcut with a bind has a callback wiring', () => {
     // Derive expected set directly from SHORTCUTS: every shortcut with a bind
     // that is not disabled. This way the test self-updates when shortcuts gain
     // or lose their `disabled` flag rather than requiring a parallel list.
@@ -362,14 +362,14 @@ describe('ID_TO_CALLBACK wiring invariant', () => {
       .filter((s) => s.bind !== undefined && !s.disabled)
       .map((s) => s.id)
       .sort();
-    const actual = Object.keys(ID_TO_CALLBACK).sort();
+    const actual = SHORTCUTS.filter((s) => hasCallbackWiring(s.id)).map((s) => s.id).sort();
     expect(actual).toEqual(expected);
   });
 
-  it('every ID_TO_CALLBACK key is a shortcut with a bind', () => {
-    for (const id of Object.keys(ID_TO_CALLBACK) as ShortcutId[]) {
-      const shortcut = SHORTCUTS.find((s) => s.id === id);
-      expect(shortcut?.bind, `shortcut "${id}" should have a bind field`).toBeDefined();
+  it('every wired shortcut has a bind', () => {
+    for (const s of SHORTCUTS) {
+      if (!hasCallbackWiring(s.id)) continue;
+      expect(s.bind, `wired shortcut "${s.id}" must have a bind`).toBeDefined();
     }
   });
 });
