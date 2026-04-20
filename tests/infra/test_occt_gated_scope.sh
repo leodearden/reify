@@ -116,4 +116,58 @@ assert "gated debug invocation does not contain --workspace" \
 assert "gated release invocation does not contain --workspace" \
     bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' --workspace'"
 
+# ---------------------------------------------------------------------------
+# Tests 7–11: ungated-exclude assertions
+# ---------------------------------------------------------------------------
+# Extract ungated workspace passes: segments with 'cargo test --workspace' but
+# NOT containing 'cargo-test-occt-gated.sh'.
+UNGATED_DEBUG="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g' \
+    | grep 'cargo test --workspace' | grep -v 'cargo-test-occt-gated\.sh' | grep -v -- '--release' || true)"
+UNGATED_RELEASE="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g' \
+    | grep 'cargo test --workspace' | grep -v 'cargo-test-occt-gated\.sh' | grep -- '--release' || true)"
+export UNGATED_DEBUG UNGATED_RELEASE
+
+echo ""
+echo "--- Test 7: ungated workspace passes exist (one debug, one release) ---"
+assert "ungated debug pass (cargo test --workspace, no gate, no --release) exists" \
+    test -n "$UNGATED_DEBUG"
+assert "ungated release pass (cargo test --workspace --release, no gate) exists" \
+    test -n "$UNGATED_RELEASE"
+
+echo ""
+echo "--- Test 8: ungated passes have --exclude <crate> for each declared crate ---"
+while IFS= read -r crate; do
+    [ -z "$crate" ] && continue
+    assert "ungated debug has '--exclude $crate'" \
+        bash -c "printf '%s' \"\$UNGATED_DEBUG\" | grep -qF ' --exclude $crate'"
+    assert "ungated release has '--exclude $crate'" \
+        bash -c "printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' --exclude $crate'"
+done <<< "$DECLARED_CRATES"
+
+echo ""
+echo "--- Test 9: ungated passes are wrapped in 'timeout --kill-after=60 [0-9]+m' ---"
+assert "ungated debug invocation contains 'timeout --kill-after=60 [0-9]+m'" \
+    bash -c "printf '%s' \"\$UNGATED_DEBUG\" | grep -qE 'timeout[[:space:]]+--kill-after=60[[:space:]]+[0-9]+m[[:space:]]'"
+assert "ungated release invocation contains 'timeout --kill-after=60 [0-9]+m'" \
+    bash -c "printf '%s' \"\$UNGATED_RELEASE\" | grep -qE 'timeout[[:space:]]+--kill-after=60[[:space:]]+[0-9]+m[[:space:]]'"
+
+echo ""
+echo "--- Test 10: gated debug appears before ungated debug in test_command ---"
+_ALL_SEGS="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g')"
+_GATED_DEBUG_IDX="$(printf '%s\n' "$_ALL_SEGS" \
+    | grep -n 'cargo-test-occt-gated\.sh' | grep -v -- '--release' | head -1 | cut -d: -f1 || true)"
+_UNGATED_DEBUG_IDX="$(printf '%s\n' "$_ALL_SEGS" \
+    | grep -n 'cargo test --workspace' | grep -v 'cargo-test-occt-gated' | grep -v -- '--release' | head -1 | cut -d: -f1 || true)"
+assert "gated debug (segment ${_GATED_DEBUG_IDX:-?}) precedes ungated debug (segment ${_UNGATED_DEBUG_IDX:-?})" \
+    bash -c "[ '${_GATED_DEBUG_IDX:-0}' -gt 0 ] && [ '${_UNGATED_DEBUG_IDX:-0}' -gt 0 ] && [ '${_GATED_DEBUG_IDX:-0}' -lt '${_UNGATED_DEBUG_IDX:-0}' ]"
+
+echo ""
+echo "--- Test 11: gated release appears before ungated release in test_command ---"
+_GATED_RELEASE_IDX="$(printf '%s\n' "$_ALL_SEGS" \
+    | grep -n 'cargo-test-occt-gated\.sh' | grep -- '--release' | head -1 | cut -d: -f1 || true)"
+_UNGATED_RELEASE_IDX="$(printf '%s\n' "$_ALL_SEGS" \
+    | grep -n 'cargo test --workspace' | grep -v 'cargo-test-occt-gated' | grep -- '--release' | head -1 | cut -d: -f1 || true)"
+assert "gated release (segment ${_GATED_RELEASE_IDX:-?}) precedes ungated release (segment ${_UNGATED_RELEASE_IDX:-?})" \
+    bash -c "[ '${_GATED_RELEASE_IDX:-0}' -gt 0 ] && [ '${_UNGATED_RELEASE_IDX:-0}' -gt 0 ] && [ '${_GATED_RELEASE_IDX:-0}' -lt '${_UNGATED_RELEASE_IDX:-0}' ]"
+
 test_summary
