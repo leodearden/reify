@@ -481,9 +481,9 @@ impl ReifyToolContext for CliToolContext {
             .to_string_lossy()
             .to_string();
 
-        // If it's a .ri file, parse/compile/eval BEFORE committing state.
+        // If it's a .ri file, parse/compile BEFORE committing state.
         // On parse failure, still register the file but don't update compiled/engine.
-        let pipeline_result = if file_path.ends_with(".ri") {
+        let pipeline_result: Option<reify_compiler::CompiledModule> = if file_path.ends_with(".ri") {
             let module_name = std::path::Path::new(file_path)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -492,11 +492,7 @@ impl ReifyToolContext for CliToolContext {
             let parsed = reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
 
             if parsed.errors.is_empty() {
-                let compiled = reify_compiler::compile(&parsed);
-                let checker = reify_constraints::SimpleConstraintChecker;
-                let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-                engine.eval(&compiled);
-                Some((compiled, engine))
+                Some(reify_compiler::compile(&parsed))
             } else {
                 None
             }
@@ -514,13 +510,9 @@ impl ReifyToolContext for CliToolContext {
         );
         state.active_file = Some(abs_path.clone());
 
-        if let Some((compiled, engine)) = pipeline_result {
+        if let Some(compiled) = pipeline_result {
+            ensure_engine(&mut state).eval(&compiled);
             state.compiled = Some(compiled);
-            state.engine = Some(engine);
-            #[cfg(test)]
-            {
-                state.engine_construction_count += 1;
-            }
         }
 
         Ok(OpenFileInfo {
