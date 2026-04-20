@@ -7,7 +7,7 @@
 //! scope.
 
 use reify_compiler::RequirementKind;
-use reify_test_support::{compile_source, compile_source_with_stdlib, parse_and_compile_with_stdlib};
+use reify_test_support::{compile_source, compile_source_with_stdlib, parse_and_compile_with_stdlib, warnings_only};
 use reify_types::{Severity, Type};
 
 /// Structure member: `param m : Material` should resolve to `Type::TraitObject("Material")`.
@@ -332,12 +332,10 @@ fn alias_wins_over_trait_name_for_param_type() {
 /// This MUST fail on the base branch (before step-2 implementation) because no
 /// call-site conformance check exists yet.
 ///
-/// NOTE: This source also produces a Warning-severity diagnostic
-/// "cannot infer return type of zero-arg function NotAMaterial" (emitted by
-/// expr.rs when a structure name is used in call position before the template
-/// registry is fully populated). This warning co-occurs with the conformance
-/// error and is intentional/expected — the conformance error is the one the
-/// user cares about. The test filters to `Severity::Error` to remain focused.
+/// The test also asserts the co-occurring Warning-severity
+/// "cannot infer return type of zero-arg function NotAMaterial" diagnostic
+/// (emitted by expr.rs when a structure name is used in call position before
+/// the template registry populates).
 #[test]
 fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
     // NotAMaterial does NOT declare `: Material` — it just has `density : Real`.
@@ -363,6 +361,16 @@ fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
                 && d.message.contains("Material")),
         "expected a 'does not conform to trait Material' error, got: {:?}",
         errors
+    );
+
+    let warnings = warnings_only(&module);
+    assert!(
+        warnings
+            .iter()
+            .any(|d| d.message.contains("cannot infer return type of zero-arg function")
+                && d.message.contains("NotAMaterial")),
+        "expected a Warning-severity 'cannot infer return type of zero-arg function NotAMaterial' diagnostic co-occurring with the conformance error, got: {:?}",
+        warnings
     );
 }
 
