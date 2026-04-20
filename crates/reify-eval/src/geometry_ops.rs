@@ -658,11 +658,35 @@ pub(crate) fn compile_geometry_op(
                         guide: guide_handle,
                     })
                 }
-                // NOTE: LoftGuided arm is added in task-322 step 16. The
-                // catch-all below keeps the eval lib compiling while the
-                // test lands (TDD: test fails at runtime until the impl
-                // arm lands).
-                reify_compiler::SweepKind::LoftGuided => None,
+                reify_compiler::SweepKind::LoftGuided => {
+                    // The compiler packs the section profiles in
+                    // `profiles[..len-1]` and the trailing guide as the
+                    // final entry, matching the surface convention
+                    // `loft_guided(p1, p2, ..., guide)`. Split here so
+                    // GeometryOp::LoftGuided carries separate profiles +
+                    // guides vecs.
+                    if profiles.len() < 3 {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "loft_guided dropped: expected at least 2 \
+                             profile refs + 1 guide ref (3 total), got {}",
+                            profiles.len()
+                        )));
+                        return None;
+                    }
+                    let guide_ref = profiles.last()?;
+                    let profile_refs = &profiles[..profiles.len() - 1];
+                    let resolved_profiles: Option<Vec<GeometryHandleId>> = profile_refs
+                        .iter()
+                        .map(|r| resolve_geom_ref(r, step_handles, diagnostics))
+                        .collect();
+                    let resolved_profiles = resolved_profiles?;
+                    let resolved_guide =
+                        resolve_geom_ref(guide_ref, step_handles, diagnostics)?;
+                    Some(reify_types::GeometryOp::LoftGuided {
+                        profiles: resolved_profiles,
+                        guides: vec![resolved_guide],
+                    })
+                }
             }
         }
         CompiledGeometryOp::Curve { kind, args } => {
