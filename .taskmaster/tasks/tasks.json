@@ -42238,7 +42238,19 @@
           "480"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/src/snapshot.rs",
+            "crates/reify-eval/src/dirty.rs",
+            "crates/reify-eval/src/demand.rs",
+            "crates/reify-eval/src/deps.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": "2014",
@@ -42249,7 +42261,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/src/mcp_context.rs",
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/src",
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": "2015",
@@ -42260,7 +42282,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/src/mcp_context.rs",
+            "crates/reify-cli/tests/mcp_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/src",
+            "crates/reify-cli/tests"
+          ]
+        }
       },
       {
         "id": "2016",
