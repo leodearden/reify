@@ -30,6 +30,11 @@ pub use dimension::{DimensionVector, Rational};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
     DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, SelectorKind, UnOp,
+    TAG_AD_HOC_SELECTOR, TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE,
+    TAG_FUNCTION_CALL, TAG_INDEX_ACCESS, TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL,
+    TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS, TAG_METHOD_CALL, TAG_OPTION_NONE,
+    TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR, TAG_SET_LITERAL,
+    TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
 };
 pub use geometry::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,

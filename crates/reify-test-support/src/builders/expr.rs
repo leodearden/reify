@@ -1,6 +1,7 @@
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    ResolvedFunction, Type, UnOp, Value, ValueCellId,
+    ResolvedFunction, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_USER_FUNCTION_CALL, Type, UnOp,
+    Value, ValueCellId,
 };
 
 // --- Expression builders ---
@@ -156,7 +157,7 @@ pub fn conditional_expr(
     else_branch: CompiledExpr,
 ) -> CompiledExpr {
     let result_type = then_branch.result_type.clone();
-    let content_hash = ContentHash::of(&[5])
+    let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
         .combine(condition.content_hash)
         .combine(then_branch.content_hash)
         .combine(else_branch.content_hash);
@@ -178,7 +179,8 @@ pub fn fn_call(
     args: Vec<CompiledExpr>,
     result_type: Type,
 ) -> CompiledExpr {
-    let mut content_hash = ContentHash::of(&[4]).combine(ContentHash::of_str(qualified_name));
+    let mut content_hash =
+        ContentHash::of(&[TAG_FUNCTION_CALL]).combine(ContentHash::of_str(qualified_name));
     for arg in &args {
         content_hash = content_hash.combine(arg.content_hash);
     }
@@ -201,7 +203,8 @@ pub fn user_fn_call(
     args: Vec<CompiledExpr>,
     result_type: Type,
 ) -> CompiledExpr {
-    let mut content_hash = ContentHash::of(&[6]).combine(ContentHash::of_str(function_name));
+    let mut content_hash =
+        ContentHash::of(&[TAG_USER_FUNCTION_CALL]).combine(ContentHash::of_str(function_name));
     for arg in &args {
         content_hash = content_hash.combine(arg.content_hash);
     }

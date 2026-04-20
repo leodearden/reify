@@ -209,34 +209,40 @@ pub struct CompiledFnBody {
     pub result_expr: CompiledExpr,
 }
 
-// Content-hash tag-byte allocation for `CompiledExpr` constructors
-// ---------------------------------------------------------------
-// Each constructor seeds its hash with a unique tag byte so that
-// structurally-different expression kinds can never collide on the same
-// `ContentHash` for identical sub-hashes.  Current allocation:
-//
-//   [0]  Literal            [10] MapLiteral
-//   [1]  ValueRef           [11] IndexAccess
-//   [2]  BinOp              [12] MethodCall
-//   [3]  UnOp               [13] Quantifier
-//   [4]  FunctionCall       [14] OptionSome
-//   [5]  Conditional        [15] OptionNone
-//   [6]  UserFunctionCall   [16] MetaAccess
-//   [7]  Lambda             [17] DeterminacyPredicate
-//   [8]  ListLiteral        [18] RangeConstructor
-//   [9]  SetLiteral         [19] AdHocSelector
-//
-//   [20]–[23] — intentionally skipped; used by `CachedResult::content_hash`
-//               in `reify-eval/src/cache.rs` (a distinct hash domain, but
-//               sharing bytes with it would confuse future readers)
-//
-//   [24] Match
-//
-// Next new `CompiledExpr` variant: use [25].
+/// Content-hash tag bytes for each `CompiledExprKind` variant.
+///
+/// Each constructor seeds its hash with its tag so structurally-different
+/// expression kinds cannot collide on identical sub-hashes.
+///
+/// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
+/// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
+/// confuse future readers). Next new `CompiledExpr` variant: use `[25]`.
+pub const TAG_LITERAL: u8 = 0;
+pub const TAG_VALUE_REF: u8 = 1;
+pub const TAG_BIN_OP: u8 = 2;
+pub const TAG_UN_OP: u8 = 3;
+pub const TAG_FUNCTION_CALL: u8 = 4;
+pub const TAG_CONDITIONAL: u8 = 5;
+pub const TAG_USER_FUNCTION_CALL: u8 = 6;
+pub const TAG_LAMBDA: u8 = 7;
+pub const TAG_LIST_LITERAL: u8 = 8;
+pub const TAG_SET_LITERAL: u8 = 9;
+pub const TAG_MAP_LITERAL: u8 = 10;
+pub const TAG_INDEX_ACCESS: u8 = 11;
+pub const TAG_METHOD_CALL: u8 = 12;
+pub const TAG_QUANTIFIER: u8 = 13;
+pub const TAG_OPTION_SOME: u8 = 14;
+pub const TAG_OPTION_NONE: u8 = 15;
+pub const TAG_META_ACCESS: u8 = 16;
+pub const TAG_DETERMINACY_PREDICATE: u8 = 17;
+pub const TAG_RANGE_CONSTRUCTOR: u8 = 18;
+pub const TAG_AD_HOC_SELECTOR: u8 = 19;
+pub const TAG_MATCH: u8 = 24;
+
 impl CompiledExpr {
     /// Create a literal expression.
     pub fn literal(value: Value, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[0]).combine(value.content_hash());
+        let content_hash = ContentHash::of(&[TAG_LITERAL]).combine(value.content_hash());
         CompiledExpr {
             kind: CompiledExprKind::Literal(value),
             result_type,
@@ -246,7 +252,7 @@ impl CompiledExpr {
 
     /// Create a value reference expression.
     pub fn value_ref(id: ValueCellId, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[1]).combine(ContentHash::of_str(&format!("{}", id)));
+        let content_hash = ContentHash::of(&[TAG_VALUE_REF]).combine(ContentHash::of_str(&format!("{}", id)));
         CompiledExpr {
             kind: CompiledExprKind::ValueRef(id),
             result_type,
@@ -256,7 +262,7 @@ impl CompiledExpr {
 
     /// Create a binary operation expression.
     pub fn binop(op: BinOp, left: CompiledExpr, right: CompiledExpr, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[2, op as u8])
+        let content_hash = ContentHash::of(&[TAG_BIN_OP, op as u8])
             .combine(left.content_hash)
             .combine(right.content_hash);
         CompiledExpr {
@@ -375,7 +381,7 @@ impl CompiledExpr {
 
     /// Create a unary operation expression.
     pub fn unop(op: UnOp, operand: CompiledExpr, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[3, op as u8]).combine(operand.content_hash);
+        let content_hash = ContentHash::of(&[TAG_UN_OP, op as u8]).combine(operand.content_hash);
         CompiledExpr {
             kind: CompiledExprKind::UnOp {
                 op,
@@ -514,7 +520,7 @@ impl CompiledExpr {
         captures: Vec<ValueCellId>,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[7]).combine(body.content_hash);
+        let mut content_hash = ContentHash::of(&[TAG_LAMBDA]).combine(body.content_hash);
         for (name, ty) in &params {
             content_hash = content_hash.combine(ContentHash::of_str(name));
             if let Some(t) = ty {
@@ -541,7 +547,7 @@ impl CompiledExpr {
 
     /// Create a list literal expression.
     pub fn list_literal(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
-        let mut content_hash = ContentHash::of(&[8]);
+        let mut content_hash = ContentHash::of(&[TAG_LIST_LITERAL]);
         for elem in &elements {
             content_hash = content_hash.combine(elem.content_hash);
         }
@@ -554,7 +560,7 @@ impl CompiledExpr {
 
     /// Create a set literal expression.
     pub fn set_literal(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
-        let mut content_hash = ContentHash::of(&[9]);
+        let mut content_hash = ContentHash::of(&[TAG_SET_LITERAL]);
         for elem in &elements {
             content_hash = content_hash.combine(elem.content_hash);
         }
@@ -567,7 +573,7 @@ impl CompiledExpr {
 
     /// Create a map literal expression.
     pub fn map_literal(entries: Vec<(CompiledExpr, CompiledExpr)>, result_type: Type) -> Self {
-        let mut content_hash = ContentHash::of(&[10]);
+        let mut content_hash = ContentHash::of(&[TAG_MAP_LITERAL]);
         for (key, val) in &entries {
             content_hash = content_hash
                 .combine(key.content_hash)
@@ -582,7 +588,7 @@ impl CompiledExpr {
 
     /// Create an index access expression.
     pub fn index_access(object: CompiledExpr, index: CompiledExpr, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[11])
+        let content_hash = ContentHash::of(&[TAG_INDEX_ACCESS])
             .combine(object.content_hash)
             .combine(index.content_hash);
         CompiledExpr {
@@ -607,7 +613,7 @@ impl CompiledExpr {
             QuantifierKind::ForAll => 0,
             QuantifierKind::Exists => 1,
         };
-        let content_hash = ContentHash::of(&[13, kind_byte])
+        let content_hash = ContentHash::of(&[TAG_QUANTIFIER, kind_byte])
             .combine(ContentHash::of_str(&variable))
             .combine(ContentHash::of_str(&format!("{}", variable_id)))
             .combine(collection.content_hash)
@@ -628,7 +634,7 @@ impl CompiledExpr {
     /// Create an `option_some` expression wrapping an inner expression.
     /// Note: result_type should be Type::Option(Box::new(inner.result_type.clone())).
     pub fn option_some(inner: CompiledExpr, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[14]).combine(inner.content_hash);
+        let content_hash = ContentHash::of(&[TAG_OPTION_SOME]).combine(inner.content_hash);
         CompiledExpr {
             kind: CompiledExprKind::OptionSome(Box::new(inner)),
             result_type,
@@ -639,7 +645,7 @@ impl CompiledExpr {
     /// Create an `option_none` expression.
     /// Note: result_type should be Type::Option(Box::new(inner_type)).
     pub fn option_none(result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[15]);
+        let content_hash = ContentHash::of(&[TAG_OPTION_NONE]);
         CompiledExpr {
             kind: CompiledExprKind::OptionNone,
             result_type,
@@ -785,7 +791,7 @@ impl CompiledExpr {
         args: Vec<CompiledExpr>,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[12])
+        let mut content_hash = ContentHash::of(&[TAG_METHOD_CALL])
             .combine(object.content_hash)
             .combine(ContentHash::of_str(&method));
         for arg in &args {
@@ -804,7 +810,7 @@ impl CompiledExpr {
 
     /// Create a meta access expression (resolves a key from an entity's meta block).
     pub fn meta_access(entity: String, key: String) -> Self {
-        let content_hash = ContentHash::of(&[16])
+        let content_hash = ContentHash::of(&[TAG_META_ACCESS])
             .combine(ContentHash::of_str(&entity))
             .combine(ContentHash::of_str(&key));
         CompiledExpr {
@@ -822,7 +828,7 @@ impl CompiledExpr {
         upper_inclusive: bool,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[18, lower_inclusive as u8, upper_inclusive as u8]);
+        let mut content_hash = ContentHash::of(&[TAG_RANGE_CONSTRUCTOR, lower_inclusive as u8, upper_inclusive as u8]);
         if let Some(lo) = &lower {
             content_hash = content_hash.combine(lo.content_hash);
         }
@@ -852,7 +858,7 @@ impl CompiledExpr {
             SelectorKind::Point => 1,
             SelectorKind::Edge => 2,
         };
-        let mut content_hash = ContentHash::of(&[19, kind_byte]).combine(base.content_hash);
+        let mut content_hash = ContentHash::of(&[TAG_AD_HOC_SELECTOR, kind_byte]).combine(base.content_hash);
         for arg in &args {
             content_hash = content_hash.combine(arg.content_hash);
         }
@@ -880,7 +886,7 @@ impl CompiledExpr {
             DeterminacyPredicateKind::PartiallyDetermined => 3,
         };
         let content_hash =
-            ContentHash::of(&[17, kind_byte]).combine(ContentHash::of_str(&format!("{}", cell)));
+            ContentHash::of(&[TAG_DETERMINACY_PREDICATE, kind_byte]).combine(ContentHash::of_str(&format!("{}", cell)));
         CompiledExpr {
             kind: CompiledExprKind::DeterminacyPredicate { kind, cell },
             result_type: Type::Bool,
@@ -890,17 +896,17 @@ impl CompiledExpr {
 
     /// Create a user-defined function call expression.
     ///
-    /// Hash tag byte: `[6]`, matching the inline implementation in
-    /// `reify-compiler/src/expr.rs`. Combines the function name then each
-    /// argument's content hash in order, following the same pattern as
-    /// `method_call`.
+    /// Hash tag byte: `TAG_USER_FUNCTION_CALL` (= `[6]`), matching the inline
+    /// implementation in `reify-compiler/src/expr.rs`. Combines the function
+    /// name then each argument's content hash in order, following the same
+    /// pattern as `method_call`.
     pub fn user_function_call(
         function_name: String,
         args: Vec<CompiledExpr>,
         result_type: Type,
     ) -> Self {
         let mut content_hash =
-            ContentHash::of(&[6]).combine(ContentHash::of_str(&function_name));
+            ContentHash::of(&[TAG_USER_FUNCTION_CALL]).combine(ContentHash::of_str(&function_name));
         for arg in &args {
             content_hash = content_hash.combine(arg.content_hash);
         }
@@ -913,16 +919,16 @@ impl CompiledExpr {
 
     /// Create a match expression.
     ///
-    /// Hash tag byte: `[24]`, matching the inline implementation in
-    /// `reify-compiler/src/expr.rs`. Combines the discriminant hash then, for
-    /// each arm, each pattern string followed by the arm body hash — the same
-    /// combine order as the production inline code.
+    /// Hash tag byte: `TAG_MATCH` (= `[24]`), matching the inline
+    /// implementation in `reify-compiler/src/expr.rs`. Combines the
+    /// discriminant hash then, for each arm, each pattern string followed by
+    /// the arm body hash — the same combine order as the production inline code.
     pub fn match_expr(
         discriminant: CompiledExpr,
         arms: Vec<CompiledMatchArm>,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[24]).combine(discriminant.content_hash);
+        let mut content_hash = ContentHash::of(&[TAG_MATCH]).combine(discriminant.content_hash);
         for arm in &arms {
             for pattern in &arm.patterns {
                 content_hash = content_hash.combine(ContentHash::of_str(pattern));
@@ -952,7 +958,7 @@ mod tests {
         else_branch: CompiledExpr,
         result_type: Type,
     ) -> CompiledExpr {
-        let hash = ContentHash::of(&[5])
+        let hash = ContentHash::of(&[TAG_CONDITIONAL])
             .combine(condition.content_hash)
             .combine(then_branch.content_hash)
             .combine(else_branch.content_hash);
@@ -1298,5 +1304,75 @@ mod tests {
             }
         });
         assert_eq!(refs.len(), 4);
+    }
+
+    /// Assert that every TAG_* constant carries the expected byte value.
+    ///
+    /// This test is the "red" step: it fails to compile until the 21 `TAG_*`
+    /// constants are defined (step 2).  Once they exist, the assertions lock
+    /// their values so no future edit can silently change the byte assigned to
+    /// a variant.
+    #[test]
+    fn tag_byte_constants_have_expected_values() {
+        use super::{
+            TAG_AD_HOC_SELECTOR, TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE,
+            TAG_FUNCTION_CALL, TAG_INDEX_ACCESS, TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL,
+            TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS, TAG_METHOD_CALL, TAG_OPTION_NONE,
+            TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR, TAG_SET_LITERAL,
+            TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
+        };
+
+        assert_eq!(TAG_LITERAL, 0u8);
+        assert_eq!(TAG_VALUE_REF, 1u8);
+        assert_eq!(TAG_BIN_OP, 2u8);
+        assert_eq!(TAG_UN_OP, 3u8);
+        assert_eq!(TAG_FUNCTION_CALL, 4u8);
+        assert_eq!(TAG_CONDITIONAL, 5u8);
+        assert_eq!(TAG_USER_FUNCTION_CALL, 6u8);
+        assert_eq!(TAG_LAMBDA, 7u8);
+        assert_eq!(TAG_LIST_LITERAL, 8u8);
+        assert_eq!(TAG_SET_LITERAL, 9u8);
+        assert_eq!(TAG_MAP_LITERAL, 10u8);
+        assert_eq!(TAG_INDEX_ACCESS, 11u8);
+        assert_eq!(TAG_METHOD_CALL, 12u8);
+        assert_eq!(TAG_QUANTIFIER, 13u8);
+        assert_eq!(TAG_OPTION_SOME, 14u8);
+        assert_eq!(TAG_OPTION_NONE, 15u8);
+        assert_eq!(TAG_META_ACCESS, 16u8);
+        assert_eq!(TAG_DETERMINACY_PREDICATE, 17u8);
+        assert_eq!(TAG_RANGE_CONSTRUCTOR, 18u8);
+        assert_eq!(TAG_AD_HOC_SELECTOR, 19u8);
+        assert_eq!(TAG_MATCH, 24u8);
+
+        // Lock: constructing via the public API and reconstructing via TAG_*
+        // must produce the same content hash.
+
+        // user_function_call with no args: tag + function name.
+        let ufc = CompiledExpr::user_function_call("f".to_string(), vec![], Type::Bool);
+        let expected_ufc = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
+            .combine(ContentHash::of_str("f"));
+        assert_eq!(
+            ufc.content_hash, expected_ufc,
+            "user_function_call hash must equal TAG_USER_FUNCTION_CALL-based reconstruction"
+        );
+
+        // match_expr with one wildcard arm: tag + disc + pattern + body.
+        let disc = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let disc_hash = disc.content_hash;
+        let body_hash = body.content_hash;
+        let arm = CompiledMatchArm {
+            patterns: vec!["_".to_string()],
+            body,
+        };
+        let match_e = CompiledExpr::match_expr(disc, vec![arm], Type::Bool);
+        let expected_match = ContentHash::of(&[TAG_MATCH])
+            .combine(disc_hash)
+            .combine(ContentHash::of_str("_"))
+            .combine(body_hash);
+        assert_eq!(
+            match_e.content_hash, expected_match,
+            "match_expr hash must equal TAG_MATCH-based reconstruction"
+        );
     }
 }
