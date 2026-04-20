@@ -42213,7 +42213,7 @@
         "description": "In `crates/reify-cli/src/mcp_context.rs:169-185`, `reapply_user_overrides` silently swallows ALL errors from `engine.edit_param()`. The doc comment claims \"CellNotFound means topology changed — skip silently\", but `edit_param` can also return `TypeKindMismatch`, `DimensionMismatch`, and `NotInitialized`. Those errors are equally ignored, which can mask genuine bugs (e.g. an override whose dimension no longer matches the new topology's cell type after a user edit).\n\nFix: match specifically on `Err(EngineError::CellNotFound { .. })` for the silent-skip path; propagate or at minimum log other variants (warn-level tracing) so type/dimension regressions surface instead of disappearing into the override re-apply loop.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42224,7 +42224,8 @@
           "modules": [
             "crates/reify-cli/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-20T07:28:36.759Z"
       },
       {
         "id": "2013",
@@ -42344,7 +42345,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T07:28:36.230Z",
+      "lastModified": "2026-04-20T07:28:36.759Z",
       "taskCount": 2009,
       "completedCount": 1714,
       "tags": [
