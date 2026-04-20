@@ -29,3 +29,32 @@ fn kernel_status_for_false_message_exact_wording() {
 fn kernel_status_ipc_contract() {
     super::assert_ipc_contract::<KernelStatus>();
 }
+
+#[cfg(feature = "gui")]
+mod gui_tests {
+    use crate::kernel_status::{self, KERNEL_UNAVAILABLE_MESSAGE};
+    use reify_geometry::DispatchPlanner;
+    use reify_kernel_occt::OCCT_AVAILABLE;
+
+    #[test]
+    fn current_kernel_status_matches_occt_availability() {
+        let status = kernel_status::current_kernel_status();
+        assert_eq!(status.available, OCCT_AVAILABLE);
+        if !OCCT_AVAILABLE {
+            assert_eq!(
+                status.message.as_deref(),
+                Some(KERNEL_UNAVAILABLE_MESSAGE)
+            );
+        } else {
+            assert!(status.message.is_none());
+        }
+    }
+
+    #[test]
+    fn configure_planner_matches_availability() {
+        let mut planner = DispatchPlanner::new();
+        let status = kernel_status::configure_planner(&mut planner);
+        assert_eq!(status.available, OCCT_AVAILABLE);
+        assert_eq!(planner.has_kernel(), OCCT_AVAILABLE);
+    }
+}
