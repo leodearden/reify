@@ -511,15 +511,15 @@ fn sub_component_arg_conforming_via_refinement_chain_accepted() {
 /// "does not conform to trait" error.
 ///
 /// This locks in the existing behaviour of the suppression heuristic in
-/// `check_trait_arg_conformance` (conformance.rs:1019-1042). The exact path
-/// exercised:
+/// `check_trait_arg_conformance` (conformance.rs). The exact path exercised:
 ///
 /// 1. `1.0` compiles to `CompiledExprKind::Literal(Value::Real(...))` — NOT a
-///    `FunctionCall` — so `arg_call_name` is `None` (entity.rs:859-864).
-/// 2. The promotion branch (conformance.rs:964-970) finds `arg_call_name` is `None`,
-///    so `effective_arg_type = &Type::Real`.
-/// 3. The `_` arm (conformance.rs:1019) is reached.
-/// 4. The suppression guard (conformance.rs:1026-1028) requires BOTH
+///    `FunctionCall` — so `arg_call_name` is `None` (captured in the
+///    `arg_call_name` extraction block in `entity.rs`).
+/// 2. The promotion branch in `check_trait_arg_conformance` finds
+///    `arg_call_name` is `None`, so `effective_arg_type = &Type::Real`.
+/// 3. The `_` arm of `check_trait_arg_conformance` is reached.
+/// 4. The suppression guard in the `_` arm requires BOTH
 ///    `matches!(arg_type, Type::Real)` AND `arg_call_name.is_some()`. Because
 ///    `arg_call_name` is `None`, the guard does NOT suppress — execution continues
 ///    and the diagnostic is emitted.
