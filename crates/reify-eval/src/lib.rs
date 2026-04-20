@@ -12,6 +12,12 @@ pub mod snapshot;
 pub mod test_runner;
 mod unfold;
 use unfold::{elaborate_child_instance, unfold_recursive_sub};
+mod engine_admin;
+mod engine_purposes;
+mod engine_constraints;
+mod engine_eval;
+mod engine_edit;
+mod engine_build;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
