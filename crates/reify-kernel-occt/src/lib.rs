@@ -521,6 +521,16 @@ impl OcctKernel {
                 ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            // NOTE: ExtrudeSymmetric / SweepGuided / LoftGuided land in steps
+            // 18/20/22 of task-322. The catch-all below keeps the kernel lib
+            // compiling while e2e tests are authored (TDD).
+            GeometryOp::ExtrudeSymmetric { .. }
+            | GeometryOp::SweepGuided { .. }
+            | GeometryOp::LoftGuided { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "geometry op not yet implemented in kernel (task-322 steps 18/20/22)".into(),
+                ));
+            }
             GeometryOp::LineSegment {
                 x1, y1, z1, x2, y2, z2,
             } => {

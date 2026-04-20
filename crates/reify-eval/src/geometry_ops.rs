@@ -611,6 +611,13 @@ pub(crate) fn compile_geometry_op(
                         path: path_handle,
                     })
                 }
+                // NOTE: ExtrudeSymmetric/SweepGuided/LoftGuided arms are
+                // added in task-322 steps 12/14/16. The catch-all below keeps
+                // the eval lib compiling while the per-kind tests are written
+                // (TDD: tests fail at runtime until the impl arm lands).
+                reify_compiler::SweepKind::ExtrudeSymmetric
+                | reify_compiler::SweepKind::SweepGuided
+                | reify_compiler::SweepKind::LoftGuided => None,
             }
         }
         CompiledGeometryOp::Curve { kind, args } => {
