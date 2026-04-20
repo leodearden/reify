@@ -42449,15 +42449,16 @@
         "description": "After task 2007 shipped the focus-entity event listener in App.tsx:365-391, user-initiated navigation still double-dispatches flyToEntity and selectEntity — once inside navigation.ts navigateToEntity, once via the listener. It's idempotent today but brittle: if selectEntity ever toggles or flyToEntity becomes non-idempotent, correctness silently breaks.\n\nFix: Strip the direct flyToEntity/selectEntity calls from navigateToEntity in gui/src/navigation.ts so the focus-entity listener is the sole terminal dispatcher in practice as well as in name.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T11:05:32.764Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:05:32.522Z",
+      "lastModified": "2026-04-20T11:05:32.764Z",
       "taskCount": 2014,
       "completedCount": 1720,
       "tags": [
