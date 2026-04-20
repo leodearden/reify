@@ -111,3 +111,42 @@ pub(crate) fn compile_transform_op(
         _ => unreachable!("compile_transform_op called with non-transform name: {}", name),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scalar_literal(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(Value::Real(v), Type::Real)
+    }
+
+    #[test]
+    fn compile_transform_op_translate_direct() {
+        // translate(target, dx, dy, dz) — 4 args
+        let args: Vec<CompiledExpr> = (1..=4).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(0);
+        let result = compile_transform_op("translate", args, target.clone(), &mut diagnostics, vec![]);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_transform_op translate should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Transform { kind: TransformKind::Translate, target: op_target, args: op_args } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "dx", "dy", "dz"]);
+            }
+            other => panic!("expected Transform(Translate), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_transform_op_wrong_arg_count() {
+        // translate expects 4 args; pass 2
+        let args: Vec<CompiledExpr> = (1..=2).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_transform_op("translate", args, GeomRef::Step(0), &mut diagnostics, vec![]);
+        assert!(result.is_none(), "expected None for wrong arg count");
+        assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
+    }
+}
