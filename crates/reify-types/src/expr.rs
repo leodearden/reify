@@ -260,7 +260,7 @@ pub const TAG_MATCH: u8 = 24;
 impl CompiledExpr {
     /// Create a literal expression.
     pub fn literal(value: Value, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[0]).combine(value.content_hash());
+        let content_hash = ContentHash::of(&[TAG_LITERAL]).combine(value.content_hash());
         CompiledExpr {
             kind: CompiledExprKind::Literal(value),
             result_type,
@@ -270,7 +270,7 @@ impl CompiledExpr {
 
     /// Create a value reference expression.
     pub fn value_ref(id: ValueCellId, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[1]).combine(ContentHash::of_str(&format!("{}", id)));
+        let content_hash = ContentHash::of(&[TAG_VALUE_REF]).combine(ContentHash::of_str(&format!("{}", id)));
         CompiledExpr {
             kind: CompiledExprKind::ValueRef(id),
             result_type,
@@ -280,7 +280,7 @@ impl CompiledExpr {
 
     /// Create a binary operation expression.
     pub fn binop(op: BinOp, left: CompiledExpr, right: CompiledExpr, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[2, op as u8])
+        let content_hash = ContentHash::of(&[TAG_BIN_OP, op as u8])
             .combine(left.content_hash)
             .combine(right.content_hash);
         CompiledExpr {
@@ -399,7 +399,7 @@ impl CompiledExpr {
 
     /// Create a unary operation expression.
     pub fn unop(op: UnOp, operand: CompiledExpr, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[3, op as u8]).combine(operand.content_hash);
+        let content_hash = ContentHash::of(&[TAG_UN_OP, op as u8]).combine(operand.content_hash);
         CompiledExpr {
             kind: CompiledExprKind::UnOp {
                 op,
@@ -538,7 +538,7 @@ impl CompiledExpr {
         captures: Vec<ValueCellId>,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[7]).combine(body.content_hash);
+        let mut content_hash = ContentHash::of(&[TAG_LAMBDA]).combine(body.content_hash);
         for (name, ty) in &params {
             content_hash = content_hash.combine(ContentHash::of_str(name));
             if let Some(t) = ty {
@@ -565,7 +565,7 @@ impl CompiledExpr {
 
     /// Create a list literal expression.
     pub fn list_literal(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
-        let mut content_hash = ContentHash::of(&[8]);
+        let mut content_hash = ContentHash::of(&[TAG_LIST_LITERAL]);
         for elem in &elements {
             content_hash = content_hash.combine(elem.content_hash);
         }
@@ -578,7 +578,7 @@ impl CompiledExpr {
 
     /// Create a set literal expression.
     pub fn set_literal(elements: Vec<CompiledExpr>, result_type: Type) -> Self {
-        let mut content_hash = ContentHash::of(&[9]);
+        let mut content_hash = ContentHash::of(&[TAG_SET_LITERAL]);
         for elem in &elements {
             content_hash = content_hash.combine(elem.content_hash);
         }
@@ -591,7 +591,7 @@ impl CompiledExpr {
 
     /// Create a map literal expression.
     pub fn map_literal(entries: Vec<(CompiledExpr, CompiledExpr)>, result_type: Type) -> Self {
-        let mut content_hash = ContentHash::of(&[10]);
+        let mut content_hash = ContentHash::of(&[TAG_MAP_LITERAL]);
         for (key, val) in &entries {
             content_hash = content_hash
                 .combine(key.content_hash)
@@ -606,7 +606,7 @@ impl CompiledExpr {
 
     /// Create an index access expression.
     pub fn index_access(object: CompiledExpr, index: CompiledExpr, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[11])
+        let content_hash = ContentHash::of(&[TAG_INDEX_ACCESS])
             .combine(object.content_hash)
             .combine(index.content_hash);
         CompiledExpr {
@@ -631,7 +631,7 @@ impl CompiledExpr {
             QuantifierKind::ForAll => 0,
             QuantifierKind::Exists => 1,
         };
-        let content_hash = ContentHash::of(&[13, kind_byte])
+        let content_hash = ContentHash::of(&[TAG_QUANTIFIER, kind_byte])
             .combine(ContentHash::of_str(&variable))
             .combine(ContentHash::of_str(&format!("{}", variable_id)))
             .combine(collection.content_hash)
@@ -652,7 +652,7 @@ impl CompiledExpr {
     /// Create an `option_some` expression wrapping an inner expression.
     /// Note: result_type should be Type::Option(Box::new(inner.result_type.clone())).
     pub fn option_some(inner: CompiledExpr, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[14]).combine(inner.content_hash);
+        let content_hash = ContentHash::of(&[TAG_OPTION_SOME]).combine(inner.content_hash);
         CompiledExpr {
             kind: CompiledExprKind::OptionSome(Box::new(inner)),
             result_type,
@@ -663,7 +663,7 @@ impl CompiledExpr {
     /// Create an `option_none` expression.
     /// Note: result_type should be Type::Option(Box::new(inner_type)).
     pub fn option_none(result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[15]);
+        let content_hash = ContentHash::of(&[TAG_OPTION_NONE]);
         CompiledExpr {
             kind: CompiledExprKind::OptionNone,
             result_type,
@@ -809,7 +809,7 @@ impl CompiledExpr {
         args: Vec<CompiledExpr>,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[12])
+        let mut content_hash = ContentHash::of(&[TAG_METHOD_CALL])
             .combine(object.content_hash)
             .combine(ContentHash::of_str(&method));
         for arg in &args {
@@ -828,7 +828,7 @@ impl CompiledExpr {
 
     /// Create a meta access expression (resolves a key from an entity's meta block).
     pub fn meta_access(entity: String, key: String) -> Self {
-        let content_hash = ContentHash::of(&[16])
+        let content_hash = ContentHash::of(&[TAG_META_ACCESS])
             .combine(ContentHash::of_str(&entity))
             .combine(ContentHash::of_str(&key));
         CompiledExpr {
@@ -846,7 +846,7 @@ impl CompiledExpr {
         upper_inclusive: bool,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[18, lower_inclusive as u8, upper_inclusive as u8]);
+        let mut content_hash = ContentHash::of(&[TAG_RANGE_CONSTRUCTOR, lower_inclusive as u8, upper_inclusive as u8]);
         if let Some(lo) = &lower {
             content_hash = content_hash.combine(lo.content_hash);
         }
@@ -876,7 +876,7 @@ impl CompiledExpr {
             SelectorKind::Point => 1,
             SelectorKind::Edge => 2,
         };
-        let mut content_hash = ContentHash::of(&[19, kind_byte]).combine(base.content_hash);
+        let mut content_hash = ContentHash::of(&[TAG_AD_HOC_SELECTOR, kind_byte]).combine(base.content_hash);
         for arg in &args {
             content_hash = content_hash.combine(arg.content_hash);
         }
@@ -904,7 +904,7 @@ impl CompiledExpr {
             DeterminacyPredicateKind::PartiallyDetermined => 3,
         };
         let content_hash =
-            ContentHash::of(&[17, kind_byte]).combine(ContentHash::of_str(&format!("{}", cell)));
+            ContentHash::of(&[TAG_DETERMINACY_PREDICATE, kind_byte]).combine(ContentHash::of_str(&format!("{}", cell)));
         CompiledExpr {
             kind: CompiledExprKind::DeterminacyPredicate { kind, cell },
             result_type: Type::Bool,
@@ -914,17 +914,17 @@ impl CompiledExpr {
 
     /// Create a user-defined function call expression.
     ///
-    /// Hash tag byte: `[6]`, matching the inline implementation in
-    /// `reify-compiler/src/expr.rs`. Combines the function name then each
-    /// argument's content hash in order, following the same pattern as
-    /// `method_call`.
+    /// Hash tag byte: `TAG_USER_FUNCTION_CALL` (= `[6]`), matching the inline
+    /// implementation in `reify-compiler/src/expr.rs`. Combines the function
+    /// name then each argument's content hash in order, following the same
+    /// pattern as `method_call`.
     pub fn user_function_call(
         function_name: String,
         args: Vec<CompiledExpr>,
         result_type: Type,
     ) -> Self {
         let mut content_hash =
-            ContentHash::of(&[6]).combine(ContentHash::of_str(&function_name));
+            ContentHash::of(&[TAG_USER_FUNCTION_CALL]).combine(ContentHash::of_str(&function_name));
         for arg in &args {
             content_hash = content_hash.combine(arg.content_hash);
         }
@@ -937,16 +937,16 @@ impl CompiledExpr {
 
     /// Create a match expression.
     ///
-    /// Hash tag byte: `[24]`, matching the inline implementation in
-    /// `reify-compiler/src/expr.rs`. Combines the discriminant hash then, for
-    /// each arm, each pattern string followed by the arm body hash — the same
-    /// combine order as the production inline code.
+    /// Hash tag byte: `TAG_MATCH` (= `[24]`), matching the inline
+    /// implementation in `reify-compiler/src/expr.rs`. Combines the
+    /// discriminant hash then, for each arm, each pattern string followed by
+    /// the arm body hash — the same combine order as the production inline code.
     pub fn match_expr(
         discriminant: CompiledExpr,
         arms: Vec<CompiledMatchArm>,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[24]).combine(discriminant.content_hash);
+        let mut content_hash = ContentHash::of(&[TAG_MATCH]).combine(discriminant.content_hash);
         for arm in &arms {
             for pattern in &arm.patterns {
                 content_hash = content_hash.combine(ContentHash::of_str(pattern));
