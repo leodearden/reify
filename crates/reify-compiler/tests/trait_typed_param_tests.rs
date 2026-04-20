@@ -390,3 +390,35 @@ fn sub_component_arg_for_trait_typed_param_accepts_conforming_struct() {
         errors
     );
 }
+
+/// Refinement test: a struct that conforms via a refinement chain is accepted.
+///
+/// `Physical : Material` (refinement), `Rigid : Physical` (structure declares `: Physical`).
+/// The host param is `Material`. `Rigid : Physical : Material` so Rigid satisfies Material
+/// transitively. This will FAIL if `satisfies_trait_bound` is not used (direct equality
+/// of trait name would reject `Physical` for `Material`).
+#[test]
+fn sub_component_arg_conforming_via_refinement_chain_accepted() {
+    // Self-contained: no stdlib needed.
+    let source = r#"
+        trait Material {}
+        trait Physical : Material {}
+        structure def Host { param m : Material }
+        structure def Rigid : Physical {}
+        structure def Top {
+            sub x = Host(m: Rigid())
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: Rigid : Physical : Material satisfies param m : Material, got: {:?}",
+        errors
+    );
+}
