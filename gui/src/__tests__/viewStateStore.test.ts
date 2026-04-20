@@ -1436,3 +1436,111 @@ describe('viewStateStore — ViewStateStore type export', () => {
     expectTypeOf<ViewStateStore>().toEqualTypeOf<ReturnType<typeof createViewStateStore>>();
   });
 });
+
+// ---------------------------------------------------------------------------
+// createView + switchView
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — createView', () => {
+  it('(a) returns a new id of the form user:<slug>', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('My View');
+      expect(id).toMatch(/^user:/);
+      dispose();
+    });
+  });
+
+  it('(b) adds the view to state.views with auto: false, modified: false, empty visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('My View');
+      const view = store.state.views[id];
+      expect(view).toBeDefined();
+      expect(view.auto).toBe(false);
+      expect(view.modified).toBe(false);
+      expect(view.visibility).toEqual({});
+      dispose();
+    });
+  });
+
+  it('(c) appends the new id to state.userViewOrder', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('First');
+      const id2 = store.createView('Second');
+      expect(store.state.userViewOrder).toContain(id1);
+      expect(store.state.userViewOrder).toContain(id2);
+      // id1 should come before id2 (appended in order)
+      expect(store.state.userViewOrder.indexOf(id1)).toBeLessThan(
+        store.state.userViewOrder.indexOf(id2),
+      );
+      dispose();
+    });
+  });
+
+  it('(d) the view does NOT become active automatically', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const previousActiveId = store.state.activeViewId;
+      store.createView('New View');
+      // activeViewId should not change
+      expect(store.state.activeViewId).toBe(previousActiveId);
+      dispose();
+    });
+  });
+
+  it('(e) name is reflected in the stored view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Custom Name');
+      expect(store.state.views[id].name).toBe('Custom Name');
+      dispose();
+    });
+  });
+
+  it('(f) state.userViewOrder is empty on fresh store creation', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      expect(store.state.userViewOrder).toEqual([]);
+      dispose();
+    });
+  });
+});
+
+describe('viewStateStore — switchView', () => {
+  it('(a) sets activeViewId to the given id and returns true', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const result = store.switchView('auto:default');
+      expect(result).toBe(true);
+      expect(store.state.activeViewId).toBe('auto:default');
+      dispose();
+    });
+  });
+
+  it('(b) returns false and does NOT change activeViewId for an unknown view id', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const prevActive = store.state.activeViewId;
+      const result = store.switchView('nonexistent:view');
+      expect(result).toBe(false);
+      expect(store.state.activeViewId).toBe(prevActive);
+      dispose();
+    });
+  });
+
+  it('(c) switching to a user view via switchView makes it active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const id = store.createView('My View');
+      const result = store.switchView(id);
+      expect(result).toBe(true);
+      expect(store.state.activeViewId).toBe(id);
+      dispose();
+    });
+  });
+});

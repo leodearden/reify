@@ -22,6 +22,14 @@ export interface ViewState {
   explicit: Record<string, ExplicitVisibility>;
   views: Record<string, ViewDefinition>;
   activeViewId: string;
+  /**
+   * Ordered list of user view ids for display in the ViewSelector and
+   * ViewManageModal. Auto views always appear before user views in the
+   * selector; this array controls the order of the user-view segment.
+   * Re-initialized to `[]` each session; persistence is handled by a
+   * future task.
+   */
+  userViewOrder: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +81,7 @@ export function createViewStateStore() {
     explicit: {},
     views: {},
     activeViewId: 'auto:default',
+    userViewOrder: [],
   });
 
   // Internal non-reactive maps (rebuilt on setTree / rebuildTreeMaps).
@@ -306,6 +315,48 @@ export function createViewStateStore() {
   }
 
   /**
+   * Create a new empty user view with the given name.
+   *
+   * The view is added to `state.views` with `auto: false`, `modified: false`,
+   * and an empty `visibility` map.  Its id is appended to `state.userViewOrder`.
+   * The new view does NOT become active automatically — the caller should follow
+   * up with `switchView(id)` if activation is desired.
+   *
+   * @returns The new view's id (format: `user:<uuid-fragment>`).
+   */
+  function createView(name: string): string {
+    // Generate a short unique id using the high-res timestamp + random bits.
+    const id = `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    setState(
+      produce((s) => {
+        s.views[id] = {
+          id,
+          name,
+          auto: false,
+          modified: false,
+          visibility: {},
+        };
+        s.userViewOrder.push(id);
+      }),
+    );
+    return id;
+  }
+
+  /**
+   * Switch the active view, returning `true` on success or `false` if the view
+   * id is unknown (does not exist in `state.views`).
+   *
+   * This is a boolean-returning wrapper over the existing `setActiveView` so
+   * that callers (the number-key dispatcher, ViewSelector) can silently ignore
+   * out-of-range indices without inspecting store internals.
+   */
+  function switchView(viewId: string): boolean {
+    if (!state.views[viewId]) return false;
+    setActiveView(viewId);
+    return true;
+  }
+
+  /**
    * Regenerate all `auto:*` views from the current tree and active purposes,
    * preserve any `user:*` views, then reconcile the active view:
    *
@@ -442,6 +493,8 @@ export function createViewStateStore() {
     seedView,
     setActiveView,
     regenerateAutoViews,
+    createView,
+    switchView,
   };
 }
 
