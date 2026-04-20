@@ -43058,11 +43058,20 @@
         "description": "Review follow-up from task 1999. Introduce pub(crate) TAG_* constants (one per CompiledExpr variant) in reify-types/src/expr.rs and use them from both the reify-types constructors and the reify-compiler inline emission paths (crates/reify-compiler/src/expr.rs:554 UserFunctionCall, :1318 Match) so the allocation table at expr.rs:212-235 cannot drift from call sites. Values must equal current literals. Verify hash-pinning tests still pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:39:33.085Z"
+        "updatedAt": "2026-04-20T13:49:12.968Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-test-support/tests/builder_compiler_hash_agreement.rs",
+            "crates/reify-types/src/expr.rs",
+            "crates/reify-types/src/lib.rs"
+          ]
+        }
       },
       {
         "id": "2054",
@@ -43116,7 +43125,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:48:53.600Z",
+      "lastModified": "2026-04-20T13:49:12.968Z",
       "taskCount": 2048,
       "completedCount": 1746,
       "tags": [
