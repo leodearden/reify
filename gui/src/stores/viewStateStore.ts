@@ -357,6 +357,39 @@ export function createViewStateStore() {
   }
 
   /**
+   * Rename a user view.  Validation rules (all return `false` on failure):
+   * - id must exist in `state.views`
+   * - id must not start with `auto:` (auto views cannot be renamed)
+   * - new name must not be empty or whitespace-only
+   * - new name must not duplicate an existing user view name (case-insensitive),
+   *   except when renaming the view to its own current name (identity rename)
+   *
+   * @returns `true` on success, `false` on any validation failure (no state change).
+   */
+  function renameView(id: string, newName: string): boolean {
+    // id must exist
+    const view = state.views[id];
+    if (!view) return false;
+    // auto views cannot be renamed
+    if (id.startsWith('auto:')) return false;
+    // name must not be empty/whitespace
+    const trimmed = newName.trim();
+    if (trimmed.length === 0) return false;
+    // check for name collision against other user views (case-insensitive)
+    const lowerNew = trimmed.toLowerCase();
+    for (const [otherId, otherView] of Object.entries(state.views)) {
+      if (otherId === id) continue; // skip self
+      if (otherView.name.toLowerCase() === lowerNew) return false;
+    }
+    setState(
+      produce((s) => {
+        s.views[id].name = trimmed;
+      }),
+    );
+    return true;
+  }
+
+  /**
    * Regenerate all `auto:*` views from the current tree and active purposes,
    * preserve any `user:*` views, then reconcile the active view:
    *
@@ -495,6 +528,7 @@ export function createViewStateStore() {
     regenerateAutoViews,
     createView,
     switchView,
+    renameView,
   };
 }
 

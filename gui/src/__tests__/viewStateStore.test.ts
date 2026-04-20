@@ -1431,6 +1431,102 @@ describe('setActiveView — wholesale explicit replacement after resetToInherit'
   });
 });
 
+// ---------------------------------------------------------------------------
+// renameView
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — renameView', () => {
+  function makeStoreWithUserView() {
+    let store: ReturnType<typeof createViewStateStore>;
+    let id: string;
+    createRoot((dispose) => {
+      store = createViewStateStore();
+      id = store.createView('Original Name');
+      // keep root alive — tests call dispose() themselves
+    });
+    return { store: store!, id: id! };
+  }
+
+  it('(a) updates views[id].name when given a valid new name', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Original');
+      const result = store.renameView(id, 'Updated');
+      expect(result).toBe(true);
+      expect(store.state.views[id].name).toBe('Updated');
+      dispose();
+    });
+  });
+
+  it('(b) rejects empty name — returns false, no state change', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Original');
+      const result = store.renameView(id, '');
+      expect(result).toBe(false);
+      expect(store.state.views[id].name).toBe('Original');
+      dispose();
+    });
+  });
+
+  it('(b) rejects whitespace-only name — returns false, no state change', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Original');
+      const result = store.renameView(id, '   ');
+      expect(result).toBe(false);
+      expect(store.state.views[id].name).toBe('Original');
+      dispose();
+    });
+  });
+
+  it('(c) rejects duplicate name (case-insensitive) — returns false, no state change', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id1 = store.createView('Alpha');
+      const id2 = store.createView('Beta');
+      // Try to rename id2 to "alpha" (duplicate of id1, case-insensitive)
+      const result = store.renameView(id2, 'alpha');
+      expect(result).toBe(false);
+      expect(store.state.views[id2].name).toBe('Beta');
+      dispose();
+    });
+  });
+
+  it('(c) allows renaming to same name (case-insensitive same-id is not a collision)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const id = store.createView('Alpha');
+      // Renaming Alpha to "Alpha" (same) should succeed
+      const result = store.renameView(id, 'Alpha');
+      expect(result).toBe(true);
+      expect(store.state.views[id].name).toBe('Alpha');
+      dispose();
+    });
+  });
+
+  it('(d) rejects renaming auto views — returns false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const result = store.renameView('auto:default', 'My Default');
+      expect(result).toBe(false);
+      // auto view name unchanged
+      expect(store.state.views['auto:default'].name).toBe('Default');
+      dispose();
+    });
+  });
+
+  it('(d) rejects renaming unknown ids — returns false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const result = store.renameView('user:nonexistent', 'New Name');
+      expect(result).toBe(false);
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — ViewStateStore type export', () => {
   it('ViewStateStore type alias is structurally identical to ReturnType<typeof createViewStateStore>', () => {
     expectTypeOf<ViewStateStore>().toEqualTypeOf<ReturnType<typeof createViewStateStore>>();
