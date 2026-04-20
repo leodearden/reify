@@ -111,14 +111,14 @@ ORCH="$REPO_ROOT/orchestrator.yaml"
 echo ""
 echo "--- Test 10: debug pass is gated by cargo-test-occt-gated.sh ---"
 
-assert "test_command contains './scripts/cargo-test-occt-gated.sh cargo test --workspace -- --test-threads=1'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test --workspace -- --test-threads=1'"
+assert "test_command contains gated debug pass with -p reify-kernel-occt" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -- --test-threads=1'"
 
 echo ""
 echo "--- Test 11: release pass is gated by cargo-test-occt-gated.sh ---"
 
-assert "test_command contains './scripts/cargo-test-occt-gated.sh cargo test --workspace --release -- --test-threads=1'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test --workspace --release -- --test-threads=1'"
+assert "test_command contains gated release pass with -p reify-kernel-occt" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli --release -- --test-threads=1'"
 
 echo ""
 echo "--- Test 12: no bare ungated 'cargo test --workspace' in test_command ---"
@@ -137,8 +137,8 @@ assert "no bare 'cargo test --workspace' without gate in test_command" \
 echo ""
 echo "--- Test 13: --workspace flag preserved under gate (coverage assertion) ---"
 
-assert "gated debug invocation contains --workspace" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'cargo-test-occt-gated.sh cargo test --workspace'"
+assert "gated debug invocation contains '-p reify-kernel-occt'" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
 
 # -- Test 14: bounded lock-wait exits non-zero with clear message ---------------
 echo ""
@@ -236,9 +236,9 @@ assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= appears exactly twice in test_command 
     bash -c "[ \"\$(grep 'test_command:' '$ORCH' | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 2 ]"
 
 assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=2700" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test --workspace --'"
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
 
 assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test --workspace --release'"
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli --release'"
 
 test_summary
