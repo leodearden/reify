@@ -10,8 +10,24 @@
 # This wrapper acquires an exclusive flock before executing the given command,
 # ensuring at most one OCCT-touching test process runs on the host at a time.
 #
-# Usage:
-#   ./scripts/cargo-test-occt-gated.sh cargo test --workspace -- --test-threads=1
+# Intended usage (two-pass pattern in orchestrator.yaml):
+#
+#   # Pass 1 — gated: only OCCT-touching crates, serialized via this wrapper.
+#   REIFY_OCCT_TEST_TIMEOUT=2700 \
+#     ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt \
+#       -p reify-eval -p reify-cli -- --test-threads=1
+#
+#   # Pass 2 — ungated: all other workspace crates, runs in parallel across
+#   # worktrees (no flock needed because they don't touch OCCT).
+#   timeout --kill-after=60 30m cargo test --workspace \
+#     --exclude reify-kernel-occt --exclude reify-eval --exclude reify-cli \
+#     -- --test-threads=1
+#
+# The authoritative list of OCCT-touching crates lives in:
+#   scripts/occt-touching-crates.txt
+# The infra test that validates this wrapper's scope and orchestrator.yaml
+# consistency is:
+#   tests/infra/test_occt_gated_scope.sh
 #
 # Environment:
 #   REIFY_OCCT_LOCK       Override the lock file path.
