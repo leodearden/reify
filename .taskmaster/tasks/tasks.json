@@ -42347,7 +42347,7 @@
         "description": "`update_source_invalid_content_does_not_construct_new_engine` in `crates/reify-cli/src/mcp_context.rs:868-908` uses the literal string `\"enum { }\"` to trigger a parse failure. The guard under test specifically checks that `parsed.errors` is non-empty (line 436). If the Reify grammar ever accepts `enum { }` and defers the problem to compile time, this test would silently exercise the wrong branch — the pipeline would commit new state instead of taking the intended \"no-op on parse failure\" path.\n\nFix: replace `\"enum { }\"` with content known to be a hard parse error. Either:\n- read `tests/fixtures/bracket_parse_error.ri` (already exists per reviewer), or\n- use a syntactically nonsense input like `\"{{{{\"`, or\n- assert at the top of the test that `reify_syntax::parse(input, …)` actually emits a parse error before exercising `update_source`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42360,7 +42360,8 @@
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-20T11:51:13.270Z"
       },
       {
         "id": "2016",
@@ -42777,7 +42778,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:51:00.752Z",
+      "lastModified": "2026-04-20T11:51:13.281Z",
       "taskCount": 2030,
       "completedCount": 1733,
       "tags": [
