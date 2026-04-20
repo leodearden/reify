@@ -42768,7 +42768,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:50:52.254Z"
+        "updatedAt": "2026-04-20T11:50:52.254Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-cli/src/mcp_context.rs"
+          ]
+        }
       },
       {
         "id": "2038",
