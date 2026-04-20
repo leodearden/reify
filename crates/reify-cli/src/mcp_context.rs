@@ -162,10 +162,18 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 /// Re-apply tracked user overrides to the engine after `eval()` has rebuilt the snapshot
 /// from module defaults.
 ///
-/// Any override whose cell no longer exists in the current topology is silently
-/// skipped rather than removed — this handles topology-changing edits gracefully and
-/// allows overrides to reappear if the topology reverts (e.g. a user deletes a param
-/// and immediately undoes it).
+/// Three cases are distinguished:
+///
+/// - **`Ok`** — the cell exists and accepted the value; `set_param_and_invalidate` is
+///   called to commit the override into the engine.
+/// - **`Err(CellNotFound)`** — topology changed (the param was deleted or renamed);
+///   skip silently and keep the override in `user_overrides` so it can reappear if
+///   the topology reverts in a subsequent edit.
+/// - **Any other `Err`** (`TypeKindMismatch`, `DimensionMismatch`, `NotInitialized`) —
+///   the cell exists but the stored value is incompatible with its current type.  A
+///   `tracing::warn!` event is emitted with the cell id and error for diagnostic
+///   inspection.  The override is kept in `user_overrides` so the user's intent
+///   survives a transient mismatch and reapplies when the type becomes compatible again.
 fn reapply_user_overrides(state: &mut CliState) {
     if state.user_overrides.is_empty() {
         return;
@@ -173,12 +181,24 @@ fn reapply_user_overrides(state: &mut CliState) {
     let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
     if let Some(engine) = state.engine.as_mut() {
         for (cell_id, value) in overrides {
-            // edit_param validates that the cell exists in the current snapshot graph.
-            // CellNotFound means topology changed — skip silently without removing
-            // the override from user_overrides so it can be re-applied if the cell
-            // returns to the topology in a subsequent edit.
-            if engine.edit_param(cell_id.clone(), value.clone()).is_ok() {
-                engine.set_param_and_invalidate(&cell_id, value);
+            match engine.edit_param(cell_id.clone(), value.clone()) {
+                Ok(_) => {
+                    engine.set_param_and_invalidate(&cell_id, value);
+                }
+                Err(reify_eval::EngineError::CellNotFound { .. }) => {
+                    // Topology changed — skip silently without removing the override
+                    // so it can be re-applied if the cell returns to the topology in
+                    // a subsequent edit.
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        cell_id = %cell_id,
+                        error = %err,
+                        "reapply_user_overrides: edit_param failed with non-CellNotFound error; \
+                         override retained in user_overrides so it can reapply when the topology \
+                         becomes compatible"
+                    );
+                }
             }
         }
     }
@@ -891,13 +911,16 @@ structure Bracket {
         // Snapshot warn counter before the topology-changing update.
         let before = counter.load(Ordering::Acquire);
 
-        // Update source: change `width` from `Scalar = 80mm` (LENGTH) to
-        // `Scalar = 5kg` (MASS).  The cell now expects a MASS scalar but the stored
-        // override has LENGTH dimension → edit_param must return DimensionMismatch →
-        // reapply_user_overrides must warn.
+        // Update source: change `width` type annotation from `Scalar` (which resolves
+        // to LENGTH) to `Mass` (MASS dimension).  The cell now has Scalar[MASS] type,
+        // but the stored override is Scalar[LENGTH] → edit_param must return
+        // DimensionMismatch → reapply_user_overrides must warn.
+        // Note: changing only the unit suffix (e.g. `Scalar = 5kg`) does NOT change
+        // the dimension because `"Scalar"` always resolves to Type::length() regardless
+        // of the default literal's unit.  The type annotation must be `Mass`.
         let content_with_mass_width = "\
 structure Bracket {
-    param width: Scalar = 5kg
+    param width: Mass = 5kg
     param height: Scalar = 100mm
     param thickness: Scalar = 5mm
     param fillet_radius: Scalar = 3mm
