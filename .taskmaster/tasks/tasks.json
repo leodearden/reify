@@ -40500,7 +40500,13 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Broaden find_node test helper to cover all recursive CompiledExprKind variants"
+            ]
+          }
         }
       },
       {
@@ -40809,11 +40815,11 @@
         "description": "`Value::Field`'s doc in crates/reify-types/src/value.rs:205 references `reify_expr::calculus::detect_single_point_param`, but that function is a private `fn` (not `pub fn`) in crates/reify-expr/src/calculus.rs:526. Readers outside reify-expr cannot jump to it from rustdoc, and any intra-doc link would not resolve.",
         "details": "Pick one of:\n1. Make `detect_single_point_param` `pub(crate)` plus a `#[doc(hidden)] pub` re-export so the rustdoc link resolves across crates, or\n2. Soften the cross-reference in value.rs:205 to clarify it's an internal helper — e.g. \"See the private `detect_single_point_param` helper in `crates/reify-expr/src/calculus.rs` for the reference implementation of this heuristic; keep this doc in sync with that function.\"\n\nOption 2 is lower-risk and preserves encapsulation; option 1 enables navigation at the cost of widening the surface.\n\nSource: review escalation esc-1002-30, suggestion 2.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T05:56:27.352Z",
+        "updatedAt": "2026-04-20T06:24:21.689Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -40834,7 +40840,12 @@
           "modules": [
             "crates/reify-types/src",
             "crates/reify-expr/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "cec044bdb95b22184411fb61e1d5c51d880dbcbc",
+            "commit_input": "cec044bdb",
+            "note": "Task 1950 branch merged into main; verified via git merge-base --is-ancestor HEAD main. Code changes landed: 7c73e612d (TDD red), 7a95c7004 (resolvable intra-doc link from detect_single_point_param to Value::Field), cec044bdb (removed stale back-pointer from Value::Field)."
+          }
         }
       },
       {
@@ -42176,9 +42187,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T06:18:26.398Z",
+      "lastModified": "2026-04-20T06:24:21.689Z",
       "taskCount": 2003,
-      "completedCount": 1708,
+      "completedCount": 1709,
       "tags": [
         "master"
       ]
