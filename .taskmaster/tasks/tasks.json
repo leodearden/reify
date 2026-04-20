@@ -42425,6 +42425,18 @@
         "description": "After task 2007 shipped the focus-entity event listener in App.tsx:365-391, user-initiated navigation still double-dispatches flyToEntity and selectEntity — once inside navigation.ts navigateToEntity, once via the listener. It's idempotent today but brittle: if selectEntity ever toggles or flyToEntity becomes non-idempotent, correctness silently breaks.\n\nFix: Strip the direct flyToEntity/selectEntity calls from navigateToEntity in gui/src/navigation.ts so the focus-entity listener is the sole terminal dispatcher in practice as well as in name.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-20T11:05:21.190Z"
+      },
+      {
+        "id": "2021",
+        "title": "Strengthen focus-entity App test to assert selected entity identity is 'Bracket'",
+        "description": "gui/src/__tests__/App.test.tsx:642-670 asserts mockFlyToEntity was called and that one selected group appears in PropertyEditor, but does not check that the entity path routed to selectionStore.selectEntity is 'Bracket'. A regression that selected the wrong entity would still satisfy `selectedGroups.length === 1`.\n\nFix: Also assert the selected group's identity (e.g. that the data-selected element corresponds to 'Bracket', or inspect selectionStore state) so the test verifies the value routed through, not merely that something got selected.\n\nSource: reviewer_comprehensive on task 2007.",
+        "details": "",
+        "testStrategy": "",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
@@ -42433,8 +42445,8 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:04:44.832Z",
-      "taskCount": 2012,
+      "lastModified": "2026-04-20T11:05:21.190Z",
+      "taskCount": 2013,
       "completedCount": 1720,
       "tags": [
         "master"
