@@ -42835,13 +42835,12 @@
             ]
           },
           "files": [
-            "crates/reify-compiler/src/conformance.rs",
-            "crates/reify-compiler/tests/conformance_tests.rs"
+            "crates/reify-compiler/src/conformance.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ]
+            "crates/reify-compiler/src"
+          ],
+          "fallback_outcome": "All 4 tests access pub(crate) check_trait_conformance and cannot move to integration tests. Plan added module-level doc comment explaining why. See commit 60575c066."
         }
       },
       {
@@ -43469,7 +43468,9 @@
       "completedCount": 1786,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T20:02:47.152Z",
+      "description": "Tasks for master context"
     }
   }
 }
