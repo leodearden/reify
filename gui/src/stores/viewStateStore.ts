@@ -448,3 +448,5 @@ export function createViewStateStore() {
     regenerateAutoViews,
   };
 }
+
+export type ViewStateStore = ReturnType<typeof createViewStateStore>;
