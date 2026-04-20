@@ -40304,11 +40304,11 @@
         "description": "In crates/reify-eval/src/lib.rs (~line 101-143, `value_type_kind_matches`), every value/type predicate (e.g. `Value::Real(_) => matches!(ty, Type::Real | Type::Int)`) enumerates concrete Type variants but never accepts Type::Error. Since Type::Error now propagates further into compiled expressions (task-448, task-1912), a CompiledExpr carrying Type::Error could reach evaluation during incremental/LSP scenarios and produce spurious TypeKindMismatch diagnostics or panics. Either add an explicit Type::Error arm in each predicate (returning true as \"don't second-guess a poisoned type\"), or guard the evaluator to refuse evaluation when diagnostics contain errors, and document the contract. Related: tasks 1867, 1893, 1913. Review followup from task 1912 (S6).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:33:35.850Z",
+        "updatedAt": "2026-04-20T11:35:19.678Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
@@ -42628,7 +42628,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:34:38.960Z",
+      "lastModified": "2026-04-20T11:35:19.680Z",
       "taskCount": 2022,
       "completedCount": 1727,
       "tags": [
