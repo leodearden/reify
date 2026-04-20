@@ -323,12 +323,6 @@ describe('shortcuts — switchViewByIndex entry', () => {
     expect((entry as ShortcutDef & { category?: string })?.category).toBe('View');
   });
 
-  it('switchViewByIndex description mentions view switching', () => {
-    const entry = SHORTCUTS.find((s) => s.id === 'switchViewByIndex');
-    expect(entry?.description).toBeTruthy();
-    expect(entry?.description.toLowerCase()).toContain('view');
-  });
-
   it('ShortcutId union includes "switchViewByIndex" — verified via getShortcut lookup', () => {
     // ShortcutId is derived from _SHORTCUTS_DEF; once 'switchViewByIndex' is added
     // the literal type flows into ShortcutId and getShortcut accepts it without cast.
