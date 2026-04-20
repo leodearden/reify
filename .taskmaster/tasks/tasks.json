@@ -42798,11 +42798,11 @@
         "description": "Move the `mod tests` block from `crates/reify-compiler/src/conformance.rs` (L1046-1272, ~225 lines) into a new integration test file at `crates/reify-compiler/tests/conformance_tests.rs`.\n\nIf any test accesses `pub(crate)` items (`check_trait_conformance`, `MergeContext`, `collect_all_requirements`, `check_trait_arg_conformance`), keep those tests as a `#[cfg(test)] mod tests` submodule inside conformance.rs and move only the tests that exercise conformance checking through the public `compile()` API. Preserve the same assertion behavior.\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically.\n- `conformance.rs` drops from 1272 → ~1050 lines (or less, depending on how many tests can move to integration tests).\n\nWhy: conformance.rs is the #3 contended file (12 pending tasks). Shedding tests is a low-risk first step; the structural extraction follows in the next task.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T17:30:11.740Z",
+        "updatedAt": "2026-04-20T17:44:22.697Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -43392,7 +43392,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:31:53.209Z",
+      "lastModified": "2026-04-20T17:44:22.697Z",
       "taskCount": 2054,
       "completedCount": 1783,
       "tags": [
