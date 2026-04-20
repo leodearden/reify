@@ -243,4 +243,53 @@ assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=2700" \
 assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
     bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli --release'"
 
+# -- Test 18: wrapper does not leak the lock fd into background daemons --------
+# Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
+# detached daemon by cargo via RUSTC_WRAPPER) inherited FD 9 and outlived
+# cargo, pinning the flock forever.  The wrapper must run its child with FD 9
+# closed so no descendant can leak the open file description.
+echo ""
+echo "--- Test 18: wrapper closes fd 9 on the child; daemons do not leak the lock ---"
+
+_LOCK18="$(mktemp)"
+_DAEMON_PID_FILE="$(mktemp)"
+_EXIT18=0
+
+# Run the wrapper on a command that forks a detached daemon that survives the
+# wrapper's exit.  setsid + & + disown produces exactly the sccache-style
+# inheritance pattern: the daemon's only link to the lock fd is inheritance
+# from its parent, so a correctly-patched wrapper closes fd 9 before the
+# child exec and the daemon starts life without fd 9.
+REIFY_OCCT_LOCK="$_LOCK18" "$WRAPPER" bash -c '
+    setsid bash -c "sleep 30" </dev/null >/dev/null 2>&1 &
+    echo $! > "'"$_DAEMON_PID_FILE"'"
+    disown
+    exit 0
+' || _EXIT18=$?
+
+_DAEMON_PID="$(cat "$_DAEMON_PID_FILE" 2>/dev/null || echo "")"
+
+# The daemon must still be alive (otherwise the test is vacuous — we'd be
+# verifying the lock is free because nothing inherited it at all).
+assert "Test 18: daemon spawned inside wrapper is still alive after wrapper exits (pid=$_DAEMON_PID)" \
+    bash -c "[ -n '$_DAEMON_PID' ] && kill -0 '$_DAEMON_PID' 2>/dev/null"
+
+# After the wrapper returns, the flock must be free: a non-blocking flock
+# attempt on the same lock file must succeed immediately.  If fd 9 had
+# leaked into the surviving daemon, this would fail (lock still held).
+_LOCK_FREE18=1
+( flock -n -x 9 || exit 1 ) 9>>"$_LOCK18" || _LOCK_FREE18=0
+
+assert "Test 18: lock released after wrapper exit despite surviving daemon (fd 9 not inherited)" \
+    test "$_LOCK_FREE18" -eq 1
+
+# Cleanup the surviving daemon.
+if [ -n "$_DAEMON_PID" ]; then
+    kill "$_DAEMON_PID" 2>/dev/null || true
+fi
+rm -f "$_LOCK18" "$_DAEMON_PID_FILE"
+
+assert "Test 18: wrapper exited 0 on successful spawn (got $_EXIT18)" \
+    test "$_EXIT18" -eq 0
+
 test_summary
