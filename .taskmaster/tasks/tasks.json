@@ -41060,11 +41060,11 @@
         "description": "Cleanup batch for artifacts left after Task 1745's migration:\n\n1. `ViewDefinition.modified` is declared and set to false at every construction site but never read. Shipping unused fields invites callers to start setting them inconsistently before a consumer lands.\n2. `seedView` is on the public store interface but is only called from tests — UI callers could bypass the reconciliation that regenerateAutoViews does.\n3. Tests in viewStateStore.test.ts reference \"step-16\" migration context in comments that become archaeology once shipped. Separately, there's no regression test for the documented `resetToInherit` + `setActiveView` null-destruction semantics.",
         "details": "## Scope\n\n- gui/src/stores/autoViewGenerator.ts:20 and 94-180\n- gui/src/stores/viewStateStore.ts:212-216\n- gui/src/__tests__/viewStateStore.test.ts:921-985\n\n### 1. `ViewDefinition.modified`\n\nDecision: drop it from ViewDefinition until the edit-preservation feature lands. Remove the field from the type and all constructor sites in autoViewGenerator.ts. Update the related doc comment in regenerateAutoViews (lines 258-262) that references the future use.\n\n(Alternative: if the sibling task for user-view write-back decides to stamp `modified=true` for edits, keep the field and add the consumer instead. Coordinate with that task.)\n\n### 2. `seedView` visibility\n\nEither (a) use seedView inside regenerateAutoViews so it has a real production consumer, or (b) remove it from the returned object and expose a test-only helper. Minimum: add a `/** @internal */` JSDoc tag.\n\n### 3. Test hygiene\n\n- Strip \"step-16\" migration comments from viewStateStore.test.ts:921-985 now that the migration is complete.\n- Add a regression test: call resetToInherit(path), setActiveView(otherId), and assert that the prior explicit-null marker is destroyed and the view's own visibility map fully replaces state.explicit (matches the documented setActiveView null-destruction semantics).\n\n### memory_hints\n- search: \"ViewDefinition modified field\"\n- search: \"seedView regenerateAutoViews\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:13:38.521Z",
+        "updatedAt": "2026-04-20T12:57:42.992Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/autoViewGenerator.test.ts",
@@ -42853,9 +42853,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T12:57:40.936Z",
+      "lastModified": "2026-04-20T12:57:42.993Z",
       "taskCount": 2032,
-      "completedCount": 1739,
+      "completedCount": 1740,
       "tags": [
         "master"
       ]
