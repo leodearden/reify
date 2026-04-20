@@ -42994,11 +42994,11 @@
         "description": "Add positive assertion to test at crates/reify-compiler/tests/constraint_def_compile_tests.rs line ~977: find `Aligned` in module.constraint_defs, assert params.len()==2, type_params.len()==1. Source: esc-1964-55.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:36:26.649Z",
+        "updatedAt": "2026-04-20T15:21:54.967Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
@@ -43279,7 +43279,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T15:17:13.640Z",
+      "lastModified": "2026-04-20T15:21:54.967Z",
       "taskCount": 2050,
       "completedCount": 1766,
       "tags": [
