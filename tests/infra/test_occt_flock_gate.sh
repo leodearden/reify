@@ -220,4 +220,20 @@ assert "Test 16: stderr contains log line with 'acquired', 'OCCT lock', and nume
 
 rm -f "$_LOCK16" "$_ERR16"
 
+# -- Test 17: orchestrator.yaml no longer wraps gated invocations with outer timeout -
+echo ""
+echo "--- Test 17: orchestrator.yaml delegates timeout to wrapper via REIFY_OCCT_TEST_TIMEOUT ---"
+
+assert "Test 17: no outer 'timeout --kill-after=N Nm ./scripts/cargo-test-occt-gated' remains in test_command" \
+    bash -c "LINE=\$(grep 'test_command:' '$ORCH'); ! echo \"\$LINE\" | grep -qE 'timeout[[:space:]]+--kill-after=[0-9]+[[:space:]]+[0-9]+[smhd][[:space:]]+[./]*scripts/cargo-test-occt-gated'"
+
+assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= appears exactly twice in test_command (once per gated invocation)" \
+    bash -c "[ \"\$(grep 'test_command:' '$ORCH' | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 2 ]"
+
+assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=2700" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test --workspace --'"
+
+assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test --workspace --release'"
+
 test_summary
