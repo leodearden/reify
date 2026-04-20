@@ -717,7 +717,7 @@ impl ReifyToolContext for CliToolContext {
         Ok(false)
     }
 
-    fn navigate_to_source(&self, _file: &str, _line: u32, _column: u32) -> Result<bool, ToolError> {
+    fn navigate_to_source(&self, _file: &str, _line: u32, _column: u32, _end_line: u32, _end_column: u32) -> Result<bool, ToolError> {
         Ok(false)
     }
 }

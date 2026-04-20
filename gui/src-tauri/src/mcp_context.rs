@@ -304,7 +304,7 @@ impl ReifyToolContext for TauriToolContext {
         Ok(true)
     }
 
-    fn navigate_to_source(&self, file: &str, line: u32, column: u32) -> Result<bool, ToolError> {
+    fn navigate_to_source(&self, file: &str, line: u32, column: u32, end_line: u32, end_column: u32) -> Result<bool, ToolError> {
         if let Some(ref emitter) = self.event_emitter {
             emitter(
                 "navigate-to-source",
@@ -312,6 +312,8 @@ impl ReifyToolContext for TauriToolContext {
                     "file": file,
                     "line": line,
                     "column": column,
+                    "end_line": end_line,
+                    "end_column": end_column,
                 }),
             );
         }
