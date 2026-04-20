@@ -321,12 +321,20 @@ pub(crate) fn compile_entity(
                             if let reify_syntax::TypeExprKind::Named { name, type_args } = &type_expr.kind
                                 && let Some(t) = resolve_enum_type(name, enum_defs)
                             {
-                                // Reify enums are non-parametric; any type_args here is a parser bug.
-                                debug_assert!(
-                                    type_args.is_empty(),
-                                    "enum types do not accept type args: {}",
-                                    name
-                                );
+                                // Reify enums are non-parametric. Emit a user-facing diagnostic
+                                // if type_args are present so the error is visible in release builds too.
+                                if !type_args.is_empty() {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "enum `{}` does not accept type arguments",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "enum types are not generic",
+                                        )),
+                                    );
+                                }
                                 t
                             } else {
                                 diagnostics.push(

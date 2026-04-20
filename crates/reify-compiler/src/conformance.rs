@@ -36,11 +36,18 @@ pub(crate) fn check_trait_conformance(
                     resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
                         .or_else(|| {
                             enum_names.contains(name.as_str()).then(|| {
-                                debug_assert!(
-                                    type_args.is_empty(),
-                                    "enum types do not accept type args: {}",
-                                    name
-                                );
+                                if !type_args.is_empty() {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "enum `{}` does not accept type arguments",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            te.span,
+                                            "enum types are not generic",
+                                        )),
+                                    );
+                                }
                                 Type::Enum(name.to_string())
                             })
                         })
@@ -1047,14 +1054,29 @@ mod tests {
     /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
     /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
     ///
-    /// This test **FAILS on the unpatched code** and **PASSES after the Option B fix**.
     /// Characterization test that enum-typed `param` and `let` members resolve to
     /// `Type::Enum` through `check_trait_conformance`.
     ///
     /// Serves as a tripwire for the step-4 refactor (HashSet + closure extraction):
     /// any drift in enum resolution or diagnostic messages in the filter_map is caught
-    /// immediately. The test passes today (pre-refactor) and must continue to pass
-    /// after step-4.
+    /// immediately.
+    ///
+    /// ## Why negative assertions?
+    ///
+    /// `structure_members` is a local binding inside `check_trait_conformance` and is not
+    /// directly observable from outside the function.  Rather than restructuring the API,
+    /// this test uses three negative-assertion sentinels as a proxy for correct
+    /// `Type::Enum("Direction")` resolution:
+    ///
+    /// - Absence of **"unresolved type"** → both `dir` and `kind` were resolved (not fallen
+    ///   back to `Type::Real`)
+    /// - Absence of **"type mismatch"** → the resolved types matched the trait's
+    ///   `Type::Enum("Direction")` requirements
+    /// - Absence of **"missing required member"** → both members appeared in `structure_members`
+    ///
+    /// Together these three imply `Type::Enum("Direction")` was produced.  A regression that
+    /// accidentally resolves enum params to `Type::Real` would trip "type mismatch", and one
+    /// that omits a member from `structure_members` would trip "missing required member".
     #[test]
     fn check_trait_conformance_resolves_enum_typed_param_and_let() {
         // Direction enum defined in the same module
@@ -1390,18 +1412,15 @@ mod tests {
         );
     }
 
-    /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) triggers the
-    /// `debug_assert!(type_args.is_empty(), "enum types do not accept type args: ...")` added
-    /// in step-6.
+    /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) emits a
+    /// user-facing `Diagnostic::error` with the message
+    /// "enum `Direction` does not accept type arguments".
     ///
-    /// In the current code (post step-4, pre step-6) this silently discards the type_args and
-    /// resolves to `Type::Enum("Direction")` without panicking — so this test FAILS until step-6
-    /// adds the debug_assert.
+    /// Unlike a `debug_assert!`, the diagnostic is emitted in both debug and release builds,
+    /// so this test validates the error is always surfaced to users regardless of build profile.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "enum types do not accept type args")]
-    fn enum_with_type_args_triggers_debug_assert() {
-        // Direction<Something> — non-empty type_args that should trigger the assert
+    fn enum_with_type_args_emits_error_diagnostic() {
+        // Direction<Something> — non-empty type_args that should trigger the diagnostic
         let bogus_type_arg = reify_syntax::TypeExpr {
             kind: reify_syntax::TypeExprKind::Named {
                 name: "Something".to_string(),
@@ -1455,9 +1474,6 @@ mod tests {
         let trait_names: HashSet<String> = HashSet::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        // Should panic with the debug_assert in the enum-resolution arm (step-6).
-        // Pre-step-6 this silently returns Type::Enum("Direction") — no panic — so
-        // the #[should_panic] test FAILS until step-6 is applied.
         check_trait_conformance(
             &entity_ref,
             &trait_registry,
@@ -1471,13 +1487,30 @@ mod tests {
             &alias_registry,
             &mut diagnostics,
         );
+
+        // Expect exactly one diagnostic reporting the type-args error.
+        let type_args_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("does not accept type arguments"))
+            .collect();
+        assert_eq!(
+            type_args_errors.len(),
+            1,
+            "Expected exactly one 'does not accept type arguments' diagnostic; got: {:?}",
+            diagnostics
+        );
     }
 
-    /// Companion test confirming that the debug_assert does NOT fire when a non-enum
-    /// named type (e.g., an unknown name) appears with non-empty type_args.  The assert
-    /// is gated inside the enum-match arm, so non-enum names never reach it.
+    /// A non-enum type name with non-empty type_args (e.g. `NotAnEnum<Something>`) should
+    /// produce exactly one "unresolved type" diagnostic — the same outcome as `NotAnEnum`
+    /// without type_args, because enum-resolution is gated on the name matching an enum.
+    ///
+    /// The positive assertion (`unresolved.len() == 1`) is the load-bearing check here:
+    /// it verifies that an unknown parameterized type name falls through to the
+    /// "unresolved type" diagnostic rather than silently resolving to `Type::Real` or
+    /// emitting a spurious "does not accept type arguments" error.
     #[test]
-    fn non_enum_named_with_type_args_does_not_panic() {
+    fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
         // NotAnEnum<Something> — non-empty type_args but "NotAnEnum" is not in enum_defs
         let bogus_type_arg = reify_syntax::TypeExpr {
             kind: reify_syntax::TypeExprKind::Named {

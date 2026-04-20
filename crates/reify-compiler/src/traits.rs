@@ -28,12 +28,20 @@ pub(crate) fn compile_trait(
                             t
                         } else if let Some(t) = resolve_enum_type(name, enum_defs) {
                             // Enum type defined in the same module; reify enums are
-                            // non-parametric today — any type_args here is a parser bug.
-                            debug_assert!(
-                                type_args.is_empty(),
-                                "enum types do not accept type args: {}",
-                                name
-                            );
+                            // non-parametric. Emit a user-facing diagnostic if type_args
+                            // are present so the error is visible in release builds too.
+                            if !type_args.is_empty() {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "enum `{}` does not accept type arguments",
+                                        name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        type_expr.span,
+                                        "enum types are not generic",
+                                    )),
+                                );
+                            }
                             t
                         } else {
                             diagnostics.push(
