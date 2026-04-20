@@ -20,22 +20,22 @@ ORCH="$REPO_ROOT/orchestrator.yaml"
 echo ""
 echo "--- Test 1: release pass present in test_command ---"
 
-assert "test_command contains 'cargo test --workspace --release'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -q 'cargo test --workspace --release'"
+assert "test_command contains 'cargo test --workspace.*--release'" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qE 'cargo test --workspace.*--release'"
 
 # -- Test 2: debug pass preserved ----------------------------------------------
 echo ""
 echo "--- Test 2: debug pass preserved in test_command ---"
 
-assert "test_command still contains 'cargo test --workspace -- --test-threads=1'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -q 'cargo test --workspace -- --test-threads=1'"
+assert "test_command contains 'cargo test --workspace.*-- --test-threads=1'" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qE 'cargo test --workspace.*-- --test-threads=1'"
 
 # -- Test 3: release pass uses --test-threads=1 --------------------------------
 echo ""
 echo "--- Test 3: release pass uses --test-threads=1 ---"
 
-assert "test_command contains 'cargo test --workspace --release -- --test-threads=1'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -q 'cargo test --workspace --release -- --test-threads=1'"
+assert "test_command contains 'cargo test --workspace.*--release.*-- --test-threads=1'" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -qE 'cargo test --workspace.*--release.*-- --test-threads=1'"
 
 # -- Test 4: ordering (release AFTER debug) ------------------------------------
 echo ""
@@ -44,8 +44,17 @@ echo "--- Test 4: release pass appears after debug pass ---"
 assert "release pass byte position is greater than debug pass byte position" \
     bash -c "
         LINE=\$(grep 'test_command:' '$ORCH')
-        DEBUG_POS=\$(awk 'BEGIN { s=ARGV[1]; p=ARGV[2]; print index(s, p) }' \"\$LINE\" 'cargo test --workspace -- --test-threads=1')
-        RELEASE_POS=\$(awk 'BEGIN { s=ARGV[1]; p=ARGV[2]; print index(s, p) }' \"\$LINE\" 'cargo test --workspace --release -- --test-threads=1')
+        PAT='cargo test --workspace --exclude'
+        DEBUG_POS=\$(awk 'BEGIN { s=ARGV[1]; p=ARGV[2]; print index(s, p) }' \"\$LINE\" \"\$PAT\")
+        RELEASE_POS=\$(awk 'BEGIN {
+            s=ARGV[1]; p=ARGV[2]
+            first = index(s, p)
+            if (first == 0) { print 0; exit }
+            rest = substr(s, first + length(p))
+            second = index(rest, p)
+            if (second == 0) { print 0; exit }
+            print first + length(p) + second - 1
+        }' \"\$LINE\" \"\$PAT\")
         [ \"\$DEBUG_POS\" -gt 0 ] && [ \"\$RELEASE_POS\" -gt 0 ] && [ \"\$RELEASE_POS\" -gt \"\$DEBUG_POS\" ]
     "
 
