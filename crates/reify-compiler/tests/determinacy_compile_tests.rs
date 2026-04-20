@@ -1,6 +1,8 @@
 //! Determinacy predicate compilation tests.
 
-use reify_types::{CompiledExprKind, ContentHash, DeterminacyPredicateKind, Severity};
+use reify_types::{
+    CompiledExprKind, ContentHash, DeterminacyPredicateKind, Severity, TAG_DETERMINACY_PREDICATE,
+};
 
 /// step-27: Compile `constraint determined(x)` and verify its content_hash
 /// matches the canonical stable-byte formula:
@@ -52,7 +54,7 @@ structure S {
             // Compute the expected canonical hash using stable byte discriminators
             // (matching the quantifier pattern: [tag, kind_byte] + stringified cell_id)
             let kind_byte: u8 = 0; // Determined = 0
-            let expected_hash = ContentHash::of(&[17u8, kind_byte])
+            let expected_hash = ContentHash::of(&[TAG_DETERMINACY_PREDICATE, kind_byte])
                 .combine(ContentHash::of_str(&format!("{}", cell)));
 
             assert_eq!(

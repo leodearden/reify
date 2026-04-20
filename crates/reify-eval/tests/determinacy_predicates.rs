@@ -10,8 +10,8 @@
 use reify_eval::Engine;
 use reify_test_support::{make_engine, parse_and_compile};
 use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, DeterminacyPredicateKind, Satisfaction, Type,
-    Value, ValueCellId,
+    CompiledExpr, CompiledExprKind, ContentHash, DeterminacyPredicateKind, Satisfaction,
+    TAG_DETERMINACY_PREDICATE, Type, Value, ValueCellId,
 };
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -774,7 +774,7 @@ fn determinacy_predicate_constructor_produces_stable_hash() {
         );
 
         // Verify content_hash matches the stable byte-discriminator formula.
-        let expected_hash = ContentHash::of(&[17u8, *kind_byte])
+        let expected_hash = ContentHash::of(&[TAG_DETERMINACY_PREDICATE, *kind_byte])
             .combine(ContentHash::of_str(&format!("{}", cell_id)));
         assert_eq!(
             expr.content_hash, expected_hash,

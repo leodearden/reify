@@ -907,7 +907,7 @@ impl ConstraintSolver for DimensionalSolver {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult, ValueMap};
+    use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult, TAG_CONDITIONAL, ValueMap};
 
     // ---- shared solver test helpers ----
 
@@ -3356,7 +3356,7 @@ mod tests {
         let then_branch = CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::Real);
         let else_branch = x_ref;
 
-        let cond_hash = ContentHash::of(&[5])
+        let cond_hash = ContentHash::of(&[TAG_CONDITIONAL])
             .combine(condition.content_hash)
             .combine(then_branch.content_hash)
             .combine(else_branch.content_hash);
@@ -3470,7 +3470,7 @@ mod tests {
         let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::Real);
         let else_branch = x_ref;
 
-        let cond_hash = ContentHash::of(&[5])
+        let cond_hash = ContentHash::of(&[TAG_CONDITIONAL])
             .combine(condition.content_hash)
             .combine(then_branch.content_hash)
             .combine(else_branch.content_hash);
