@@ -42048,7 +42048,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T05:43:09.358Z"
+        "updatedAt": "2026-04-20T05:43:09.358Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src/claude_bridge.rs",
+            "gui/src-tauri/src/tests",
+            "gui/src/App.tsx",
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/bridge.test.ts",
+            "gui/src/bridge.ts"
+          ]
+        }
       },
       {
         "id": "2008",
@@ -42143,7 +42153,9 @@
       "completedCount": 1707,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T05:52:27.785Z",
+      "description": "Tasks for master context"
     }
   }
 }
