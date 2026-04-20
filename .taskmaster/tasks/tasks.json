@@ -43116,15 +43116,20 @@
         "description": "Dedup repeated CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"),\"/tests/fixtures\"))) in mcp_context.rs tests (lines ~807,832,865,891,931,1115,1136). Extract private fresh_ctx helper. Spawned from task 2015 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T16:29:27.567Z",
+        "updatedAt": "2026-04-20T16:36:15.910Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "89835e8faa01e64c0357a712a109a324c54f8c3c",
+            "commit_input": "89835e8fa",
+            "note": "Task 2050 work already merged to main via commits cb4146af7 (fresh_ctx helper), 89835e8fa (8 call-site substitutions), 1d1ef1e5f + 2f25b62ec (smoke test), 343965f2a (pristine-state behavior test). Branch task/2050 holds one additional test (a05adcc6e, fresh_ctx_returns_fresh_fixtures_scoped_context) that further guards the helper's contract."
+          }
         }
       },
       {
@@ -43315,9 +43320,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:33:58.908Z",
+      "lastModified": "2026-04-20T16:36:15.910Z",
       "taskCount": 2051,
-      "completedCount": 1774,
+      "completedCount": 1775,
       "tags": [
         "master"
       ]
