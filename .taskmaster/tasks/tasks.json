@@ -11381,7 +11381,7 @@
         "description": "Address robustness suggestions from task #326 review:\n1. Add debug_assert in load_stdlib() that no module has error-level diagnostics — silent cache of broken modules is dangerous (stdlib_loader.rs:23-38)\n2. Compile stdlib modules sequentially with compile_with_prelude so cross-module deps work when second .ri file is added (stdlib_loader.rs:33-36)\n3. Document function shadowing semantics in eval() — user functions shadow prelude by insertion order with iter().find() first-match (lib.rs:847-854)\n4. Investigate _distance_f64 rename — confirm whether is_finite() guard was intentional validation or dead code (lib.rs:3244)\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-eval/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11405,7 +11405,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-19T21:23:54.305Z"
+        "updatedAt": "2026-04-20T05:43:05.437Z"
       },
       {
         "id": "516",
@@ -39297,11 +39297,11 @@
         "description": "Allow param types to reference traits (e.g. `param material : Material`), so that structures can declare dependencies on trait-satisfying values. Currently `resolve_type_name` rejects trait names used as types (\"unresolved type: Material\"). Required for `examples/m5_geometry_flange.ri` to use the intended syntax instead of the `param material : String = \"steel\"` stand-in.",
         "details": "## Scope\nSpawned from task 1751 esc-1751-2. The architect plan for 1751 substituted `param material : String` because trait-typed params are not implementable in the current compiler.\n\n## Problem\n- `resolve_type_name` (crates/reify-compiler/src/type_resolution.rs) only resolves concrete types; trait names are not accepted.\n- `Material` is defined as a trait in `crates/reify-compiler/stdlib/materials_mechanical.ri:8`.\n\n## Approach options\n- Structural subtyping / existential types — significant design change.\n- Limited nominal trait-typed param (accept only concrete structs satisfying the trait at instantiation).\n- Conformance check at instantiation with the passed value's struct.\n\n## Acceptance\n- `param material : Material` type-checks when callers pass a struct that conforms to `Material`.\n- `examples/m5_geometry_flange.ri` can be updated to use the trait-typed form.\n\n## Dependencies\nCoordinates with task ~follow-up on \"Material as first-class type\" (spawned below).\n\n### memory_hints\n- search: \"resolve_type_name Material trait\"\n- search: \"trait conformance param type annotation\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:39.360Z",
+        "updatedAt": "2026-04-20T05:43:05.613Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -42084,15 +42084,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:28:31.231Z",
-      "taskCount": 2000,
+      "lastModified": "2026-04-20T05:43:05.613Z",
+      "taskCount": 2003,
       "completedCount": 1702,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T05:29:02.056Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T05:30:17.477Z"
+      ]
     }
   }
 }
