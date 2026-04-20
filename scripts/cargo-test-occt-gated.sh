@@ -14,13 +14,22 @@
 #   ./scripts/cargo-test-occt-gated.sh cargo test --workspace -- --test-threads=1
 #
 # Environment:
-#   REIFY_OCCT_LOCK  Override the lock file path.
-#                    Default: ${TMPDIR:-/tmp}/reify-occt-$(id -u).lock
-#                    The default is user-scoped so each OS account on a shared
-#                    host gets its own lock file.  Cross-user serialization
-#                    (rare) requires setting REIFY_OCCT_LOCK to a shared path.
-#                    Use a unique per-test path in test harnesses to avoid
-#                    interference with real OCCT runs.
+#   REIFY_OCCT_LOCK       Override the lock file path.
+#                         Default: ${TMPDIR:-/tmp}/reify-occt-$(id -u).lock
+#                         The default is user-scoped so each OS account on a
+#                         shared host gets its own lock file.  Cross-user
+#                         serialization (rare) requires setting
+#                         REIFY_OCCT_LOCK to a shared path.  Use a unique
+#                         per-test path in test harnesses to avoid
+#                         interference with real OCCT runs.
+#
+#   REIFY_OCCT_LOCK_WAIT  Maximum seconds to wait for the exclusive lock.
+#                         Default: 1800 (30 minutes).  If the lock cannot be
+#                         acquired within this budget, the wrapper exits 75
+#                         (EX_TEMPFAIL) with an error message on stderr — the
+#                         command is NOT executed.  A caller that sees exit 75
+#                         should interpret it as transient contention ("try
+#                         again, nothing ran") rather than a test failure.
 
 set -euo pipefail
 
@@ -31,10 +40,24 @@ if ! command -v flock >/dev/null 2>&1; then
 fi
 
 LOCK="${REIFY_OCCT_LOCK:-${TMPDIR:-/tmp}/reify-occt-$(id -u).lock}"
+LOCK_WAIT="${REIFY_OCCT_LOCK_WAIT:-1800}"
 
 if [ "$#" -eq 0 ]; then
     echo "ERROR: cargo-test-occt-gated.sh: no command provided" >&2
     exit 64
 fi
 
-exec flock -x "$LOCK" "$@"
+# FD-mode flock: open the lock file on FD 9 and acquire an exclusive lock with
+# a bounded wait.  Using FD-mode (rather than command-mode) lets us interleave
+# logic between lock acquisition and exec — specifically, the elapsed-time log
+# line and the internal post-lock timeout applied in the next step.  The lock
+# stays held for the lifetime of FD 9, which is inherited by exec'd children,
+# so the serialization guarantee is preserved.  We use ">>" (append) rather
+# than ">" to avoid truncating the lock file on every acquisition.
+exec 9>>"$LOCK"
+if ! flock -x -w "$LOCK_WAIT" 9; then
+    echo "ERROR: cargo-test-occt-gated.sh: failed to acquire OCCT lock within ${LOCK_WAIT}s (LOCK=$LOCK)" >&2
+    exit 75
+fi
+
+exec "$@"
