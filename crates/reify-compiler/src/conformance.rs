@@ -21,92 +21,23 @@ pub(crate) fn check_trait_conformance(
 ) {
     // Collect all structure member names for conformance checking.
     let empty_params: HashSet<String> = HashSet::new();
-    let structure_members: HashMap<String, Type> = structure
-        .members
-        .iter()
-        .filter_map(|m| match m {
-            reify_syntax::MemberDecl::Param(p) => {
-                let ty = p
-                    .type_expr
-                    .as_ref()
-                    .map(|te| {
-                        // Extract name from Named variant; DimensionalOp can't be a param type.
-                        let name_opt = match &te.kind {
-                            reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
-                            reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
-                        };
-                        if let Some(name) = name_opt {
-                            resolve_type_with_aliases(
-                                name,
-                                &empty_params,
-                                alias_registry,
-                                trait_names,
-                            )
-                                .or_else(|| {
-                                    if enum_defs.iter().any(|e| e.name == name) {
-                                        Some(Type::Enum(name.to_string()))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or_else(|| {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!(
-                                            "unresolved type in conformance check: {}",
-                                            name
-                                        ))
-                                        .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                                    );
-                                    Type::Real
-                                })
-                        } else {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type in conformance check: {}",
-                                    te
-                                ))
-                                .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
-                            );
-                            Type::Real
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "trait member '{}' has no type annotation; cannot infer type",
-                                p.name
-                            ))
-                            .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
-                        );
-                        Type::Real
-                    });
-                Some((p.name.clone(), ty))
-            }
-            reify_syntax::MemberDecl::Let(l) => {
-                // let bindings get their type from expression inference, not annotations.
-                // Only include in structure_members when there is an explicit type annotation;
-                // omitting is safe because if a trait requires this member, the conformance
-                // check will report "missing required member" rather than a spurious
-                // "no type annotation" error.
-                let te = l.type_expr.as_ref()?;
-                // Extract name from Named variant; DimensionalOp can't be a let type annotation.
-                let name_opt = match &te.kind {
-                    reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
-                    reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
-                };
-                if let Some(name) = name_opt {
-                    let ty = resolve_type_with_aliases(
-                        name,
-                        &empty_params,
-                        alias_registry,
-                        trait_names,
-                    )
+    // Build a HashSet of enum names once (O(E)) so the filter_map below performs
+    // O(1) membership checks per member instead of a fresh O(E) scan each time.
+    let enum_names: HashSet<&str> = enum_defs.iter().map(|e| e.name.as_str()).collect();
+
+    // Shared resolution logic for Param and Let type annotations in the filter_map.
+    // Receives `diagnostics` as an explicit parameter (rather than capturing it) so
+    // the filter_map closure can also push to `diagnostics` for the "missing annotation"
+    // case without a mutable-borrow conflict.
+    let resolve_member_annotation_type =
+        |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
+            match &te.kind {
+                reify_syntax::TypeExprKind::Named { name, .. } => {
+                    resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
                         .or_else(|| {
-                            if enum_defs.iter().any(|e| e.name == name) {
-                                Some(Type::Enum(name.to_string()))
-                            } else {
-                                None
-                            }
+                            enum_names
+                                .contains(name.as_str())
+                                .then(|| Type::Enum(name.to_string()))
                         })
                         .unwrap_or_else(|| {
                             diagnostics.push(
@@ -117,9 +48,9 @@ pub(crate) fn check_trait_conformance(
                                 .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                             );
                             Type::Real
-                        });
-                    Some((l.name.clone(), ty))
-                } else {
+                        })
+                }
+                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "unresolved type in conformance check: {}",
@@ -127,8 +58,39 @@ pub(crate) fn check_trait_conformance(
                         ))
                         .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
                     );
-                    Some((l.name.clone(), Type::Real))
+                    Type::Real
                 }
+            }
+        };
+
+    let structure_members: HashMap<String, Type> = structure
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            reify_syntax::MemberDecl::Param(p) => {
+                let ty = match p.type_expr.as_ref() {
+                    Some(te) => resolve_member_annotation_type(te, diagnostics),
+                    None => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "trait member '{}' has no type annotation; cannot infer type",
+                                p.name
+                            ))
+                            .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
+                        );
+                        Type::Real
+                    }
+                };
+                Some((p.name.clone(), ty))
+            }
+            reify_syntax::MemberDecl::Let(l) => {
+                // let bindings get their type from expression inference, not annotations.
+                // Only include in structure_members when there is an explicit type annotation;
+                // omitting is safe because if a trait requires this member, the conformance
+                // check will report "missing required member" rather than a spurious
+                // "no type annotation" error.
+                let te = l.type_expr.as_ref()?;
+                Some((l.name.clone(), resolve_member_annotation_type(te, diagnostics)))
             }
             _ => None,
         })
