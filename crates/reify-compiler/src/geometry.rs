@@ -1252,4 +1252,186 @@ mod tests {
             compiled.diagnostics
         );
     }
+
+    // ─── loft_guided (task-322 step-9) ──────────────────────────────────────
+
+    /// loft_guided() with <3 args should produce an arity diagnostic.
+    #[test]
+    fn loft_guided_compiler_rejects_two_args() {
+        let source = r#"structure S {
+    let p1 = sphere(5mm)
+    let p2 = sphere(3mm)
+    let result = loft_guided(p1, p2)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_lg2"),
+        );
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        let has_op = template.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::LoftGuided,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected error diagnostic for wrong arg count (2 args)"
+        );
+        assert!(
+            !has_op,
+            "should not produce Sweep(LoftGuided) op with wrong arg count (2 args)"
+        );
+    }
+
+    /// loft_guided() with exactly 3 args (p1, p2, guide) should produce
+    /// a Sweep(LoftGuided) op with 3 profile refs (2 profiles + 1 guide).
+    #[test]
+    fn loft_guided_compiler_accepts_three_args() {
+        let source = r#"structure S {
+    let p1 = sphere(5mm)
+    let p2 = sphere(3mm)
+    let guide = sphere(2mm)
+    let result = loft_guided(p1, p2, guide)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_lg3"),
+        );
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        // Find the Sweep(LoftGuided) op across all realizations.
+        let op = template
+            .realizations
+            .iter()
+            .flat_map(|r| r.operations.iter())
+            .find(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::LoftGuided,
+                        ..
+                    }
+                )
+            });
+        let op = op.expect("expected Sweep(LoftGuided) op");
+        // profiles slice should contain 3 GeomRef entries: 2 profiles + 1 guide.
+        match op {
+            crate::CompiledGeometryOp::Sweep { profiles, args, .. } => {
+                assert_eq!(
+                    profiles.len(),
+                    3,
+                    "expected 3 GeomRefs (2 profiles + 1 guide), got {}",
+                    profiles.len()
+                );
+                // Last arg must be the guide (by convention).
+                let last_key = args.last().map(|(k, _)| k.as_str()).unwrap_or("");
+                assert_eq!(
+                    last_key, "guide",
+                    "expected last arg to be keyed 'guide', got {:?}",
+                    last_key
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "expected no diagnostics for loft_guided(p1, p2, guide), got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    /// loft_guided() with 4 args should compile as 3 profile refs + 1 guide.
+    #[test]
+    fn loft_guided_compiler_accepts_four_args() {
+        let source = r#"structure S {
+    let p1 = sphere(5mm)
+    let p2 = sphere(4mm)
+    let p3 = sphere(3mm)
+    let guide = sphere(2mm)
+    let result = loft_guided(p1, p2, p3, guide)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_lg4"),
+        );
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        let op = template
+            .realizations
+            .iter()
+            .flat_map(|r| r.operations.iter())
+            .find(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::LoftGuided,
+                        ..
+                    }
+                )
+            });
+        let op = op.expect("expected Sweep(LoftGuided) op");
+        match op {
+            crate::CompiledGeometryOp::Sweep { profiles, args, .. } => {
+                assert_eq!(
+                    profiles.len(),
+                    4,
+                    "expected 4 GeomRefs (3 profiles + 1 guide), got {}",
+                    profiles.len()
+                );
+                let last_key = args.last().map(|(k, _)| k.as_str()).unwrap_or("");
+                assert_eq!(last_key, "guide");
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "expected no diagnostics for loft_guided with 4 args, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    /// loft_guided() with non-geometry args should silently fall back like loft.
+    /// The op is still produced with GeomRef::Step fallbacks so downstream
+    /// analysis sees the structure.
+    #[test]
+    fn loft_guided_compiler_non_geom_args_silent_fallback() {
+        let source = r#"structure S {
+    param a: Scalar = 1mm
+    param b: Scalar = 1mm
+    param c: Scalar = 1mm
+    let result = loft_guided(a, b, c)
+}"#;
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_lg_nongeom"),
+        );
+        let compiled = crate::compile(&parsed);
+        let template = &compiled.templates[0];
+        // An op should still be produced with fallback GeomRef::Step refs
+        // (silent fallback mirroring loft's behavior).
+        let has_op = template.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::LoftGuided,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(
+            has_op,
+            "expected Sweep(LoftGuided) op produced with fallback refs"
+        );
+    }
 }
