@@ -36657,7 +36657,7 @@
         "description": "Implement user-created named views, the view selector dropdown UI, and the copy-on-write mechanism for auto views. Users can create, rename, delete, and duplicate views. Modifying an auto view creates a COW copy that becomes a user view, preserving the original auto view.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 6.2 (Named Views), 6.3 (Copy-on-Write), 6.4 (View Selector Interaction).\n\n### Implementation\n\n1. **View selector dropdown** (`panels/ViewSelector.tsx`)\n   - Dropdown at top of Design Tree panel, above the tree\n   - Shows active view name with a chevron\n   - Dropdown content:\n     - Auto views section (gear icon prefix, sorted by name)\n     - Separator\n     - User views section (diamond icon prefix, sorted by name)\n     - Separator\n     - \"+ New view\" action\n     - \"Manage views...\" action (opens modal)\n   - Active view indicated with checkmark\n   - Click to switch active view\n\n2. **View CRUD operations** (in `viewStateStore.ts`)\n   - `createView(name: string)`: create empty user view with default rules\n   - `renameView(viewId: string, newName: string)`: rename (user views only)\n   - `deleteView(viewId: string)`: delete (user views only, cannot delete auto)\n   - `duplicateView(viewId: string, newName: string)`: deep copy with new ID\n   - `switchView(viewId: string)`: set as active, recompute effective visibility\n\n3. **Copy-on-write mechanism**\n   - When user modifies visibility while an auto view is active:\n     1. Clone the auto view's current state\n     2. Create a new user view named \"{auto_name} (modified)\"\n     3. Apply the user's change to the clone\n     4. Switch active view to the clone\n     5. Original auto view continues to auto-update\n   - Detection: any `setVisibility` call while `activeView.auto == true` triggers COW\n   - The COW view gets `auto: false, modified: true` so the UI can show \"(modified)\" badge\n\n4. **View management modal** (`panels/ViewManageModal.tsx`)\n   - List all views with actions: rename, delete, duplicate\n   - Auto views: duplicate only (no rename/delete)\n   - User views: all actions\n   - Drag to reorder user views (ordering is cosmetic only)\n\n5. **Keyboard shortcut**\n   - Number keys 1-9: quick-switch to first 9 views in the selector\n\n### Requirements covered\nVM-4, VM-5, VM-6, VM-7, VM-8, VM-9, VM-10\n\n### memory_hints\n- search: \"viewStateStore views\"\n- search: \"auto view generator\"\n- search: \"SolidJS dropdown modal\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "1745"
         ],
@@ -36696,7 +36696,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-20T14:59:13.050Z"
+        "updatedAt": "2026-04-20T16:33:56.857Z"
       },
       {
         "id": "1747",
@@ -43312,7 +43312,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:31:20.683Z",
+      "lastModified": "2026-04-20T16:33:56.864Z",
       "taskCount": 2051,
       "completedCount": 1773,
       "tags": [
