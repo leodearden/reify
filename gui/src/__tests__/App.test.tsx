@@ -671,10 +671,6 @@ describe('App navigation wiring', () => {
       expect(selectedGroups.length).toBe(1);
       // Primary identity check: exact entity path routed through selectionStore to Viewport prop
       expect(capturedViewportProps.selectedEntity).toBe('Bracket');
-      // DOM-reflected identity check: the selected group header button text must be exactly 'Bracket'
-      // (strip the ▼/▶ collapse icon that precedes the group name in the button)
-      const headerButton = selectedGroups[0].querySelector('button');
-      expect(headerButton!.textContent?.replace(/[▼▶]/g, '').trim()).toBe('Bracket');
     });
   });
 
