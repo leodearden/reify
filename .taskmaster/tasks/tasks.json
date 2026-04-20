@@ -42578,23 +42578,32 @@
         "description": "Follow-up from task 322 review. The four tests added to crates/reify-compiler/src/types.rs (sweep_kind_extrude_symmetric_variant_exists, sweep_kind_sweep_guided_variant_exists, sweep_kind_loft_guided_variant_exists, sweep_kind_new_variants_distinct_from_existing, lines 643-689) exercise derived trait machinery (Copy, PartialEq, Eq, Hash) and enum-discriminant uniqueness that the Rust compiler already guarantees at build time. They add ~45 LoC of maintenance surface for zero behavioral coverage.</description>\n<parameter name=\"details\">Delete the four tests at crates/reify-compiler/src/types.rs:643-689. The enum declarations plus the real compile/eval tests elsewhere in the task-322 diff (extrude_symmetric_integration, sweep_guided_integration, loft_guided_integration) already cover behavior. If a single-line existence canary is desired, an inline `let _ = SweepKind::LoftGuided;` within an existing behavioral test suffices.\n\nRationale: if the variants vanish, the rest of the crate stops compiling long before these tests run; if #[derive(Hash)] were removed, every real call site would fail. Low-value canaries, not meta-doc tests.\n\nSource: reviewer_comprehensive suggestion from esc-322-22.\n\nmemory_hints: search \"SweepKind variant tests\" entity \"SweepKind\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-20T11:28:03.528Z"
+      },
+      {
+        "id": "2030",
+        "title": "Factor loft/loft_guided arg resolution helper + hoist silent-fallback rationale",
+        "description": "Follow-up from task 322 review. The loft_guided arm in crates/reify-compiler/src/geometry.rs:476-530 manually rebuilds the refs vec with the same `geom_refs.get(&i).cloned().unwrap_or(GeomRef::Step(step_offset + i))` pattern as the nearby loft arm, and constructs positional-key args inline. The diff already factored the sweep family via resolve_named_geom_arg but left loft/loft_guided un-factored. Additionally, the silent-fallback vs labelled-per-arg rationale is now repeated across three arms (sweep, sweep_guided, loft_guided).",
+        "details": "Two changes in crates/reify-compiler/src/geometry.rs:\n\n1. **Extract shared helper** (mirrors resolve_named_geom_arg for the sweep family): a small helper such as `resolve_loft_like_args(name, args, compiled_args, geom_refs, step_offset, guide_suffix: bool) -> (Vec<GeomRef>, Vec<(String, CompiledExpr)>)` reused by both the `loft` arm (lines ~455-474) and the `loft_guided` arm (lines ~476-530). The `guide_suffix` flag selects whether the last keyed arg is labelled \"guide\" (loft_guided) or `profile_{last_idx}` (loft).\n\n2. **Consolidate rationale comments**: the \"silent fallback vs. labelled per-arg\" explanation currently appears in full in the loft_guided arm (lines 488-498) and in shorter form in the sweep / sweep_guided arms. Hoist the rationale to a single module-level doc comment (or onto `resolve_named_geom_arg`'s docstring) and reduce each per-arm comment to a one-line pointer referencing the canonical location.\n\nSource: reviewer_comprehensive suggestions (code_duplication + documentation_accuracy) from esc-322-22.\n\nmemory_hints: search \"resolve_named_geom_arg loft_guided sweep compiler helper\" entity \"SweepKind\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
         "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:22:01.630Z",
-      "taskCount": 2020,
+      "lastModified": "2026-04-20T11:28:03.528Z",
+      "taskCount": 2022,
       "completedCount": 1725,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T11:27:31.521Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T11:27:31.537Z"
+      ]
     }
   }
 }
