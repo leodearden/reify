@@ -43064,11 +43064,11 @@
         "description": "Review follow-up from task 1999 (suggestion 2, reviewer_comprehensive, non-blocking).\n\nThe tag-byte allocation table at crates/reify-types/src/expr.rs:212-235 is a manually-maintained comment registry separate from the call sites. Each CompiledExpr constructor seeds ContentHash with a literal tag byte (e.g. `ContentHash::of(&[24])` for Match), and the reify-compiler's inline emission paths (crates/reify-compiler/src/expr.rs:554, :1318) also use literal bytes. This makes drift likely the next time a variant is added.\n\nFix: Introduce `pub(crate) const TAG_LITERAL: u8 = 0; ... TAG_MATCH: u8 = 24;` (or similar, re-export as needed) in one authoritative location and reference them from both the reify-types constructors and the reify-compiler inline paths. Keep the comment table, but make it reflect the constants. Verify existing golden fixtures / hash-pinning tests still pass — the constant values must equal the current literals exactly.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:01:13.142Z",
+        "updatedAt": "2026-04-20T14:01:24.022Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -43205,7 +43205,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:01:23.356Z",
+      "lastModified": "2026-04-20T14:01:24.023Z",
       "taskCount": 2050,
       "completedCount": 1753,
       "tags": [
