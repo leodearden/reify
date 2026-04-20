@@ -27,3 +27,31 @@ pub fn kernel_status_for(occt_available: bool) -> KernelStatus {
         }
     }
 }
+
+/// Read the current kernel status from the build-time `OCCT_AVAILABLE` constant.
+///
+/// Only available under the `gui` feature (which enables `reify-kernel-occt`).
+#[cfg(feature = "gui")]
+pub fn current_kernel_status() -> KernelStatus {
+    kernel_status_for(reify_kernel_occt::OCCT_AVAILABLE)
+}
+
+/// Register the OCCT kernel on `planner` if available, then return the status.
+///
+/// When OCCT is not linked (`OCCT_AVAILABLE == false`), the kernel is intentionally
+/// *not* registered so that downstream geometry ops fail with "no kernel registered"
+/// rather than a silent OCCT-stub error — paired with the startup banner that
+/// explains why.
+///
+/// Only available under the `gui` feature (which enables `reify-kernel-occt`).
+#[cfg(feature = "gui")]
+pub fn configure_planner(planner: &mut reify_geometry::DispatchPlanner) -> KernelStatus {
+    use reify_kernel_occt::OcctKernelHandle;
+
+    let status = current_kernel_status();
+    if status.available {
+        let handle = OcctKernelHandle::spawn();
+        planner.register_kernel(Box::new(handle));
+    }
+    status
+}
