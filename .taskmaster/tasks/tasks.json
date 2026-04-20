@@ -41656,7 +41656,7 @@
         "description": "Task 1920 followup S1+S2. File: crates/reify-compiler/tests/type_error_propagation_tests.rs. S1: Lambda-body row uses Type::Error as outer lambda result_type so test passes trivially; change to Type::Bool. S2: two tests overlap on ListLiteral/OptionSome/Quantifier; consolidate.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41668,7 +41668,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-20T12:48:23.469Z"
+        "updatedAt": "2026-04-20T12:51:37.716Z"
       },
       {
         "id": "1985",
@@ -42818,7 +42818,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T12:49:27.514Z",
+      "lastModified": "2026-04-20T12:51:37.716Z",
       "taskCount": 2030,
       "completedCount": 1738,
       "tags": [
