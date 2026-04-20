@@ -675,4 +675,53 @@ mod tests {
              (got engine_construction_count={count_after_update})"
         );
     }
+
+    /// Regression guard: `update_source` with invalid content must not construct a
+    /// new Engine and must leave prior valid state intact (files/compiled/engine
+    /// unchanged).  The "invalid input preserves state" invariant is separately
+    /// tested via JSON-RPC in tests/mcp_integration.rs; this unit test adds a
+    /// fast in-process guard that also verifies the engine is never touched on
+    /// parse failure.
+    #[test]
+    fn update_source_invalid_content_does_not_construct_new_engine() {
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        // Load a valid file to get known-good state.
+        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        let count_before = ctx.engine_construction_count();
+        assert_eq!(count_before, 1);
+
+        // Prior valid state: get_parameters returns results.
+        let params_before = ctx.get_parameters().expect("get_parameters should succeed");
+        assert!(
+            !params_before.is_empty(),
+            "should have parameters after loading bracket.ri"
+        );
+
+        // Attempt an update with invalid content (parse error).
+        let result = ctx
+            .update_source(BRACKET_PATH, "enum { }")
+            .expect("update_source should return Ok (not Err) even on parse failure");
+        assert!(!result.success, "update_source should report failure for invalid content");
+
+        // Engine must not have been (re)constructed.
+        let count_after = ctx.engine_construction_count();
+        assert_eq!(
+            count_after, 1,
+            "invalid update_source must not construct a new engine \
+             (got engine_construction_count={count_after})"
+        );
+
+        // Prior valid parameters must still be accessible.
+        let params_after = ctx.get_parameters().expect("get_parameters should still work");
+        assert_eq!(
+            params_before.len(),
+            params_after.len(),
+            "parameter list must be unchanged after a failed update_source"
+        );
+    }
 }
