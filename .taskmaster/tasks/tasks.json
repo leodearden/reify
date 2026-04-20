@@ -41277,11 +41277,11 @@
         "description": "Review follow-up from task 1920; suggestion S3 from reviewer_comprehensive (non-blocking).\n\nContext: task 1920's new `find_node_compound_variant_coverage` test in crates/reify-compiler/tests/type_error_propagation_tests.rs (lines 400-419) has in-test raw struct-literal helpers `make_user_fn_call` and `make_match` because no public constructor exists for `CompiledExprKind::UserFunctionCall` or `CompiledExprKind::Match`. The other 10+ variants in the table use `CompiledExpr::list_literal`, `set_literal`, `map_literal`, `lambda`, `quantifier`, `range_constructor`, `ad_hoc_selector`, `option_some`, `literal`.\n\nThe ad-hoc helpers fabricate content-hash bytes (`ContentHash::of(&[0xf0])`, `0xf1`) which risks drifting from the real per-variant tag bytes used by the production constructors (7/8/9/10/12/13/14/15/16/18/19). Today `0xf0`/`0xf1` don't collide, but the risk grows as variants are added.\n\nFix: add `CompiledExpr::user_function_call(...)` and `CompiledExpr::match_expr(...)` constructors in `crates/reify-types/src/expr.rs` following the pattern of the existing per-variant constructors (with next-available tag bytes). Then update the test to use them and delete the ad-hoc helpers.\n\nNon-blocking — current in-test helpers work — but removes a small correctness hazard and matches the convention already established for other variants.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T05:46:48.707Z",
+        "updatedAt": "2026-04-20T05:47:21.904Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/expr.rs",
@@ -41296,6 +41296,9 @@
             "queries": [
               "resolution for: Add public constructors for UserFunctionCall and Match CompiledExprKind variants"
             ]
+          },
+          "done_provenance": {
+            "note": "Deliverables already landed on main prior to task/1972 branching. Verified on main: CompiledExpr::user_function_call (expr.rs:873) and CompiledExpr::match_expr (expr.rs:901) constructors exist with unit tests; type_error_propagation_tests.rs (lines 428,438,447) uses the constructors and the ad-hoc make_user_fn_call/make_match helpers with fabricated 0xf0/0xf1 hash bytes are gone. A drift guard (constructor_hash_tests.rs) also exists. Implementing commits per architect: 760b14cc7, 6964e6dad, f92593dc6, 768739a82, 1293ac16a, 262004bd7, ad40a1ebb. Task HEAD 1a5398435 is an ancestor of main."
           }
         }
       },
@@ -41720,7 +41723,13 @@
           "modules": [
             "crates/reify-kernel-occt",
             "scripts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Serialize OCCT-touching tests with a file lock to prevent cross-worktree deadlocks"
+            ]
+          }
         },
         "updatedAt": "2026-04-20T05:46:52.552Z"
       },
@@ -42113,9 +42122,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:46:52.552Z",
+      "lastModified": "2026-04-20T05:47:21.904Z",
       "taskCount": 2003,
-      "completedCount": 1704,
+      "completedCount": 1705,
       "tags": [
         "master"
       ]
