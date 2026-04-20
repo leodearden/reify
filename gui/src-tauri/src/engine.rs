@@ -494,13 +494,30 @@ impl EngineSession {
 
         // Validate template-name uniqueness once (O(N)) rather than inside every
         // build_template_node call (which would be O(N²) across the full tree build).
-        debug_assert!(
-            {
-                let mut seen = std::collections::HashSet::new();
-                compiled.templates.iter().all(|t| seen.insert(t.name.as_str()))
-            },
-            "template names must be unique within a compiled module"
-        );
+        // In release builds the first duplicate emits a tracing::warn! and the tree
+        // is still built with first-match semantics (graceful degradation).  In debug
+        // builds the debug_assert!(false, ...) panics loudly with the same message
+        // substring that `get_entity_tree_panics_on_duplicate_template_names_in_debug`
+        // pins via #[should_panic(expected = "template names must be unique")].
+        {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for t in &compiled.templates {
+                if !seen.insert(t.name.as_str()) {
+                    warn!(
+                        template_name = %t.name,
+                        "duplicate template name in compiled module; \
+                         get_entity_tree falls back to first-match and may \
+                         produce inconsistent tree"
+                    );
+                    debug_assert!(
+                        false,
+                        "template names must be unique within a compiled module: duplicate = {}",
+                        t.name
+                    );
+                    break;
+                }
+            }
+        }
 
         compiled
             .templates
