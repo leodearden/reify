@@ -2,13 +2,13 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import type { Component } from 'solid-js';
 import { DesignTreeContextMenu } from './DesignTreeContextMenu';
 import type { MenuAction } from './DesignTreeContextMenu';
-import { createViewStateStore } from '../stores/viewStateStore';
+import type { ViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
 import styles from './DesignTree.module.css';
 
 interface Props {
   tree: EntityTreeNode[];
-  viewStateStore: ReturnType<typeof createViewStateStore>;
+  viewStateStore: ViewStateStore;
   selectedEntity?: string | null;
   selectedEntities?: readonly string[];
   anchorEntity?: string | null;
