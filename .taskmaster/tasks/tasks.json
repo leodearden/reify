@@ -42222,7 +42222,7 @@
         "description": "`gui/src-tauri/src/main.rs:427` unconditionally calls `OcctKernelHandle::spawn()`. When Reify is built without OCCT, the stub handle (`crates/reify-kernel-occt/src/stubs.rs:75-108`) is silently registered, and every geometry op returns `\"OCCT libraries not available\"` at runtime — but the user sees no explicit signal that the GUI is in a degraded state. No call site checks `OCCT_AVAILABLE`.\n\nSymptom: silent geometry-op failures that look like design errors.\n\nFix:\n1. Branch on `OCCT_AVAILABLE` (const from `reify-kernel-occt`) before spawning the kernel handle. If false, surface a top-of-viewport banner or status-bar message (\"Geometry kernel not available — OCCT not linked\") and skip the planner registration so failures become obvious.\n2. Add a regression test (feature-gated on `OCCT_AVAILABLE=false`) that asserts a user-visible signal is raised.\n\nThis matches the briefing's stability-first posture: failures should be noisy, not silent.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42245,7 +42245,7 @@
             "gui/src/stores/engineStore.ts"
           ]
         },
-        "updatedAt": "2026-04-20T12:16:39.214Z"
+        "updatedAt": "2026-04-20T13:48:29.861Z"
       },
       {
         "id": "2010",
@@ -43103,7 +43103,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:48:20.925Z",
+      "lastModified": "2026-04-20T13:48:29.902Z",
       "taskCount": 2048,
       "completedCount": 1746,
       "tags": [
