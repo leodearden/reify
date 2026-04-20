@@ -1204,4 +1204,18 @@ structure Bracket {
             .load_file(BRACKET_PATH)
             .expect("fresh_ctx must point at the real fixtures dir so bracket.ri is loadable");
     }
+
+    /// Behavior guard: `fresh_ctx()` must return a context whose engine has
+    /// not been constructed yet.  Guards against a future refactor that eagerly
+    /// builds an engine inside `CliToolContext::new`, which would break the
+    /// lazy-init invariants verified by `*_reuses_engine_*` tests.
+    #[test]
+    fn fresh_ctx_returns_pristine_context() {
+        let ctx = fresh_ctx();
+        assert_eq!(
+            ctx.engine_construction_count(),
+            0,
+            "fresh_ctx must return a context whose engine has not been constructed yet"
+        );
+    }
 }
