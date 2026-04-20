@@ -39300,11 +39300,11 @@
         "description": "Allow param types to reference traits (e.g. `param material : Material`), so that structures can declare dependencies on trait-satisfying values. Currently `resolve_type_name` rejects trait names used as types (\"unresolved type: Material\"). Required for `examples/m5_geometry_flange.ri` to use the intended syntax instead of the `param material : String = \"steel\"` stand-in.",
         "details": "## Scope\nSpawned from task 1751 esc-1751-2. The architect plan for 1751 substituted `param material : String` because trait-typed params are not implementable in the current compiler.\n\n## Problem\n- `resolve_type_name` (crates/reify-compiler/src/type_resolution.rs) only resolves concrete types; trait names are not accepted.\n- `Material` is defined as a trait in `crates/reify-compiler/stdlib/materials_mechanical.ri:8`.\n\n## Approach options\n- Structural subtyping / existential types — significant design change.\n- Limited nominal trait-typed param (accept only concrete structs satisfying the trait at instantiation).\n- Conformance check at instantiation with the passed value's struct.\n\n## Acceptance\n- `param material : Material` type-checks when callers pass a struct that conforms to `Material`.\n- `examples/m5_geometry_flange.ri` can be updated to use the trait-typed form.\n\n## Dependencies\nCoordinates with task ~follow-up on \"Material as first-class type\" (spawned below).\n\n### memory_hints\n- search: \"resolve_type_name Material trait\"\n- search: \"trait conformance param type annotation\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:28:34.012Z",
+        "updatedAt": "2026-04-20T11:21:53.241Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -41909,7 +41909,7 @@
         "id": "1996",
         "title": "Add debug_assert safety net (or comment) to propagate_poison() callers (esc-1921-7 S2)",
         "description": "In crates/reify-compiler/src/expr.rs, `propagate_poison()` (L128-140) has no debug_assert safety net by design — it is for pure consumer-propagation sites where an already-`Type::Error` operand short-circuits. Add either (a) a `#[track_caller]` debug-only check that the caller's object operand was already `Type::Error` where a handle is easily threadable (e.g. `propagate_poison(compiled_obj)` taking the poisoned operand for the invariant check), or (b) at minimum a comment at each `propagate_poison()` call site reminding the reader that switching to a diagnostic push requires migrating to `make_poison_literal`. This mirrors the producer-side guard and prevents regression if a future refactor adds a diagnostic push at a current consumer site. Current callers: aggregation poisoned short-circuit, non-aggregation member-access poisoned short-circuit. Source: review suggestion S2 in esc-1921-7.",
-        "details": "",
+        "details": "<info added on 2026-04-20T11:21:52.978Z>\nBlocked due to dependency on task 1921, which introduces `propagate_poison()` on the unmerged `task/1921` branch. Implementing `propagate_poison` independently would cause merge conflicts. The task will proceed only after 1921 is merged into the main branch. An alternative approach is to integrate the S2 debug_assert-or-comment directly into task 1921, as it introduces `propagate_poison`.\n</info added on 2026-04-20T11:21:52.978Z>",
         "testStrategy": "",
         "status": "blocked",
         "dependencies": [
@@ -42566,23 +42566,21 @@
         "description": "Two small polish items in `crates/reify-compiler/tests/trait_typed_param_tests.rs`:\n1. The `#[ignore]`d test at 407-453 guards a parser-limitation path that is already covered indirectly by the defensively-widened entity.rs capture logic. Either delete it (and move the acceptance criterion to an explicit parser follow-up task) or convert it to an explicit parse-rejection test asserting current behaviour.\n2. The negative test at 339-346 mentions an expected Warning-severity 'cannot infer return type of zero-arg function NotAMaterial' in a comment but does not assert it. Either add an explicit assertion (and filter the warning from error counts) or drop the comment.",
         "details": "## Scope\nTwo review suggestions on task 1874 (esc-1874-31, reviewer_comprehensive).\n\n## Locations\n- crates/reify-compiler/tests/trait_typed_param_tests.rs:407-453 (ignored nested-call test)\n- crates/reify-compiler/tests/trait_typed_param_tests.rs:339-346 (warning-severity comment)\n\n## Acceptance\n- Ignored test either deleted or replaced with an assertive parse-rejection test.\n- If deleted, follow-up task is filed that captures the parser limitation + its acceptance criterion.\n- Warning comment in negative test either becomes an explicit assertion or is removed; the test keeps passing either way.\n- Full `cargo test -p reify-compiler` still green.\n\n### memory_hints\n- search: \"trait_typed_param_tests ignored nested call\"\n- search: \"NotAMaterial zero-arg function warning\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T11:21:53.146Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:21:03.904Z",
-      "taskCount": 2019,
-      "completedCount": 1722,
+      "lastModified": "2026-04-20T11:21:53.241Z",
+      "taskCount": 2020,
+      "completedCount": 1723,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T11:21:05.185Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T11:21:39.182Z"
+      ]
     }
   }
 }
