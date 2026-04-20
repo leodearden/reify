@@ -42126,11 +42126,11 @@
         "description": "Backend emits two Tauri events that have no frontend listener — round-trips silently go nowhere:\n\n- `gui/src-tauri/src/main.rs:266` — `focus_entity` command emits `focus-entity`\n- `gui/src-tauri/src/mcp_context.rs:302` — MCP `focus_entity` tool emits `focus-entity`\n- `gui/src-tauri/src/mcp_context.rs:310` — MCP `navigate_to_source` tool emits `navigate-to-source`\n\nGrep of `gui/src/` returns zero listeners for either event. Frontend navigation today works only because `gui/src/navigation.ts` calls local helpers directly after the IPC round-trip — but when an external agent (Claude via MCP) issues focus/navigate, the UI does not update.\n\nAdditionally, `gui/src-tauri/src/claude_bridge.rs:278` builds the intercepted-reify_ tool context with `.with_selection()` but does NOT call `.with_event_emitter()`, so the MCP path always emits from a `None` emitter when invoked by Claude. Contrast with the direct `mcp_tool_call` command at `gui/src-tauri/src/main.rs:296` which does wire the emitter.\n\nFix:\n1. Add `listen` calls in the frontend (likely `gui/src/navigation.ts` or the app-layout component) to receive `focus-entity` and `navigate-to-source` events and dispatch to flyToEntity/selectEntity/editor-scroll.\n2. Wire the event emitter into the Claude-bridge-constructed ToolContext in `claude_bridge.rs:278`.\n3. Add tests (frontend listener present; backend Claude-path emitter non-None).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:28:32.287Z",
+        "updatedAt": "2026-04-20T11:02:44.716Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/claude_bridge.rs",
@@ -42139,7 +42139,11 @@
             "gui/src/__tests__/App.test.tsx",
             "gui/src/__tests__/bridge.test.ts",
             "gui/src/bridge.ts"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "7727c8634ae6a7ae583bb0e23190db324021ae37",
+            "commit_input": "7727c8634"
+          }
         }
       },
       {
@@ -42406,9 +42410,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T10:54:15.603Z",
+      "lastModified": "2026-04-20T11:02:44.717Z",
       "taskCount": 2010,
-      "completedCount": 1719,
+      "completedCount": 1720,
       "tags": [
         "master"
       ]
