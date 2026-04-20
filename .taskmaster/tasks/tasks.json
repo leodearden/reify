@@ -41918,7 +41918,7 @@
         "description": "Follow-up to task 1992 review. In orchestrator.yaml the `timeout --kill-after=60 45m` envelope wraps `./scripts/cargo-test-occt-gated.sh ...`, so the 45-minute timer starts *before* flock is acquired. Under multi-worktree contention (48 concurrent worktrees observed 2026-04-19), a waiting invocation can burn its entire budget idling on the flock and be killed before running any tests — the opposite of what the gate is meant to prevent.",
         "details": "## Context\n\nTask 1992 landed `scripts/cargo-test-occt-gated.sh` and routed `cargo test --workspace` invocations in `orchestrator.yaml` through it. Reviewer flagged that the pre-existing `timeout --kill-after=60 45m` wrappers now fire while the wrapper is still blocked on `flock -x`. With N≥3 active worktrees each needing ~20–30m of test runtime, a late-arriving waiter can exhaust its 45-minute envelope waiting.\n\n## Options\n\n- **(a) Move timeout inside the wrapper** — wrapper acquires lock, then runs `timeout --kill-after=60 <N>m cargo test ...`. Timer starts after lock. Requires exposing a `--timeout` / env-var knob on the wrapper.\n- **(b) Raise outer budget to N × runtime** — coarse; wastes wall-clock budget and depends on knowing N.\n- **(c) Add `flock -w <seconds>` lock-wait timeout + log wait duration** — fails fast on pathological contention with a clear error; keeps current ordering.\n- **(d) Combine (a) + (c)** — bounded wait, post-lock timeout, diagnosable.\n\nRecommend (d): wrapper accepts `REIFY_OCCT_LOCK_WAIT` (default e.g. 30m) and `REIFY_OCCT_TEST_TIMEOUT` (passed through to an internal `timeout` invocation). Emit a log line with wait duration on acquisition so contention is visible in verify output.\n\n## Acceptance\n\n- Wrapper supports post-lock timeout with sensible default.\n- Wrapper supports bounded lock wait with a clear error on timeout.\n- `orchestrator.yaml` `test_command` uses the wrapper's internal timeout instead of an outer `timeout` so the 45m/60m budgets measure actual test runtime.\n- `tests/infra/test_occt_flock_gate.sh` grows assertions: (i) lock-wait timeout fires with non-zero exit and clear message; (ii) post-lock timeout fires after N seconds of execution, not N seconds after wrapper start.\n\n## Modules\n\nscripts/cargo-test-occt-gated.sh, orchestrator.yaml, tests/infra/test_occt_flock_gate.sh\n\n## Memory hints\n\n- search: \"OCCT flock gate\" \"cargo-test-occt-gated\"\n- See task 1992 for the base wrapper.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1992"
         ],
@@ -41933,7 +41933,7 @@
             "scripts"
           ]
         },
-        "updatedAt": "2026-04-20T07:28:30.942Z"
+        "updatedAt": "2026-04-20T07:28:35.665Z"
       },
       {
         "id": "1999",
@@ -42344,7 +42344,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T07:28:35.078Z",
+      "lastModified": "2026-04-20T07:28:35.665Z",
       "taskCount": 2009,
       "completedCount": 1714,
       "tags": [
