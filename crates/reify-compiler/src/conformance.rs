@@ -32,12 +32,17 @@ pub(crate) fn check_trait_conformance(
     let resolve_member_annotation_type =
         |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
             match &te.kind {
-                reify_syntax::TypeExprKind::Named { name, .. } => {
+                reify_syntax::TypeExprKind::Named { name, type_args } => {
                     resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
                         .or_else(|| {
-                            enum_names
-                                .contains(name.as_str())
-                                .then(|| Type::Enum(name.to_string()))
+                            enum_names.contains(name.as_str()).then(|| {
+                                debug_assert!(
+                                    type_args.is_empty(),
+                                    "enum types do not accept type args: {}",
+                                    name
+                                );
+                                Type::Enum(name.to_string())
+                            })
                         })
                         .unwrap_or_else(|| {
                             diagnostics.push(

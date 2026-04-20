@@ -318,9 +318,15 @@ pub(crate) fn compile_entity(
                         Some(t) => t,
                         None => {
                             // Check if it's an enum type defined in the same module or prelude
-                            if let reify_syntax::TypeExprKind::Named { name, .. } = &type_expr.kind
+                            if let reify_syntax::TypeExprKind::Named { name, type_args } = &type_expr.kind
                                 && let Some(t) = resolve_enum_type(name, enum_defs)
                             {
+                                // Reify enums are non-parametric; any type_args here is a parser bug.
+                                debug_assert!(
+                                    type_args.is_empty(),
+                                    "enum types do not accept type args: {}",
+                                    name
+                                );
                                 t
                             } else {
                                 diagnostics.push(
