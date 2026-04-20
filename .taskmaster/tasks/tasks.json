@@ -41172,11 +41172,11 @@
         "description": "Two small cleanups in crates/reify-compiler/src/lib.rs flagged during task 872 review: (1) format_shadow_warning is pub with a rationale (\"so tests can build the expected string without duplicating the format literal\") but no test actually calls it — the shadow-warning test uses substring matches. Demote to `fn` (crate-private) and drop the pub justification from the doc; if a test ever needs it, promote with `#[cfg(test)] pub(crate)`. (2) In compile_constraint_def, the param-type check has `resolve_type_expr_with_aliases(...).is_none() && ... && !type_param_names.contains(name.as_str())`. resolve_type_expr_with_aliases internally returns Some(Type::TypeParam(..)) when the name is a type param, so the explicit `!type_param_names.contains(...)` clause is dead — drop it.</description>\n<parameter name=\"details\">Locations: crates/reify-compiler/src/lib.rs lines ~60-73 (format_shadow_warning) and ~116-124 (param-type check).\n\nmemory_hints: search \"format_shadow_warning constraint def shadow\" for task 872 review context.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:39:06.623Z",
+        "updatedAt": "2026-04-20T13:20:26.155Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/lib.rs",
@@ -42865,10 +42865,11 @@
         "description": "The regression test `generic_constraint_def_with_type_param_type_compiles_cleanly` in crates/reify-compiler/tests/constraint_def_compile_tests.rs (added by task 1964) currently only asserts the absence of 'unknown type' errors. Add a positive assertion that the `Aligned` constraint def was actually compiled with the expected shape (e.g. `module.constraint_defs` contains `Aligned` with 2 params and 1 type_param). This turns a negative-only guard into a stronger regression guard against silent drops where the def is never compiled but no unknown-type error is emitted either.",
         "details": "Location: crates/reify-compiler/tests/constraint_def_compile_tests.rs ~lines 977-998 (after the unknown_type_errors.is_empty() assertion).\n\nSuggested additions (adjust to actual API):\n```\nlet def = module\n    .constraint_defs\n    .iter()\n    .find(|d| d.name == \"Aligned\")\n    .expect(\"Aligned constraint def must compile\");\nassert_eq!(def.params.len(), 2, \"expected params t and w\");\nassert_eq!(def.type_params.len(), 1, \"expected type param T\");\n```\n\nCompiledConstraintDef fields (from crates/reify-compiler/src/types.rs ~line 612):\n- pub name: String\n- pub type_params: Vec<reify_types::TypeParam>\n- pub params: Vec<CompiledConstraintParam>\n\nmemory_hints: search \"task 1964 format_shadow_warning type-param guard\" for context. This was suggestion from esc-1964-55.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:20:26.051Z"
       },
       {
         "id": "2042",
@@ -42891,19 +42892,27 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2044",
+        "title": "Strengthen generic_constraint_def_with_type_param test with positive Aligned shape assertion",
+        "description": "Add positive assertion to test at crates/reify-compiler/tests/constraint_def_compile_tests.rs line ~977: find `Aligned` in module.constraint_defs, assert params.len()==2, type_params.len()==1. Source: esc-1964-55.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:08:19.409Z",
-      "taskCount": 2033,
-      "completedCount": 1740,
+      "lastModified": "2026-04-20T13:20:26.155Z",
+      "taskCount": 2036,
+      "completedCount": 1741,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T13:12:22.427Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T13:16:24.003Z"
+      ]
     }
   }
 }
