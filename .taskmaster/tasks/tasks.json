@@ -42988,7 +42988,18 @@
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "reapply_user_overrides",
+              "user_overrides",
+              "NotInitialized"
+            ],
+            "queries": [
+              "user overrides warned_overrides clear empty state reify",
+              "reapply user overrides NotInitialized documentation"
+            ]
+          }
         }
       },
       {
