@@ -327,12 +327,6 @@ export function createViewStateStore() {
    * branch (the only branch that preserves `s.explicit` rather than replacing it
    * wholesale).  Auto:* and unknown branches overwrite `s.explicit` with a fresh
    * view map, so a prior prune pass would be wasted work.
-   *
-   * NOTE on the `modified` flag: `ViewDefinition.modified` is tracked in the
-   * type but `regenerateAutoViews` does not yet inspect it.  Auto-view edits
-   * (made via `setVisibility` after switching to an auto view) are therefore
-   * always transient — regenerating will overwrite them.  A future revision
-   * should preserve the user's edits when `modified === true`.
    */
   function regenerateAutoViews(tree: EntityTreeNode[], activePurposes: string[] = []): void {
     // Rebuild the internal maps without triggering a reactive setState so that

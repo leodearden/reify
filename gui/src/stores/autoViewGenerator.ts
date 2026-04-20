@@ -10,9 +10,6 @@ import type { EntityTreeNode, VisibilityState } from '../types';
  *   `auto:all-geometry`, `auto:purpose:<name>`. User views use `user:<name>`.
  * - `name`: Human-readable label displayed in the UI.
  * - `auto`: True for generated views, false for user-created views.
- * - `modified`: True if the user has made local edits to an auto view.
- *   NOTE: `regenerateAutoViews` does not yet preserve edits when `modified=true`
- *   (future work). For now auto-view edits are always transient.
  * - `visibility`: Explicit per-node visibility state keyed by `entity_path`.
  *   For auto views this is a full assignment (every node has an entry).
  *   For user views the map may be sparse; unset paths fall through to
@@ -32,7 +29,6 @@ export interface ViewDefinition {
   id: string;
   name: string;
   auto: boolean;
-  modified: boolean;
   visibility: Record<string, VisibilityState>;
 }
 
@@ -129,7 +125,6 @@ export function generateDefaultView(tree: EntityTreeNode[]): ViewDefinition {
     id: 'auto:default',
     name: 'Default',
     auto: true,
-    modified: false,
     visibility,
   };
 }
@@ -147,7 +142,6 @@ export function generateAllGeometryView(tree: EntityTreeNode[]): ViewDefinition 
     id: 'auto:all-geometry',
     name: 'All geometry',
     auto: true,
-    modified: false,
     visibility,
   };
 }
@@ -204,7 +198,6 @@ export function generatePurposeViews(
       id: `auto:purpose:${purpose}`,
       name: purpose,
       auto: true,
-      modified: false,
       visibility,
     };
   });

@@ -780,7 +780,6 @@ describe('viewStateStore — views map and activeViewId skeleton', () => {
         id: 'auto:default',
         name: 'Default',
         auto: true,
-        modified: false,
         visibility: { 'Root': 'show', 'Root.geo': 'hidden' },
       };
       store.seedView(testView);
@@ -852,7 +851,6 @@ describe('viewStateStore — regenerateAutoViews — populate and preserve', () 
         id: 'user:my-view',
         name: 'My view',
         auto: false,
-        modified: false,
         visibility: { 'Root': 'hidden' },
       };
       store.seedView(userView);
@@ -937,7 +935,6 @@ describe('viewStateStore — regenerateAutoViews — active view reconciliation'
         id: 'user:mine',
         name: 'Mine',
         auto: false,
-        modified: false,
         visibility: { 'Root.A': 'hidden' },
       };
       store.seedView(userView);
@@ -1100,7 +1097,6 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
         id: 'auto:default',
         name: 'Default',
         auto: true,
-        modified: false,
         visibility: { Root: 'show', [leaf]: 'hidden' },
       };
       store.seedView(defaultView);
@@ -1113,7 +1109,6 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
         id: 'user:sparse',
         name: 'Sparse',
         auto: false,
-        modified: false,
         visibility: {}, // intentionally no entry for leaf
       };
       store.seedView(userView);
@@ -1293,7 +1288,6 @@ describe('regenerateAutoViews — atomicity (single reactive notification)', () 
         id: 'user:mine',
         name: 'Mine',
         auto: false,
-        modified: false,
         visibility: { 'Root.stale': 'hidden' },
       };
       store.seedView(userView);
@@ -1328,7 +1322,6 @@ describe('regenerateAutoViews — atomicity (single reactive notification)', () 
         id: 'custom:test',
         name: 'Custom',
         auto: false,
-        modified: false,
         visibility: { 'Root.stale': 'hidden' },
       };
       store.seedView(customView);
@@ -1388,7 +1381,6 @@ describe('setVisibility — user-view write-back', () => {
         id: 'user:mine',
         name: 'Mine',
         auto: false,
-        modified: false,
         visibility: { Root: 'show' },
       };
       store.seedView(userView);
@@ -1416,7 +1408,6 @@ describe('setVisibility — user-view write-back', () => {
         id: 'user:mine',
         name: 'Mine',
         auto: false,
-        modified: false,
         visibility: { 'Root.A': 'ghost', 'Root.A.a1': 'show' },
       };
       store.seedView(userView);
@@ -1444,7 +1435,6 @@ describe('setVisibility — user-view write-back', () => {
         id: 'auto:default',
         name: 'Default',
         auto: true,
-        modified: false,
         visibility: { Root: 'show', 'Root.A': 'show', 'Root.A.a1': 'show', 'Root.B': 'show' },
       };
       store.seedView(autoView);
@@ -1493,7 +1483,6 @@ describe('other mutations — user-view mirror to active user view', () => {
       id: 'user:mine',
       name: 'Mine',
       auto: false,
-      modified: false,
       visibility: {},
     };
     store.seedView(userView);
