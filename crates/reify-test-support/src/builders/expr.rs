@@ -156,7 +156,7 @@ pub fn conditional_expr(
     else_branch: CompiledExpr,
 ) -> CompiledExpr {
     let result_type = then_branch.result_type.clone();
-    let content_hash = ContentHash::of(&[4])
+    let content_hash = ContentHash::of(&[5])
         .combine(condition.content_hash)
         .combine(then_branch.content_hash)
         .combine(else_branch.content_hash);
