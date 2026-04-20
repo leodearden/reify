@@ -39983,11 +39983,11 @@
         "description": "Post-merge polish for the tessellation-diagnostics wiring added in task 1764. Covers performance, API-contract consistency, and doc clarification in engine.rs and diff.rs.",
         "details": "From reviewer_comprehensive suggestions on task 1764:\n\n1. **Avoid cloning source on every diagnostic-producing tessellation** (engine.rs:433-438).\n   - `resolve_source()` result is currently `.map(|(f, s)| (f.to_owned(), s.to_owned()))`, cloning the entire source file each time diagnostics are produced.\n   - `diagnostics_to_info` only needs `&str`. Rework to keep borrows, only allocating the fallback `(\"<unknown>\", \"\")` strings when `resolve_source()` returns `None`.\n   - Suggested form: `let (file_path, source): (&str, &str) = self.resolve_source().unwrap_or((\"<unknown>\", \"\")); let unresolved = file_path == \"<unknown>\";`\n\n2. **Derive Serialize on Severity to centralize PascalCase formatting** (engine.rs:1370-1383, diagnostics_to_info).\n   - The change from lowercase (`Severity`'s Display impl) to PascalCase (hand-rolled match in `diagnostics_to_info`) is an observable wire-format break for MCP `get_diagnostics` consumers.\n   - Preferred: derive `Serialize` on `Severity` with `#[serde(rename_all = \"PascalCase\")]` (or equivalent) and use that everywhere instead of duplicating the mapping. Keeps `DiagnosticInfo.severity` string and other serialized Severity sites in lock-step.\n   - Alternative (if derive is infeasible): add a release/migration note documenting the PascalCase change.\n\n3. **Align log and wire format for diagnostic severity** (engine.rs:427).\n   - `warn!(severity = ?diag.severity, ...)` uses Debug format while the emitted wire `DiagnosticInfo.severity` uses the PascalCase match. They happen to look similar today but will drift.\n   - Use `%diag.severity` (Display) or the same mapping used by `diagnostics_to_info` so log and wire formats stay pinned together.\n\n4. **Clarify StateDelta::full tessellation_diagnostics asymmetry comment** (diff.rs:33-49).\n   - Current comment (line ~41) only explains why the initial full-emission collapses empty→None. It does not mention that `diff_gui_state` still emits `Some(vec![])` when clearing a previously non-empty list.\n   - Expand comment to: \"Initial full emission: skip when empty (the frontend default is already []). Subsequent diffs (diff_gui_state) still emit Some(vec![]) when clearing a previously non-empty list so subscribers can clear their view.\"\n\nVerification: run `cargo test -p gui` (or the workspace equivalent) to ensure MCP and GUI tests still pass; also spot-check any serde tests that cover Severity/DiagnosticInfo serialization.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:05:53.293Z",
+        "updatedAt": "2026-04-20T11:09:01.411Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -42458,7 +42458,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:05:53.293Z",
+      "lastModified": "2026-04-20T11:09:01.412Z",
       "taskCount": 2014,
       "completedCount": 1720,
       "tags": [
