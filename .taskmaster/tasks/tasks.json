@@ -41790,7 +41790,13 @@
               "Type::Error anti-cascade propagation pattern track_caller debug_assert",
               "make_poison_literal vs propagate_poison producer consumer distinction"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/expr.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
         }
       },
       {
