@@ -41717,8 +41717,9 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-kernel-occt/tests/common/mod.rs",
-            "scripts/run-tests.sh"
+            "scripts/cargo-test-occt-gated.sh",
+            "tests/infra/test_occt_flock_gate.sh",
+            "orchestrator.yaml"
           ],
           "modules": [
             "crates/reify-kernel-occt",
@@ -42127,7 +42128,9 @@
       "completedCount": 1705,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T05:47:30.129Z",
+      "description": "Tasks for master context"
     }
   }
 }
