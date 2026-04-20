@@ -430,7 +430,7 @@ fn find_node_compound_variant_coverage() {
         // Lambda — error in the body expression.
         (
             "Lambda body",
-            CompiledExpr::lambda(vec![], vec![], error_leaf(), vec![], Type::Error),
+            CompiledExpr::lambda(vec![], vec![], error_leaf(), vec![], Type::Bool),
         ),
         // Match — error in the discriminant.
         (
