@@ -18,6 +18,7 @@ import {
   onConstraintRemoved,
   onTessellationDiagnostics,
 } from '../bridge';
+import type { KernelStatus } from '../bridge';
 
 export interface EngineState {
   meshes: Record<string, MeshData>;
@@ -25,6 +26,7 @@ export interface EngineState {
   constraints: Record<string, ConstraintData>;
   evalStatus: EvaluationStatus;
   tessellationDiagnostics: DiagnosticInfo[];
+  kernelStatus: KernelStatus | null;
 }
 
 export interface EngineStoreOptions {
@@ -38,6 +40,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     constraints: {},
     evalStatus: { phase: 'idle' },
     tessellationDiagnostics: [],
+    kernelStatus: null,
   });
 
   function initFromState(guiState: GuiState) {
@@ -102,6 +105,10 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('tessellationDiagnostics', diags);
   }
 
+  function setKernelStatus(status: KernelStatus | null) {
+    setState('kernelStatus', status);
+  }
+
   async function subscribeToEvents(): Promise<() => void> {
     const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
@@ -141,6 +148,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     removeConstraint,
     setEvalStatus,
     setTessellationDiagnostics,
+    setKernelStatus,
     subscribeToEvents,
   };
 }
