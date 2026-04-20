@@ -42736,13 +42736,20 @@
         "description": "After task #2031 lands (tests moved out), decompose the 820-line `compile_with_prelude_refs` fn in `crates/reify-compiler/src/lib.rs` (L245-1066) into per-phase free functions.\n\nThe function is already sectioned by comment into 13 passes:\n1. parse-errors forwarding\n2. module-pragma validation\n3. pre-pass: collect decl references + entity-name tracker\n4. units compilation (prelude seeding + local units)\n5. type alias DFS resolution\n6. enum collection\n7. functions pass\n8. traits pass\n9. fields pass\n10. constraint-defs pass (with cross-prelude shadow warnings)\n11. post-pass: deferred bound checks\n12. post-pass: recursion detection + termination + hash remix\n13. post-pass: dup-sig check, field-composition, purpose compilation, final hash\n\nDesign:\n- Introduce `CompilationCtx` (probably `pub(crate) struct`) holding the shared mutable state: `diagnostics`, `scope`, registries (`alias_registry`, `trait_registry`, `constraint_def_registry`, `template_registry`, `field_registry`), `enum_defs`, `resolution_enums`, `functions`, `fields`, `templates`, `imports`, `seen_entity_names`, etc.\n- Factor each sectioned pass into a free fn `fn phase_<name>(ctx: &mut CompilationCtx, parsed: &ParsedModule, prelude: &[&CompiledModule])` or similar signature.\n- House them in a submodule tree: `crates/reify-compiler/src/compile_builder/{ctx.rs, pre_pass.rs, units.rs, aliases.rs, enums.rs, functions_pass.rs, traits_pass.rs, fields_pass.rs, defs_pass.rs, post_passes.rs, hash.rs}` (or a single `compile_builder.rs` if the phases feel small enough).\n- `compile_with_prelude_refs` becomes a thin orchestrator: construct `CompilationCtx`, call each phase in order, assemble `CompiledModule` from ctx fields.\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically (no behavioral change).\n- `compile_with_prelude_refs` body shrinks to < 80 lines (orchestrator only).\n- `lib.rs` drops below 300 lines (module decls + public entry points + reexports).\n\nWhy: biggest structural win — ~35 pending tasks target lib.rs but most actually edit one specific pass. After the split, they lock only the relevant phase file and dispatch concurrently.\n\nRisk: `CompilationCtx` field design takes thought (what moves, what stays as call args). Prefer keeping per-pass call args explicit where natural — don't force everything into ctx just for uniformity.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2031"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:45:08.829Z"
+        "updatedAt": "2026-04-20T11:56:34.698Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/compile_builder_smoke_tests.rs"
+          ]
+        }
       },
       {
         "id": "2036",
@@ -42795,14 +42802,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:51:13.281Z",
+      "lastModified": "2026-04-20T11:56:34.699Z",
       "taskCount": 2030,
       "completedCount": 1733,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T11:54:18.611Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
