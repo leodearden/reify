@@ -42869,6 +42869,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2042",
+        "title": "Strengthen generic_constraint_def_with_type_param_type test with positive assertion",
+        "description": "Test `generic_constraint_def_with_type_param_type_compiles_cleanly` in crates/reify-compiler/tests/constraint_def_compile_tests.rs (~line 977, added by task 1964) only asserts absence of 'unknown type' errors. Add positive assertion that module.constraint_defs contains `Aligned` with 2 params + 1 type_param, to guard against silent drops.",
+        "details": "Source esc-1964-55. CompiledConstraintDef fields (types.rs line ~612): name, type_params, params. Suggested: find Aligned def, assert params.len()==2, type_params.len()==1.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -42878,7 +42889,10 @@
       "completedCount": 1740,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T13:12:22.427Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-20T13:12:22.451Z"
     }
   }
 }
