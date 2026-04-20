@@ -36743,9 +36743,16 @@
             "gui/src/viewport/selection.ts"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "Viewport",
+              "ViewStore",
+              "Named views",
+              "viewStateStore"
+            ],
             "queries": [
-              "resolution for: Viewport-view decoupling and viewport store"
+              "viewport view decoupling abstraction boundary store",
+              "viewStateStore named views copy-on-write",
+              "Multi-viewport design viewport store decoupling"
             ]
           }
         },
