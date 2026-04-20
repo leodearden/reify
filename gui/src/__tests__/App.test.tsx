@@ -2899,3 +2899,75 @@ describe('App DesignTree wiring', () => {
     await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('hidden'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// App — view selector and COW integration (step-27)
+// ---------------------------------------------------------------------------
+
+describe('App — view selector and COW integration', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+  }
+
+  it('pressing "2" (no modifiers) switches to the second view in ViewSelector order', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    // Wait for ViewSelector trigger button showing the active view name "Default"
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
+    // Press "2" — second entry in selector order should be "All geometry"
+    fireEvent.keyDown(document, { key: '2' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'All geometry' })).toBeTruthy());
+  });
+
+  it('clicking "Organize views…" opens ViewManageModal; Escape closes it', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
+    // Open ViewSelector dropdown
+    fireEvent.click(screen.getByRole('button', { name: 'Default' }));
+    // Click Organize views…
+    fireEvent.click(screen.getByRole('menuitem', { name: /organize views/i }));
+    // Modal opens
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    // Escape on overlay closes it
+    fireEvent.keyDown(screen.getByTestId('view-manage-overlay'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('COW user view appears in ViewSelector after eye-icon click and can be activated', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('eye-icon-Root.A')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
+    // Trigger COW: click eye-icon while "Default" auto-view is active
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    // ViewSelector button changes to "Default (modified)"
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Default (modified)' })).toBeTruthy()
+    );
+    // Switch back to Default using key "1" (first position = Default after sort)
+    fireEvent.keyDown(document, { key: '1' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
+    // Open ViewSelector — "Default (modified)" user view should be listed
+    fireEvent.click(screen.getByRole('button', { name: 'Default' }));
+    expect(screen.getByRole('menuitem', { name: 'Default (modified)' })).toBeTruthy();
+    // Click it to activate
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Default (modified)' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Default (modified)' })).toBeTruthy()
+    );
+  });
+
+  it('COW: toggling eye-icon while auto view active creates "{autoName} (modified)" as active view', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('eye-icon-Root.A')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
+    // Click eye-icon (triggers COW since Default auto-view is active)
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+    // ViewSelector button now shows "Default (modified)"
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Default (modified)' })).toBeTruthy()
+    );
+  });
+});
