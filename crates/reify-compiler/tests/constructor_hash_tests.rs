@@ -79,6 +79,45 @@ structure S {
     );
 }
 
+/// Verify the `user_function_call` constructor's per-arg combine order agrees
+/// with the compiler's inline emission when the call has ≥2 arguments.
+///
+/// A single-arg call hashes `tag • name • arg0`, which is indistinguishable from
+/// `tag • name • arg0 • <nothing>`.  With two or more args the sequence matters:
+/// a refactor that folds args in reverse, or drops the second arg, would be
+/// caught only here and not by the single-arg case above.
+#[test]
+fn constructor_hash_matches_compiler_for_multi_arg_user_function_call() {
+    let source = r#"
+fn f(x: Int, y: Int) -> Int { x + y }
+structure S {
+    let v = f(3, 5)
+}
+"#;
+    let module = compile_source(source);
+    let compiled = get_let_expr(&module, "v");
+
+    let CompiledExprKind::UserFunctionCall { function_name, args } = &compiled.kind else {
+        panic!(
+            "expected v to compile to UserFunctionCall, got {:?}",
+            compiled.kind
+        );
+    };
+    assert!(args.len() >= 2, "expected ≥2 args, got {}", args.len());
+
+    let reconstructed = CompiledExpr::user_function_call(
+        function_name.clone(),
+        args.clone(),
+        compiled.result_type.clone(),
+    );
+    assert_eq!(
+        compiled.content_hash, reconstructed.content_hash,
+        "CompiledExpr::user_function_call constructor hash must match \
+         the compiler's inline emission hash for the same inputs — \
+         per-arg combine order may have diverged"
+    );
+}
+
 // ── Match ────────────────────────────────────────────────────────────────────
 
 /// Verify that `CompiledExpr::match_expr` produces the same content hash as
@@ -119,5 +158,51 @@ structure S {
         "CompiledExpr::match_expr constructor hash must match \
          the compiler's inline emission hash for the same inputs — \
          tag byte or combine order may have diverged"
+    );
+}
+
+/// Verify the `match_expr` constructor agrees with the compiler when arms have
+/// multiple patterns (`Red | Blue => ...`) and the match also contains a
+/// wildcard arm.
+///
+/// The single-pattern two-arm case above fixes arm-order and tag byte, but
+/// leaves the per-pattern combine loop inside a single arm unverified.  A
+/// refactor that, say, combines only `patterns[0]` per arm, or folds patterns
+/// in reverse, would pass the single-pattern test and fail here.
+#[test]
+fn constructor_hash_matches_compiler_for_multi_pattern_match() {
+    let source = r#"
+enum Color { Red, Blue, Green }
+structure S {
+    let c = Color.Red
+    let v = match c { Red | Blue => 1, _ => 2 }
+}
+"#;
+    let module = compile_source(source);
+    let compiled = get_let_expr(&module, "v");
+
+    let CompiledExprKind::Match { discriminant, arms } = &compiled.kind else {
+        panic!(
+            "expected v to compile to Match, got {:?}",
+            compiled.kind
+        );
+    };
+    assert!(arms.len() >= 2, "expected ≥2 arms, got {}", arms.len());
+    assert!(
+        arms.iter().any(|a| a.patterns.len() >= 2),
+        "expected at least one arm with ≥2 patterns, got {:?}",
+        arms.iter().map(|a| &a.patterns).collect::<Vec<_>>()
+    );
+
+    let reconstructed = CompiledExpr::match_expr(
+        (**discriminant).clone(),
+        arms.clone(),
+        compiled.result_type.clone(),
+    );
+    assert_eq!(
+        compiled.content_hash, reconstructed.content_hash,
+        "CompiledExpr::match_expr constructor hash must match the \
+         compiler's inline emission hash for multi-pattern arms — \
+         per-pattern combine order within an arm may have diverged"
     );
 }
