@@ -40953,11 +40953,11 @@
         "description": "regenerateAutoViews performs two sequential setState calls (setTree prunes explicit, then a second produce() block replaces explicit for auto:* active views). Each setState triggers reactive subscribers independently, exposing an intermediate state and wasting the initial prune. Separately, for user:* active views, edits made via setVisibility are written to state.explicit but never mirrored back into state.views[activeViewId].visibility, so the view's stored visibility drifts from the live edits — a later \"restore view\"/\"export view\" feature would surprise the user.",
         "details": "## Scope\n\ngui/src/stores/viewStateStore.ts\n\n### 1. Atomicity (lines 264-330)\n\nFold the setTree pruning into the same produce() pass as the view regeneration, OR skip the explicit-prune inside setTree when called from regenerateAutoViews (since explicit is replaced moments later on the auto:* branch anyway). Rebuild nodeByPath/parentByPath in the same step. Goal: one setState, one reactive notification.\n\n### 2. User-view write-back (lines 305-322)\n\nPick and document one semantic:\n- (a) `ViewDefinition.visibility` is a seed/template; live state lives only in `state.explicit`. Add a doc comment on ViewDefinition and seedView explaining this.\n- (b) Mirror setVisibility edits back into `state.views[activeViewId].visibility` when active view is `user:*` (and possibly stamp `modified=true` on auto views — see Task XXXX for `modified` cleanup).\n\nPrefer (b) so user views remain self-contained, but either is acceptable as long as it's documented.\n\n### Tests\n\nAdd a regression test that calls setVisibility while a user:* view is active, then asserts that either (a) state.views[activeViewId].visibility is unchanged and the store doc says so, or (b) state.views[activeViewId].visibility reflects the edit.\n\n### memory_hints\n- search: \"viewStateStore regenerateAutoViews\"\n- search: \"ViewDefinition visibility explicit\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T05:43:06.160Z",
+        "updatedAt": "2026-04-20T05:43:12.724Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/viewStateStore.test.ts",
@@ -42085,7 +42085,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:43:12.090Z",
+      "lastModified": "2026-04-20T05:43:12.724Z",
       "taskCount": 2003,
       "completedCount": 1702,
       "tags": [
