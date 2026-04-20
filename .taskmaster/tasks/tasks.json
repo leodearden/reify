@@ -42025,11 +42025,11 @@
         "description": "Review follow-up from task 1972 (suggestion 1, reviewer_comprehensive, non-blocking).\n\nBoth `CompiledExpr::user_function_call` (crates/reify-types/src/expr.rs:887) and `CompiledExpr::match_expr` (:917) use hash tag byte `[6]`. The collision is pre-existing in production: the compiler's inline emission at crates/reify-compiler/src/expr.rs:554 (UserFunctionCall) and :1318 (Match) also both use `[6]`. This creates a latent hash-collision risk between structurally equivalent UserFunctionCall and Match expressions.\n\nFix: retag one variant (e.g. Match → `[7]`) with coordinated changes to both the constructor in reify-types and the compiler inline path (reify-compiler/src/expr.rs:1318). Confirm no on-disk hashes depend on the current tag byte before changing, and update any golden fixtures / hash-pinning tests.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:10:19.752Z",
+        "updatedAt": "2026-04-20T13:39:32.995Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/expr.rs",
@@ -42956,11 +42956,11 @@
         "description": "The PathBuf/CliToolContext::new pattern is duplicated across many tests in crates/reify-cli/src/mcp_context.rs (lines 807, 832, 865, 891, 931, 1115, 1136). Introduce a private `fn fresh_ctx() -> CliToolContext` helper in the test module and update sites to use it. Source: review_comprehensive on Task 2015 (code_reuse). Run `cargo test -p reify-cli`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:36:28.829Z"
+        "updatedAt": "2026-04-20T13:39:32.911Z"
       },
       {
         "id": "2048",
@@ -42968,11 +42968,11 @@
         "description": "Duplicated PathBuf+CliToolContext::new pattern across mcp_context.rs tests. Add fn fresh_ctx() helper in test module. From review of task 2015.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:37:11.102Z",
+        "updatedAt": "2026-04-20T13:39:32.751Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43063,14 +43063,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:39:32.460Z",
+      "lastModified": "2026-04-20T13:39:32.995Z",
       "taskCount": 2047,
-      "completedCount": 1743,
+      "completedCount": 1744,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T13:39:32.528Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
