@@ -84,16 +84,13 @@ impl CliToolContext {
 
         let compiled = reify_compiler::compile(&parsed);
 
-        let checker = reify_constraints::SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-        engine.eval(&compiled);
-
         let abs_path = std::fs::canonicalize(path)
             .unwrap_or_else(|_| PathBuf::from(path))
             .to_string_lossy()
             .to_string();
 
         let mut state = self.lock_state();
+        ensure_engine(&mut state).eval(&compiled);
         state.files.insert(
             abs_path.clone(),
             FileEntry {
@@ -103,11 +100,6 @@ impl CliToolContext {
         );
         state.active_file = Some(abs_path);
         state.compiled = Some(compiled);
-        state.engine = Some(engine);
-        #[cfg(test)]
-        {
-            state.engine_construction_count += 1;
-        }
 
         Ok(())
     }
