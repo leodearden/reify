@@ -109,7 +109,7 @@ describe('generateDefaultView', () => {
     expect(view.id).toBe('auto:default');
     expect(view.name).toBe('Default');
     expect(view.auto).toBe(true);
-    expect(view.modified).toBe(false);
+    expect(view).not.toHaveProperty('modified');
   });
 });
 
@@ -149,7 +149,7 @@ describe('generateAllGeometryView', () => {
     expect(view.id).toBe('auto:all-geometry');
     expect(view.name).toBe('All geometry');
     expect(view.auto).toBe(true);
-    expect(view.modified).toBe(false);
+    expect(view).not.toHaveProperty('modified');
   });
 });
 
@@ -181,7 +181,7 @@ describe('generatePurposeViews', () => {
     expect(view.id).toBe('auto:purpose:foo');
     expect(view.name).toBe('foo');
     expect(view.auto).toBe(true);
-    expect(view.modified).toBe(false);
+    expect(view).not.toHaveProperty('modified');
     // Falls back to Default rules
     expect(view.visibility['Root.geo']).toBe('hidden');
     expect(view.visibility['Root.mesh']).toBe('show');
