@@ -42769,11 +42769,11 @@
         "description": "`crates/reify-eval/src/lib.rs` (3868 lines) contains one `impl Engine` block (L352-3368, 58 methods) plus `mod tests` (L3369-3868). Currently ~32 pending tasks are serialized behind this file.\n\nRust supports multiple `impl Engine { ... }` blocks across files. Split by concern into ~5 sibling modules:\n- `engine_eval.rs` — core `eval()` and direct eval helpers\n- `engine_edit.rs` — `edit_param`, `set_param_and_invalidate`, incremental re-eval methods\n- `engine_purposes.rs` — `activate_purpose`, `deactivate_purpose`, `is_purpose_active`, `active_objectives`\n- `engine_constraints.rs` — `dispatch_constraints` and constraint dispatch helpers\n- `engine_admin.rs` — `new`, `register_optimized_impl`, `unregister_optimized_impl`, prelude/functions_count/is_initialized/snapshot/journal accessors, solver/cache/unfold-depth setters\n\nAlso move `mod tests` (L3369-3868) to a new integration test at `crates/reify-eval/tests/engine_tests.rs` if it compiles against the public API; otherwise leave as a `tests` submodule in lib.rs.\n\nKeep `pub struct Engine`, `pub enum EngineError`, `pub struct EvaluationState`, `CacheStats`, `EvalResult`, etc. in `lib.rs` (shared type definitions). Move only the `impl Engine { ... }` method bodies.\n\nSuccess criteria:\n- `cargo test -p reify-eval` passes identically.\n- `lib.rs` drops from 3868 to ~600-800 lines.\n- Each sibling file is < 1500 lines.\n\nWhy: single biggest parallelism unlock — 32 pending tasks become concurrently dispatchable when they target different sibling files.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:02:09.118Z",
+        "updatedAt": "2026-04-20T16:56:18.481Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_admin.rs",
@@ -43359,9 +43359,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:50:44.962Z",
+      "lastModified": "2026-04-20T16:56:18.481Z",
       "taskCount": 2052,
-      "completedCount": 1779,
+      "completedCount": 1780,
       "tags": [
         "master"
       ]
