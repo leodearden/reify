@@ -36,6 +36,12 @@ static STDLIB_CACHE: OnceLock<Vec<CompiledModule>> = OnceLock::new();
 /// (e.g. `Physical : Material`, `ElasticallyDeformable : Elastic`) explicit
 /// during compilation rather than relying on lazy string resolution.
 ///
+/// Any Error-severity diagnostic in any stdlib module panics immediately
+/// rather than caching a broken result: a broken `OnceLock` entry would
+/// entrench the broken state for the entire process lifetime, producing
+/// confusing downstream errors that are far harder to diagnose than a
+/// direct panic at the point of failure.
+///
 /// Subsequent calls return the cached result with zero overhead.
 pub fn load_stdlib() -> &'static [CompiledModule] {
     STDLIB_CACHE.get_or_init(|| {
@@ -60,6 +66,12 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             ("std.tolerancing", TOLERANCING_SRC),
         ];
 
+        // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
+        // against all previously-compiled stdlib modules (`&modules` grows by
+        // one each iteration). This implements the cross-module dependency
+        // requirement from task #326 suggestion #2 — a stdlib module added
+        // later (e.g. std.structural.physical) can freely reference traits and
+        // types declared in earlier modules (e.g. std.materials.mechanical).
         let mut modules = Vec::with_capacity(sources.len());
         for (module_name, source) in &sources {
             let segments: Vec<String> = module_name.split('.').map(String::from).collect();
@@ -82,6 +94,10 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             // Fail fast: Error-severity diagnostics in embedded stdlib are always
             // programming errors. Without this check, a broken module gets permanently
             // cached in OnceLock, producing confusing downstream errors.
+            // `assert!` (not `debug_assert!`) is intentional: a broken stdlib module
+            // cached in OnceLock is at least as dangerous in release builds as in debug
+            // builds, and `debug_assert!` would compile out in exactly the builds where
+            // the bug is hardest to diagnose.
             let has_errors = compiled
                 .diagnostics
                 .iter()

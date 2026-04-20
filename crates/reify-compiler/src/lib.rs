@@ -195,6 +195,45 @@ pub fn compile_with_prelude(
     compile_with_prelude_refs(parsed, &refs)
 }
 
+/// Merge user functions with prelude functions, applying the canonical shadowing rule:
+/// prelude functions whose `(name, arity, param_types)` triple matches any user function
+/// are excluded; all others are appended. The result has user functions first, preserving
+/// first-match-wins dispatch order for any resolver that iterates linearly.
+///
+/// First-wins dedup also applies prelude-vs-prelude: the shadow check runs against
+/// `result` (the accumulating output), not `user` alone, so when two stdlib modules
+/// both declare the same `(name, arity, param_types)` triple only the first-seen
+/// entry survives. This mirrors stdlib load order (sequential in `stdlib_loader::load_stdlib`)
+/// and silently drops duplicates without a diagnostic — intentional for now; if a future
+/// stdlib PR introduces an accidental collision it will be invisible, so rely on
+/// stdlib-level review rather than this function for duplicate detection.
+///
+/// This is the single-source shadow predicate for Reify function tables. It is used by
+/// [`compile_with_prelude_refs`] to build the compile-time overload-resolution table.
+/// `reify_eval::Engine` uses an unfiltered append that is dispatch-equivalent under
+/// first-match-wins semantics (shadowed prelude entries are unreachable at dispatch time),
+/// but the dedup logic for the filtered case lives here.
+pub fn merge_prelude_functions(
+    user: &[CompiledFunction],
+    prelude: &[CompiledFunction],
+) -> Vec<CompiledFunction> {
+    let mut result = user.to_vec();
+    for f in prelude {
+        let shadowed = result.iter().any(|uf| {
+            uf.name == f.name
+                && uf.params.len() == f.params.len()
+                && uf.params
+                    .iter()
+                    .zip(f.params.iter())
+                    .all(|((_, ut), (_, ft))| ut == ft)
+        });
+        if !shadowed {
+            result.push(f.clone());
+        }
+    }
+    result
+}
+
 /// Compile a parsed module with prelude definitions provided as references.
 ///
 /// This is the inner implementation used by the module DAG to avoid cloning
@@ -544,6 +583,19 @@ pub(crate) fn compile_with_prelude_refs(
         }
     }
 
+    // Build a resolution function list for compile-time overload resolution.
+    // User functions appear first (shadowing priority); prelude functions with
+    // distinct (name, arity, param_types) triples are appended. See
+    // merge_prelude_functions() for the canonical shadow predicate.
+    // `functions` (user-only) remains the output stored in CompiledModule.
+    let resolution_functions: Vec<CompiledFunction> = {
+        let prelude_fns: Vec<CompiledFunction> = prelude
+            .iter()
+            .flat_map(|m| m.functions.iter().cloned())
+            .collect();
+        merge_prelude_functions(&functions, &prelude_fns)
+    };
+
     // Build the set of trait names known at compile time so the type resolver
     // can resolve `param m : Material` (trait name) to Type::TraitObject(...).
     //
@@ -613,7 +665,7 @@ pub(crate) fn compile_with_prelude_refs(
         let compiled = compile_field(
             field_def,
             &resolution_enums,
-            &functions,
+            &resolution_functions,
             &alias_registry,
             &mut diagnostics,
         );
@@ -693,7 +745,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &entity_ref,
                         EntityKind::Structure,
                         &resolution_enums,
-                        &functions,
+                        &resolution_functions,
                         &trait_registry,
                         &trait_names,
                         &field_registry,
@@ -743,7 +795,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &entity_ref,
                         EntityKind::Occurrence,
                         &resolution_enums,
-                        &functions,
+                        &resolution_functions,
                         &trait_registry,
                         &trait_names,
                         &field_registry,
@@ -907,7 +959,7 @@ pub(crate) fn compile_with_prelude_refs(
                 let compiled = compile_purpose(
                     purpose_def,
                     &resolution_enums,
-                    &functions,
+                    &resolution_functions,
                     &purpose_template_registry,
                     &unit_registry,
                     &mut diagnostics,

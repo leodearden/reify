@@ -454,9 +454,11 @@ fn prelude_function_merging_path() {
         .build();
 
     // User code that calls the prelude function.
+    // Note: 21.5 (not 21.0) to ensure the literal is inferred as Real, not Int.
+    // The Reify compiler infers whole-number literals as Int; fractional as Real.
     let source = r#"
 structure def S {
-    param x : Real = double(21.0)
+    param x : Real = double(21.5)
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
@@ -492,13 +494,15 @@ structure def S {
         .default_expr
         .as_ref()
         .expect("param 'x' should have a default expression");
+    // Prelude (user-defined) functions compile to UserFunctionCall, not FunctionCall.
+    // FunctionCall is reserved for built-in stdlib functions resolved at compile time.
     match &default_expr.kind {
-        CompiledExprKind::FunctionCall { function, .. } => {
-            assert_eq!(function.name, "double", "expected resolved call to 'double'");
+        CompiledExprKind::UserFunctionCall { function_name, .. } => {
+            assert_eq!(function_name, "double", "expected resolved call to 'double'");
         }
         other => {
             panic!(
-                "param 'x' default should be a function call to 'double', got: {:?}",
+                "param 'x' default should be a UserFunctionCall to 'double', got: {:?}",
                 other
             );
         }

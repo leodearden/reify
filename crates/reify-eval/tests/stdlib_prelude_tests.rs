@@ -154,6 +154,194 @@ structure S {
     );
 }
 
+// ─── step-515-1: Arity-mismatch coexistence regression ───────────────
+
+/// Regression guard: a user-defined function does NOT shadow a prelude function
+/// when they share a name but differ in arity (or param types). Both must remain
+/// independently callable — the dispatch rule is (name, arity, param types).
+///
+/// Setup:
+///   - User defines `symmetric_tolerance(x: Length) -> Length` (1-arg, returns x).
+///   - Prelude defines `symmetric_tolerance(nominal, deviation)` (2-arg, returns sum).
+///
+/// Expected:
+///   - `symmetric_tolerance(5mm)` → user impl → 5mm = 0.005 m
+///   - `symmetric_tolerance(5mm, 2mm)` → prelude impl → 7mm = 0.007 m
+///
+/// If the arity-mismatch were incorrectly treated as shadowing, the prelude's
+/// 2-arg form would be inaccessible and `b` would fail to resolve.
+#[test]
+fn prelude_function_not_shadowed_by_arity_mismatch() {
+    let source = r#"
+fn symmetric_tolerance(x: Length) -> Length {
+    x
+}
+
+structure S {
+    let a : Length = symmetric_tolerance(5mm)
+    let b : Length = symmetric_tolerance(5mm, 2mm)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no error diagnostics, got: {:?}",
+        eval_errors
+    );
+
+    // a = symmetric_tolerance(5mm) → user impl (1-arg, returns x) → 5mm = 0.005 m
+    let cell_a = ValueCellId::new("S", "a");
+    let a = result
+        .values
+        .get(&cell_a)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            panic!(
+                "S.a should be numeric. Available values: {:?}",
+                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (a - 0.005).abs() < 1e-9,
+        "S.a: user 1-arg symmetric_tolerance(5mm) should return 5mm=0.005, got {}",
+        a
+    );
+
+    // b = symmetric_tolerance(5mm, 2mm) → prelude impl (2-arg, returns sum) → 7mm = 0.007 m
+    let cell_b = ValueCellId::new("S", "b");
+    let b = result
+        .values
+        .get(&cell_b)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            panic!(
+                "S.b should be numeric. Available values: {:?}",
+                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (b - 0.007).abs() < 1e-9,
+        "S.b: prelude 2-arg symmetric_tolerance(5mm, 2mm) should return 7mm=0.007, got {}",
+        b
+    );
+}
+
+// ─── step-4: Constraint solver path regression ───────────────────────
+
+/// Regression guard: prelude functions must be reachable from the constraint
+/// solver's `ResolutionProblem` (lib.rs:1361) and from the post-solver
+/// let-binding re-evaluation (lib.rs:1455).
+///
+/// Uses `auto(free)` to skip uniqueness verification and an inequality
+/// constraint whose initial point (10mm) is immediately feasible, so the
+/// solver returns without running Nelder-Mead — giving a predictable x value.
+///
+/// Without the fix at 1361, `problem.functions` contains only user functions
+/// (empty here), so `symmetric_tolerance(15mm, 5mm)` in the constraint
+/// expression evaluates to Undef — the initial point appears infeasible, the
+/// Nelder-Mead runs and fails, and an error diagnostic is emitted.
+/// Without the fix at 1455, the post-solver `evaluate_let_bindings` uses
+/// `&module.functions` (empty) so `symmetric_tolerance(x, 1mm)` → Undef.
+///
+/// Expected relationships (prelude `symmetric_tolerance(a, b) = a + b`):
+///   - `x` is finite and satisfies `x < 20mm` (solver produced a feasible point)
+///   - `y == x + 0.001` exactly (prelude was reachable in post-solver re-eval)
+/// The exact value of `x` is not asserted — it depends on DimensionalSolver's
+/// feasibility-shortcut policy and pinning it would couple this test to solver
+/// internals instead of the prelude reachability it guards.
+#[test]
+fn prelude_function_resolves_in_constraint_solver_path() {
+    use reify_constraints::DimensionalSolver;
+
+    let source = r#"
+structure S {
+    param x : Length = auto(free)
+    let y : Length = symmetric_tolerance(x, 1mm)
+    constraint x < symmetric_tolerance(15mm, 5mm)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None)
+        .with_solver(Box::new(DimensionalSolver));
+    let result = engine.eval(&compiled);
+
+    // Only the auto(free) non-unique warning is expected; no errors.
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no error diagnostics, got: {:?}",
+        eval_errors
+    );
+
+    // x = 10mm (solver initial; x < 20mm is already satisfied → returned immediately)
+    let cell_x = ValueCellId::new("S", "x");
+    let x = result
+        .values
+        .get(&cell_x)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            panic!(
+                "S.x should be numeric. Available: {:?}",
+                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            )
+        });
+    // Assert solver feasibility rather than a specific x value: we care that the solver
+    // produced a finite result satisfying the constraint `x < symmetric_tolerance(15mm, 5mm)`
+    // = 20mm. The exact x depends on DimensionalSolver's feasibility-shortcut policy; pinning
+    // x == 0.010 would couple this test to that internal behavior rather than to the prelude
+    // reachability it is supposed to guard.
+    assert!(
+        x.is_finite() && x < 0.020,
+        "S.x should be finite and satisfy x < 20mm constraint, got {}",
+        x
+    );
+
+    // y = symmetric_tolerance(x, 1mm) = x + 0.001 (exact, by prelude definition).
+    // This is the real regression guard: it proves the prelude function was reachable
+    // from the post-solver let-binding re-evaluation, regardless of solver x choice.
+    let cell_y = ValueCellId::new("S", "y");
+    let y = result
+        .values
+        .get(&cell_y)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            panic!(
+                "S.y should be numeric. Available: {:?}",
+                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (y - (x + 0.001)).abs() < 1e-9,
+        "S.y: post-solver re-eval should give symmetric_tolerance(x, 1mm) = x + 0.001 = {}, got {}",
+        x + 0.001,
+        y
+    );
+}
+
 // ─── step-3: Eval idempotency (caching regression) ───────────────────
 
 /// Regression guard: calling `eval()` twice on the same engine with the
@@ -240,6 +428,65 @@ structure S {
         (v1 - 0.007).abs() < 1e-9,
         "symmetric_tolerance(5mm, 2mm) should be 0.007 m (7mm), got {}",
         v1
+    );
+}
+
+// ─── step-6: Downstream dispatch path regression ─────────────────────
+
+/// Regression guard: prelude functions must be reachable at ALL dispatch
+/// sites, not just inside `eval()`. The `check()` path calls
+/// `dispatch_constraints` at lib.rs:2803 with `&module.functions` (user-only)
+/// before the step-7 sweep.
+///
+/// `SimpleConstraintChecker` (unlike `MockConstraintChecker`) evaluates each
+/// constraint expression via `eval_expr`. Without the fix at 2803,
+/// `symmetric_tolerance(1mm, 1mm)` evaluates to Undef, making the constraint
+/// `Indeterminate` rather than `Satisfied`.
+///
+/// With the fix: `symmetric_tolerance(1mm, 1mm)` = 2mm → `5mm > 2mm = true`
+/// → `Satisfied`, no warning.
+#[test]
+fn prelude_function_resolves_in_downstream_dispatch_paths() {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_types::Satisfaction;
+
+    let source = r#"
+structure S {
+    let y : Length = 5mm
+    constraint y > symmetric_tolerance(1mm, 1mm)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let check_result = engine.check(&compiled);
+
+    let check_errors = collect_errors(&check_result.diagnostics);
+    assert!(
+        check_errors.is_empty(),
+        "check() should produce no error diagnostics, got: {:?}",
+        check_errors
+    );
+
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "should have exactly 1 constraint result"
+    );
+    let cr = &check_result.constraint_results[0];
+    assert_eq!(
+        cr.satisfaction,
+        Satisfaction::Satisfied,
+        "constraint y > symmetric_tolerance(1mm,1mm) should be Satisfied (5mm > 2mm), \
+         got {:?}. All diagnostics: {:?}",
+        cr.satisfaction,
+        check_result.diagnostics
     );
 }
 

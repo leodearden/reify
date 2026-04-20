@@ -834,8 +834,29 @@ impl Engine {
         // takes precedence and shadows the prelude implementation. The compiler's
         // duplicate-function check only compares user functions against each other, not against
         // the prelude, so user code may freely redefine prelude signatures without diagnostics.
+        //
+        // COEXISTENCE COROLLARY: a user function whose (name, arity, param types) triple
+        // differs from all prelude functions does NOT shadow those prelude functions — both
+        // remain independently callable. The compiler includes non-shadowed prelude functions
+        // in its overload resolution so each call site is resolved to whichever signature
+        // matches the arguments, regardless of whether the user also defines a same-named
+        // function with a different arity or param types.
         self.functions = module.functions.clone();
-        // Extend with pre-flattened prelude functions (cached once at Engine construction).
+        // Unfiltered append: intentionally adds ALL prelude functions without filtering out
+        // entries whose (name, arity, param_types) triple matches a user function.
+        // Correctness is preserved because `reify_expr::eval_user_function_call` resolves
+        // via first-match-wins linear scan, and user functions are stored FIRST (see
+        // SHADOWING INVARIANT above) — shadowed prelude entries can never be the first
+        // match, so they are permanently unreachable at dispatch time.
+        //
+        // This diverges from the compiler's `resolution_functions` build in
+        // compile_with_prelude_refs, which applies an explicit shadow filter via
+        // `reify_compiler::merge_prelude_functions`. That filter is a compile-time
+        // concern (it avoids ambiguous-overload errors in the resolution table); the
+        // eval dispatch table does not need it — unfiltered ≡ filtered under
+        // first-match-wins semantics. The shadow predicate itself is canonical in
+        // `merge_prelude_functions`; if the filtering rule changes, update that
+        // function and verify the dispatch-time equivalence still holds.
         self.functions.extend(self.prelude_functions.iter().cloned());
         self.compiled_purposes = module.compiled_purposes.clone();
         // Clear stale purpose state from previous eval() calls — the fresh
@@ -850,7 +871,33 @@ impl Engine {
             .filter(|t| !t.meta.is_empty())
             .map(|t| (t.name.clone(), t.meta.clone()))
             .collect();
-        let functions = &module.functions;
+        // Use the merged function table (user functions prepended before prelude functions) so
+        // that EvalContext has the full dispatch set — both user-defined overloads AND
+        // non-shadowed prelude functions. This matches the SHADOWING INVARIANT: first-match-wins
+        // linear scan means user functions take precedence when signatures collide, while
+        // prelude functions with distinct (name, arity, param types) triples remain callable.
+        // Clone here to satisfy the borrow checker: `evaluate_let_bindings` borrows `self`
+        // mutably, which would conflict with an immutable borrow of `self.functions`.
+        //
+        // PERFORMANCE NOTE: eval() currently clones the merged function table TWICE per call —
+        // once when assigning `self.functions = module.functions.clone()` (then extending in
+        // place with the prelude above), and again into the local `functions` below so
+        // EvalContext can hold it without aliasing `self`. Each CompiledFunction contains a
+        // boxed expression tree, so for a nontrivial user module plus the 11-module stdlib
+        // the double-clone is a non-trivial allocation on the hot path (every edit_param,
+        // check, build, and tessellate triggers an eval). The natural fix is to change
+        // `self.functions` to `Arc<Vec<CompiledFunction>>` so both clones become O(1):
+        //
+        //   self.functions = Arc::new({ let mut v = module.functions.clone();
+        //                               v.extend(prelude); v });
+        //   let functions = Arc::clone(&self.functions);   // O(1)
+        //
+        // That refactor also requires updating `ConcurrentEditSetup::functions` in
+        // concurrent.rs (field type `Vec<CompiledFunction>`, assigned as
+        // `functions: self.functions.clone()`) — which lies outside this task's locked
+        // modules. The same pattern repeats in edit_param() below. Deferred to
+        // task #1997 (perf: Arc<Vec<CompiledFunction>> in Engine::eval/edit_param).
+        let functions: Vec<CompiledFunction> = self.functions.clone();
 
         let mut values = ValueMap::new();
         let mut diagnostics = Vec::new();
@@ -890,13 +937,13 @@ impl Engine {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr } => {
                     let ctx =
-                        reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map);
+                        reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Composed { expr } => {
                     let ctx =
-                        reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map);
+                        reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
@@ -988,7 +1035,7 @@ impl Engine {
 
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(&values, functions)
+                        &reify_expr::EvalContext::new(&values, &functions)
                             .with_meta(&self.meta_map)
                             .with_determinacy(&snapshot.values),
                     );
@@ -1029,7 +1076,7 @@ impl Engine {
                     &mut values,
                     &mut snapshot,
                     version_id,
-                    functions,
+                    &functions,
                     &meta_map,
                     &mut diagnostics,
                 );
@@ -1042,7 +1089,7 @@ impl Engine {
                 // Evaluate the guard cell expression
                 let guard_val = reify_expr::eval_expr(
                     &group.guard_expr,
-                    &reify_expr::EvalContext::new(&values, functions)
+                    &reify_expr::EvalContext::new(&values, &functions)
                         .with_meta(&self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
@@ -1068,7 +1115,7 @@ impl Engine {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, functions)
+                                    &reify_expr::EvalContext::new(&values, &functions)
                                         .with_meta(&self.meta_map)
                                         .with_determinacy(&snapshot.values),
                                 );
@@ -1108,7 +1155,7 @@ impl Engine {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, functions)
+                                    &reify_expr::EvalContext::new(&values, &functions)
                                         .with_meta(&self.meta_map)
                                         .with_determinacy(&snapshot.values),
                                 );
@@ -1181,7 +1228,7 @@ impl Engine {
                             elaborate_child_instance(
                                 &mut values,
                                 &mut snapshot,
-                                functions,
+                                &functions,
                                 &mut self.journal,
                                 &mut self.cache,
                                 version_id,
@@ -1237,7 +1284,7 @@ impl Engine {
                     unfold_recursive_sub(
                         &mut values,
                         &mut snapshot,
-                        functions,
+                        &functions,
                         &mut self.journal,
                         &mut self.cache,
                         version_id,
@@ -1261,7 +1308,7 @@ impl Engine {
                 elaborate_child_instance(
                     &mut values,
                     &mut snapshot,
-                    functions,
+                    &functions,
                     &mut self.journal,
                     &mut self.cache,
                     version_id,
@@ -1284,7 +1331,7 @@ impl Engine {
                     &mut values,
                     &mut snapshot,
                     version_id,
-                    functions,
+                    &functions,
                     &meta_map,
                     &mut diagnostics,
                 );
@@ -1344,7 +1391,7 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: values.clone(),
                     objective: template.objective.clone(),
-                    functions: module.functions.clone(),
+                    functions: functions.clone(),
                 };
 
                 let parent_snap_id = snapshot.id;
@@ -1438,7 +1485,7 @@ impl Engine {
                             &mut values,
                             &mut snapshot,
                             res_version_id,
-                            &module.functions,
+                            &functions,
                             &meta_map,
                             &mut diagnostics,
                         );
@@ -1499,6 +1546,9 @@ impl Engine {
         cell: ValueCellId,
         new_value: reify_types::Value,
     ) -> Result<EvalResult, EngineError> {
+        // Clone the merged function table for use in EvalContext.  Same borrow-checker
+        // workaround and same O(N) cost as the clone in eval(); see PERFORMANCE NOTE
+        // near eval()'s `let functions` binding for the deferred Arc refactor.
         let functions = self.functions.clone();
         let state = self
             .eval_state
@@ -2515,7 +2565,7 @@ impl Engine {
                     } else if let Some(ref expr) = cell.default_expr {
                         reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &module.functions)
+                            &reify_expr::EvalContext::new(&values, &self.functions)
                                 .with_meta(&self.meta_map),
                         )
                     } else {
@@ -2611,7 +2661,7 @@ impl Engine {
 
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(&values, &module.functions)
+                        &reify_expr::EvalContext::new(&values, &self.functions)
                             .with_meta(&self.meta_map),
                     );
 
@@ -2691,7 +2741,7 @@ impl Engine {
             let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 &values,
-                &module.functions,
+                &self.functions,
                 Some(&state.snapshot.values),
             );
             diagnostics.extend(dispatch_diags);
@@ -2786,7 +2836,7 @@ impl Engine {
             let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 &eval_result.values,
-                &module.functions,
+                &self.functions,
                 Some(det_values),
             );
             diagnostics.extend(dispatch_diags);
@@ -2849,7 +2899,7 @@ impl Engine {
                 let (results, dispatch_diags) = self.dispatch_constraints(
                     entries,
                     &values,
-                    &module.functions,
+                    &self.functions,
                     Some(&state.snapshot.values),
                 );
                 diagnostics.extend(dispatch_diags);
@@ -2882,7 +2932,7 @@ impl Engine {
                         kernel.as_mut(),
                         &realization.operations,
                         &values,
-                        &module.functions,
+                        &self.functions,
                         &self.meta_map,
                         &mut step_handles,
                         &mut diagnostics,
@@ -2939,7 +2989,7 @@ impl Engine {
                         kernel.as_mut(),
                         &realization.operations,
                         &check_result.values,
-                        &module.functions,
+                        &self.functions,
                         &self.meta_map,
                         &mut step_handles,
                         &mut diagnostics,
@@ -2999,6 +3049,7 @@ impl Engine {
             &mut self.geometry_kernel,
             module,
             &check_result.values,
+            &self.functions,
             &mut diagnostics,
             &self.meta_map,
         );
@@ -3022,6 +3073,7 @@ impl Engine {
         geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
         module: &CompiledModule,
         values: &ValueMap,
+        functions: &[CompiledFunction],
         diagnostics: &mut Vec<Diagnostic>,
         meta_map: &HashMap<String, HashMap<String, String>>,
     ) -> Vec<(String, Mesh)> {
@@ -3041,7 +3093,7 @@ impl Engine {
                     kernel.as_mut(),
                     &realization.operations,
                     values,
-                    &module.functions,
+                    functions,
                     meta_map,
                     &mut step_handles,
                     diagnostics,
@@ -3166,7 +3218,7 @@ impl Engine {
                 let (results, dispatch_diags) = self.dispatch_constraints(
                     entries,
                     &values,
-                    &module.functions,
+                    &self.functions,
                     Some(&state.snapshot.values),
                 );
                 diagnostics.extend(dispatch_diags);
@@ -3191,6 +3243,7 @@ impl Engine {
             &mut self.geometry_kernel,
             module,
             &values,
+            &self.functions,
             &mut diagnostics,
             &self.meta_map,
         );
