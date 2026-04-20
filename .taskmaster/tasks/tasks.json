@@ -20552,11 +20552,11 @@
         "description": "In crates/reify-compiler/src/lib.rs: (1) Extract resolve_enum_type(name, enum_defs) helper to replace 4+ inline occurrences. (2) Build HashSet of enum names before filter_map loop in check_trait_conformance. (3) Extract local closure for duplicated 22-line Param/Let blocks. (4) Add assertion when type_args is non-empty on enum match.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T17:40:45.089Z",
+        "updatedAt": "2026-04-20T11:21:55.314Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -42575,7 +42575,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:21:53.241Z",
+      "lastModified": "2026-04-20T11:21:55.314Z",
       "taskCount": 2020,
       "completedCount": 1723,
       "tags": [
