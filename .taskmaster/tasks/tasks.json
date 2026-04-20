@@ -42759,7 +42759,20 @@
             "queries": [
               "resolution for: Move reify-compiler lib.rs `mod tests` to integration test file"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/compile_api_tests.rs",
+            "crates/reify-compiler/src/geometry_curve.rs",
+            "crates/reify-compiler/src/geometry_transform.rs",
+            "crates/reify-compiler/src/geometry_modify.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/units.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
         },
         "updatedAt": "2026-04-20T17:30:12.253Z"
       },
@@ -42809,7 +42822,15 @@
             "queries": [
               "resolution for: Move reify-compiler/src/conformance.rs `mod tests` to integration test file"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/conformance_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
@@ -43397,7 +43418,9 @@
       "completedCount": 1783,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T17:59:37.228Z",
+      "description": "Tasks for master context"
     }
   }
 }
