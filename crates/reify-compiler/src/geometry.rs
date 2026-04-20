@@ -95,6 +95,51 @@ fn resolve_named_geom_arg(
     GeomRef::Step(step_offset + idx)
 }
 
+/// Build the `(profiles, named_args)` pair for a loft-family dispatch arm.
+///
+/// For each arg slot `0..n` (where `n = compiled_args.len()`):
+/// - `profiles[i]` is taken from `geom_refs[i]` when present, otherwise
+///   falls back silently to `GeomRef::Step(step_offset + i)`.
+/// - `named_args[i].0` is `"profile_{i}"` for all slots except the last
+///   when `guide_suffix` is `true`, in which case the last key is `"guide"`.
+///
+/// `compiled_args` is consumed by value because both call sites (`loft`,
+/// `loft_guided`) already move it into the helper.
+///
+/// This helper is the loft-family counterpart of `resolve_named_geom_arg`
+/// (sweep family). The key difference is that it emits **no diagnostic**:
+/// the loft family uses a silent fallback by design — see the module-level
+/// note on silent-fallback vs. labelled-per-arg policy.
+fn resolve_loft_like_args(
+    compiled_args: Vec<CompiledExpr>,
+    geom_refs: &HashMap<usize, GeomRef>,
+    step_offset: usize,
+    guide_suffix: bool,
+) -> (Vec<GeomRef>, Vec<(String, CompiledExpr)>) {
+    let n = compiled_args.len();
+    let profiles: Vec<GeomRef> = (0..n)
+        .map(|i| {
+            geom_refs
+                .get(&i)
+                .cloned()
+                .unwrap_or(GeomRef::Step(step_offset + i))
+        })
+        .collect();
+    let named_args: Vec<(String, CompiledExpr)> = compiled_args
+        .into_iter()
+        .enumerate()
+        .map(|(i, expr)| {
+            let key = if guide_suffix && i == n - 1 {
+                "guide".to_string()
+            } else {
+                format!("profile_{}", i)
+            };
+            (key, expr)
+        })
+        .collect();
+    (profiles, named_args)
+}
+
 /// Compile a geometry function call expression into CompiledGeometryOps.
 ///
 /// Maps positional arguments to the named parameters expected by each primitive:
@@ -445,25 +490,9 @@ pub(crate) fn compile_geometry_call(
                 )));
                 return None;
             }
-            let mut profiles = Vec::with_capacity(args.len());
-            for i in 0..args.len() {
-                // Silently fall back to GeomRef::Step(step_offset + i) per profile
-                // when an arg is not a geometry expression. This matches the
-                // single-geom-arg geom_ref() convention while preserving per-profile
-                // index uniqueness (loft requires distinct cross-sections, so each
-                // fallback profile needs a distinct step index for downstream
-                // analysis).
-                let r = geom_refs
-                    .get(&i)
-                    .cloned()
-                    .unwrap_or(GeomRef::Step(step_offset + i));
-                profiles.push(r);
-            }
-            let loft_args: Vec<(String, CompiledExpr)> = compiled_args
-                .into_iter()
-                .enumerate()
-                .map(|(i, expr)| (format!("profile_{}", i), expr))
-                .collect();
+            // Silent fallback per profile slot — see module-level note on silent-fallback vs. labelled-per-arg.
+            let (profiles, loft_args) =
+                resolve_loft_like_args(compiled_args, &geom_refs, step_offset, false);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Loft,
                 profiles,
@@ -484,42 +513,10 @@ pub(crate) fn compile_geometry_call(
                 )));
                 return None;
             }
-            // Resolve a GeomRef per arg, falling back to step_offset+i like loft.
-            // This is intentionally asymmetric with sweep_guided (one arm below),
-            // which emits a per-arg diagnostic on miss via resolve_named_geom_arg:
-            //   - loft / loft_guided  → silent fallback
-            //   - sweep / sweep_guided → labelled per-arg error
-            // Rationale: the loft family is variadic, and emitting one diagnostic
-            // per profile slot (which can be 5, 10, 50, ...) would flood the user
-            // with N near-duplicate "argument K must be a geometry expression"
-            // errors instead of one actionable signal. The silent fallback also
-            // preserves per-profile index uniqueness for downstream analysis.
-            // See `loft_guided_compiler_non_geom_args_silent_fallback` for the
-            // behavioural test that pins this decision.
-            let mut refs = Vec::with_capacity(args.len());
-            for i in 0..args.len() {
-                let r = geom_refs
-                    .get(&i)
-                    .cloned()
-                    .unwrap_or(GeomRef::Step(step_offset + i));
-                refs.push(r);
-            }
-            // Convention: last arg is the guide wire; preceding args are
-            // profiles (at least 2). Key the last named arg as "guide", the
-            // earlier ones as "profile_0", "profile_1", ...
-            let last_idx = compiled_args.len() - 1;
-            let loft_guided_args: Vec<(String, CompiledExpr)> = compiled_args
-                .into_iter()
-                .enumerate()
-                .map(|(i, expr)| {
-                    let key = if i == last_idx {
-                        "guide".to_string()
-                    } else {
-                        format!("profile_{}", i)
-                    };
-                    (key, expr)
-                })
-                .collect();
+            // Silent fallback per profile slot — see module-level note on silent-fallback vs. labelled-per-arg.
+            // Convention: last arg is the guide wire; preceding args are profiles.
+            let (refs, loft_guided_args) =
+                resolve_loft_like_args(compiled_args, &geom_refs, step_offset, true);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::LoftGuided,
                 profiles: refs,
