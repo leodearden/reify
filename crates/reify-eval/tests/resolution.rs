@@ -11,8 +11,8 @@ use reify_test_support::{
     lt, make_simple_engine, mm, value_ref,
 };
 use reify_types::{
-    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId,
-    SnapshotProvenance, Type, Value, ValueCellId,
+    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type,
+    Value, ValueCellId,
 };
 
 #[test]
@@ -2018,10 +2018,7 @@ fn auto_free_emits_warning_diagnostic() {
     let warning = result
         .diagnostics
         .iter()
-        .find(|d| {
-            d.message.contains("resolved via auto(free)")
-                && d.message.contains("thickness")
-        });
+        .find(|d| d.message.contains("resolved via auto(free)") && d.message.contains("thickness"));
     assert!(
         warning.is_some(),
         "expected warning diagnostic about 'thickness' resolved via auto(free), got {:?}",
@@ -2128,8 +2125,8 @@ fn resolve_concurrent_edit_populates_result_in_place() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     engine.eval(&module);
 

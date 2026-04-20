@@ -19,8 +19,8 @@ const EXAMPLE_PATH: &str = concat!(
 /// Read m11_field_calculus.ri and verify it parses without errors.
 #[test]
 fn field_calculus_ri_parses() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m11_field_calculus.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m11_field_calculus.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
     assert!(
@@ -33,8 +33,8 @@ fn field_calculus_ri_parses() {
 /// Compile the .ri file and verify no compile errors.
 #[test]
 fn field_calculus_compiles() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m11_field_calculus.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m11_field_calculus.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 
@@ -61,8 +61,8 @@ fn field_calculus_compiles() {
 /// Compile, eval, and verify all constraints are Satisfied with SimpleConstraintChecker.
 #[test]
 fn field_calculus_all_constraints_satisfied() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m11_field_calculus.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m11_field_calculus.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 

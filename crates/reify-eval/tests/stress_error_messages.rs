@@ -14,8 +14,8 @@
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity, Type};
 use reify_test_support::*;
+use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity, Type};
 
 // ---------------------------------------------------------------------------
 // step-25/26: parse_error_malformed_syntax
@@ -425,8 +425,7 @@ fn all_error_classes_produce_nonempty_messages() {
         assert!(
             has_any_error,
             "[{}] expected at least one error for snippet {:?}, got none",
-            label,
-            source
+            label, source
         );
 
         // All parse error messages must be non-empty.

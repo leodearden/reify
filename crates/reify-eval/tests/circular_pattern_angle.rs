@@ -6,7 +6,7 @@
 //! - An explicit angle unit (`360deg`) passes through without any warning.
 
 use reify_eval::{BuildResult, Engine};
-use reify_test_support::{parse_and_compile, MockConstraintChecker, MockGeometryKernel};
+use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
 use reify_types::{ExportFormat, Severity};
 
 /// Source shared by both tests: a plate structure with a cylindrical hole

@@ -18,8 +18,8 @@ use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 /// Load a .ri file, parse, compile (asserting no errors), and evaluate.
 /// Returns the full EvalResult for per-test assertions.
 fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
-    let source = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+    let source =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
     let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
     assert!(
         parsed.errors.is_empty(),
@@ -58,9 +58,12 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 
 /// Load and compile a .ri file, returning both compiled module and eval result.
 #[allow(dead_code)]
-fn compile_and_eval_ri(path: &str, module_name: &str) -> (reify_compiler::CompiledModule, reify_eval::EvalResult) {
-    let source = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+fn compile_and_eval_ri(
+    path: &str,
+    module_name: &str,
+) -> (reify_compiler::CompiledModule, reify_eval::EvalResult) {
+    let source =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
     let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
     assert!(
         parsed.errors.is_empty(),
@@ -102,10 +105,7 @@ fn compile_and_eval_ri(path: &str, module_name: &str) -> (reify_compiler::Compil
 /// Load trait_hierarchy.ri, parse, compile, eval — no errors, non-empty values.
 #[test]
 fn trait_hierarchy_parses_and_compiles() {
-    let result = eval_ri_file(
-        "../../examples/trait_hierarchy.ri",
-        "trait_hierarchy",
-    );
+    let result = eval_ri_file("../../examples/trait_hierarchy.ri", "trait_hierarchy");
     assert!(
         !result.values.is_empty(),
         "eval should produce non-empty values for trait_hierarchy.ri"
@@ -121,14 +121,13 @@ fn trait_hierarchy_parses_and_compiles() {
 ///   - computed = x + y = 8mm = 0.008 SI (let binding from Middle)
 #[test]
 fn three_deep_chain_values() {
-    let result = eval_ri_file(
-        "../../examples/trait_hierarchy.ri",
-        "trait_hierarchy",
-    );
+    let result = eval_ri_file("../../examples/trait_hierarchy.ri", "trait_hierarchy");
 
     // x = 5mm = 0.005 m SI
     let x_id = ValueCellId::new("ThreeDeepLeaf", "x");
-    let x_val = result.values.get(&x_id)
+    let x_val = result
+        .values
+        .get(&x_id)
         .unwrap_or_else(|| panic!("ThreeDeepLeaf.x not found in result"));
     match x_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -143,7 +142,9 @@ fn three_deep_chain_values() {
 
     // y = 3mm = 0.003 m SI
     let y_id = ValueCellId::new("ThreeDeepLeaf", "y");
-    let y_val = result.values.get(&y_id)
+    let y_val = result
+        .values
+        .get(&y_id)
         .unwrap_or_else(|| panic!("ThreeDeepLeaf.y not found in result"));
     match y_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -158,7 +159,9 @@ fn three_deep_chain_values() {
 
     // z = 1mm = 0.001 m SI
     let z_id = ValueCellId::new("ThreeDeepLeaf", "z");
-    let z_val = result.values.get(&z_id)
+    let z_val = result
+        .values
+        .get(&z_id)
         .unwrap_or_else(|| panic!("ThreeDeepLeaf.z not found in result"));
     match z_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -173,7 +176,9 @@ fn three_deep_chain_values() {
 
     // computed = x + y = 8mm = 0.008 m SI (let binding from Middle trait)
     let computed_id = ValueCellId::new("ThreeDeepLeaf", "computed");
-    let computed_val = result.values.get(&computed_id)
+    let computed_val = result
+        .values
+        .get(&computed_id)
         .unwrap_or_else(|| panic!("ThreeDeepLeaf.computed not found in result"));
     match computed_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -203,9 +208,15 @@ fn three_deep_chain_constraints_all_satisfied() {
     let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
         .expect("trait_hierarchy.ri should exist");
     let parsed = reify_syntax::parse(&source, ModulePath::single("trait_hierarchy"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled.diagnostics.iter()
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
@@ -218,7 +229,9 @@ fn three_deep_chain_constraints_all_satisfied() {
 
     // Then check constraints
     let check_result = engine.check(&compiled);
-    let leaf_constraints: Vec<_> = check_result.constraint_results.iter()
+    let leaf_constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
         .filter(|e| e.id.entity == "ThreeDeepLeaf")
         .collect();
 
@@ -249,9 +262,15 @@ fn diamond_inheritance_merges_correctly() {
     let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
         .expect("trait_hierarchy.ri should exist");
     let parsed = reify_syntax::parse(&source, ModulePath::single("trait_hierarchy"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled.diagnostics.iter()
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
@@ -262,8 +281,9 @@ fn diamond_inheritance_merges_correctly() {
 
     // d = 10mm = 0.01 m SI (single merged param from diamond)
     let d_id = ValueCellId::new("DiamondStruct", "d");
-    let d_val = result.values.get(&d_id)
-        .unwrap_or_else(|| panic!("DiamondStruct.d not found — diamond merge should produce single 'd'"));
+    let d_val = result.values.get(&d_id).unwrap_or_else(|| {
+        panic!("DiamondStruct.d not found — diamond merge should produce single 'd'")
+    });
     match d_val {
         reify_types::Value::Scalar { si_value, .. } => {
             assert!(
@@ -277,7 +297,9 @@ fn diamond_inheritance_merges_correctly() {
 
     // Constraints: d > 0mm (from Base, deduplicated) and d < 500mm (from structure)
     let check_result = engine.check(&compiled);
-    let diamond_constraints: Vec<_> = check_result.constraint_results.iter()
+    let diamond_constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
         .filter(|e| e.id.entity == "DiamondStruct")
         .collect();
 
@@ -312,9 +334,15 @@ fn multi_trait_impl_three_independent() {
     let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
         .expect("trait_hierarchy.ri should exist");
     let parsed = reify_syntax::parse(&source, ModulePath::single("trait_hierarchy"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled.diagnostics.iter()
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
@@ -325,7 +353,9 @@ fn multi_trait_impl_three_independent() {
 
     // mass = 2kg = 2.0 SI
     let mass_id = ValueCellId::new("TripleImpl", "mass");
-    let mass_val = result.values.get(&mass_id)
+    let mass_val = result
+        .values
+        .get(&mass_id)
         .unwrap_or_else(|| panic!("TripleImpl.mass not found"));
     match mass_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -340,7 +370,9 @@ fn multi_trait_impl_three_independent() {
 
     // width = 100mm = 0.1 SI
     let width_id = ValueCellId::new("TripleImpl", "width");
-    let width_val = result.values.get(&width_id)
+    let width_val = result
+        .values
+        .get(&width_id)
         .unwrap_or_else(|| panic!("TripleImpl.width not found"));
     match width_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -355,7 +387,9 @@ fn multi_trait_impl_three_independent() {
 
     // count = 5.0 (Real — whole-number literals may be stored as Int or Real by the evaluator)
     let count_id = ValueCellId::new("TripleImpl", "count");
-    let count_val = result.values.get(&count_id)
+    let count_val = result
+        .values
+        .get(&count_id)
         .unwrap_or_else(|| panic!("TripleImpl.count not found"));
     match count_val {
         reify_types::Value::Real(v) => {
@@ -367,11 +401,7 @@ fn multi_trait_impl_three_independent() {
         }
         reify_types::Value::Int(v) => {
             // The evaluator may store whole-number Real literals as Int
-            assert_eq!(
-                *v, 5,
-                "TripleImpl.count should be 5, got {}",
-                v
-            );
+            assert_eq!(*v, 5, "TripleImpl.count should be 5, got {}", v);
         }
         reify_types::Value::Scalar { si_value, .. } => {
             // dimensionless scalar also acceptable
@@ -381,12 +411,17 @@ fn multi_trait_impl_three_independent() {
                 si_value
             );
         }
-        other => panic!("TripleImpl.count should be Real, Int, or dimensionless Scalar, got {:?}", other),
+        other => panic!(
+            "TripleImpl.count should be Real, Int, or dimensionless Scalar, got {:?}",
+            other
+        ),
     }
 
     // All constraints from all 3 traits + structure should be satisfied
     let check_result = engine.check(&compiled);
-    let triple_constraints: Vec<_> = check_result.constraint_results.iter()
+    let triple_constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
         .filter(|e| e.id.entity == "TripleImpl")
         .collect();
 
@@ -422,9 +457,15 @@ fn diamond_with_extra_constraints() {
     let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
         .expect("trait_hierarchy.ri should exist");
     let parsed = reify_syntax::parse(&source, ModulePath::single("trait_hierarchy"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled.diagnostics.iter()
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
@@ -435,7 +476,9 @@ fn diamond_with_extra_constraints() {
 
     // x = 10mm = 0.01 m SI
     let x_id = ValueCellId::new("ConstrainedDiamond", "x");
-    let x_val = result.values.get(&x_id)
+    let x_val = result
+        .values
+        .get(&x_id)
         .unwrap_or_else(|| panic!("ConstrainedDiamond.x not found"));
     match x_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -450,7 +493,9 @@ fn diamond_with_extra_constraints() {
 
     // l_val = 5mm = 0.005 m SI
     let l_id = ValueCellId::new("ConstrainedDiamond", "l_val");
-    let l_val = result.values.get(&l_id)
+    let l_val = result
+        .values
+        .get(&l_id)
         .unwrap_or_else(|| panic!("ConstrainedDiamond.l_val not found"));
     match l_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -465,7 +510,9 @@ fn diamond_with_extra_constraints() {
 
     // r_val = 5mm = 0.005 m SI
     let r_id = ValueCellId::new("ConstrainedDiamond", "r_val");
-    let r_val = result.values.get(&r_id)
+    let r_val = result
+        .values
+        .get(&r_id)
         .unwrap_or_else(|| panic!("ConstrainedDiamond.r_val not found"));
     match r_val {
         reify_types::Value::Scalar { si_value, .. } => {
@@ -481,7 +528,9 @@ fn diamond_with_extra_constraints() {
     // All constraints from BaseC (deduplicated), LeftC, RightC, and ConstrainedDiamond itself
     // Expected at minimum: x>0mm, x<1000mm, l_val>0mm, r_val>0mm, x<100mm = 5 constraints
     let check_result = engine.check(&compiled);
-    let cd_constraints: Vec<_> = check_result.constraint_results.iter()
+    let cd_constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
         .filter(|e| e.id.entity == "ConstrainedDiamond")
         .collect();
 

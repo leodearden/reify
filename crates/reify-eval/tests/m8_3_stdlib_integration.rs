@@ -21,18 +21,12 @@ const PATH_MATERIALS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/m8_materials.ri"
 );
-const PATH_PORTS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m8_ports.ri"
-);
+const PATH_PORTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m8_ports.ri");
 const PATH_TOLERANCING: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/m8_tolerancing.ri"
 );
-const PATH_UNITS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m8_units.ri"
-);
+const PATH_UNITS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m8_units.ri");
 
 // ── Expected SI constants for imperial units (from imperial_units_tests.rs) ──
 
@@ -48,8 +42,8 @@ const LB_SI: f64 = 0.45359237;
 /// `SimpleConstraintChecker`, and assert no eval errors.
 /// Returns the full `EvalResult` for per-test assertions.
 fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+    let source =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
 
     let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
     assert!(
@@ -94,8 +88,8 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 /// Panics if there are any Severity::Error diagnostics.
 /// Returns the CompiledModule for compile-level assertions.
 fn compiled_ri(path: &str) -> CompiledModule {
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+    let source =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
     parse_and_compile_with_stdlib(&source)
 }
 
@@ -154,7 +148,10 @@ fn materials_bracket_mass_computed() {
     let density_f64 = match density_val {
         Value::Real(v) => *v,
         Value::Int(i) => *i as f64,
-        other => panic!("AluminumBracket.density should be Real or Int, got {:?}", other),
+        other => panic!(
+            "AluminumBracket.density should be Real or Int, got {:?}",
+            other
+        ),
     };
     assert!(
         (density_f64 - 2700.0).abs() < 1e-9,
@@ -243,7 +240,10 @@ fn ports_rotary_connection_compiles() {
     );
 
     assert!(
-        drivetrain.connections.iter().any(|c| c.left_port == "motor.shaft" && c.right_port == "gearbox.input"),
+        drivetrain
+            .connections
+            .iter()
+            .any(|c| c.left_port == "motor.shaft" && c.right_port == "gearbox.input"),
         "DriveTrain should have a connection from motor.shaft to gearbox.input"
     );
 
@@ -330,7 +330,10 @@ fn ports_threaded_m8_port_values() {
         .expect("thread_major_dia should have a default_expr");
 
     match &major_expr.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
             assert!(
                 (si_value - 0.008).abs() < 1e-9,
                 "thread_major_dia should be 0.008m (8mm), got {}",
@@ -361,7 +364,10 @@ fn ports_threaded_m8_port_values() {
         .expect("thread_pitch should have a default_expr");
 
     match &pitch_expr.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
             assert!(
                 (si_value - 0.00125).abs() < 1e-9,
                 "thread_pitch should be 0.00125m (1.25mm), got {}",
@@ -411,7 +417,10 @@ fn tolerancing_position_mmc_flatness_ra() {
         .get(&pos_tol_id)
         .unwrap_or_else(|| panic!("Flange.pos.tolerance_value not found in eval result"));
     match pos_tol_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.0001).abs() < 1e-9,
                 "Flange.pos.tolerance_value should be 0.0001m (0.1mm), got {}",
@@ -456,7 +465,10 @@ fn tolerancing_position_mmc_flatness_ra() {
         .get(&flat_tol_id)
         .unwrap_or_else(|| panic!("Flange.flat.tolerance_value not found"));
     match flat_tol_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.00005).abs() < 1e-12,
                 "Flange.flat.tolerance_value should be 0.00005m (0.05mm), got {}",
@@ -501,7 +513,10 @@ fn tolerancing_position_mmc_flatness_ra() {
         .get(&finish_val_id)
         .unwrap_or_else(|| panic!("Flange.finish.value not found"));
     match finish_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 1.6e-6).abs() < 1e-15,
                 "Flange.finish.value should be 1.6e-6m (1.6μm), got {}",
@@ -541,7 +556,10 @@ fn tolerancing_dimensional_bounds_computed() {
         .get(&ul_id)
         .unwrap_or_else(|| panic!("Flange.dim_tol.upper_limit not found in eval result"));
     match ul_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.0501).abs() < 1e-9,
                 "Flange.dim_tol.upper_limit should be ≈0.0501m, got {}",
@@ -566,7 +584,10 @@ fn tolerancing_dimensional_bounds_computed() {
         .get(&ll_id)
         .unwrap_or_else(|| panic!("Flange.dim_tol.lower_limit not found in eval result"));
     match ll_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.0499).abs() < 1e-9,
                 "Flange.dim_tol.lower_limit should be ≈0.0499m, got {}",
@@ -591,7 +612,10 @@ fn tolerancing_dimensional_bounds_computed() {
         .get(&tb_id)
         .unwrap_or_else(|| panic!("Flange.dim_tol.tolerance_band not found in eval result"));
     match tb_val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.0002).abs() < 1e-9,
                 "Flange.dim_tol.tolerance_band should be ≈0.0002m (0.2mm), got {}",
@@ -640,11 +664,17 @@ fn assert_scalar_cell(
         .get(&id)
         .unwrap_or_else(|| panic!("{}.{} not found in eval result", entity, member));
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - expected_si).abs() < tolerance,
                 "{}.{}: expected si_value ≈{}, got {}",
-                entity, member, expected_si, si_value
+                entity,
+                member,
+                expected_si,
+                si_value
             );
             assert_eq!(
                 *dimension, expected_dim,
@@ -679,22 +709,22 @@ fn units_si_prefix_coverage() {
     let t = DimensionVector::TIME;
 
     // ── Length ────────────────────────────────────────────────────────────────
-    assert_scalar_cell(&result, e, "len_nm", 1e-9,    1e-20, l);
-    assert_scalar_cell(&result, e, "len_um", 1e-6,    1e-17, l);
-    assert_scalar_cell(&result, e, "len_mm", 1e-3,    1e-14, l);
-    assert_scalar_cell(&result, e, "len_km", 1e3,     1e-6,  l);
-    assert_scalar_cell(&result, e, "len_Mm", 1e6,     1e-3,  l);
+    assert_scalar_cell(&result, e, "len_nm", 1e-9, 1e-20, l);
+    assert_scalar_cell(&result, e, "len_um", 1e-6, 1e-17, l);
+    assert_scalar_cell(&result, e, "len_mm", 1e-3, 1e-14, l);
+    assert_scalar_cell(&result, e, "len_km", 1e3, 1e-6, l);
+    assert_scalar_cell(&result, e, "len_Mm", 1e6, 1e-3, l);
 
     // ── Mass ──────────────────────────────────────────────────────────────────
-    assert_scalar_cell(&result, e, "mass_mg", 1e-6,   1e-17, m);
-    assert_scalar_cell(&result, e, "mass_kg", 1.0,    1e-9,  m);
-    assert_scalar_cell(&result, e, "mass_Mg", 1e3,    1e-6,  m);
+    assert_scalar_cell(&result, e, "mass_mg", 1e-6, 1e-17, m);
+    assert_scalar_cell(&result, e, "mass_kg", 1.0, 1e-9, m);
+    assert_scalar_cell(&result, e, "mass_Mg", 1e3, 1e-6, m);
 
     // ── Time ──────────────────────────────────────────────────────────────────
-    assert_scalar_cell(&result, e, "time_ns", 1e-9,   1e-20, t);
-    assert_scalar_cell(&result, e, "time_us", 1e-6,   1e-17, t);
-    assert_scalar_cell(&result, e, "time_ms", 1e-3,   1e-14, t);
-    assert_scalar_cell(&result, e, "time_ks", 1e3,    1e-6,  t);
+    assert_scalar_cell(&result, e, "time_ns", 1e-9, 1e-20, t);
+    assert_scalar_cell(&result, e, "time_us", 1e-6, 1e-17, t);
+    assert_scalar_cell(&result, e, "time_ms", 1e-3, 1e-14, t);
+    assert_scalar_cell(&result, e, "time_ks", 1e3, 1e-6, t);
 }
 
 // ── step-17: units_imperial_conversions ──────────────────────────────────────
@@ -722,21 +752,21 @@ fn units_imperial_conversions() {
     let v = DimensionVector::VOLUME;
 
     // ── Length ────────────────────────────────────────────────────────────────
-    assert_scalar_cell(&result, e, "len_in",  0.0254,        1e-13, l);
-    assert_scalar_cell(&result, e, "len_ft",  0.3048,        1e-12, l);
-    assert_scalar_cell(&result, e, "len_yd",  0.9144,        1e-12, l);
+    assert_scalar_cell(&result, e, "len_in", 0.0254, 1e-13, l);
+    assert_scalar_cell(&result, e, "len_ft", 0.3048, 1e-12, l);
+    assert_scalar_cell(&result, e, "len_yd", 0.9144, 1e-12, l);
 
     // ── Mass ──────────────────────────────────────────────────────────────────
-    assert_scalar_cell(&result, e, "mass_lb", LB_SI,         1e-12, m);
+    assert_scalar_cell(&result, e, "mass_lb", LB_SI, 1e-12, m);
 
     // ── Force ─────────────────────────────────────────────────────────────────
-    assert_scalar_cell(&result, e, "force_lbf", LBF_SI,      1e-10, f);
+    assert_scalar_cell(&result, e, "force_lbf", LBF_SI, 1e-10, f);
 
     // ── Pressure ──────────────────────────────────────────────────────────────
-    assert_scalar_cell(&result, e, "pressure_psi", PSI_SI,   1e-6,  p);
+    assert_scalar_cell(&result, e, "pressure_psi", PSI_SI, 1e-6, p);
 
     // ── Volume ────────────────────────────────────────────────────────────────
-    assert_scalar_cell(&result, e, "volume_gal", GAL_SI,     1e-13, v);
+    assert_scalar_cell(&result, e, "volume_gal", GAL_SI, 1e-13, v);
 }
 
 // ── step-19: units_cross_system_arithmetic ───────────────────────────────────
@@ -761,16 +791,20 @@ fn units_cross_system_arithmetic() {
 
     // ── mixed_len: 1in + 25.4mm = 0.0508 m (LENGTH) ──────────────────────────
     assert_scalar_cell(
-        &result, e, "mixed_len",
+        &result,
+        e,
+        "mixed_len",
         0.0508,
         1e-12,
         DimensionVector::LENGTH,
     );
 
     // ── energy_imperial: 2lbf * 3mm = 2 * LBF_SI * 0.003 J (ENERGY) ─────────
-    let expected_energy = 2.0 * LBF_SI * 0.003;  // ≈ 0.026689329691563 J
+    let expected_energy = 2.0 * LBF_SI * 0.003; // ≈ 0.026689329691563 J
     assert_scalar_cell(
-        &result, e, "energy_imperial",
+        &result,
+        e,
+        "energy_imperial",
         expected_energy,
         1e-11,
         DimensionVector::ENERGY,
@@ -778,11 +812,11 @@ fn units_cross_system_arithmetic() {
 
     // ── pressure_ratio: (1psi) / (1Pa) = dimensionless ≈ 6894.757 ────────────
     assert_scalar_cell(
-        &result, e, "pressure_ratio",
+        &result,
+        e,
+        "pressure_ratio",
         PSI_SI,
         1e-6,
         DimensionVector::DIMENSIONLESS,
     );
 }
-
-

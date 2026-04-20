@@ -19,7 +19,9 @@ use std::fs;
 use std::sync::OnceLock;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{Diagnostic, DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_types::{
+    Diagnostic, DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId,
+};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -96,7 +98,10 @@ fn eval_and_check_ri() -> reify_eval::CheckResult {
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&compiled);
-    assert_no_errors(&result.diagnostics, "integration_corner_cases.ri eval/check");
+    assert_no_errors(
+        &result.diagnostics,
+        "integration_corner_cases.ri eval/check",
+    );
     result
 }
 
@@ -107,12 +112,7 @@ fn assert_no_errors(diagnostics: &[Diagnostic], context: &str) {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(
-        errors.is_empty(),
-        "errors in {}: {:?}",
-        context,
-        errors
-    );
+    assert!(errors.is_empty(), "errors in {}: {:?}", context, errors);
 }
 
 // ── step-1: smoke test ────────────────────────────────────────────────────────
@@ -536,7 +536,10 @@ fn auto_free_multiple_solutions() {
         "AutoFreeMulti should have at least 2 Satisfied constraints (constrained(x) and constrained(y)), got {} satisfied of {}: {:?}",
         satisfied_count,
         auto_constraints.len(),
-        auto_constraints.iter().map(|e| (&e.id, &e.satisfaction)).collect::<Vec<_>>()
+        auto_constraints
+            .iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
 }
 

@@ -20,7 +20,9 @@
 //! `crates/reify-compiler/src/traits.rs` (resolved_queries building loop).
 
 use reify_eval::Engine;
-use reify_test_support::{make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
+};
 use reify_types::{ModulePath, OptimizationObjective, Satisfaction, Severity};
 
 const EXAMPLE_PATH: &str = concat!(
@@ -153,7 +155,10 @@ purpose mfg_ready(subject : Structure) {
         constraint_count(&engine),
         "deactivating an inactive purpose must not change constraint count"
     );
-    assert!(!engine.is_purpose_active("mfg_ready"), "purpose should not be active");
+    assert!(
+        !engine.is_purpose_active("mfg_ready"),
+        "purpose should not be active"
+    );
 }
 
 // ── §2: eval() clears stale purpose state (migrated from purpose_eval.rs) ────
@@ -291,7 +296,11 @@ purpose check_params(subject : Widget) {
 }
 "#;
     let compiled = parse_and_compile(source);
-    assert_eq!(compiled.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
     let purpose = &compiled.compiled_purposes[0];
     assert_eq!(purpose.name, "check_params");
     assert_eq!(purpose.params[0].entity_kind, "Widget");
@@ -327,10 +336,17 @@ purpose check_params(subject : Widget) {
         "resolved_ids should contain only params (width, height), not lets (area): {:?}",
         query.resolved_ids
     );
-    let members: Vec<&str> = query.resolved_ids.iter().map(|id| id.member.as_str()).collect();
+    let members: Vec<&str> = query
+        .resolved_ids
+        .iter()
+        .map(|id| id.member.as_str())
+        .collect();
     assert!(members.contains(&"width"), "should contain 'width'");
     assert!(members.contains(&"height"), "should contain 'height'");
-    assert!(!members.contains(&"area"), "must NOT contain 'area' (a let binding)");
+    assert!(
+        !members.contains(&"area"),
+        "must NOT contain 'area' (a let binding)"
+    );
 }
 
 #[test]
@@ -346,7 +362,11 @@ purpose check_params(subject : Widget) {
 }
 "#;
     let compiled = parse_and_compile(source);
-    assert_eq!(compiled.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
     let query = &compiled.compiled_purposes[0].resolved_queries[0];
     // Both Param and Auto value cells must be included (traits.rs:342)
     assert_eq!(
@@ -355,7 +375,11 @@ purpose check_params(subject : Widget) {
         "both explicit param and auto param should be included: {:?}",
         query.resolved_ids
     );
-    let members: Vec<&str> = query.resolved_ids.iter().map(|id| id.member.as_str()).collect();
+    let members: Vec<&str> = query
+        .resolved_ids
+        .iter()
+        .map(|id| id.member.as_str())
+        .collect();
     assert!(members.contains(&"x"), "should contain 'x'");
     assert!(members.contains(&"y"), "should contain 'y'");
 }
@@ -410,7 +434,10 @@ fn purpose_without_objective_keeps_active_objectives_empty() {
     let compiled = parse_and_compile(SIMPLE_MFG_SRC);
     let mut engine = make_engine();
     engine.eval(&compiled);
-    assert!(engine.active_objectives().is_empty(), "objectives should be empty before activation");
+    assert!(
+        engine.active_objectives().is_empty(),
+        "objectives should be empty before activation"
+    );
     engine.activate_purpose("mfg_ready", "Bracket");
     assert!(
         engine.active_objectives().is_empty(),
@@ -438,11 +465,22 @@ purpose strong(subject : Structure) {
     engine.eval(&compiled);
     engine.activate_purpose("lightweight", "Bracket");
     engine.activate_purpose("strong", "Bracket");
-    assert_eq!(engine.active_objectives().len(), 2, "both purposes: 2 objectives");
+    assert_eq!(
+        engine.active_objectives().len(),
+        2,
+        "both purposes: 2 objectives"
+    );
     engine.deactivate_purpose("lightweight");
-    assert_eq!(engine.active_objectives().len(), 1, "after deactivating lightweight: 1 objective");
+    assert_eq!(
+        engine.active_objectives().len(),
+        1,
+        "after deactivating lightweight: 1 objective"
+    );
     engine.deactivate_purpose("strong");
-    assert!(engine.active_objectives().is_empty(), "after deactivating both: 0 objectives");
+    assert!(
+        engine.active_objectives().is_empty(),
+        "after deactivating both: 0 objectives"
+    );
 }
 
 // ── §6: Edge cases ────────────────────────────────────────────────────────────
@@ -460,7 +498,11 @@ structure Bracket {
     engine.eval(&compiled);
     let before = constraint_count(&engine);
     engine.activate_purpose("does_not_exist", "Bracket"); // silently ignored (lib.rs:423)
-    assert_eq!(before, constraint_count(&engine), "unknown purpose should not change constraint count");
+    assert_eq!(
+        before,
+        constraint_count(&engine),
+        "unknown purpose should not change constraint count"
+    );
     assert!(
         !engine.is_purpose_active("does_not_exist"),
         "unknown purpose should not register as active"
@@ -508,22 +550,44 @@ fn m10_purpose_activation_example_parses_and_compiles() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/m10_purpose_activation.ri should exist");
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = parse_and_compile_with_stdlib(&source);
     let bracket = compiled
         .templates
         .iter()
         .find(|t| t.name == "Bracket")
         .expect("should have a Bracket template");
-    assert!(!bracket.value_cells.is_empty(), "Bracket should have value cells");
+    assert!(
+        !bracket.value_cells.is_empty(),
+        "Bracket should have value cells"
+    );
     assert!(
         compiled.compiled_purposes.len() >= 5,
         "expected >=5 purposes (ok_basic, mfg_ready, lightweight, strong, dimensionally_valid), got {}",
         compiled.compiled_purposes.len()
     );
-    let names: Vec<&str> = compiled.compiled_purposes.iter().map(|p| p.name.as_str()).collect();
-    for name in &["ok_basic", "mfg_ready", "lightweight", "strong", "dimensionally_valid"] {
-        assert!(names.contains(name), "expected purpose '{}' in {:?}", name, names);
+    let names: Vec<&str> = compiled
+        .compiled_purposes
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    for name in &[
+        "ok_basic",
+        "mfg_ready",
+        "lightweight",
+        "strong",
+        "dimensionally_valid",
+    ] {
+        assert!(
+            names.contains(name),
+            "expected purpose '{}' in {:?}",
+            name,
+            names
+        );
     }
 }
 

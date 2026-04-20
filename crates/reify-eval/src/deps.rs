@@ -430,7 +430,11 @@ mod tests {
             Type::Real,
         );
         let trace = extract_dependency_trace(&expr);
-        assert_eq!(trace.reads.len(), 2, "BinOp of two ValueRefs should yield 2 reads");
+        assert_eq!(
+            trace.reads.len(),
+            2,
+            "BinOp of two ValueRefs should yield 2 reads"
+        );
         assert!(trace.reads.contains(&a), "reads should contain 'x'");
         assert!(trace.reads.contains(&b), "reads should contain 'y'");
     }
@@ -511,7 +515,10 @@ mod tests {
         );
         // Pin traversal order: condition → then_branch → else_branch
         // (matches collect_value_refs_inner's Conditional arm in reify-types/src/expr.rs)
-        assert_eq!(trace.reads[0], flag, "reads[0] should be the condition (flag)");
+        assert_eq!(
+            trace.reads[0], flag,
+            "reads[0] should be the condition (flag)"
+        );
         assert_eq!(trace.reads[1], x, "reads[1] should be the then-branch (x)");
         assert_eq!(trace.reads[2], x, "reads[2] should be the else-branch (x)");
     }
@@ -540,9 +547,18 @@ mod tests {
             3,
             "Conditional with 3 distinct ValueRefs should yield 3 reads"
         );
-        assert!(trace.reads.contains(&cond_cell), "reads should contain condition cell");
-        assert!(trace.reads.contains(&then_cell), "reads should contain then-branch cell");
-        assert!(trace.reads.contains(&else_cell), "reads should contain else-branch cell");
+        assert!(
+            trace.reads.contains(&cond_cell),
+            "reads should contain condition cell"
+        );
+        assert!(
+            trace.reads.contains(&then_cell),
+            "reads should contain then-branch cell"
+        );
+        assert!(
+            trace.reads.contains(&else_cell),
+            "reads should contain else-branch cell"
+        );
     }
 
     /// Step 3: Verify extract_dependency_trace returns empty reads for a Literal expression.
@@ -701,7 +717,12 @@ mod extract_value_deps_tests {
             CompiledExpr::value_ref(b.clone(), Type::Real),
             Type::Real,
         );
-        let expr = CompiledExpr::binop(BinOp::Mul, inner, CompiledExpr::value_ref(c.clone(), Type::Real), Type::Real);
+        let expr = CompiledExpr::binop(
+            BinOp::Mul,
+            inner,
+            CompiledExpr::value_ref(c.clone(), Type::Real),
+            Type::Real,
+        );
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 3, "Nested BinOp should have 3 deps");
         assert!(deps.contains(&a));
@@ -713,7 +734,11 @@ mod extract_value_deps_tests {
     #[test]
     fn extract_value_deps_unop_collects_operand() {
         let x = ValueCellId::new("A", "x");
-        let expr = CompiledExpr::unop(UnOp::Neg, CompiledExpr::value_ref(x.clone(), Type::Real), Type::Real);
+        let expr = CompiledExpr::unop(
+            UnOp::Neg,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            Type::Real,
+        );
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 1, "UnOp should have 1 dep");
         assert!(deps.contains(&x));
@@ -1043,32 +1068,28 @@ mod dependency_map_tests {
         let order = dep_map.topological_order();
         let e = "Bracket";
 
-        let width_idx = order.iter().position(|c| c == &ValueCellId::new(e, "width"));
-        let height_idx = order.iter().position(|c| c == &ValueCellId::new(e, "height"));
-        let thickness_idx = order.iter().position(|c| c == &ValueCellId::new(e, "thickness"));
-        let volume_idx = order.iter().position(|c| c == &ValueCellId::new(e, "volume"));
+        let width_idx = order
+            .iter()
+            .position(|c| c == &ValueCellId::new(e, "width"));
+        let height_idx = order
+            .iter()
+            .position(|c| c == &ValueCellId::new(e, "height"));
+        let thickness_idx = order
+            .iter()
+            .position(|c| c == &ValueCellId::new(e, "thickness"));
+        let volume_idx = order
+            .iter()
+            .position(|c| c == &ValueCellId::new(e, "volume"));
 
         // Params should come before volume in topological order
         if let (Some(w), Some(v)) = (width_idx, volume_idx) {
-            assert!(
-                w < v,
-                "width ({}) should come before volume ({})",
-                w, v
-            );
+            assert!(w < v, "width ({}) should come before volume ({})", w, v);
         }
         if let (Some(h), Some(v)) = (height_idx, volume_idx) {
-            assert!(
-                h < v,
-                "height ({}) should come before volume ({})",
-                h, v
-            );
+            assert!(h < v, "height ({}) should come before volume ({})", h, v);
         }
         if let (Some(t), Some(v)) = (thickness_idx, volume_idx) {
-            assert!(
-                t < v,
-                "thickness ({}) should come before volume ({})",
-                t, v
-            );
+            assert!(t < v, "thickness ({}) should come before volume ({})", t, v);
         }
     }
 
@@ -1117,7 +1138,10 @@ mod dependency_map_tests {
                     assert!(
                         di < i,
                         "cell {:?} at {} has dep {:?} at {} (should be before)",
-                        cell, i, dep, di
+                        cell,
+                        i,
+                        dep,
+                        di
                     );
                 }
             }

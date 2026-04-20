@@ -22,12 +22,7 @@ const EXAMPLE_PATH: &str = concat!(
 // Component.density uses a Real/Scalar union and is left inline.
 
 #[track_caller]
-fn assert_scalar_si(
-    result: &reify_eval::EvalResult,
-    entity: &str,
-    field: &str,
-    expected_si: f64,
-) {
+fn assert_scalar_si(result: &reify_eval::EvalResult, entity: &str, field: &str, expected_si: f64) {
     let id = ValueCellId::new(entity, field);
     let val = result
         .values
@@ -44,10 +39,7 @@ fn assert_scalar_si(
                 si_value
             );
         }
-        other => panic!(
-            "expected Scalar for {}.{}, got {:?}",
-            entity, field, other
-        ),
+        other => panic!("expected Scalar for {}.{}, got {:?}", entity, field, other),
     }
 }
 

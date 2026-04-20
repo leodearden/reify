@@ -80,10 +80,17 @@ fn zero_extrude_distance() {
     // A regression that drops the warning on its way out would not be caught
     // by the kernel-ops check above.
     assert!(
-        result.diagnostics.iter().any(|d| matches!(d.severity, Severity::Warning)
-            && d.message.contains("extrude dropped")),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, Severity::Warning)
+                && d.message.contains("extrude dropped")),
         "expected a Warning containing 'extrude dropped' in BuildResult.diagnostics, got: {:?}",
-        result.diagnostics.iter().map(|d| (d.severity, &d.message)).collect::<Vec<_>>()
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -98,8 +105,7 @@ fn zero_extrude_distance() {
 fn revolve_720_degrees() {
     let e = "TestRevolve720";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -157,7 +163,10 @@ fn revolve_720_degrees() {
                 angle_rad
             );
         }
-        other => panic!("expected GeometryOp::Revolve at op index 1, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Revolve at op index 1, got {:?}",
+            other
+        ),
     }
 }
 
@@ -195,7 +204,7 @@ fn negative_extrude_distance_is_valid() {
         kind: SweepKind::Extrude,
         profiles: vec![GeomRef::Step(0)],
         args: vec![
-            ("profile".into(), mm_literal(5.0)), // placeholder expr
+            ("profile".into(), mm_literal(5.0)),    // placeholder expr
             ("distance".into(), mm_literal(-10.0)), // NEGATIVE — reverse direction
         ],
     };
@@ -232,7 +241,9 @@ fn negative_extrude_distance_is_valid() {
                 "Extrude profile should be handle from op 0 ({:?}), got {:?}",
                 profile_handle, profile
             );
-            let dist_si = distance.as_f64().expect("distance should be a numeric value");
+            let dist_si = distance
+                .as_f64()
+                .expect("distance should be a numeric value");
             // Sign must be preserved — negative means reverse direction, not normalized to abs.
             assert!(
                 dist_si < 0.0,
@@ -245,7 +256,10 @@ fn negative_extrude_distance_is_valid() {
                 dist_si
             );
         }
-        other => panic!("expected GeometryOp::Extrude at op index 1, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Extrude at op index 1, got {:?}",
+            other
+        ),
     }
 }
 
@@ -271,8 +285,7 @@ fn negative_extrude_distance_is_valid() {
 fn negative_revolve_angle_is_valid() {
     let e = "TestNegRevolve";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -336,7 +349,10 @@ fn negative_revolve_angle_is_valid() {
                 angle_rad
             );
         }
-        other => panic!("expected GeometryOp::Revolve at op index 1, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Revolve at op index 1, got {:?}",
+            other
+        ),
     }
 }
 

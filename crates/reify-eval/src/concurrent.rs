@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_types::{
-    AutoParam, CompiledFunction, ContentHash, DeterminacyState, Diagnostic,
-    OptimizationObjective, PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance,
-    SolveResult, Value, ValueCellId, ValueMap, VersionId,
+    AutoParam, CompiledFunction, ContentHash, DeterminacyState, Diagnostic, OptimizationObjective,
+    PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
+    ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -236,9 +236,7 @@ impl Engine {
                 trace,
             );
 
-            let duration = node_result
-                .eval_duration
-                .unwrap_or_else(|| start.elapsed());
+            let duration = node_result.eval_duration.unwrap_or_else(|| start.elapsed());
             self.journal.record(EvalEvent {
                 timestamp: Instant::now(),
                 node_id: node_result.node.clone(),

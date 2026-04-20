@@ -18,9 +18,8 @@ fn run_tests_on_module_with_no_tests_returns_empty_vec() {
 // Step 11: single passing test
 #[test]
 fn run_tests_with_single_passing_structure_returns_pass() {
-    let compiled = parse_and_compile(
-        "@test structure TestA { param x : Length = 5mm\n constraint x > 0mm }",
-    );
+    let compiled =
+        parse_and_compile("@test structure TestA { param x : Length = 5mm\n constraint x > 0mm }");
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1, "expected 1 test result");
     assert_eq!(results[0].name, "TestA");
@@ -41,9 +40,8 @@ fn run_tests_with_single_passing_structure_returns_pass() {
 // Step 12: single failing (violated) test
 #[test]
 fn run_tests_with_single_violated_structure_returns_fail() {
-    let compiled = parse_and_compile(
-        "@test structure TestA { param x : Length = -3mm\n constraint x > 0mm }",
-    );
+    let compiled =
+        parse_and_compile("@test structure TestA { param x : Length = -3mm\n constraint x > 0mm }");
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].name, "TestA");
@@ -60,9 +58,8 @@ fn run_tests_with_single_violated_structure_returns_fail() {
 // Step 13: indeterminate test using MockConstraintChecker
 #[test]
 fn run_tests_with_indeterminate_constraint_returns_indeterminate() {
-    let compiled = parse_and_compile(
-        "@test structure TestA { param x : Length = 1mm\n constraint x > 0mm }",
-    );
+    let compiled =
+        parse_and_compile("@test structure TestA { param x : Length = 1mm\n constraint x > 0mm }");
     let results = run_tests(&compiled, || {
         Box::new(MockConstraintChecker::new().with_default(Satisfaction::Indeterminate))
     });
@@ -81,8 +78,10 @@ fn run_tests_with_multiple_tests_returns_mixed_results() {
         2,
         "expected 2 test results (TestPass, TestFail); Prod must be excluded"
     );
-    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> =
-        results.iter().map(|r| (r.name.as_str(), r.status)).collect();
+    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> = results
+        .iter()
+        .map(|r| (r.name.as_str(), r.status))
+        .collect();
     assert_eq!(by_name.get("TestPass"), Some(&reify_eval::TestStatus::Pass));
     assert_eq!(by_name.get("TestFail"), Some(&reify_eval::TestStatus::Fail));
     assert!(
@@ -121,8 +120,10 @@ fn run_tests_isolates_engine_state_between_tests() {
     let compiled = parse_and_compile(source);
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 2);
-    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> =
-        results.iter().map(|r| (r.name.as_str(), r.status)).collect();
+    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> = results
+        .iter()
+        .map(|r| (r.name.as_str(), r.status))
+        .collect();
     assert_eq!(by_name.get("TestFail"), Some(&reify_eval::TestStatus::Fail));
     assert_eq!(
         by_name.get("TestPass"),

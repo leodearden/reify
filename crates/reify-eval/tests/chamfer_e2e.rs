@@ -87,7 +87,11 @@ fn chamfer_compiler_accepts_two_args() {
     let result = chamfer(target, dist)
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ch2"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     assert_eq!(
@@ -142,7 +146,12 @@ fn chamfer_through_full_eval_pipeline() {
     ];
 
     let (_result, ops) = run_modify_pipeline(ModifyKind::Chamfer, args);
-    assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry operations, got {}",
+        ops.len()
+    );
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
@@ -152,14 +161,19 @@ fn chamfer_through_full_eval_pipeline() {
                 "Chamfer target should be handle from op 0 ({:?}), got {:?}",
                 target_handle, target
             );
-            let dist_si = distance.as_f64().expect("distance should be a numeric value");
+            let dist_si = distance
+                .as_f64()
+                .expect("distance should be a numeric value");
             assert!(
                 (dist_si - 0.003).abs() < 1e-9,
                 "Chamfer distance should be 0.003 m (3 mm SI), got {}",
                 dist_si
             );
         }
-        other => panic!("expected GeometryOp::Chamfer at op index 1, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Chamfer at op index 1, got {:?}",
+            other
+        ),
     }
 }
 
@@ -182,7 +196,12 @@ fn chamfer_modify_only_needs_distance_arg() {
     let args = vec![("distance".to_string(), mm_literal(3.0))];
 
     let (_result, ops) = run_modify_pipeline(ModifyKind::Chamfer, args);
-    assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry operations, got {}",
+        ops.len()
+    );
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
@@ -192,13 +211,18 @@ fn chamfer_modify_only_needs_distance_arg() {
                 "Chamfer target should be handle from op 0 ({:?}), got {:?}",
                 target_handle, target
             );
-            let dist_si = distance.as_f64().expect("distance should be a numeric value");
+            let dist_si = distance
+                .as_f64()
+                .expect("distance should be a numeric value");
             assert!(
                 (dist_si - 0.003).abs() < 1e-9,
                 "Chamfer distance should be 0.003 m (3 mm SI), got {}",
                 dist_si
             );
         }
-        other => panic!("expected GeometryOp::Chamfer at op index 1, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Chamfer at op index 1, got {:?}",
+            other
+        ),
     }
 }

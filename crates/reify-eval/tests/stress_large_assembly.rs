@@ -227,9 +227,12 @@ fn total_mass_computed() {
         .values
         .get(&id)
         .unwrap_or_else(|| panic!("LargeAssembly.total_mass not found in eval result"));
-    let val = total
-        .as_f64()
-        .unwrap_or_else(|| panic!("LargeAssembly.total_mass should be numeric, got {:?}", total));
+    let val = total.as_f64().unwrap_or_else(|| {
+        panic!(
+            "LargeAssembly.total_mass should be numeric, got {:?}",
+            total
+        )
+    });
     assert!(
         val > 0.0,
         "LargeAssembly.total_mass should be > 0, got {}",
@@ -303,7 +306,11 @@ fn eval_full_pipeline_benchmark() {
     let source = std::fs::read_to_string(FIXTURE_PATH)
         .unwrap_or_else(|e| panic!("{} should exist: {}", FIXTURE_PATH, e));
     let parsed = reify_syntax::parse(&source, ModulePath::single("large_assembly"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);

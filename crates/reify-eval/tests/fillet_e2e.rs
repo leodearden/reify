@@ -87,7 +87,11 @@ fn fillet_compiler_accepts_two_args() {
     let result = fillet(target, rad)
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fl2"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     assert_eq!(
@@ -146,7 +150,12 @@ fn fillet_through_full_eval_pipeline() {
     ];
 
     let (_result, ops) = run_modify_pipeline(ModifyKind::Fillet, args);
-    assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry operations, got {}",
+        ops.len()
+    );
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
@@ -186,7 +195,12 @@ fn fillet_modify_only_needs_radius_arg() {
     let args = vec![("radius".to_string(), mm_literal(3.0))];
 
     let (_result, ops) = run_modify_pipeline(ModifyKind::Fillet, args);
-    assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry operations, got {}",
+        ops.len()
+    );
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {

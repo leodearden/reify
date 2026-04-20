@@ -322,10 +322,10 @@ fn eval_meta_access_in_else_members_when_guard_false() {
         .guarded_group(
             guard_expr,
             guard_id.clone(),
-            vec![],                   // members (active when guard=true) — none
-            vec![],                   // constraints
-            vec![mode_label_decl],    // else_members (active when guard=false)
-            vec![],                   // else_constraints
+            vec![],                // members (active when guard=true) — none
+            vec![],                // constraints
+            vec![mode_label_decl], // else_members (active when guard=false)
+            vec![],                // else_constraints
         )
         .build();
 

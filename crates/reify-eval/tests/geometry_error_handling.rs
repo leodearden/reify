@@ -23,10 +23,7 @@ use reify_types::{
 /// Callers that need kernel/checker flexibility receive the raw `CompiledModule`
 /// and wire up their own `Engine` — this helper is intentionally narrow so it
 /// does not need to accept kernel or format parameters.
-fn build_module_with_ops(
-    path: &str,
-    ops: &[CompiledGeometryOp],
-) -> reify_compiler::CompiledModule {
+fn build_module_with_ops(path: &str, ops: &[CompiledGeometryOp]) -> reify_compiler::CompiledModule {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -139,8 +136,7 @@ fn assert_sentinel_invariants(kernel_ops: &[GeometryOpRecord], diagnostics: &[Di
         .filter(|d| d.message.contains("failed to compile geometry operation"))
         .count();
     assert_eq!(
-        compile_failure_count,
-        1,
+        compile_failure_count, 1,
         "expected exactly 1 compile-failure diagnostic from op 1, got {compile_failure_count}"
     );
 }
@@ -879,8 +875,7 @@ fn partial_failure_tessellate_produces_no_mesh() {
 /// (c) exactly 1 compile-failure diagnostic from op 1.
 #[test]
 fn tessellate_sentinel_placeholder_continues_independent_ops() {
-    let (module, checker, kernel, ops_ref) =
-        make_sentinel_module("test_tess_sentinel_continues");
+    let (module, checker, kernel, ops_ref) = make_sentinel_module("test_tess_sentinel_continues");
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
@@ -1191,10 +1186,9 @@ fn build_modify_missing_arg_no_kernel_error() {
         .realization(e, 0, vec![box_op, fillet_op])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_radius"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_radius"))
+        .template(template)
+        .build();
 
     // Standard MockGeometryKernel — if execute() were called for the Fillet it
     // would succeed, but it should never be reached for that op.
@@ -1619,8 +1613,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
 /// The realization is rolled back because had_failure=true.
 #[test]
 fn sentinel_placeholder_continues_independent_ops() {
-    let (module, checker, kernel, ops_ref) =
-        make_sentinel_module("test_sentinel_continues");
+    let (module, checker, kernel, ops_ref) = make_sentinel_module("test_sentinel_continues");
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
@@ -1856,7 +1849,11 @@ fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
     assert!(
         eval_result.diagnostics.is_empty(),
         "eval() produced unexpected diagnostics: {:?}",
-        eval_result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        eval_result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     // Isolate kernel ops for the build_snapshot call: clear any ops that might
     // have been accumulated during eval() so the count assertion below is exact.

@@ -59,10 +59,9 @@ fn sweep_guided_through_full_eval_pipeline() {
         )
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_sweep_guided"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_sweep_guided"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();

@@ -19,7 +19,9 @@ use std::sync::OnceLock;
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{DeterminacyState, DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_types::{
+    DeterminacyState, DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId,
+};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
@@ -236,7 +238,11 @@ fn full_v01_trait_param_values() {
     let result = eval_full();
 
     let mass_id = ValueCellId::new("Assembly", "mass");
-    match result.values.get(&mass_id).expect("Assembly.mass not found") {
+    match result
+        .values
+        .get(&mass_id)
+        .expect("Assembly.mass not found")
+    {
         Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 5.0).abs() < 1e-12,
@@ -247,7 +253,11 @@ fn full_v01_trait_param_values() {
     }
 
     let px_id = ValueCellId::new("Assembly", "position_x");
-    match result.values.get(&px_id).expect("Assembly.position_x not found") {
+    match result
+        .values
+        .get(&px_id)
+        .expect("Assembly.position_x not found")
+    {
         Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.1).abs() < 1e-12,
@@ -258,7 +268,11 @@ fn full_v01_trait_param_values() {
     }
 
     let py_id = ValueCellId::new("Assembly", "position_y");
-    match result.values.get(&py_id).expect("Assembly.position_y not found") {
+    match result
+        .values
+        .get(&py_id)
+        .expect("Assembly.position_y not found")
+    {
         Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.2).abs() < 1e-12,
@@ -274,7 +288,11 @@ fn full_v01_trait_param_values() {
 fn full_v01_custom_unit_value() {
     let result = eval_full();
     let id = ValueCellId::new("Assembly", "clearance");
-    match result.values.get(&id).expect("Assembly.clearance not found") {
+    match result
+        .values
+        .get(&id)
+        .expect("Assembly.clearance not found")
+    {
         Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.0127).abs() < 1e-9,
@@ -292,14 +310,20 @@ fn full_v01_meta_access_values() {
 
     let proj_id = ValueCellId::new("Assembly", "proj_name");
     assert_eq!(
-        result.values.get(&proj_id).expect("Assembly.proj_name not found"),
+        result
+            .values
+            .get(&proj_id)
+            .expect("Assembly.proj_name not found"),
         &Value::String("integration-test".to_string()),
         "Assembly.proj_name should be String(\"integration-test\")"
     );
 
     let ver_id = ValueCellId::new("Assembly", "file_ver");
     assert_eq!(
-        result.values.get(&ver_id).expect("Assembly.file_ver not found"),
+        result
+            .values
+            .get(&ver_id)
+            .expect("Assembly.file_ver not found"),
         &Value::String("0.1".to_string()),
         "Assembly.file_ver should be String(\"0.1\")"
     );
@@ -311,7 +335,10 @@ fn full_v01_match_expression() {
     let result = eval_full();
     let id = ValueCellId::new("Assembly", "grade_code");
     assert_eq!(
-        result.values.get(&id).expect("Assembly.grade_code not found"),
+        result
+            .values
+            .get(&id)
+            .expect("Assembly.grade_code not found"),
         &Value::Int(3),
         "Assembly.grade_code should be Int(3) (Grade.Premium → 3)"
     );
@@ -323,7 +350,10 @@ fn full_v01_collection_operations() {
     let result = eval_full();
     let id = ValueCellId::new("Assembly", "size_count");
     assert_eq!(
-        result.values.get(&id).expect("Assembly.size_count not found"),
+        result
+            .values
+            .get(&id)
+            .expect("Assembly.size_count not found"),
         &Value::Int(5),
         "Assembly.size_count should be Int(5)"
     );
@@ -335,7 +365,11 @@ fn full_v01_function_overloads() {
     let result = eval_full();
 
     let real_id = ValueCellId::new("Assembly", "safe_load_real");
-    match result.values.get(&real_id).expect("Assembly.safe_load_real not found") {
+    match result
+        .values
+        .get(&real_id)
+        .expect("Assembly.safe_load_real not found")
+    {
         Value::Real(v) => {
             assert!(
                 (v - 150.0).abs() < 1.0,
@@ -347,7 +381,10 @@ fn full_v01_function_overloads() {
 
     let int_id = ValueCellId::new("Assembly", "safe_load_int");
     assert_eq!(
-        result.values.get(&int_id).expect("Assembly.safe_load_int not found"),
+        result
+            .values
+            .get(&int_id)
+            .expect("Assembly.safe_load_int not found"),
         &Value::Int(200),
         "Assembly.safe_load_int should be Int(200)"
     );
@@ -358,7 +395,10 @@ fn full_v01_function_overloads() {
 fn full_v01_complex_binding() {
     let result = eval_full();
     let id = ValueCellId::new("Assembly", "impedance");
-    let v = result.values.get(&id).expect("Assembly.impedance not found");
+    let v = result
+        .values
+        .get(&id)
+        .expect("Assembly.impedance not found");
     assert!(
         !matches!(v, Value::Undef),
         "Assembly.impedance should not be Undef"
@@ -375,7 +415,10 @@ fn full_v01_if_then_else() {
     let result = eval_full();
     let id = ValueCellId::new("Assembly", "grade_label");
     assert_eq!(
-        result.values.get(&id).expect("Assembly.grade_label not found"),
+        result
+            .values
+            .get(&id)
+            .expect("Assembly.grade_label not found"),
         &Value::String("premium".to_string()),
         "Assembly.grade_label should be String(\"premium\")"
     );
@@ -388,14 +431,20 @@ fn full_v01_boolean_logic() {
 
     let hok_id = ValueCellId::new("Assembly", "height_ok");
     assert_eq!(
-        result.values.get(&hok_id).expect("Assembly.height_ok not found"),
+        result
+            .values
+            .get(&hok_id)
+            .expect("Assembly.height_ok not found"),
         &Value::Bool(true),
         "Assembly.height_ok should be Bool(true)"
     );
 
     let mv_id = ValueCellId::new("Assembly", "mass_valid");
     assert_eq!(
-        result.values.get(&mv_id).expect("Assembly.mass_valid not found"),
+        result
+            .values
+            .get(&mv_id)
+            .expect("Assembly.mass_valid not found"),
         &Value::Bool(true),
         "Assembly.mass_valid should be Bool(true)"
     );
@@ -407,14 +456,20 @@ fn full_v01_some_none() {
     let result = eval_full();
 
     let some_id = ValueCellId::new("Assembly", "maybe_load");
-    let some_val = result.values.get(&some_id).expect("Assembly.maybe_load not found");
+    let some_val = result
+        .values
+        .get(&some_id)
+        .expect("Assembly.maybe_load not found");
     assert!(
         matches!(some_val, Value::Option(Some(_))),
         "Assembly.maybe_load should be Value::Option(Some(_)), got {some_val:?}"
     );
 
     let none_id = ValueCellId::new("Assembly", "no_load");
-    let none_val = result.values.get(&none_id).expect("Assembly.no_load not found");
+    let none_val = result
+        .values
+        .get(&none_id)
+        .expect("Assembly.no_load not found");
     assert!(
         matches!(none_val, Value::Option(None)),
         "Assembly.no_load should be Value::Option(None), got {none_val:?}"
@@ -471,7 +526,10 @@ fn full_v01_field_sample_gradient() {
     };
 
     let temp_id = ValueCellId::new("Assembly", "temp_at_3");
-    let temp_val = result.values.get(&temp_id).expect("Assembly.temp_at_3 not found");
+    let temp_val = result
+        .values
+        .get(&temp_id)
+        .expect("Assembly.temp_at_3 not found");
     let temp_f = numeric(temp_val, "temp_at_3");
     assert!(
         (temp_f - 19.0).abs() < 0.1,
@@ -479,7 +537,10 @@ fn full_v01_field_sample_gradient() {
     );
 
     let dtemp_id = ValueCellId::new("Assembly", "dtemp_at_3");
-    let dtemp_val = result.values.get(&dtemp_id).expect("Assembly.dtemp_at_3 not found");
+    let dtemp_val = result
+        .values
+        .get(&dtemp_id)
+        .expect("Assembly.dtemp_at_3 not found");
     let dtemp_f = numeric(dtemp_val, "dtemp_at_3");
     assert!(
         (dtemp_f - 6.0).abs() < 0.1,
@@ -493,14 +554,20 @@ fn full_v01_range_lets() {
     let result = eval_full();
 
     let range_id = ValueCellId::new("Assembly", "size_range");
-    let range_val = result.values.get(&range_id).expect("Assembly.size_range not found");
+    let range_val = result
+        .values
+        .get(&range_id)
+        .expect("Assembly.size_range not found");
     assert!(
         matches!(range_val, Value::Range { .. }),
         "Assembly.size_range should be Value::Range, got {range_val:?}"
     );
 
     let exc_id = ValueCellId::new("Assembly", "size_range_exc");
-    let exc_val = result.values.get(&exc_id).expect("Assembly.size_range_exc not found");
+    let exc_val = result
+        .values
+        .get(&exc_id)
+        .expect("Assembly.size_range_exc not found");
     assert!(
         matches!(exc_val, Value::Range { .. }),
         "Assembly.size_range_exc should be Value::Range, got {exc_val:?}"
@@ -622,8 +689,10 @@ fn full_v01_test_runner_all_pass() {
         "TestGradeMatch",
     ];
 
-    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> =
-        results.iter().map(|r| (r.name.as_str(), r.status)).collect();
+    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> = results
+        .iter()
+        .map(|r| (r.name.as_str(), r.status))
+        .collect();
 
     for name in &expected_tests {
         if let Some(&status) = by_name.get(*name) {
@@ -676,8 +745,7 @@ fn full_v01_purpose_mfg_ready() {
         "mfg_ready should have exactly 1 param"
     );
     assert_eq!(
-        mfg_ready.params[0].entity_kind,
-        "Structure",
+        mfg_ready.params[0].entity_kind, "Structure",
         "mfg_ready param entity_kind should be 'Structure'"
     );
 
@@ -874,8 +942,16 @@ fn full_v01_constraint_def_labels() {
             .filter(|e| e.label.as_deref() == Some(label))
             .count()
     };
-    assert_eq!(count_label("InRange[0]"), 2, "expected 2 constraints with label 'InRange[0]'");
-    assert_eq!(count_label("InRange[1]"), 2, "expected 2 constraints with label 'InRange[1]'");
+    assert_eq!(
+        count_label("InRange[0]"),
+        2,
+        "expected 2 constraints with label 'InRange[0]'"
+    );
+    assert_eq!(
+        count_label("InRange[1]"),
+        2,
+        "expected 2 constraints with label 'InRange[1]'"
+    );
 
     for entry in &inrange_constraints {
         assert_eq!(
@@ -893,10 +969,8 @@ fn full_v01_constraint_def_labels() {
 /// a Violated result. Total count must still be >=40 (no short-circuit).
 #[test]
 fn full_v01_violated_constraint_detected() {
-    let violating = source_full().replace(
-        "constraint height < 2000mm",
-        "constraint height < 100mm",
-    );
+    let violating =
+        source_full().replace("constraint height < 2000mm", "constraint height < 100mm");
     assert_ne!(
         violating,
         source_full(),
@@ -952,14 +1026,20 @@ fn corner_trait_all_member_kinds() {
     let result = eval_corner();
 
     let size_id = ValueCellId::new("FullTraitImpl", "size");
-    let size_val = result.values.get(&size_id).expect("FullTraitImpl.size not found");
+    let size_val = result
+        .values
+        .get(&size_id)
+        .expect("FullTraitImpl.size not found");
     assert!(
         matches!(size_val, Value::Scalar { .. }),
         "FullTraitImpl.size should be Scalar, got {size_val:?}"
     );
 
     let doubled_id = ValueCellId::new("FullTraitImpl", "doubled");
-    let doubled_val = result.values.get(&doubled_id).expect("FullTraitImpl.doubled not found");
+    let doubled_val = result
+        .values
+        .get(&doubled_id)
+        .expect("FullTraitImpl.doubled not found");
     assert!(
         matches!(doubled_val, Value::Scalar { .. }),
         "FullTraitImpl.doubled should be Scalar, got {doubled_val:?}"
@@ -1022,7 +1102,10 @@ fn corner_undef_propagation() {
     for member in ["arith", "cmp", "neg"] {
         let id = ValueCellId::new("UndefPropagation", member);
         assert_eq!(
-            result.values.get(&id).unwrap_or_else(|| panic!("UndefPropagation.{member} not found")),
+            result
+                .values
+                .get(&id)
+                .unwrap_or_else(|| panic!("UndefPropagation.{member} not found")),
             &Value::Undef,
             "UndefPropagation.{member} should be Undef"
         );
@@ -1035,14 +1118,20 @@ fn corner_option_edges() {
     let result = eval_corner();
 
     let s_id = ValueCellId::new("OptionEdgeCases", "s");
-    let s_val = result.values.get(&s_id).expect("OptionEdgeCases.s not found");
+    let s_val = result
+        .values
+        .get(&s_id)
+        .expect("OptionEdgeCases.s not found");
     assert!(
         matches!(s_val, Value::Option(Some(_))),
         "OptionEdgeCases.s should be Option(Some(_)), got {s_val:?}"
     );
 
     let n_id = ValueCellId::new("OptionEdgeCases", "n");
-    let n_val = result.values.get(&n_id).expect("OptionEdgeCases.n not found");
+    let n_val = result
+        .values
+        .get(&n_id)
+        .expect("OptionEdgeCases.n not found");
     assert!(
         matches!(n_val, Value::Option(None)),
         "OptionEdgeCases.n should be Option(None), got {n_val:?}"
@@ -1056,7 +1145,10 @@ fn corner_recursive_depth_zero() {
 
     let depth_id = ValueCellId::new("RecTree", "depth");
     assert_eq!(
-        result.values.get(&depth_id).expect("RecTree.depth not found"),
+        result
+            .values
+            .get(&depth_id)
+            .expect("RecTree.depth not found"),
         &Value::Int(0),
         "RecTree.depth should be Int(0)"
     );
@@ -1074,7 +1166,10 @@ fn corner_chained_comparison() {
     let result = eval_corner();
     let chain_id = ValueCellId::new("ChainedFour", "chain");
     assert_eq!(
-        result.values.get(&chain_id).expect("ChainedFour.chain not found"),
+        result
+            .values
+            .get(&chain_id)
+            .expect("ChainedFour.chain not found"),
         &Value::Bool(true),
         "ChainedFour.chain should be Bool(true)"
     );
@@ -1087,21 +1182,30 @@ fn corner_kleene_logic() {
 
     let and_id = ValueCellId::new("KleeneEdge", "and_absorb");
     assert_eq!(
-        result.values.get(&and_id).expect("KleeneEdge.and_absorb not found"),
+        result
+            .values
+            .get(&and_id)
+            .expect("KleeneEdge.and_absorb not found"),
         &Value::Bool(false),
         "false && Undef should be Bool(false) (Kleene AND)"
     );
 
     let or_id = ValueCellId::new("KleeneEdge", "or_absorb");
     assert_eq!(
-        result.values.get(&or_id).expect("KleeneEdge.or_absorb not found"),
+        result
+            .values
+            .get(&or_id)
+            .expect("KleeneEdge.or_absorb not found"),
         &Value::Bool(true),
         "true || Undef should be Bool(true) (Kleene OR)"
     );
 
     let imp_id = ValueCellId::new("KleeneEdge", "implies_vacuous");
     assert_eq!(
-        result.values.get(&imp_id).expect("KleeneEdge.implies_vacuous not found"),
+        result
+            .values
+            .get(&imp_id)
+            .expect("KleeneEdge.implies_vacuous not found"),
         &Value::Bool(true),
         "!false || Undef should be Bool(true) (vacuous implication)"
     );
@@ -1157,7 +1261,10 @@ fn corner_auto_free() {
          got {} satisfied of {}: {:?}",
         satisfied_count,
         auto_constraints.len(),
-        auto_constraints.iter().map(|e| (&e.id, &e.satisfaction)).collect::<Vec<_>>()
+        auto_constraints
+            .iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
 }
 

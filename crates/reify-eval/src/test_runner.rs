@@ -164,48 +164,60 @@ mod tests {
 
     #[test]
     fn compute_status_all_satisfied_returns_pass() {
-        use reify_types::Satisfaction;
         use super::compute_status;
-        let entries = vec![entry(Satisfaction::Satisfied), entry(Satisfaction::Satisfied)];
+        use reify_types::Satisfaction;
+        let entries = vec![
+            entry(Satisfaction::Satisfied),
+            entry(Satisfaction::Satisfied),
+        ];
         assert_eq!(compute_status(&entries), super::TestStatus::Pass);
     }
 
     #[test]
     fn compute_status_any_violated_returns_fail() {
-        use reify_types::Satisfaction;
         use super::compute_status;
-        let entries = vec![entry(Satisfaction::Satisfied), entry(Satisfaction::Violated)];
+        use reify_types::Satisfaction;
+        let entries = vec![
+            entry(Satisfaction::Satisfied),
+            entry(Satisfaction::Violated),
+        ];
         assert_eq!(compute_status(&entries), super::TestStatus::Fail);
     }
 
     #[test]
     fn compute_status_only_indeterminate_returns_indeterminate() {
-        use reify_types::Satisfaction;
         use super::compute_status;
+        use reify_types::Satisfaction;
         let entries = vec![entry(Satisfaction::Indeterminate)];
         assert_eq!(compute_status(&entries), super::TestStatus::Indeterminate);
     }
 
     #[test]
     fn compute_status_mix_satisfied_indeterminate_returns_indeterminate() {
-        use reify_types::Satisfaction;
         use super::compute_status;
-        let entries = vec![entry(Satisfaction::Satisfied), entry(Satisfaction::Indeterminate)];
+        use reify_types::Satisfaction;
+        let entries = vec![
+            entry(Satisfaction::Satisfied),
+            entry(Satisfaction::Indeterminate),
+        ];
         assert_eq!(compute_status(&entries), super::TestStatus::Indeterminate);
     }
 
     #[test]
     fn compute_status_violated_dominates_indeterminate_returns_fail() {
-        use reify_types::Satisfaction;
         use super::compute_status;
-        let entries = vec![entry(Satisfaction::Indeterminate), entry(Satisfaction::Violated)];
+        use reify_types::Satisfaction;
+        let entries = vec![
+            entry(Satisfaction::Indeterminate),
+            entry(Satisfaction::Violated),
+        ];
         assert_eq!(compute_status(&entries), super::TestStatus::Fail);
     }
 
     #[test]
     fn compute_status_violated_dominates_satisfied_and_indeterminate_returns_fail() {
-        use reify_types::Satisfaction;
         use super::compute_status;
+        use reify_types::Satisfaction;
         let entries = vec![
             entry(Satisfaction::Satisfied),
             entry(Satisfaction::Indeterminate),
@@ -217,7 +229,11 @@ mod tests {
     fn parse_and_compile_inline(source: &str) -> reify_compiler::CompiledModule {
         use reify_types::{ModulePath, Severity};
         let parsed = reify_syntax::parse(source, ModulePath::single("test_inline"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = reify_compiler::compile(&parsed);
         let errors: Vec<_> = compiled
             .diagnostics
@@ -233,13 +249,20 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0 }\n@test structure TestC { param z : Real }";
         let module = parse_and_compile_inline(source);
-        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module
+            .test_templates()
+            .find(|t| t.name == "TestA")
+            .expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         let names: Vec<&str> = isolated.templates.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names.len(), 2, "expected TestA + B, got {:?}", names);
         assert!(names.contains(&"TestA"), "TestA missing from {:?}", names);
         assert!(names.contains(&"B"), "B missing from {:?}", names);
-        assert!(!names.contains(&"TestC"), "TestC should be excluded from {:?}", names);
+        assert!(
+            !names.contains(&"TestC"),
+            "TestC should be excluded from {:?}",
+            names
+        );
     }
 
     #[test]
@@ -247,13 +270,30 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0\n constraint y < 100 }";
         let module = parse_and_compile_inline(source);
-        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module
+            .test_templates()
+            .find(|t| t.name == "TestA")
+            .expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
-        let b = isolated.templates.iter().find(|t| t.name == "B").expect("B not found");
-        assert!(b.constraints.is_empty(), "B.constraints should be stripped, got {} constraints", b.constraints.len());
+        let b = isolated
+            .templates
+            .iter()
+            .find(|t| t.name == "B")
+            .expect("B not found");
+        assert!(
+            b.constraints.is_empty(),
+            "B.constraints should be stripped, got {} constraints",
+            b.constraints.len()
+        );
         for group in &b.guarded_groups {
-            assert!(group.constraints.is_empty(), "B guarded group constraints should be stripped");
-            assert!(group.else_constraints.is_empty(), "B guarded group else_constraints should be stripped");
+            assert!(
+                group.constraints.is_empty(),
+                "B guarded group constraints should be stripped"
+            );
+            assert!(
+                group.else_constraints.is_empty(),
+                "B guarded group else_constraints should be stripped"
+            );
         }
         assert!(b.objective.is_none(), "B.objective should be stripped");
     }
@@ -263,10 +303,20 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0 }";
         let module = parse_and_compile_inline(source);
-        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module
+            .test_templates()
+            .find(|t| t.name == "TestA")
+            .expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
-        let testa = isolated.templates.iter().find(|t| t.name == "TestA").expect("TestA not in isolated");
-        assert!(!testa.constraints.is_empty(), "TestA constraints should be preserved");
+        let testa = isolated
+            .templates
+            .iter()
+            .find(|t| t.name == "TestA")
+            .expect("TestA not in isolated");
+        assert!(
+            !testa.constraints.is_empty(),
+            "TestA constraints should be preserved"
+        );
     }
 
     #[test]
@@ -310,38 +360,107 @@ constraint def Positive {
 }
 "#;
         let module = parse_and_compile_inline(source);
-        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module
+            .test_templates()
+            .find(|t| t.name == "TestA")
+            .expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
-        assert!(!module.constraint_defs.is_empty(), "constraint_defs must be non-empty in source module");
-        assert_eq!(isolated.constraint_defs.len(), module.constraint_defs.len(),
-            "constraint_defs must be preserved");
-        assert!(!module.functions.is_empty(), "functions must be non-empty in source module");
-        assert_eq!(isolated.functions.len(), module.functions.len(),
-            "functions must be preserved");
-        assert!(!module.fields.is_empty(), "fields must be non-empty in source module");
-        assert_eq!(isolated.fields.len(), module.fields.len(),
-            "fields must be preserved");
-        assert!(!module.type_aliases.is_empty(), "type_aliases must be non-empty in source module");
-        assert_eq!(isolated.type_aliases.len(), module.type_aliases.len(),
-            "type_aliases must be preserved");
-        assert!(!module.enum_defs.is_empty(), "enum_defs must be non-empty in source module");
-        assert_eq!(isolated.enum_defs.len(), module.enum_defs.len(),
-            "enum_defs must be preserved");
-        assert!(!module.trait_defs.is_empty(), "trait_defs must be non-empty in source module");
-        assert_eq!(isolated.trait_defs.len(), module.trait_defs.len(),
-            "trait_defs must be preserved");
-        assert_eq!(module.path, reify_types::ModulePath::single("test_inline"),
-            "module path must be non-trivially set in source module");
+        assert!(
+            !module.constraint_defs.is_empty(),
+            "constraint_defs must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.constraint_defs.len(),
+            module.constraint_defs.len(),
+            "constraint_defs must be preserved"
+        );
+        assert!(
+            !module.functions.is_empty(),
+            "functions must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.functions.len(),
+            module.functions.len(),
+            "functions must be preserved"
+        );
+        assert!(
+            !module.fields.is_empty(),
+            "fields must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.fields.len(),
+            module.fields.len(),
+            "fields must be preserved"
+        );
+        assert!(
+            !module.type_aliases.is_empty(),
+            "type_aliases must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.type_aliases.len(),
+            module.type_aliases.len(),
+            "type_aliases must be preserved"
+        );
+        assert!(
+            !module.enum_defs.is_empty(),
+            "enum_defs must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.enum_defs.len(),
+            module.enum_defs.len(),
+            "enum_defs must be preserved"
+        );
+        assert!(
+            !module.trait_defs.is_empty(),
+            "trait_defs must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.trait_defs.len(),
+            module.trait_defs.len(),
+            "trait_defs must be preserved"
+        );
+        assert_eq!(
+            module.path,
+            reify_types::ModulePath::single("test_inline"),
+            "module path must be non-trivially set in source module"
+        );
         assert_eq!(isolated.path, module.path, "module path must be preserved");
-        assert!(!module.units.is_empty(), "units must be non-empty in source module");
-        assert_eq!(isolated.units.len(), module.units.len(), "units must be preserved");
-        assert!(!module.imports.is_empty(), "imports must be non-empty in source module");
-        assert_eq!(isolated.imports.len(), module.imports.len(), "imports must be preserved");
-        assert!(!module.pragmas.is_empty(), "pragmas must be non-empty in source module");
-        assert_eq!(isolated.pragmas.len(), module.pragmas.len(), "pragmas must be preserved");
-        assert!(!module.compiled_purposes.is_empty(), "compiled_purposes must be non-empty in source module");
-        assert_eq!(isolated.compiled_purposes.len(), module.compiled_purposes.len(),
-            "compiled_purposes must be preserved");
+        assert!(
+            !module.units.is_empty(),
+            "units must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.units.len(),
+            module.units.len(),
+            "units must be preserved"
+        );
+        assert!(
+            !module.imports.is_empty(),
+            "imports must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.imports.len(),
+            module.imports.len(),
+            "imports must be preserved"
+        );
+        assert!(
+            !module.pragmas.is_empty(),
+            "pragmas must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.pragmas.len(),
+            module.pragmas.len(),
+            "pragmas must be preserved"
+        );
+        assert!(
+            !module.compiled_purposes.is_empty(),
+            "compiled_purposes must be non-empty in source module"
+        );
+        assert_eq!(
+            isolated.compiled_purposes.len(),
+            module.compiled_purposes.len(),
+            "compiled_purposes must be preserved"
+        );
     }
 
     #[test]

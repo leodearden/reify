@@ -142,9 +142,9 @@ structure S {
                 .collect::<Vec<_>>()
         )
     });
-    let actual = value.as_f64().unwrap_or_else(|| {
-        panic!("S.v should be numeric, got: {:?}", value)
-    });
+    let actual = value
+        .as_f64()
+        .unwrap_or_else(|| panic!("S.v should be numeric, got: {:?}", value));
     // User impl: 5mm - 2mm = 3mm = 0.003 m
     // Prelude impl (if shadowing were broken): 5mm + 2mm = 7mm = 0.007 m
     assert!(
@@ -214,7 +214,11 @@ structure S {
         .unwrap_or_else(|| {
             panic!(
                 "S.a should be numeric. Available values: {:?}",
-                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+                result
+                    .values
+                    .iter()
+                    .map(|(k, _)| k.to_string())
+                    .collect::<Vec<_>>()
             )
         });
     assert!(
@@ -232,7 +236,11 @@ structure S {
         .unwrap_or_else(|| {
             panic!(
                 "S.b should be numeric. Available values: {:?}",
-                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+                result
+                    .values
+                    .iter()
+                    .map(|(k, _)| k.to_string())
+                    .collect::<Vec<_>>()
             )
         });
     assert!(
@@ -278,15 +286,19 @@ structure S {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
     let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None)
-        .with_solver(Box::new(DimensionalSolver));
+    let mut engine =
+        reify_eval::Engine::new(Box::new(checker), None).with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 
     // Only the auto(free) non-unique warning is expected; no errors.
@@ -306,7 +318,11 @@ structure S {
         .unwrap_or_else(|| {
             panic!(
                 "S.x should be numeric. Available: {:?}",
-                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+                result
+                    .values
+                    .iter()
+                    .map(|(k, _)| k.to_string())
+                    .collect::<Vec<_>>()
             )
         });
     // Assert solver feasibility rather than a specific x value: we care that the solver
@@ -331,7 +347,11 @@ structure S {
         .unwrap_or_else(|| {
             panic!(
                 "S.y should be numeric. Available: {:?}",
-                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+                result
+                    .values
+                    .iter()
+                    .map(|(k, _)| k.to_string())
+                    .collect::<Vec<_>>()
             )
         });
     assert!(
@@ -458,7 +478,11 @@ structure S {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
     let errors = collect_errors(&compiled.diagnostics);

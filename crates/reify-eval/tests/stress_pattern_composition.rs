@@ -25,8 +25,8 @@ const FIXTURE_PATH: &str = concat!(
 /// Load a .ri file, parse, compile (asserting no errors), and evaluate.
 /// Returns the full EvalResult for per-test assertions.
 fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
-    let source = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+    let source =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
     let compiled = compile_source_named(&source, module_name);
     let errs = errors_only(&compiled);
     assert!(errs.is_empty(), "compile errors in {}: {:?}", path, errs);
@@ -40,8 +40,8 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 
 /// Compile the fixture without evaluating. Used for structural assertions.
 fn compile_ri_file(path: &str, module_name: &str) -> reify_compiler::CompiledModule {
-    let source = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+    let source =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
     compile_source_named(&source, module_name)
 }
 
@@ -70,7 +70,11 @@ fn has_expected_templates() {
         compiled.templates.len() >= 7,
         "expected >=7 templates, got {}: {:?}",
         compiled.templates.len(),
-        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 
     let expected_names = [
@@ -105,7 +109,10 @@ fn count_zero_compiles() {
         errors
     );
     assert!(
-        compiled.templates.iter().any(|t| t.name == "PatternCountZero"),
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "PatternCountZero"),
         "PatternCountZero template should be present"
     );
 }
@@ -211,5 +218,8 @@ fn boolean_fold_eval() {
             }
         )
     });
-    assert!(has_union, "BooleanFold realization should contain at least one Union operation");
+    assert!(
+        has_union,
+        "BooleanFold realization should contain at least one Union operation"
+    );
 }

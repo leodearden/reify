@@ -6,8 +6,8 @@
 use reify_expr::{EvalContext, eval_expr};
 use reify_test_support::{eval_source, make_engine, parse_and_compile};
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
-    ValueMap, FIELD_ENTITY_PREFIX, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FIELD_ENTITY_PREFIX, FieldSourceKind,
+    ResolvedFunction, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
@@ -17,7 +17,12 @@ use reify_types::{
 /// Used by the three principal-stress tests to avoid duplicating the
 /// extraction loop.
 fn extract_eigenvalues(items: &[Value]) -> [f64; 3] {
-    assert_eq!(items.len(), 3, "expected 3 eigenvalues, got {}", items.len());
+    assert_eq!(
+        items.len(),
+        3,
+        "expected 3 eigenvalues, got {}",
+        items.len()
+    );
     let mut eigenvalues = [0.0_f64; 3];
     for (i, item) in items.iter().enumerate() {
         match item {
@@ -272,7 +277,10 @@ fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) ->
 fn make_sample_at(field_expr: CompiledExpr, point: f64, result_type: Type) -> CompiledExpr {
     make_function_call(
         "sample",
-        vec![field_expr, CompiledExpr::literal(Value::Real(point), Type::Real)],
+        vec![
+            field_expr,
+            CompiledExpr::literal(Value::Real(point), Type::Real),
+        ],
         result_type,
     )
 }
@@ -317,7 +325,11 @@ fn eval_sampled_analysis(
 ) -> Value {
     let (field, field_type) = make_constant_tensor_field(tensor);
     let mut args = vec![CompiledExpr::literal(field, field_type)];
-    args.extend(extra_args.into_iter().map(|(v, t)| CompiledExpr::literal(v, t)));
+    args.extend(
+        extra_args
+            .into_iter()
+            .map(|(v, t)| CompiledExpr::literal(v, t)),
+    );
     let ft = Type::Field {
         domain: Box::new(Type::Real),
         codomain: Box::new(codomain.clone()),
@@ -337,7 +349,10 @@ fn test_make_sample_at_produces_sample_call() {
     // Verify kind is FunctionCall with name "sample"
     match &result.kind {
         CompiledExprKind::FunctionCall { function, args } => {
-            assert_eq!(function.name, "sample", "function name should be \"sample\"");
+            assert_eq!(
+                function.name, "sample",
+                "function name should be \"sample\""
+            );
             assert_eq!(args.len(), 2, "should have exactly 2 args");
             // First arg should be the original field_expr (same content hash)
             assert_eq!(
@@ -366,7 +381,11 @@ fn test_make_sample_at_produces_sample_call() {
 #[allow(clippy::assertions_on_constants)]
 fn test_assert_real_approx_passes_within_tolerance() {
     // Should not panic: value matches expected within REAL_TOLERANCE
-    assert_real_approx(&Value::Real(std::f64::consts::PI), std::f64::consts::PI, "pi");
+    assert_real_approx(
+        &Value::Real(std::f64::consts::PI),
+        std::f64::consts::PI,
+        "pi",
+    );
     // Should not panic: difference is exactly at zero
     assert_real_approx(&Value::Real(0.0), 0.0, "zero");
     // Should not panic: value is just inside tolerance (90% of REAL_TOLERANCE)
@@ -377,7 +396,10 @@ fn test_assert_real_approx_passes_within_tolerance() {
     );
     // Verify REAL_TOLERANCE constant exists and has the expected magnitude
     assert!(REAL_TOLERANCE > 0.0, "REAL_TOLERANCE must be positive");
-    assert!(REAL_TOLERANCE <= 1e-10, "REAL_TOLERANCE should be small (≤1e-10)");
+    assert!(
+        REAL_TOLERANCE <= 1e-10,
+        "REAL_TOLERANCE should be small (≤1e-10)"
+    );
 }
 
 #[test]
@@ -430,9 +452,7 @@ fn test_assert_real_approx_panics_for_non_real_variant() {
 fn eval_sample_von_mises_field_dispatch() {
     // Uniaxial stress [[σ,0,0],[0,0,0],[0,0,0]]: von Mises = σ (dimensionless)
     let sigma = 100.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
-    );
+    let tensor = make_stress_tensor(&[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
     let (field, field_type) = make_constant_tensor_field(tensor);
 
     // Build nested expr: sample(von_mises(field_literal), 0.5)
@@ -462,9 +482,7 @@ fn eval_sample_von_mises_field_dispatch() {
 fn eval_sample_principal_stresses_field_dispatch() {
     // Uniaxial [[100,0,0],[0,0,0],[0,0,0]]: eigenvalues [0.0, 0.0, 100.0] sorted ascending
     let sigma = 100.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
-    );
+    let tensor = make_stress_tensor(&[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
     let (field, field_type) = make_constant_tensor_field(tensor);
 
     // Build nested expr: sample(principal_stresses(field_literal), 0.5)
@@ -514,9 +532,7 @@ fn eval_sample_max_shear_field_dispatch() {
     // Pure shear [[0,τ,0],[τ,0,0],[0,0,0]]: eigenvalues [-τ, 0, τ]
     // max_shear = (τ - (-τ)) / 2 = τ
     let tau = 50.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[0.0, tau, 0.0], &[tau, 0.0, 0.0], &[0.0, 0.0, 0.0]],
-    );
+    let tensor = make_stress_tensor(&[&[0.0, tau, 0.0], &[tau, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
     let (field, field_type) = make_constant_tensor_field(tensor);
 
     // Build nested expr: sample(max_shear(field_literal), 0.5)
@@ -545,9 +561,7 @@ fn eval_sample_safety_factor_field_dispatch() {
     // Uniaxial stress σ=100: von_mises = 100; yield=250 → safety_factor = 2.5
     let sigma = 100.0_f64;
     let yield_val = 250.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
-    );
+    let tensor = make_stress_tensor(&[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
     let (field, field_type) = make_constant_tensor_field(tensor);
 
     // Build nested expr: sample(safety_factor(field_literal, 250.0), 0.5)
@@ -587,9 +601,7 @@ fn eval_sample_safety_factor_field_dispatch() {
 #[test]
 fn eval_sample_von_mises_zero_tensor_dispatch() {
     // Zero tensor: all entries 0 → von Mises = 0
-    let tensor = make_stress_tensor(
-        &[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
-    );
+    let tensor = make_stress_tensor(&[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
     let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::Real);
 
     match &result {
@@ -610,9 +622,7 @@ fn eval_sample_von_mises_zero_tensor_dispatch() {
 fn eval_sample_safety_factor_zero_tensor_dispatch() {
     // Zero tensor with yield=250.0: von_mises=0 → yield/0 → infinity → sanitize_value → Undef
     let yield_val = 250.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
-    );
+    let tensor = make_stress_tensor(&[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
     let result = eval_sampled_analysis(
         "safety_factor",
         tensor,
@@ -633,9 +643,7 @@ fn eval_sample_safety_factor_zero_tensor_dispatch() {
 fn eval_sample_von_mises_hydrostatic_dispatch() {
     // Hydrostatic tensor diag(p, p, p): all deviatoric differences are zero → von Mises = 0
     let p = 100.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
-    );
+    let tensor = make_stress_tensor(&[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]]);
     let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::Real);
 
     match &result {
@@ -657,9 +665,7 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
     // Hydrostatic tensor diag(p, p, p): all eigenvalues equal p.
     // Exercises the diagonal fast-path in compute_eigenvalues_3x3 (off-diagonal sum ≤ 1e-30).
     let p = 100.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
-    );
+    let tensor = make_stress_tensor(&[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]]);
     let result = eval_sampled_analysis(
         "principal_stresses",
         tensor,
@@ -701,9 +707,7 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
 fn eval_sample_max_shear_hydrostatic_dispatch() {
     // Hydrostatic tensor diag(p, p, p): eigenvalues all equal → max_shear = (p−p)/2 = 0
     let p = 100.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
-    );
+    let tensor = make_stress_tensor(&[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]]);
     let result = eval_sampled_analysis("max_shear", tensor, vec![], Type::Real);
 
     match &result {
@@ -726,9 +730,7 @@ fn eval_sample_safety_factor_hydrostatic_dispatch() {
     // Confirms dispatch doesn't special-case tensor shape; same divide-by-zero path.
     let p = 100.0_f64;
     let yield_val = 250.0_f64;
-    let tensor = make_stress_tensor(
-        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
-    );
+    let tensor = make_stress_tensor(&[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]]);
     let result = eval_sampled_analysis(
         "safety_factor",
         tensor,
@@ -753,9 +755,7 @@ fn eval_sample_safety_factor_hydrostatic_dispatch() {
 fn eval_sample_principal_stresses_full_symmetric_dispatch() {
     // Fully populated symmetric tensor with non-zero off-diagonal entries:
     // [[2,1,1],[1,3,1],[1,1,4]] — trace=9, exercises trigonometric eigenvalue branch
-    let tensor = make_stress_tensor(
-        &[&[2.0, 1.0, 1.0], &[1.0, 3.0, 1.0], &[1.0, 1.0, 4.0]],
-    );
+    let tensor = make_stress_tensor(&[&[2.0, 1.0, 1.0], &[1.0, 3.0, 1.0], &[1.0, 1.0, 4.0]]);
     let result = eval_sampled_analysis(
         "principal_stresses",
         tensor,
@@ -811,14 +811,10 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
 fn eval_sample_von_mises_spatially_varying_field() {
     // tensor_a: uniaxial σ=100 → von Mises = 100
     let sigma_a = 100.0_f64;
-    let tensor_a = make_stress_tensor(
-        &[&[sigma_a, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
-    );
+    let tensor_a = make_stress_tensor(&[&[sigma_a, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
     // tensor_b: uniaxial σ=200 → von Mises = 200
     let sigma_b = 200.0_f64;
-    let tensor_b = make_stress_tensor(
-        &[&[sigma_b, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
-    );
+    let tensor_b = make_stress_tensor(&[&[sigma_b, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
 
     // Build lambda body:  if p > 50.0 { tensor_a } else { tensor_b }
     let p_id = ValueCellId::new("$lambda0", "p");

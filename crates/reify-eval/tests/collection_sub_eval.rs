@@ -4,8 +4,8 @@
 //! count-based elaboration, and count re-elaboration.
 
 use reify_compiler::TopologyTemplate;
-use reify_eval::{Engine, EvalResult};
 use reify_eval::graph::EvaluationGraph;
+use reify_eval::{Engine, EvalResult};
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};

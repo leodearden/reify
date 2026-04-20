@@ -8,7 +8,9 @@
 
 use reify_compiler::CompiledModule;
 use reify_eval::Engine;
-use reify_test_support::{check_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    check_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+};
 use reify_types::{ModulePath, Satisfaction, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -25,8 +27,7 @@ const EXAMPLE_PATH: &str = concat!(
 fn source() -> String {
     static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(EXAMPLE_PATH)
-            .expect("examples/m10_combined.ri should exist")
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m10_combined.ri should exist")
     })
     .clone()
 }
@@ -36,7 +37,8 @@ fn source() -> String {
 /// Tests that need a mutated source must call `parse_and_compile_with_stdlib` directly.
 fn compiled() -> CompiledModule {
     static C: std::sync::OnceLock<CompiledModule> = std::sync::OnceLock::new();
-    C.get_or_init(|| parse_and_compile_with_stdlib(&source())).clone()
+    C.get_or_init(|| parse_and_compile_with_stdlib(&source()))
+        .clone()
 }
 
 /// Eval the canonical source with SimpleConstraintChecker, return EvalResult.
@@ -171,10 +173,7 @@ fn total_constraint_count_meets_threshold() {
     let check_result = check_canonical();
 
     let n = check_result.constraint_results.len();
-    assert!(
-        n >= 15,
-        "expected >= 15 total constraint results, got {n}"
-    );
+    assert!(n >= 15, "expected >= 15 total constraint results, got {n}");
 
     // All must be Satisfied (defensive double-check complementing all_constraints_satisfied)
     for entry in &check_result.constraint_results {
@@ -355,7 +354,9 @@ fn assembly_connect_has_connector_and_explicit_mapping() {
         .constraint_results
         .iter()
         .find(|e| &e.id == compat_id)
-        .unwrap_or_else(|| panic!("compatibility constraint {compat_id} not found in check results"));
+        .unwrap_or_else(|| {
+            panic!("compatibility constraint {compat_id} not found in check results")
+        });
     assert_eq!(
         compat_entry.satisfaction,
         Satisfaction::Satisfied,
@@ -387,8 +388,7 @@ fn geom_ready_purpose_compiled_and_activatable() {
         "geom_ready should have exactly 1 param (subject)"
     );
     assert_eq!(
-        geom_ready.params[0].entity_kind,
-        "Structure",
+        geom_ready.params[0].entity_kind, "Structure",
         "geom_ready param entity_kind should be 'Structure', got '{}'",
         geom_ready.params[0].entity_kind
     );
@@ -475,7 +475,11 @@ fn where_block_nested_constraints_present_and_satisfied() {
                 panic!(
                     "where-block constraint {} not found in check results; all ids: {:?}",
                     guarded_id,
-                    check_result.constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+                    check_result
+                        .constraint_results
+                        .iter()
+                        .map(|e| &e.id)
+                        .collect::<Vec<_>>()
                 )
             });
         assert_eq!(
@@ -508,14 +512,12 @@ fn where_block_nested_constraints_present_and_satisfied() {
 #[test]
 fn where_block_guard_inactive_constraints_absent() {
     // Change the guard to a known-false runtime condition: ox = 0mm, so 0mm > 100000mm = false.
-    let inactive_src = source().replace(
-        "where determined(origin)",
-        "where ox > 100000mm",
-    );
+    let inactive_src = source().replace("where determined(origin)", "where ox > 100000mm");
 
     // Guard: the substitution must have fired.
     assert_ne!(
-        inactive_src, source(),
+        inactive_src,
+        source(),
         "source mutation failed — 'where determined(origin)' not found; update the substitution"
     );
 
@@ -642,10 +644,7 @@ fn supply_point_resolves_to_concrete_value() {
 #[test]
 fn violated_constraint_detected() {
     // tx defaults to 100mm; raise the bound to 1000mm so 100mm > 1000mm is false (VIOLATED).
-    let violating = source().replace(
-        "constraint tx > 0mm",
-        "constraint tx > 1000mm",
-    );
+    let violating = source().replace("constraint tx > 0mm", "constraint tx > 1000mm");
 
     // Guard: confirm the substitution actually happened.
     // If this assertion fires, the target substring drifted; update the replace call.

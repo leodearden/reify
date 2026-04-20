@@ -31,7 +31,6 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
     engine.eval(&compiled)
 }
 
-
 // ── Step 1: .ri file parses and compiles ─────────────────────────────────────
 
 /// Read examples/m9_integration.ri, parse it, assert no parse errors, compile,
@@ -352,12 +351,17 @@ structure Item : Verifiable {
     );
 
     // All Item constraints should be Satisfied
-    for entry in check_result.constraint_results.iter().filter(|e| e.id.entity == "Item") {
+    for entry in check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "Item")
+    {
         assert_eq!(
             entry.satisfaction,
             Satisfaction::Satisfied,
             "all Item constraints should be Satisfied, but {:?} is {:?}",
-            entry.label, entry.satisfaction
+            entry.label,
+            entry.satisfaction
         );
     }
 
@@ -511,7 +515,10 @@ structure def RecursiveChain {
                 "expected ~0.05 SI for RecursiveChain.child.span (50mm), got {si_value}"
             );
         }
-        other => panic!("expected Scalar for RecursiveChain.child.span, got {:?}", other),
+        other => panic!(
+            "expected Scalar for RecursiveChain.child.span, got {:?}",
+            other
+        ),
     }
 
     // grandchild.span = 50mm / 2 = 25mm = 0.025 SI
@@ -635,9 +642,7 @@ fn full_pipeline_cross_feature_values() {
     let bracket_dir0: Vec<_> = check_result
         .constraint_results
         .iter()
-        .filter(|e| {
-            e.id.entity == "Bracket" && e.label == Some("DeterminedInRange[0]".to_string())
-        })
+        .filter(|e| e.id.entity == "Bracket" && e.label == Some("DeterminedInRange[0]".to_string()))
         .collect();
     // Exactly two DeterminedInRange invocations on Bracket in the example
     // (size and length) → exactly two [0] entries. Locking to == 2 catches
@@ -671,7 +676,10 @@ fn full_pipeline_cross_feature_values() {
                 "expected ~0.05 SI for RecursiveChain.child.span (50mm), got {si_value}"
             );
         }
-        other => panic!("expected Scalar for RecursiveChain.child.span, got {:?}", other),
+        other => panic!(
+            "expected Scalar for RecursiveChain.child.span, got {:?}",
+            other
+        ),
     }
 
     let grandchild_span_id = ValueCellId::new("RecursiveChain.child.child", "span");
@@ -781,7 +789,9 @@ structure Composite : Verifiable + Ranged {
     let dp0 = check_result
         .constraint_results
         .iter()
-        .find(|e| e.id.entity == "Composite" && e.label == Some("DeterminedPositive[0]".to_string()))
+        .find(|e| {
+            e.id.entity == "Composite" && e.label == Some("DeterminedPositive[0]".to_string())
+        })
         .expect("expected DeterminedPositive[0] for Composite");
     assert_eq!(
         dp0.satisfaction,
@@ -793,7 +803,9 @@ structure Composite : Verifiable + Ranged {
     let dp1 = check_result
         .constraint_results
         .iter()
-        .find(|e| e.id.entity == "Composite" && e.label == Some("DeterminedPositive[1]".to_string()))
+        .find(|e| {
+            e.id.entity == "Composite" && e.label == Some("DeterminedPositive[1]".to_string())
+        })
         .expect("expected DeterminedPositive[1] for Composite");
     assert_eq!(
         dp1.satisfaction,

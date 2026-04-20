@@ -1,13 +1,15 @@
 // Split from lib.rs (task 2032) — admin methods.
 
-use std::collections::HashMap;
-use reify_compiler::CompiledModule;
-use reify_types::{CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl};
 use crate::cache::{CacheStore, NodeId};
 use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
+use reify_compiler::CompiledModule;
+use reify_types::{
+    CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
+};
+use std::collections::HashMap;
 
 impl Engine {
     pub fn new(
@@ -15,8 +17,10 @@ impl Engine {
         geometry_kernel: Option<Box<dyn GeometryKernel>>,
     ) -> Self {
         let prelude = reify_compiler::stdlib_loader::load_stdlib();
-        let prelude_functions: Vec<CompiledFunction> =
-            prelude.iter().flat_map(|pm| pm.functions.iter().cloned()).collect();
+        let prelude_functions: Vec<CompiledFunction> = prelude
+            .iter()
+            .flat_map(|pm| pm.functions.iter().cloned())
+            .collect();
         Self {
             constraint_checker,
             geometry_kernel,

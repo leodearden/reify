@@ -11,8 +11,12 @@
 //!   - Mixed batches (one optimized + one fallback) produce correct per-id
 //!     results in the order `active_constraint_ids` returns them.
 
-use reify_test_support::{BrokenCountOptimizedImpl, MockOptimizedImpl, make_simple_engine, parse_and_compile};
-use reify_types::{ConstraintDiagnostics, ConstraintNodeId, ConstraintResult, Satisfaction, Severity};
+use reify_test_support::{
+    BrokenCountOptimizedImpl, MockOptimizedImpl, make_simple_engine, parse_and_compile,
+};
+use reify_types::{
+    ConstraintDiagnostics, ConstraintNodeId, ConstraintResult, Satisfaction, Severity,
+};
 
 // ── Test 1: register_optimized_impl stores & dispatches ─────────────────────
 
@@ -461,9 +465,9 @@ structure def S {
          got diagnostics: {:?}",
         check_result.diagnostics
     );
-    let violation_diag = error_diags.iter().find(|d| {
-        d.message.contains("OptimizedImpl") && d.message.contains("falling back")
-    });
+    let violation_diag = error_diags
+        .iter()
+        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
     assert!(
         violation_diag.is_some(),
         "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
@@ -552,9 +556,21 @@ structure def Mixed {
     let l1 = r1.label.as_deref().unwrap_or("");
     let l2 = r2.label.as_deref().unwrap_or("");
 
-    assert!(l0.contains("OptA"), "first result should be OptA, got label={:?}", r0.label);
-    assert!(l1.contains("OptB"), "second result should be OptB, got label={:?}", r1.label);
-    assert!(l2.contains("PlainEq"), "third result should be PlainEq, got label={:?}", r2.label);
+    assert!(
+        l0.contains("OptA"),
+        "first result should be OptA, got label={:?}",
+        r0.label
+    );
+    assert!(
+        l1.contains("OptB"),
+        "second result should be OptB, got label={:?}",
+        r1.label
+    );
+    assert!(
+        l2.contains("PlainEq"),
+        "third result should be PlainEq, got label={:?}",
+        r2.label
+    );
 
     // (b) OptA: broken impl fell back, language-level checker sees x == x → Satisfied
     assert_eq!(
@@ -683,9 +699,9 @@ structure def S {
          got diagnostics: {:?}",
         check_result.diagnostics
     );
-    let violation_diag = error_diags.iter().find(|d| {
-        d.message.contains("OptimizedImpl") && d.message.contains("falling back")
-    });
+    let violation_diag = error_diags
+        .iter()
+        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
     assert!(
         violation_diag.is_some(),
         "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
@@ -764,9 +780,9 @@ structure def S {
          got diagnostics: {:?}",
         check_result.diagnostics
     );
-    let violation_diag = error_diags.iter().find(|d| {
-        d.message.contains("OptimizedImpl") && d.message.contains("falling back")
-    });
+    let violation_diag = error_diags
+        .iter()
+        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
     assert!(
         violation_diag.is_some(),
         "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \

@@ -12,7 +12,11 @@ use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 /// Returns the compiled module.
 fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -103,7 +107,11 @@ structure def S : Bounded {
     assert!(
         any_violated,
         "expected at least one Violated constraint (5mm is not > 10mm), got: {:?}",
-        result.constraint_results.iter().map(|e| (&e.id, &e.satisfaction)).collect::<Vec<_>>()
+        result
+            .constraint_results
+            .iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -200,7 +208,11 @@ structure def S : A + B {
     assert!(
         any_satisfied,
         "expected at least one Satisfied constraint (150mm > 0mm), got: {:?}",
-        result.constraint_results.iter().map(|e| (&e.id, &e.satisfaction)).collect::<Vec<_>>()
+        result
+            .constraint_results
+            .iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
 
     let any_violated = result
@@ -210,7 +222,11 @@ structure def S : A + B {
     assert!(
         any_violated,
         "expected at least one Violated constraint (150mm is not < 100mm), got: {:?}",
-        result.constraint_results.iter().map(|e| (&e.id, &e.satisfaction)).collect::<Vec<_>>()
+        result
+            .constraint_results
+            .iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
 }
 

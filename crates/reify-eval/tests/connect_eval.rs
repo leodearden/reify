@@ -200,7 +200,11 @@ structure def S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -257,7 +261,11 @@ structure def S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -312,7 +320,11 @@ structure def S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -470,7 +482,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -524,7 +540,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -589,7 +609,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -657,7 +681,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -680,8 +708,7 @@ structure S {
 
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine =
-        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let eval_result = engine.eval(&compiled);
 
     let r_val = eval_result
@@ -725,7 +752,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let compile_errors: Vec<_> = compiled
@@ -743,7 +774,10 @@ structure S {
         assert!(
             has_geometry_error,
             "expected compile error mentioning geometry for @face without geometry, got: {:?}",
-            compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+            compile_errors
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     } else {
         // Runtime enforcement: eval with None kernel should produce Undef + diagnostic
@@ -802,7 +836,11 @@ structure def S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -833,15 +871,16 @@ structure def S {
     let result = engine.check(&compiled);
 
     // The frame constraint should appear in the results
-    let frame_entry = result
-        .constraint_results
-        .iter()
-        .find(|e| e.id == *frame_id);
+    let frame_entry = result.constraint_results.iter().find(|e| e.id == *frame_id);
     assert!(
         frame_entry.is_some(),
         "expected frame_constraint {:?} in constraint_results, got: {:?}",
         frame_id,
-        result.constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+        result
+            .constraint_results
+            .iter()
+            .map(|e| &e.id)
+            .collect::<Vec<_>>()
     );
 
     // The compatibility constraint should also appear
@@ -879,7 +918,11 @@ structure def S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -924,7 +967,11 @@ structure def S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let compile_errors: Vec<_> = compiled
@@ -943,7 +990,10 @@ structure def S {
         assert!(
             has_geometry_error,
             "expected compile error about missing geometry, got: {:?}",
-            compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+            compile_errors
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     } else {
         // Runtime enforcement: both selectors fail → Undef on both sides of frame constraint.
@@ -969,10 +1019,7 @@ structure def S {
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
         let result = engine.check(&compiled);
 
-        let frame_entry = result
-            .constraint_results
-            .iter()
-            .find(|e| e.id == *frame_id);
+        let frame_entry = result.constraint_results.iter().find(|e| e.id == *frame_id);
         assert!(
             frame_entry.is_some(),
             "expected frame_constraint {:?} in constraint_results",

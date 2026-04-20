@@ -8,7 +8,7 @@ use reify_types::{
     CompiledFunction, DeterminacyState, Diagnostic, Value, ValueCellId, ValueMap, VersionId,
 };
 
-use crate::cache::{CachedResult, CacheStore, NodeId};
+use crate::cache::{CacheStore, CachedResult, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::dirty::topological_sort;
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};

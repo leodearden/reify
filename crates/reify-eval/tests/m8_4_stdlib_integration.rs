@@ -19,20 +19,14 @@ use reify_types::{DimensionVector, Severity, Value, ValueCellId};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
-const PATH_LINALG: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/linalg.ri"
-);
+const PATH_LINALG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/linalg.ri");
 
 const PATH_FIELDS_ANALYSIS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/fields_analysis.ri"
 );
 
-const PATH_IO_EXPORT: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/io_export.ri"
-);
+const PATH_IO_EXPORT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/io_export.ri");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -41,8 +35,8 @@ const PATH_IO_EXPORT: &str = concat!(
 /// `SimpleConstraintChecker`, and assert no eval errors.
 /// Returns the full `EvalResult` for per-test assertions.
 fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+    let source =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
 
     let parsed = reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
     assert!(
@@ -109,15 +103,25 @@ fn assert_scalar(
         .get(&id)
         .unwrap_or_else(|| panic!("{}.{} not found in eval result", entity, member));
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - expected).abs() < tol,
                 "{}.{} should be ≈{} (tol {}), got {}",
-                entity, member, expected, tol, si_value
+                entity,
+                member,
+                expected,
+                tol,
+                si_value
             );
             assert_eq!(*dimension, dim, "{}.{} dimension mismatch", entity, member);
         }
-        other => panic!("{}.{} should be Value::Scalar, got {:?}", entity, member, other),
+        other => panic!(
+            "{}.{} should be Value::Scalar, got {:?}",
+            entity, member, other
+        ),
     }
 }
 
@@ -142,16 +146,27 @@ fn assert_complex(
             assert!(
                 (re - expected_re).abs() < tol,
                 "{}.{}.re should be ≈{} (tol {}), got {}",
-                entity, member, expected_re, tol, re
+                entity,
+                member,
+                expected_re,
+                tol,
+                re
             );
             assert!(
                 (im - expected_im).abs() < tol,
                 "{}.{}.im should be ≈{} (tol {}), got {}",
-                entity, member, expected_im, tol, im
+                entity,
+                member,
+                expected_im,
+                tol,
+                im
             );
             assert_eq!(*dimension, dim, "{}.{} dimension mismatch", entity, member);
         }
-        other => panic!("{}.{} should be Value::Complex, got {:?}", entity, member, other),
+        other => panic!(
+            "{}.{} should be Value::Complex, got {:?}",
+            entity, member, other
+        ),
     }
 }
 
@@ -190,10 +205,7 @@ fn linalg_rotation_det_is_one() {
                 v
             );
         }
-        other => panic!(
-            "LinalgDemo.det_rot should be Value::Real, got {:?}",
-            other
-        ),
+        other => panic!("LinalgDemo.det_rot should be Value::Real, got {:?}", other),
     }
 }
 
@@ -239,10 +251,7 @@ fn linalg_eigenvalues_of_diagonal() {
                 );
             }
         }
-        other => panic!(
-            "LinalgDemo.eig should be Value::List, got {:?}",
-            other
-        ),
+        other => panic!("LinalgDemo.eig should be Value::List, got {:?}", other),
     }
 }
 
@@ -288,24 +297,28 @@ fn linalg_inverse_equals_transpose() {
     // Check all 9 elements: (a) inv_rot == trans_rot at every position, and
     // (b) trans_rot matches the known analytical values of R^T.
     // A 2-element spot-check could pass by coincidence (e.g. both zero at [0][0]).
-    let expected_rt: [[f64; 3]; 3] = [
-        [ 0.0,  1.0, 0.0],
-        [-1.0,  0.0, 0.0],
-        [ 0.0,  0.0, 1.0],
-    ];
+    let expected_rt: [[f64; 3]; 3] = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     for (row, expected_row) in expected_rt.iter().enumerate() {
         for (col, &exp) in expected_row.iter().enumerate() {
-            let inv_elem   = tensor_elem(inv_val,   row, col);
+            let inv_elem = tensor_elem(inv_val, row, col);
             let trans_elem = tensor_elem(trans_val, row, col);
             assert!(
                 (inv_elem - trans_elem).abs() < 1e-9,
                 "inv_rot[{}][{}] ({}) != trans_rot[{}][{}] ({}): R^-1 should equal R^T",
-                row, col, inv_elem, row, col, trans_elem
+                row,
+                col,
+                inv_elem,
+                row,
+                col,
+                trans_elem
             );
             assert!(
                 (trans_elem - exp).abs() < 1e-9,
                 "trans_rot[{}][{}] should be ≈{}, got {}",
-                row, col, exp, trans_elem
+                row,
+                col,
+                exp,
+                trans_elem
             );
         }
     }
@@ -326,11 +339,7 @@ fn linalg_complex_re_im() {
         .get(&re_id)
         .unwrap_or_else(|| panic!("LinalgDemo.z_re not found"));
     match re_val {
-        Value::Real(v) => assert!(
-            (v - 3.0).abs() < 1e-9,
-            "z_re should be ≈3.0, got {}",
-            v
-        ),
+        Value::Real(v) => assert!((v - 3.0).abs() < 1e-9, "z_re should be ≈3.0, got {}", v),
         other => panic!("LinalgDemo.z_re should be Value::Real, got {:?}", other),
     }
 
@@ -341,11 +350,7 @@ fn linalg_complex_re_im() {
         .get(&im_id)
         .unwrap_or_else(|| panic!("LinalgDemo.z_im not found"));
     match im_val {
-        Value::Real(v) => assert!(
-            (v - 4.0).abs() < 1e-9,
-            "z_im should be ≈4.0, got {}",
-            v
-        ),
+        Value::Real(v) => assert!((v - 4.0).abs() < 1e-9, "z_im should be ≈4.0, got {}", v),
         other => panic!("LinalgDemo.z_im should be Value::Real, got {:?}", other),
     }
 }
@@ -372,10 +377,7 @@ fn linalg_complex_magnitude() {
                 v
             );
         }
-        other => panic!(
-            "LinalgDemo.z_mag should be Value::Real, got {:?}",
-            other
-        ),
+        other => panic!("LinalgDemo.z_mag should be Value::Real, got {:?}", other),
     }
 }
 
@@ -386,7 +388,15 @@ fn linalg_complex_magnitude() {
 #[test]
 fn linalg_complex_conjugate() {
     let result = eval_ri_file(PATH_LINALG, "linalg");
-    assert_complex(&result, "LinalgDemo", "z_conj", 3.0, -4.0, 1e-9, DimensionVector::DIMENSIONLESS);
+    assert_complex(
+        &result,
+        "LinalgDemo",
+        "z_conj",
+        3.0,
+        -4.0,
+        1e-9,
+        DimensionVector::DIMENSIONLESS,
+    );
 }
 
 // ── step-2: linalg_complex_phase ─────────────────────────────────────────────
@@ -397,7 +407,14 @@ fn linalg_complex_conjugate() {
 fn linalg_complex_phase() {
     let result = eval_ri_file(PATH_LINALG, "linalg");
     let expected = (4.0_f64).atan2(3.0);
-    assert_scalar(&result, "LinalgDemo", "z_phase", expected, 1e-9, DimensionVector::ANGLE);
+    assert_scalar(
+        &result,
+        "LinalgDemo",
+        "z_phase",
+        expected,
+        1e-9,
+        DimensionVector::ANGLE,
+    );
 }
 
 // ── Section 2: fields_analysis.ri ────────────────────────────────────────────
@@ -536,10 +553,7 @@ fn io_export_mass_computed() {
                 v
             );
         }
-        other => panic!(
-            "ExportPart.mass should be Value::Real, got {:?}",
-            other
-        ),
+        other => panic!("ExportPart.mass should be Value::Real, got {:?}", other),
     }
 }
 
@@ -551,7 +565,14 @@ fn io_export_mass_computed() {
 #[test]
 fn io_export_tolerance_upper_limit() {
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
-    assert_scalar(&result, "ExportPart.tol", "upper_limit", 0.10005, 1e-9, DimensionVector::LENGTH);
+    assert_scalar(
+        &result,
+        "ExportPart.tol",
+        "upper_limit",
+        0.10005,
+        1e-9,
+        DimensionVector::LENGTH,
+    );
 }
 
 // ── step-11: io_export_tolerance_band ────────────────────────────────────────
@@ -562,7 +583,14 @@ fn io_export_tolerance_upper_limit() {
 #[test]
 fn io_export_tolerance_band() {
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
-    assert_scalar(&result, "ExportPart.tol", "tolerance_band", 0.0001, 1e-12, DimensionVector::LENGTH);
+    assert_scalar(
+        &result,
+        "ExportPart.tol",
+        "tolerance_band",
+        0.0001,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
 }
 
 // ── step-3: io_export_flatness_tolerance ─────────────────────────────────────
@@ -572,7 +600,14 @@ fn io_export_tolerance_band() {
 #[test]
 fn io_export_flatness_tolerance() {
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
-    assert_scalar(&result, "ExportPart.flat", "tolerance_value", 0.00002, 1e-12, DimensionVector::LENGTH);
+    assert_scalar(
+        &result,
+        "ExportPart.flat",
+        "tolerance_value",
+        0.00002,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
 }
 
 // ── step-4: io_export_surface_finish ─────────────────────────────────────────
@@ -582,7 +617,14 @@ fn io_export_flatness_tolerance() {
 #[test]
 fn io_export_surface_finish() {
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
-    assert_scalar(&result, "ExportPart.finish", "value", 8e-7, 1e-12, DimensionVector::LENGTH);
+    assert_scalar(
+        &result,
+        "ExportPart.finish",
+        "value",
+        8e-7,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
 }
 
 // ── Helper unit tests ────────────────────────────────────────────────────────
@@ -592,14 +634,22 @@ fn io_export_surface_finish() {
 fn expect_real_or_int_extracts_real() {
     let val = Value::Real(3.14);
     let result = expect_real_or_int(&val, "test_label");
-    assert!((result - 3.14).abs() < 1e-15, "expected 3.14, got {}", result);
+    assert!(
+        (result - 3.14).abs() < 1e-15,
+        "expected 3.14, got {}",
+        result
+    );
 }
 
 #[test]
 fn expect_real_or_int_extracts_int() {
     let val = Value::Int(42);
     let result = expect_real_or_int(&val, "test_label");
-    assert!((result - 42.0).abs() < 1e-15, "expected 42.0, got {}", result);
+    assert!(
+        (result - 42.0).abs() < 1e-15,
+        "expected 42.0, got {}",
+        result
+    );
 }
 
 #[test]

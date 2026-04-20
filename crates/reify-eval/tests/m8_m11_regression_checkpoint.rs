@@ -146,7 +146,11 @@ fn check_checkpoint() -> &'static reify_eval::CheckResult {
 #[test]
 fn checkpoint_parses() {
     let parsed = reify_syntax::parse(SOURCE, ModulePath::single("m8_m11_checkpoint"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     assert!(
         parsed.declarations.len() >= 6,
         "expected >= 6 top-level declarations from cross-milestone source, got {}; \
@@ -264,9 +268,10 @@ fn checkpoint_m10_geometric_types_eval() {
 
     // rot = orient_identity() → Value::Orientation
     let id = ValueCellId::new("GeomPart", "rot");
-    let val = result.values.get(&id).unwrap_or_else(|| {
-        panic!("GeomPart.rot not found in eval values")
-    });
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("GeomPart.rot not found in eval values"));
     assert!(
         matches!(val, Value::Orientation { .. }),
         "expected Value::Orientation for GeomPart.rot, got {:?}",
@@ -275,9 +280,10 @@ fn checkpoint_m10_geometric_types_eval() {
 
     // tf = transform3(rot, vec3(10mm, 0mm, 0mm)) → Value::Transform
     let id = ValueCellId::new("GeomPart", "tf");
-    let val = result.values.get(&id).unwrap_or_else(|| {
-        panic!("GeomPart.tf not found in eval values")
-    });
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("GeomPart.tf not found in eval values"));
     assert!(
         matches!(val, Value::Transform { .. }),
         "expected Value::Transform for GeomPart.tf, got {:?}",
@@ -286,9 +292,10 @@ fn checkpoint_m10_geometric_types_eval() {
 
     // moved = tf * origin = translation(10mm, 0, 0) applied to (0,0,0) → (0.01m, 0, 0) SI
     let id = ValueCellId::new("GeomPart", "moved");
-    let val = result.values.get(&id).unwrap_or_else(|| {
-        panic!("GeomPart.moved not found in eval values")
-    });
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("GeomPart.moved not found in eval values"));
     assert!(
         matches!(val, Value::Point(_)),
         "expected Value::Point for GeomPart.moved, got {:?}",
@@ -336,9 +343,10 @@ fn checkpoint_m11_field_sample_at_three() {
 
     // df3 = sample(gradient(linear_f), 3.0) — gradient of a linear field is its slope
     let id = ValueCellId::new("FieldUser", "df3");
-    let val = result.values.get(&id).unwrap_or_else(|| {
-        panic!("FieldUser.df3 not found in eval values")
-    });
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("FieldUser.df3 not found in eval values"));
     match val {
         Value::Real(f) => {
             assert!(
@@ -840,8 +848,7 @@ fn test_count_floor() {
     }
 
     assert_eq!(
-        total_failed,
-        0,
+        total_failed, 0,
         "workspace test suite has {total_failed} failing test(s); \
          zero failures expected.\nOutput:\n{all_output}"
     );

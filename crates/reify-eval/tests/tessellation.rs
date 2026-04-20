@@ -177,7 +177,6 @@ fn tessellate_no_kernel_with_realizations_returns_empty_meshes() {
     );
 }
 
-
 /// tessellate_realizations records geometry execution errors as diagnostics
 /// when kernel operations fail.
 #[test]

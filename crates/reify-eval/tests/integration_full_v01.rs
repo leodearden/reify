@@ -75,12 +75,7 @@ fn assert_no_errors(diagnostics: &[Diagnostic], context: &str) {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(
-        errors.is_empty(),
-        "errors in {}: {:?}",
-        context,
-        errors
-    );
+    assert!(errors.is_empty(), "errors in {}: {:?}", context, errors);
 }
 
 /// Assert that `$parsed` (a `ParsedModule`) has at least `$min` declarations
@@ -220,10 +215,7 @@ fn all_constraints_satisfied() {
 fn total_constraint_count_meets_threshold() {
     let check_result = check_canonical();
     let n = check_result.constraint_results.len();
-    assert!(
-        n >= 40,
-        "expected >= 40 total constraint results, got {n}"
-    );
+    assert!(n >= 40, "expected >= 40 total constraint results, got {n}");
     for entry in &check_result.constraint_results {
         assert_eq!(
             entry.satisfaction,
@@ -522,7 +514,10 @@ fn recursive_unfold_depth() {
                 "expected ~0.15 SI for RecursiveBeam.child.span (150mm), got {si_value}"
             );
         }
-        other => panic!("expected Scalar for RecursiveBeam.child.span, got {:?}", other),
+        other => panic!(
+            "expected Scalar for RecursiveBeam.child.span, got {:?}",
+            other
+        ),
     }
 
     // RecursiveBeam.child.child.span = 75mm = 0.075 SI
@@ -646,8 +641,7 @@ fn purpose_compiled_and_activatable() {
         "mfg_ready should have exactly 1 param (subject)"
     );
     assert_eq!(
-        mfg_ready.params[0].entity_kind,
-        "Structure",
+        mfg_ready.params[0].entity_kind, "Structure",
         "mfg_ready param entity_kind should be 'Structure', got '{}'",
         mfg_ready.params[0].entity_kind
     );
@@ -774,8 +768,10 @@ fn test_runner_all_pass() {
         "TestFieldSample",
         "TestGradeMatch",
     ];
-    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> =
-        results.iter().map(|r| (r.name.as_str(), r.status)).collect();
+    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> = results
+        .iter()
+        .map(|r| (r.name.as_str(), r.status))
+        .collect();
     assert_eq!(
         by_name.len(),
         results.len(),
@@ -1047,10 +1043,7 @@ fn assert_min_count_macro_passes_when_met() {
 #[test]
 fn violated_constraint_detected() {
     // height=300mm; raise upper bound to below actual → Violated
-    let violating = source().replace(
-        "constraint height < 2000mm",
-        "constraint height < 100mm",
-    );
+    let violating = source().replace("constraint height < 2000mm", "constraint height < 100mm");
     assert_ne!(
         violating,
         source(),

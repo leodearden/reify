@@ -7,7 +7,7 @@
 use reify_eval::Engine;
 use reify_test_support::builders::{binop, conditional_expr, gt, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{assert_eval_clean, CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, assert_eval_clean};
 use reify_types::*;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1619,12 +1619,10 @@ fn missing_template_ref_emits_error_diagnostic() {
         .filter(|d| d.severity == Severity::Error && d.message.contains("unknown structure"))
         .count();
     assert_eq!(
-        error_count,
-        1,
+        error_count, 1,
         "Expected exactly 1 Error-severity diagnostic about unknown structure 'Nonexistent', \
          got {}: {:?}",
-        error_count,
-        result.diagnostics
+        error_count, result.diagnostics
     );
 }
 
@@ -2104,10 +2102,9 @@ fn unfold_recursive_node_budget_exhaustion() {
     let result = engine.eval(&module);
 
     // (1) At least one Error diagnostic with "total node budget exhausted"
-    let has_budget_exhausted_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error && d.message.contains("total node budget exhausted"));
+    let has_budget_exhausted_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.message.contains("total node budget exhausted")
+    });
     assert!(
         has_budget_exhausted_error,
         "Expected at least one Error diagnostic containing 'total node budget exhausted', \
@@ -2131,7 +2128,9 @@ fn unfold_recursive_node_budget_exhaustion() {
 
     // (4) S.left.left.left should exist with n=7 (third node created, when budget was 1→0)
     assert_eq!(
-        result.values.get(&ValueCellId::new("S.left.left.left", "n")),
+        result
+            .values
+            .get(&ValueCellId::new("S.left.left.left", "n")),
         Some(&Value::Int(7)),
         "S.left.left.left.n should be 7 (created when budget was 1→0)"
     );
@@ -2212,10 +2211,8 @@ fn unfold_recursive_guard_non_bool_type_emits_error() {
         .filter(|d| d.severity == Severity::Error)
         .count();
     assert_eq!(
-        error_count,
-        1,
+        error_count, 1,
         "Expected exactly one Error-severity diagnostic, but got {}: {:?}",
-        error_count,
-        result.diagnostics
+        error_count, result.diagnostics
     );
 }

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
-    OpaqueState, RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId,
-    ValueMap, VersionId,
+    OpaqueState, RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId, ValueMap,
+    VersionId,
 };
 
 use crate::deps::DependencyTrace;
@@ -438,7 +438,11 @@ pub fn compute_input_hash(
     let mut combined = expr.content_hash;
 
     // Collect dependency value hashes (order doesn't matter since we combine them all)
-    let dep_hashes: Vec<_> = deps.iter().filter_map(|id| values.get(id)).map(|v| v.content_hash()).collect();
+    let dep_hashes: Vec<_> = deps
+        .iter()
+        .filter_map(|id| values.get(id))
+        .map(|v| v.content_hash())
+        .collect();
 
     // Only combine if there are dependency hashes (empty combine_all returns zero hash)
     if !dep_hashes.is_empty() {
@@ -453,7 +457,11 @@ pub fn compute_input_hash(
 ///
 /// Returns true if the new value hash matches the cached entry's result hash,
 /// indicating no change occurred (early cutoff should apply).
-pub fn check_early_cutoff(store: &CacheStore, id: &ValueCellId, new_value_hash: ContentHash) -> bool {
+pub fn check_early_cutoff(
+    store: &CacheStore,
+    id: &ValueCellId,
+    new_value_hash: ContentHash,
+) -> bool {
     let node = NodeId::Value(id.clone());
     if let Some(entry) = store.get(&node) {
         entry.result_hash == new_value_hash
@@ -474,7 +482,6 @@ pub fn dirty_set(
     _values: &ValueMap,
     store: &mut CacheStore,
 ) -> Vec<ValueCellId> {
-
     let mut dirty: Vec<ValueCellId> = changed.to_vec();
     let mut result: Vec<ValueCellId> = Vec::new();
     let mut visited: std::collections::HashSet<ValueCellId> = std::collections::HashSet::new();
@@ -528,7 +535,6 @@ pub fn incremental_eval(
     _values: &mut ValueMap,
     changed: &[ValueCellId],
 ) -> Vec<ValueCellId> {
-
     // 1. Bump version to invalidate stale entries
     cache.bump_version();
 
@@ -834,10 +840,7 @@ mod tests {
         let node = NodeId::Value(ValueCellId::new("Bracket", "x"));
 
         // First evaluation: cold start with canonical NaN -> Changed
-        let result1 = CachedResult::Value(
-            Value::Real(canonical_nan),
-            DeterminacyState::Determined,
-        );
+        let result1 = CachedResult::Value(Value::Real(canonical_nan), DeterminacyState::Determined);
         let outcome1 = store.record_evaluation(
             node.clone(),
             result1,
@@ -849,10 +852,7 @@ mod tests {
         // Second evaluation: NaN with a different bit pattern -> Unchanged (early cutoff)
         // Value::content_hash canonicalizes all NaN payloads to f64::NAN.to_bits(),
         // so the two results produce the same hash and the cache treats them as equal.
-        let result2 = CachedResult::Value(
-            Value::Real(non_canon_nan),
-            DeterminacyState::Determined,
-        );
+        let result2 = CachedResult::Value(Value::Real(non_canon_nan), DeterminacyState::Determined);
         let outcome2 = store.record_evaluation(
             node.clone(),
             result2,
@@ -1003,7 +1003,10 @@ mod tests {
         values2.insert(x.clone(), Value::Real(2.0));
         let hash2 = compute_input_hash(&expr, std::slice::from_ref(&x), &values2);
 
-        assert_ne!(hash1, hash2, "different values should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "different values should produce different hashes"
+        );
     }
 
     #[test]
@@ -1047,7 +1050,10 @@ mod tests {
         let hash_add = compute_input_hash(&expr_add, std::slice::from_ref(&x), &values);
         let hash_mul = compute_input_hash(&expr_mul, std::slice::from_ref(&x), &values);
 
-        assert_ne!(hash_add, hash_mul, "different expressions should produce different hashes");
+        assert_ne!(
+            hash_add, hash_mul,
+            "different expressions should produce different hashes"
+        );
     }
 
     // --- CacheStore tests ---

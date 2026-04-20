@@ -65,9 +65,8 @@ fn eval_with_stdlib(source: &str) -> reify_eval::EvalResult {
 
 #[test]
 fn sin_pi_is_approximately_zero() {
-    let result = eval_with_stdlib(
-        "structure S {\n  let half_turn = pi\n  let x = sin(half_turn)\n}",
-    );
+    let result =
+        eval_with_stdlib("structure S {\n  let half_turn = pi\n  let x = sin(half_turn)\n}");
     let id = ValueCellId::new("S", "x");
     let val = result
         .values
@@ -75,11 +74,7 @@ fn sin_pi_is_approximately_zero() {
         .unwrap_or_else(|| panic!("'x' not found in eval result"));
     match val {
         Value::Real(v) => {
-            assert!(
-                v.abs() < 1e-10,
-                "sin(pi) should be ~0, got {}",
-                v
-            );
+            assert!(v.abs() < 1e-10, "sin(pi) should be ~0, got {}", v);
         }
         other => panic!("expected Real(~0), got {:?}", other),
     }
@@ -87,9 +82,8 @@ fn sin_pi_is_approximately_zero() {
 
 #[test]
 fn cos_tau_is_approximately_one() {
-    let result = eval_with_stdlib(
-        "structure S {\n  let full_turn = tau\n  let y = cos(full_turn)\n}",
-    );
+    let result =
+        eval_with_stdlib("structure S {\n  let full_turn = tau\n  let y = cos(full_turn)\n}");
     let id = ValueCellId::new("S", "y");
     let val = result
         .values
@@ -97,11 +91,7 @@ fn cos_tau_is_approximately_one() {
         .unwrap_or_else(|| panic!("'y' not found in eval result"));
     match val {
         Value::Real(v) => {
-            assert!(
-                (*v - 1.0).abs() < 1e-10,
-                "cos(tau) should be ~1, got {}",
-                v
-            );
+            assert!((*v - 1.0).abs() < 1e-10, "cos(tau) should be ~1, got {}", v);
         }
         other => panic!("expected Real(~1), got {:?}", other),
     }

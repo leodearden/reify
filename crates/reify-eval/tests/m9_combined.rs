@@ -9,10 +9,7 @@ use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m9_combined.ri"
-);
+const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m9_combined.ri");
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -22,8 +19,7 @@ const EXAMPLE_PATH: &str = concat!(
 fn source() -> &'static str {
     static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(EXAMPLE_PATH)
-            .expect("examples/m9_combined.ri should exist")
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_combined.ri should exist")
     })
     .as_str()
 }
@@ -35,7 +31,6 @@ fn eval_source(src: &str) -> reify_eval::EvalResult {
     let mut engine = make_simple_engine();
     engine.eval(&compiled)
 }
-
 
 // ── Test 1: file parses without errors ──────────────────────────────────────
 
@@ -316,7 +311,10 @@ fn recursive_unfold_depth() {
                 "expected ~0.1 SI for BracketTree.child.span (100mm), got {si_value}"
             );
         }
-        other => panic!("expected Scalar for BracketTree.child.span, got {:?}", other),
+        other => panic!(
+            "expected Scalar for BracketTree.child.span, got {:?}",
+            other
+        ),
     }
 
     // BracketTree.child.child.span = 100mm/2 = 50mm = 0.05 SI
@@ -422,7 +420,10 @@ fn violated_constraint_detected() {
     // on entity Bracket (not some unrelated or cascade failure).  Inline constraints
     // have label=None so we cannot match by label directly; instead assert exactly one
     // Bracket violation — any more would indicate an unexpected regression.
-    let bracket_violation_count = violations.iter().filter(|e| e.id.entity == "Bracket").count();
+    let bracket_violation_count = violations
+        .iter()
+        .filter(|e| e.id.entity == "Bracket")
+        .count();
     assert_eq!(
         bracket_violation_count,
         1,

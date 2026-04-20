@@ -3,7 +3,10 @@
 //! Exercises the full parse→compile→eval pipeline for `meta.key` expressions,
 //! ensuring integration across the parser, compiler, and evaluator boundaries.
 
-use reify_test_support::{assert_no_diagnostic, assert_no_error_diagnostics, make_engine, parse_and_compile, parse_compile_expect_err};
+use reify_test_support::{
+    assert_no_diagnostic, assert_no_error_diagnostics, make_engine, parse_and_compile,
+    parse_compile_expect_err,
+};
 use reify_types::{Satisfaction, Severity, Value, ValueCellId};
 
 // ---------------------------------------------------------------------------
@@ -191,10 +194,12 @@ fn e2e_meta_sub_structure_child_meta() {
         "Assembly should have exactly one sub-component"
     );
     let sub = &assembly.sub_components[0];
-    assert_eq!(sub.name, "part", "sub-component binding name should be 'part'");
     assert_eq!(
-        sub.structure_name,
-        "Part",
+        sub.name, "part",
+        "sub-component binding name should be 'part'"
+    );
+    assert_eq!(
+        sub.structure_name, "Part",
         "sub-component structure_name should be 'Part'"
     );
 
@@ -340,7 +345,11 @@ fn e2e_meta_access_missing_key() {
     // Mutual-exclusion guard: the missing-key path must NOT produce the
     // no-meta-block error.  If both appear (or the wrong one appears), a future
     // compiler regression would otherwise stay hidden.
-    assert_no_diagnostic(&compiled.diagnostics, Severity::Error, "entity has no meta block");
+    assert_no_diagnostic(
+        &compiled.diagnostics,
+        Severity::Error,
+        "entity has no meta block",
+    );
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
@@ -362,7 +371,11 @@ fn e2e_meta_access_no_meta_block() {
     // Mutual-exclusion guard: the no-meta-block path must NOT produce the
     // missing-key error.  If both appear (or the wrong one appears), a future
     // compiler regression would otherwise stay hidden.
-    assert_no_diagnostic(&compiled.diagnostics, Severity::Error, "meta block has no key");
+    assert_no_diagnostic(
+        &compiled.diagnostics,
+        Severity::Error,
+        "meta block has no key",
+    );
 }
 
 // ---------------------------------------------------------------------------

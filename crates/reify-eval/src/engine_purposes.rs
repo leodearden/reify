@@ -1,9 +1,9 @@
 // Split from lib.rs (task 2032) — purposes methods.
 
-use reify_types::{ConstraintNodeId, ContentHash, OptimizationObjective};
+use crate::Engine;
 use crate::cache::NodeId;
 use crate::deps::ReverseDependencyIndex;
-use crate::Engine;
+use reify_types::{ConstraintNodeId, ContentHash, OptimizationObjective};
 
 impl Engine {
     /// Activate a purpose by name against a target entity.

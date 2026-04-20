@@ -716,9 +716,7 @@ fn edit_param_snapshot_provenance_chain() {
     let (mut engine, _initial) = make_eval_engine();
 
     // After eval(): provenance should be Initial, ID = 0
-    let snap = engine
-        .snapshot()
-        .expect("snapshot should exist after eval");
+    let snap = engine.snapshot().expect("snapshot should exist after eval");
     assert_eq!(snap.provenance, SnapshotProvenance::Initial);
     assert_eq!(snap.id, SnapshotId(0));
 
@@ -859,16 +857,27 @@ fn edit_param_wrong_value_kind() {
     let err = engine
         .edit_param(height_id.clone(), Value::Bool(true))
         .expect_err("edit_param with wrong value kind should return Err");
-    let reify_eval::EngineError::TypeKindMismatch { cell, expected, got } = err else {
+    let reify_eval::EngineError::TypeKindMismatch {
+        cell,
+        expected,
+        got,
+    } = err
+    else {
         panic!("expected EngineError::TypeKindMismatch, got {err:?}");
     };
     assert_eq!(cell, height_id, "cell should be the height cell id");
     assert_eq!(
         *expected,
-        reify_types::Type::Scalar { dimension: reify_types::DimensionVector::LENGTH },
+        reify_types::Type::Scalar {
+            dimension: reify_types::DimensionVector::LENGTH
+        },
         "expected should be Type::Scalar[LENGTH] (the cell's declared type)"
     );
-    assert_eq!(*got, Value::Bool(true), "got should be the supplied Value::Bool(true)");
+    assert_eq!(
+        *got,
+        Value::Bool(true),
+        "got should be the supplied Value::Bool(true)"
+    );
 }
 
 /// edit_check Assembly.height (Type::Scalar[LENGTH]) with Value::Bool(true)
@@ -882,16 +891,27 @@ fn edit_check_wrong_value_kind() {
     let err = engine
         .edit_check(height_id.clone(), Value::Bool(true))
         .expect_err("edit_check with wrong value kind should return Err");
-    let reify_eval::EngineError::TypeKindMismatch { cell, expected, got } = err else {
+    let reify_eval::EngineError::TypeKindMismatch {
+        cell,
+        expected,
+        got,
+    } = err
+    else {
         panic!("expected EngineError::TypeKindMismatch, got {err:?}");
     };
     assert_eq!(cell, height_id, "cell should be the height cell id");
     assert_eq!(
         *expected,
-        reify_types::Type::Scalar { dimension: reify_types::DimensionVector::LENGTH },
+        reify_types::Type::Scalar {
+            dimension: reify_types::DimensionVector::LENGTH
+        },
         "expected should be Type::Scalar[LENGTH] (the cell's declared type)"
     );
-    assert_eq!(*got, Value::Bool(true), "got should be the supplied Value::Bool(true)");
+    assert_eq!(
+        *got,
+        Value::Bool(true),
+        "got should be the supplied Value::Bool(true)"
+    );
 }
 
 /// edit_param Assembly.grade (Type::Enum("Grade")) with Value::Int(1)
@@ -909,12 +929,25 @@ fn edit_param_enum_cell_wrong_value_kind() {
     let err = engine
         .edit_param(grade_id.clone(), Value::Int(1))
         .expect_err("edit_param with wrong value kind should return Err");
-    let reify_eval::EngineError::TypeKindMismatch { cell, expected, got } = err else {
+    let reify_eval::EngineError::TypeKindMismatch {
+        cell,
+        expected,
+        got,
+    } = err
+    else {
         panic!("expected EngineError::TypeKindMismatch, got {err:?}");
     };
     assert_eq!(cell, grade_id, "cell should be the grade cell id");
-    assert_eq!(*expected, reify_types::Type::Enum("Grade".to_string()), "expected should be Type::Enum(\"Grade\")");
-    assert_eq!(*got, Value::Int(1), "got should be the supplied Value::Int(1)");
+    assert_eq!(
+        *expected,
+        reify_types::Type::Enum("Grade".to_string()),
+        "expected should be Type::Enum(\"Grade\")"
+    );
+    assert_eq!(
+        *got,
+        Value::Int(1),
+        "got should be the supplied Value::Int(1)"
+    );
 }
 
 /// edit_check Assembly.grade (Type::Enum("Grade")) with Value::Int(1)
@@ -932,12 +965,25 @@ fn edit_check_enum_cell_wrong_value_kind() {
     let err = engine
         .edit_check(grade_id.clone(), Value::Int(1))
         .expect_err("edit_check with wrong value kind should return Err");
-    let reify_eval::EngineError::TypeKindMismatch { cell, expected, got } = err else {
+    let reify_eval::EngineError::TypeKindMismatch {
+        cell,
+        expected,
+        got,
+    } = err
+    else {
         panic!("expected EngineError::TypeKindMismatch, got {err:?}");
     };
     assert_eq!(cell, grade_id, "cell should be the grade cell id");
-    assert_eq!(*expected, reify_types::Type::Enum("Grade".to_string()), "expected should be Type::Enum(\"Grade\")");
-    assert_eq!(*got, Value::Int(1), "got should be the supplied Value::Int(1)");
+    assert_eq!(
+        *expected,
+        reify_types::Type::Enum("Grade".to_string()),
+        "expected should be Type::Enum(\"Grade\")"
+    );
+    assert_eq!(
+        *got,
+        Value::Int(1),
+        "got should be the supplied Value::Int(1)"
+    );
 }
 
 // ── Regression tests: Undef acceptance + numeric coercion ────────────────────
@@ -966,13 +1012,13 @@ fn edit_param_int_real_numeric_coercion_allowed() {
 
     // Int → Real: Assembly.load_auto is declared as `param load_auto : Real = auto`.
     let load_auto_id = ValueCellId::new("Assembly", "load_auto");
-    engine
-        .edit_param(load_auto_id, Value::Int(5))
-        .expect("edit_param with Value::Int to a Type::Real cell should return Ok (numeric coercion)");
+    engine.edit_param(load_auto_id, Value::Int(5)).expect(
+        "edit_param with Value::Int to a Type::Real cell should return Ok (numeric coercion)",
+    );
 
     // Real → Int: RecursiveBeam.depth is declared as `param depth : Int = 2`.
     let depth_id = ValueCellId::new("RecursiveBeam", "depth");
-    engine
-        .edit_param(depth_id, Value::Real(5.0))
-        .expect("edit_param with Value::Real to a Type::Int cell should return Ok (numeric coercion)");
+    engine.edit_param(depth_id, Value::Real(5.0)).expect(
+        "edit_param with Value::Real to a Type::Int cell should return Ok (numeric coercion)",
+    );
 }

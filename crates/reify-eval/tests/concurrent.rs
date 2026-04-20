@@ -10,8 +10,13 @@ use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::journal::{EventKind, EventPayload};
 use reify_eval::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult, Engine};
-use reify_test_support::mocks::{MockConstraintChecker, MultiCallSpyConstraintSolver, SequencedMockConstraintSolver};
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, binop, bracket_compiled_module, gt, literal, mm, value_ref};
+use reify_test_support::mocks::{
+    MockConstraintChecker, MultiCallSpyConstraintSolver, SequencedMockConstraintSolver,
+};
+use reify_test_support::{
+    CompiledModuleBuilder, TopologyTemplateBuilder, binop, bracket_compiled_module, gt, literal,
+    mm, value_ref,
+};
 use reify_types::{
     BinOp, ConstraintNodeId, DeterminacyState, Freshness, ModulePath, SnapshotProvenance,
     SolveResult, Type, Value, ValueCellId,
@@ -350,8 +355,14 @@ fn make_two_call_solver(
     let mut solved2 = HashMap::new();
     solved2.insert(x_id.clone(), second);
     SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1, unique: true },
-        SolveResult::Solved { values: solved2, unique: true },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ])
 }
 
@@ -390,7 +401,10 @@ fn pipeline_prepare_resolve_apply_re_resolves_auto_param() {
 
     // Cold eval: solver call 1 → x = mm(5.0) = 0.005 SI
     let cold = engine.eval(&module);
-    let cold_x = cold.values.get(&x_id).expect("x should be in cold eval values");
+    let cold_x = cold
+        .values
+        .get(&x_id)
+        .expect("x should be in cold eval values");
     assert!(
         matches!(cold_x, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
         "expected cold x = mm(5.0) = 0.005 SI, got {:?}",
@@ -430,13 +444,19 @@ fn pipeline_prepare_resolve_apply_re_resolves_auto_param() {
     );
 
     // No diagnostics for a successful solve
-    assert!(result.diagnostics.is_empty(), "expected empty diagnostics, got {:?}", result.diagnostics);
+    assert!(
+        result.diagnostics.is_empty(),
+        "expected empty diagnostics, got {:?}",
+        result.diagnostics
+    );
 
     // Apply the result
     engine.apply_concurrent_edit(&setup, result);
 
     // Snapshot should carry x = mm(20.0)
-    let snap = engine.snapshot().expect("snapshot should exist after apply");
+    let snap = engine
+        .snapshot()
+        .expect("snapshot should exist after apply");
     let (snap_x, snap_det) = snap.values.get(&x_id).expect("x should be in snapshot");
     assert!(
         matches!(snap_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
@@ -446,7 +466,10 @@ fn pipeline_prepare_resolve_apply_re_resolves_auto_param() {
     assert_eq!(*snap_det, DeterminacyState::Determined);
 
     // Snapshot version should match setup.version
-    assert_eq!(snap.version, setup.version, "snapshot version should match setup");
+    assert_eq!(
+        snap.version, setup.version,
+        "snapshot version should match setup"
+    );
 
     // Provenance should be Edit with changed = {a}
     match &snap.provenance {
@@ -517,7 +540,10 @@ fn resolve_concurrent_edit_second_wave_updates_dependent_let_binding() {
         "cache should have an entry for y after wave-2 record_evaluation"
     );
     let cache_y = engine.cache_store().get(&y_node).unwrap();
-    assert_eq!(cache_y.basis_version, setup.version, "cache y basis_version should be setup.version");
+    assert_eq!(
+        cache_y.basis_version, setup.version,
+        "cache y basis_version should be setup.version"
+    );
 }
 
 /// Returns an `(Engine, ConcurrentEditSetup)` for a minimal N-template:
@@ -572,7 +598,10 @@ fn resolve_concurrent_edit_without_solver_is_noop_fresh_input() {
     // Should not panic and should not populate either output bucket.
     engine.resolve_concurrent_edit(&setup, &mut result);
 
-    assert!(result.resolved_params.is_empty(), "no solver => no resolved params");
+    assert!(
+        result.resolved_params.is_empty(),
+        "no solver => no resolved params"
+    );
     assert!(result.diagnostics.is_empty(), "no solver => no diagnostics");
 }
 
@@ -658,7 +687,8 @@ fn rollback_restores_every_pending_node_to_final() {
             assert!(
                 matches!(entry.freshness, Freshness::Pending { .. }),
                 "node {:?} should be Pending after prepare, got {:?}",
-                node_id, entry.freshness
+                node_id,
+                entry.freshness
             );
         }
     }
@@ -675,7 +705,8 @@ fn rollback_restores_every_pending_node_to_final() {
                 entry.freshness,
                 Freshness::Final,
                 "node {:?} should be Final after rollback, got {:?}",
-                node_id, entry.freshness
+                node_id,
+                entry.freshness
             );
             // Hash must be preserved (rollback did not touch the value).
             if let Some(&pre_hash) = pre_hashes.get(node_id) {
@@ -817,9 +848,18 @@ fn apply_concurrent_edit_persists_resolved_params_to_param_overrides() {
     solved3.insert(x_id.clone(), mm(99.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1, unique: true },
-        SolveResult::Solved { values: solved2, unique: true },
-        SolveResult::Solved { values: solved3, unique: true },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved3,
+            unique: true,
+        },
     ]);
 
     let module = build_auto_param_module();
@@ -850,11 +890,18 @@ fn apply_concurrent_edit_persists_resolved_params_to_param_overrides() {
     // (b) A subsequent eval() must return x == mm(99.0) exactly (solver call 3).
     //     Derive expected SI from mm(99.0) so the assertion stays in sync with the
     //     solver setup if unit conversion semantics ever change.
-    let Value::Scalar { si_value: expected_si, .. } = mm(99.0) else {
+    let Value::Scalar {
+        si_value: expected_si,
+        ..
+    } = mm(99.0)
+    else {
         unreachable!("mm() always returns Value::Scalar")
     };
     let second = engine.eval(&module);
-    let second_x = second.values.get(&x_id).expect("x must be in second eval values");
+    let second_x = second
+        .values
+        .get(&x_id)
+        .expect("x must be in second eval values");
     assert!(
         matches!(second_x, Value::Scalar { si_value, .. } if (*si_value - expected_si).abs() < 1e-10),
         "expected second eval x == mm(99.0) (from solver call 3), got {:?}",
@@ -906,10 +953,16 @@ fn resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty(
     bogus_solved.insert(x_id.clone(), mm(999.0));
 
     let spy = MultiCallSpyConstraintSolver::new(vec![
-        SolveResult::Solved { values: cold_solved, unique: true },
+        SolveResult::Solved {
+            values: cold_solved,
+            unique: true,
+        },
         // If the solver is incorrectly called a second time, mm(999.0) would
         // appear in result.resolved_params — any emptiness assertion would fail loudly.
-        SolveResult::Solved { values: bogus_solved, unique: true },
+        SolveResult::Solved {
+            values: bogus_solved,
+            unique: true,
+        },
     ]);
 
     // Capture the shared call-counter handle BEFORE moving spy into the engine.
