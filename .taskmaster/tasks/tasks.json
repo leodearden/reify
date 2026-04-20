@@ -43325,11 +43325,11 @@
         "description": "Two small follow-ups from task 1948 review.\n\n(1) Code reuse: In `gui/src-tauri/src/tests/engine_tests.rs`, two test sites still use the raw `u32::MAX as usize` literal for the prelude sentinel even though task 1948 migrated other call sites to `reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET`. Replace:\n  - line 1449: `let sentinel = u32::MAX as usize;` → `let sentinel = reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET;`\n  - line 1544: `offset_to_line_col_fast(source, &offsets, u32::MAX as usize)` → use the constant.\n  This keeps the sentinel contract expressed in one canonical location so future changes track automatically.\n\n(2) Test quality: In `offset_to_line_col_fast_matches_original_every_offset` (lines 1457-1466), the convergence block now has three assertions:\n  - `fast_sentinel == orig_sentinel` (existing equality)\n  - `fast_sentinel == (1, 1)` (new literal pin)\n  - `orig_sentinel == (1, 1)` (new literal pin, redundant)\nThe third is redundant by transitivity: once `fast_sentinel == (1,1)` and `fast_sentinel == orig_sentinel` both hold, `orig_sentinel == (1,1)` follows. Collapse to one new assertion:\n`assert_eq!(fast_sentinel, (1, 1), \"sentinel must be (1,1) to match the no-location fallback\");`\n\nAcceptance:\n- No remaining `u32::MAX as usize` literal in `engine_tests.rs` at the two cited sentinel sites.\n- Convergence test retains `fast_sentinel == orig_sentinel` + a single `(1,1)` pin assertion.\n- `cargo test -p reify-gui-tauri` (or the GUI test crate) green.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T16:31:16.389Z"
+        "updatedAt": "2026-04-20T17:05:25.257Z"
       },
       {
         "id": "2060",
@@ -43359,9 +43359,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:56:18.481Z",
+      "lastModified": "2026-04-20T17:05:25.257Z",
       "taskCount": 2052,
-      "completedCount": 1780,
+      "completedCount": 1781,
       "tags": [
         "master"
       ]
