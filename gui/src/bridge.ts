@@ -431,3 +431,23 @@ export async function onNavigateToSource(
     callback(event.payload);
   });
 }
+
+/** Whether the OCCT geometry kernel is available in this build. */
+export interface KernelStatus {
+  available: boolean;
+  message: string | null;
+}
+
+/** Fetch the current kernel availability status via a Tauri command. */
+export async function getKernelStatus(): Promise<KernelStatus> {
+  return invoke<KernelStatus>('get_kernel_status');
+}
+
+/** Subscribe to kernel-status events emitted from Tauri setup() at startup. */
+export async function onKernelStatus(
+  callback: (status: KernelStatus) => void,
+): Promise<UnlistenFn> {
+  return listen<KernelStatus>('kernel-status', (event) => {
+    callback(event.payload);
+  });
+}
