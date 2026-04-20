@@ -123,14 +123,16 @@ assert "test_command contains gated release pass with -p reify-kernel-occt" \
 echo ""
 echo "--- Test 12: no bare ungated 'cargo test --workspace' in test_command ---"
 
-# All occurrences of 'cargo test --workspace' must be preceded by the gate script.
-# Extract the test_command line; replace gated occurrences with a placeholder;
-# then assert no bare 'cargo test --workspace' remains.
-assert "no bare 'cargo test --workspace' without gate in test_command" \
+# Allowed forms after task 2000:
+#   (a) Gated: cargo-test-occt-gated.sh cargo test -p ...  (no --workspace)
+#   (b) Ungated with --exclude: cargo test --workspace --exclude ... (intentional)
+# Forbidden form: bare 'cargo test --workspace' without any --exclude flags.
+# Strip the allowed ungated-with-exclude form, then assert none remains.
+assert "no bare 'cargo test --workspace' without --exclude in test_command" \
     bash -c "
         LINE=\$(grep 'test_command:' '$ORCH')
-        # Remove gated occurrences; anything left is ungated.
-        STRIPPED=\$(echo \"\$LINE\" | sed 's|[^ ]*/cargo-test-occt-gated\.sh cargo test --workspace||g')
+        # Remove allowed ungated-with-exclude occurrences.
+        STRIPPED=\$(echo \"\$LINE\" | sed 's|cargo test --workspace --exclude[^&]*||g')
         ! echo \"\$STRIPPED\" | grep -q 'cargo test --workspace'
     "
 
