@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SHORTCUTS, getShortcut, shortcutKey, matchesEvent, type KeyBinding } from '../shortcuts';
+import { SHORTCUTS, getShortcut, shortcutKey, matchesEvent, type KeyBinding, type ShortcutDef } from '../shortcuts';
 
 const SRC = readFileSync(join(__dirname, '../shortcuts.ts'), 'utf-8');
 

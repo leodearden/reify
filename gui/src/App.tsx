@@ -14,6 +14,7 @@ import {
   ChatPanel,
   MenuBar,
   DesignTree,
+  ViewManageModal,
 } from './panels';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -96,11 +97,13 @@ const App: Component = () => {
   // avoiding a race where the memo re-runs before the createEffect below has executed.
   const [treeGeneration, setTreeGeneration] = createSignal(0);
 
-  // Keep viewStateStore's internal path-map in sync with the latest entity tree.
-  // Increment treeGeneration AFTER setTree so that effectiveVisibility always
-  // evaluates getAllEffective() with an up-to-date nodeByPath.
+  // Keep viewStateStore in sync with the latest entity tree.
+  // regenerateAutoViews handles both the nodeByPath rebuild (equivalent to
+  // setTree) AND auto-view generation in one reactive notification.
+  // Increment treeGeneration AFTER regenerateAutoViews so that effectiveVisibility
+  // always evaluates getAllEffective() with an up-to-date nodeByPath.
   createEffect(() => {
-    viewStateStore.setTree(entityTree());
+    viewStateStore.regenerateAutoViews(entityTree());
     setTreeGeneration((v) => v + 1);
   });
 
@@ -155,6 +158,9 @@ const App: Component = () => {
 
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = createSignal(false);
+
+  // View manage modal state
+  const [viewManageOpen, setViewManageOpen] = createSignal(false);
 
   // Keyboard help overlay state
   const [showHelp, setShowHelp] = createSignal(false);
@@ -267,6 +273,21 @@ const App: Component = () => {
       }
     },
     onClearSelection: () => selectionStore.clearSelection(),
+    onSwitchViewByIndex: (i: number) => {
+      // Ordered: auto:default first, then other auto views alphabetically,
+      // then user views in userViewOrder.  Mirrors ViewSelector's sort order.
+      const sortedAutoIds = Object.values(viewStateStore.state.views)
+        .filter((v) => v.auto)
+        .sort((a, b) => {
+          if (a.id === 'auto:default') return -1;
+          if (b.id === 'auto:default') return 1;
+          return a.id.localeCompare(b.id);
+        })
+        .map((v) => v.id);
+      const allIds = [...sortedAutoIds, ...viewStateStore.state.userViewOrder];
+      const target = allIds[i];
+      if (target) viewStateStore.switchView(target);
+    },
   });
 
   let alive = true;
@@ -756,6 +777,7 @@ const App: Component = () => {
                 onSelect={handleDesignTreeSelect}
                 onRangeSelect={selectionStore.rangeSelect}
                 onSelectAll={selectionStore.selectAll}
+                onOpenManage={() => setViewManageOpen(true)}
               />
               <PropertyEditor
                 values={engineStore.state.values}
@@ -794,6 +816,11 @@ const App: Component = () => {
             exporting={exporting()}
             onExport={handleDoExport}
             onClose={() => setShowExportDialog(false)}
+          />
+          <ViewManageModal
+            open={viewManageOpen()}
+            store={viewStateStore}
+            onClose={() => setViewManageOpen(false)}
           />
           <div class={styles.toastContainer}>
             <For each={toasts()}>

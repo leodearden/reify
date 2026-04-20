@@ -52,11 +52,18 @@ export const ViewSelector: Component<ViewSelectorProps> = (props) => {
     });
   });
 
-  /** Auto views in deterministic order (by id key). */
+  /**
+   * Auto views in display order: "Default" first (auto:default is pinned),
+   * then the rest sorted alphabetically by id.
+   */
   const autoViews = createMemo(() =>
     Object.values(props.store.state.views)
       .filter((v) => v.auto)
-      .sort((a, b) => a.id.localeCompare(b.id)),
+      .sort((a, b) => {
+        if (a.id === 'auto:default') return -1;
+        if (b.id === 'auto:default') return 1;
+        return a.id.localeCompare(b.id);
+      }),
   );
 
   /** User views in userViewOrder. */
@@ -123,7 +130,7 @@ export const ViewSelector: Component<ViewSelectorProps> = (props) => {
                 >
                   <span>{view.name}</span>
                   <Show when={view.modified}>
-                    <span class={styles.modifiedMarker} data-modified="true" aria-label="modified" />
+                    <span class={styles.modifiedMarker} data-modified="true" aria-hidden="true" title="modified" />
                   </Show>
                 </button>
               )}

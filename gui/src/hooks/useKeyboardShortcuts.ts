@@ -78,7 +78,11 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       const callbackKey = ID_TO_CALLBACK[shortcut.id];
       if (!callbackKey) continue;
       e.preventDefault();
-      callbacks[callbackKey]?.();
+      // All entries in ID_TO_CALLBACK map to zero-argument callbacks.
+      // Cast to silence TypeScript's union-type inference for the parameterised
+      // onSwitchViewByIndex callback (which is handled via its own special-case
+      // block below, not through this registry loop).
+      (callbacks[callbackKey] as (() => void) | undefined)?.();
       return;
     }
 
