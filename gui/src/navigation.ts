@@ -40,6 +40,11 @@ export interface NavigateToEntityDeps {
  * Trigger the backend focus_entity command.
  * The focus-entity event listener in App.tsx handles viewport fly + selection
  * for both MCP-originated and user-initiated (double-click) paths.
+ *
+ * Deliberately kept as a named function rather than inlining `bridgeFocusEntity`
+ * directly at the call site: it provides a single extension seam (e.g. optimistic
+ * UI, analytics, or pre-flight guards) and centralises the error-catch/log that
+ * would otherwise need to be duplicated at every call site.
  */
 export async function navigateToEntity(
   entityPath: string,
