@@ -806,6 +806,183 @@ mod tests {
         );
     }
 
+    /// Verify that `reapply_user_overrides` emits a WARN when `edit_param` returns
+    /// `TypeKindMismatch` (e.g. the user changed `width` from `Scalar` to `Int`).
+    ///
+    /// Pre-fix code silently swallows all `edit_param` errors (not just
+    /// `CellNotFound`), so the warn counter stays at 0 and this test FAILS until
+    /// the explicit `match` is added.  Post-fix, the warn-arm fires and the
+    /// counter advances by exactly 1.
+    #[test]
+    fn reapply_user_overrides_warns_on_type_kind_mismatch() {
+        use std::sync::atomic::Ordering;
+
+        let (_guard, counter) = reify_test_support::warn_counting_guard();
+
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        // Override width — stores Value::Scalar[LENGTH] (0.12 m = 120 mm).
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter should succeed");
+
+        // Snapshot warn counter before the topology-changing update.
+        let before = counter.load(Ordering::Acquire);
+
+        // Update source: change `width` from `Scalar = 80mm` (LENGTH) to `Int = 80`.
+        // The cell now expects Int, but the stored override is Scalar[LENGTH] →
+        // edit_param must return TypeKindMismatch → reapply_user_overrides must warn.
+        let content_with_int_width = "\
+structure Bracket {
+    param width: Int = 80
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+    param fillet_radius: Scalar = 3mm
+    param hole_diameter: Scalar = 6mm
+
+    let volume = height * thickness
+
+    constraint thickness > 2mm
+    constraint hole_diameter < thickness * 2
+
+    let body = box(height, height, thickness)
+}
+";
+        let result = ctx
+            .update_source(BRACKET_PATH, content_with_int_width)
+            .expect("update_source should return Ok even on override mismatch");
+        assert!(result.success, "update_source should succeed (parse/compile passed)");
+
+        reify_test_support::assert_warn_count_delta(
+            &counter,
+            before,
+            1,
+            "type-kind mismatch must emit exactly one warn",
+        );
+    }
+
+    /// Verify that `reapply_user_overrides` emits a WARN when `edit_param` returns
+    /// `DimensionMismatch` (e.g. the user changed `width` from LENGTH to MASS dimension).
+    ///
+    /// Pre-fix code silently swallows this error, so the warn counter stays at 0 and
+    /// this test FAILS until the explicit `match` is added.  Post-fix, the warn-arm
+    /// fires and the counter advances by exactly 1.
+    #[test]
+    fn reapply_user_overrides_warns_on_dimension_mismatch() {
+        use std::sync::atomic::Ordering;
+
+        let (_guard, counter) = reify_test_support::warn_counting_guard();
+
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        // Override width — stores Value::Scalar[LENGTH] (0.12 m = 120 mm).
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter should succeed");
+
+        // Snapshot warn counter before the topology-changing update.
+        let before = counter.load(Ordering::Acquire);
+
+        // Update source: change `width` from `Scalar = 80mm` (LENGTH) to
+        // `Scalar = 5kg` (MASS).  The cell now expects a MASS scalar but the stored
+        // override has LENGTH dimension → edit_param must return DimensionMismatch →
+        // reapply_user_overrides must warn.
+        let content_with_mass_width = "\
+structure Bracket {
+    param width: Scalar = 5kg
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+    param fillet_radius: Scalar = 3mm
+    param hole_diameter: Scalar = 6mm
+
+    let volume = height * thickness
+
+    constraint thickness > 2mm
+    constraint hole_diameter < thickness * 2
+
+    let body = box(height, height, thickness)
+}
+";
+        let result = ctx
+            .update_source(BRACKET_PATH, content_with_mass_width)
+            .expect("update_source should return Ok even on override mismatch");
+        assert!(result.success, "update_source should succeed (parse/compile passed)");
+
+        reify_test_support::assert_warn_count_delta(
+            &counter,
+            before,
+            1,
+            "dimension mismatch must emit exactly one warn",
+        );
+    }
+
+    /// Verify that `reapply_user_overrides` does NOT warn when `edit_param` returns
+    /// `CellNotFound` (topology changed — the overridden cell no longer exists).
+    ///
+    /// This is the silent-skip path that was already correct before the fix.  The
+    /// test ensures the fix does not accidentally add a warn on `CellNotFound`.
+    /// Expected warn delta is 0, which passes against both pre-fix and post-fix code.
+    #[test]
+    fn reapply_user_overrides_cell_not_found_is_silent() {
+        use std::sync::atomic::Ordering;
+
+        let (_guard, counter) = reify_test_support::warn_counting_guard();
+
+        let project_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures"
+        ));
+        let ctx = CliToolContext::new(project_dir);
+
+        ctx.load_file(BRACKET_PATH).expect("load_file should succeed");
+        // Override width — stores Value::Scalar[LENGTH] (0.12 m = 120 mm).
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter should succeed");
+
+        // Snapshot warn counter before the topology-changing update.
+        let before = counter.load(Ordering::Acquire);
+
+        // Update source: remove `width` param entirely (topology change).
+        // References to `width` in the body are also removed so the content parses.
+        // edit_param must return CellNotFound → reapply_user_overrides must be silent
+        // (no warn emitted, override retained for potential future re-apply).
+        let content_without_width = "\
+structure Bracket {
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+    param fillet_radius: Scalar = 3mm
+    param hole_diameter: Scalar = 6mm
+
+    let volume = height * thickness
+
+    constraint thickness > 2mm
+    constraint thickness < height / 4
+    constraint hole_diameter < thickness * 2
+
+    let body = box(height, height, thickness)
+}
+";
+        let result = ctx
+            .update_source(BRACKET_PATH, content_without_width)
+            .expect("update_source should return Ok when topology changes");
+        assert!(result.success, "update_source should succeed (parse/compile passed)");
+
+        reify_test_support::assert_warn_count_delta(
+            &counter,
+            before,
+            0,
+            "CellNotFound must NOT emit a warn — silent skip",
+        );
+    }
+
     /// Verify that `load_file` clears prior parameter overrides.  Because
     /// `load_file` semantically starts over with a fresh file, overrides
     /// set before it must not leak into the re-evaluated snapshot.
