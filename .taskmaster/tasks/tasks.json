@@ -43553,14 +43553,18 @@
         "updatedAt": "2026-04-20T20:48:09.662Z",
         "metadata": {
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "reify orchestrator config"
+            ],
             "queries": [
-              "resolution for: Fix orchestrator scheduler task-fetch ENOENT error"
+              "orchestrator scheduler task fetch path config",
+              "tasks.json path project_root configuration"
             ]
           },
           "done_provenance": {
             "note": "Fix shipped in dark-factory commit 452ce221b2 (merged via cac00003f5 on 2026-04-20). Target files (scheduler.py, mcp_lifecycle.py, task_fetcher.py) live in /home/leo/src/dark-factory, not in reify. Commit broadened MCP retry set to include httpx.NetworkError and OSError, and switched scheduler catch-alls to logger.exception so tracebacks surface. Post-restart reify orchestrator logs show zero 'Failed to fetch tasks' occurrences."
-          }
+          },
+          "_causation_id": "37be0550-2c1a-4eee-a3d4-810dafacdf64"
         }
       }
     ],
@@ -43571,7 +43575,9 @@
       "completedCount": 1789,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T20:54:35.047Z",
+      "description": "Tasks for master context"
     }
   }
 }
