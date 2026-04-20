@@ -3223,7 +3223,7 @@ fn build_duplicate_template_session() -> EngineSession {
 #[test]
 #[should_panic(expected = "template names must be unique")]
 fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
-    let mut session = build_duplicate_template_session();
+    let session = build_duplicate_template_session();
     let _ = session.get_entity_tree();
 }
 

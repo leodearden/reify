@@ -270,6 +270,7 @@ structure S {
 /// Expected relationships (prelude `symmetric_tolerance(a, b) = a + b`):
 ///   - `x` is finite and satisfies `x < 20mm` (solver produced a feasible point)
 ///   - `y == x + 0.001` exactly (prelude was reachable in post-solver re-eval)
+///
 /// The exact value of `x` is not asserted — it depends on DimensionalSolver's
 /// feasibility-shortcut policy and pinning it would couple this test to solver
 /// internals instead of the prelude reachability it guards.
