@@ -48,6 +48,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         | "extrude" | "extrude_symmetric" | "revolve" | "revolve_full"
         | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
         "sweep" => &[0, 1],
+        "sweep_guided" => &[0, 1, 2],
         // NOTE: `loft` is handled specially (variadic geometry args) in the resolution block.
         // IMPORTANT: New geometry functions that take geometry args MUST be registered here
         // (or handled like loft for variadic cases). Missing entries are silently treated as
@@ -614,6 +615,81 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // sweep_guided(profile, path, guide) — pipe-shell sweep with an
+        // auxiliary guide wire constraining orientation.
+        "sweep_guided" => {
+            if compiled_args.len() != 3 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "sweep_guided() expects exactly 3 arguments (profile, path, guide), got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            // Like sweep(), sweep_guided() emits per-argument diagnostics when
+            // an arg is not a geometry expression, falling back to GeomRef::Step
+            // so the op is still produced for downstream analysis.
+            let profile = if let Some(r) = geom_refs.get(&0).cloned() {
+                r
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sweep_guided() profile (argument 1) must be a geometry expression"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        args[0].span,
+                        "not a geometry expression",
+                    )),
+                );
+                GeomRef::Step(step_offset)
+            };
+            let path = if let Some(r) = geom_refs.get(&1).cloned() {
+                r
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sweep_guided() path (argument 2) must be a geometry expression"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        args[1].span,
+                        "not a geometry expression",
+                    )),
+                );
+                GeomRef::Step(step_offset + 1)
+            };
+            let guide = if let Some(r) = geom_refs.get(&2).cloned() {
+                r
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sweep_guided() guide (argument 3) must be a geometry expression"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        args[2].span,
+                        "not a geometry expression",
+                    )),
+                );
+                GeomRef::Step(step_offset + 2)
+            };
+            let mut it = compiled_args.into_iter();
+            let sweep_args: Vec<(String, CompiledExpr)> = vec![
+                ("profile".to_string(), it.next().unwrap()),
+                ("path".to_string(), it.next().unwrap()),
+                ("guide".to_string(), it.next().unwrap()),
+            ];
+            let op = CompiledGeometryOp::Sweep {
+                kind: SweepKind::SweepGuided,
+                profiles: vec![profile, path, guide],
+                args: sweep_args,
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         // --- Transforms ---
         "translate" | "rotate" | "scale" | "rotate_around" => {
             compile_transform_op(name, compiled_args, geom_ref(0), diagnostics, sub_ops)
@@ -721,6 +797,7 @@ mod tests {
         "chamfer",
         "fillet",
         "sweep",
+        "sweep_guided",
     ];
 
     /// Every non-boolean function dispatched in `compile_geometry_call` that has
@@ -772,7 +849,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 34;
+    const EXPECTED_DISPATCH_COUNT: usize = 35;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -1111,22 +1188,24 @@ mod tests {
         assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
-        assert_eq!(
-            template.realizations.len(),
-            1,
-            "expected 1 realization, got {}",
-            template.realizations.len()
-        );
-        let has_op = template.realizations[0].operations.iter().any(|op| {
-            matches!(
-                op,
-                crate::CompiledGeometryOp::Sweep {
-                    kind: crate::SweepKind::SweepGuided,
-                    ..
-                }
-            )
+        // Each `let sphere(...)` creates its own realization; the final
+        // `let result = sweep_guided(...)` adds a realization whose ops contain
+        // the inlined sphere sub-ops plus the Sweep(SweepGuided) terminal op.
+        let has_op = template.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    crate::CompiledGeometryOp::Sweep {
+                        kind: crate::SweepKind::SweepGuided,
+                        ..
+                    }
+                )
+            })
         });
-        assert!(has_op, "expected Sweep(SweepGuided) op");
+        assert!(
+            has_op,
+            "expected Sweep(SweepGuided) op somewhere in realizations"
+        );
         assert!(
             compiled.diagnostics.is_empty(),
             "expected no diagnostics for sweep_guided(profile, path, guide), got: {:?}",
