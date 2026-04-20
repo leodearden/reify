@@ -42580,7 +42580,13 @@
             "gui/src/stores/autoViewGenerator.ts",
             "gui/src/stores/viewStateStore.ts",
             "gui/src/types.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten ExplicitVisibility type: drop `| null` now that absence-of-key is the sole \"no override\" signal"
+            ]
+          }
         }
       },
       {
@@ -43152,13 +43158,13 @@
         "description": "Follow-up to task 2000 review. The two-pass split introduced a separate outer `timeout --kill-after=60 30m/45m` on the ungated `cargo test --workspace --exclude ...` pass. Previously these 11 non-OCCT crates were folded into a 45m budget covering the whole workspace. Verify the new 30m/45m budgets have 2× headroom against real pipeline runtimes.",
         "details": "## Context\n\nBefore task 2000, debug+release `cargo test --workspace` each ran under a single outer `timeout` (historically 2700s = 45m). After the split, the ungated workspace-exclude pass has:\n\n- debug: `timeout --kill-after=60 30m`\n- release: `timeout --kill-after=60 45m`\n\ncovering 11 non-OCCT crates (tree-sitter bindings, protocol, persistence, etc.). If those crates collectively take >30m on a loaded CI host, verify will now time out where the old command would not.\n\n## Acceptance\n\n- Measure peak observed ungated non-OCCT-pass runtime on the pipeline (debug and release).\n- Set the outer `timeout --kill-after=60 <N>m` to ~2× that peak.\n- If no measurement data is available yet, bump the debug ungated pass to 45m to match the pre-split historical budget, and document the decision in orchestrator.yaml's comment block.\n- Write the rationale and the measured/assumed runtimes into the comment block at orchestrator.yaml:12-26 so the next tightening doesn't revert blind.\n\n## Modules\n\norchestrator.yaml\n\n## Memory hints\n\n- See task 2000 for the two-pass split. See commit 5cb5fb951 for the initial budgets.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "2000"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:00:27.798Z",
+        "updatedAt": "2026-04-20T14:00:34.597Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -43171,9 +43177,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:00:28.534Z",
+      "lastModified": "2026-04-20T14:00:34.598Z",
       "taskCount": 2050,
-      "completedCount": 1750,
+      "completedCount": 1751,
       "tags": [
         "master"
       ]
