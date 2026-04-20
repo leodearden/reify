@@ -40998,11 +40998,11 @@
         "description": "Geometry and material detection in autoViewGenerator.ts uses bare `type_name.includes('Solid' | 'Surface' | 'Curve' | 'Material')`. Any type whose name happens to contain those tokens (e.g. a hypothetical 'MySolidarity', 'MaterialReference') will be misclassified. This is the sole distinction between 'hidden' and 'show' in the default view, so misclassification silently hides (or unhides) geometry.",
         "details": "## Scope\n\ngui/src/stores/autoViewGenerator.ts\n\n### Changes\n\n- `isLetGeometryType` (lines 38-46): replace `type_name.includes('Solid' | 'Surface' | 'Curve')` with anchored matching. Options:\n  - Equality against a known-type enum / set: `GEOMETRY_TYPES = new Set(['Solid', 'Surface', 'Curve'])` with `GEOMETRY_TYPES.has(type_name)`.\n  - If generics/wrappers must be tolerated (e.g. `Option<Solid>`), use a regex anchored on word boundaries or parse the type_name.\n\n- `manufacturingReadyVisibilityFor` (lines 130-144): same fix for `'Material'` check.\n\n### Tests\n\ngui/src/__tests__ — add regression tests with node `type_name` values that contain the substrings but should NOT match (e.g. 'Solidarity', 'MaterialReference', 'SurfaceTreatment', 'CurveBall'). Assert they render via defaultVisibilityFor / manufacturingReadyVisibilityFor as non-geometry / non-material.\n\n### memory_hints\n- search: \"autoViewGenerator type name geometry\"\n- search: \"EntityTreeNode type_name\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T20:23:46.942Z",
+        "updatedAt": "2026-04-20T06:14:06.702Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/autoViewGenerator.test.ts",
@@ -42176,7 +42176,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T06:03:44.641Z",
+      "lastModified": "2026-04-20T06:14:06.703Z",
       "taskCount": 2003,
       "completedCount": 1708,
       "tags": [
