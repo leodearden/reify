@@ -40242,7 +40242,16 @@
           "modules": [
             "crates/reify-compiler/src/expr.rs",
             "crates/reify-compiler/tests/expr_error_sentinel_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "Type::Error sentinel producer consumer pattern expr.rs anti-cascade guard",
+              "propagate_poison make_poison_literal design decision",
+              "task 448 Type::Error anti-cascade propagation completed",
+              "task 1912 unknown member on self Type::Error sentinel"
+            ]
+          }
         }
       },
       {
@@ -40802,11 +40811,11 @@
         "description": "`Value::Field`'s doc in crates/reify-types/src/value.rs:205 references `reify_expr::calculus::detect_single_point_param`, but that function is a private `fn` (not `pub fn`) in crates/reify-expr/src/calculus.rs:526. Readers outside reify-expr cannot jump to it from rustdoc, and any intra-doc link would not resolve.",
         "details": "Pick one of:\n1. Make `detect_single_point_param` `pub(crate)` plus a `#[doc(hidden)] pub` re-export so the rustdoc link resolves across crates, or\n2. Soften the cross-reference in value.rs:205 to clarify it's an internal helper — e.g. \"See the private `detect_single_point_param` helper in `crates/reify-expr/src/calculus.rs` for the reference implementation of this heuristic; keep this doc in sync with that function.\"\n\nOption 2 is lower-risk and preserves encapsulation; option 1 enables navigation at the cost of widening the surface.\n\nSource: review escalation esc-1002-30, suggestion 2.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:36:21.907Z",
+        "updatedAt": "2026-04-20T05:26:42.304Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -40827,7 +40836,12 @@
           "modules": [
             "crates/reify-types/src",
             "crates/reify-expr/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "a6d34f14fb57ad7a68aa5ef156cdaf727ea61820",
+            "commit_input": "a6d34f14f",
+            "note": "Merged as fe52d96dc via orchestrator merge queue after esc-1950-31 WIP-overlap resolution"
+          }
         }
       },
       {
@@ -41893,13 +41907,24 @@
             "note": "Phantom-done: deliverables folded into task 1972's amend commit (multi-arg UserFunctionCall + multi-arm/multi-pattern Match integration tests in constructor_hash_tests.rs, plus match_expr_multi_pattern_arm_combine_order unit test)."
           }
         }
+      },
+      {
+        "id": "2006",
+        "title": "Migrate inline UserFunctionCall/Match construction to new CompiledExpr constructors",
+        "description": "Commit 6964e6dad added `CompiledExpr::user_function_call` and `CompiledExpr::match_expr` constructors in `crates/reify-types/src/expr.rs:873` and `:901`, but production sites still inline-construct these kinds:\n\n- `crates/reify-compiler/src/expr.rs:560-567` (UserFunctionCall) — inline hash `[6]` recomputed at :553-559\n- `crates/reify-compiler/src/expr.rs:1326-1333` (Match) — inline hash `[6]` recomputed at :1316-1324\n\nOnly tests use the constructors today (`reify-compiler/tests/constructor_hash_tests.rs`). This leaves the public API dangling and duplicates the hash-formula logic.\n\nFix: rewrite the two production sites to call the new constructors. Remove the duplicated hash-combine code. Verify with existing constructor_hash_tests.\n\nRelated note: the docstring acknowledges a pre-existing `[6]` tag collision between UserFunctionCall and Match. Resolving that collision (give Match a fresh tag) is a separate, larger follow-up because it breaks content-hash stability for cached results — do NOT fold it in here.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:23:19.875Z",
-      "taskCount": 1997,
-      "completedCount": 1701,
+      "lastModified": "2026-04-20T05:26:42.304Z",
+      "taskCount": 1998,
+      "completedCount": 1702,
       "tags": [
         "master"
       ]
