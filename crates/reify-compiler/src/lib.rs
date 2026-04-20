@@ -887,7 +887,6 @@ pub(crate) fn compile_with_prelude_refs(
                     arg_name,
                     arg_type,
                     arg_call_name,
-                    sub_name: _,
                     span,
                 } => {
                     check_trait_arg_conformance(

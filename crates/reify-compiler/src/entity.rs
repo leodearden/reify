@@ -858,7 +858,6 @@ pub(crate) fn compile_entity(
                         arg_name: arg_name.clone(),
                         arg_type: compiled_arg.result_type.clone(),
                         arg_call_name,
-                        sub_name: sub.name.clone(),
                         span: sub.span,
                     });
                 }
@@ -1742,7 +1741,6 @@ pub(crate) enum PendingBoundCheck {
         /// When the compiled arg was a zero-arg FunctionCall (potential structure
         /// instantiation), the callee name. `None` for non-call expressions.
         arg_call_name: Option<String>,
-        sub_name: String,
         span: SourceSpan,
     },
 }

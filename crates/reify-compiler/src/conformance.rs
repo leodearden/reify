@@ -924,6 +924,7 @@ pub(crate) fn collect_all_requirements(
 /// - The arg_type is `Type::Error` (anti-cascade: treat as pass-through).
 ///
 /// Emits at most one diagnostic per call.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_arg_conformance(
     target_name: &str,
     arg_name: &str,
