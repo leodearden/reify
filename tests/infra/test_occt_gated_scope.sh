@@ -62,25 +62,83 @@ while IFS= read -r crate; do
 done <<< "$DECLARED_CRATES"
 
 # ---------------------------------------------------------------------------
-# Test 3: declared set equals cargo-tree-derived OCCT-touching set
+# Test 3: declared set equals cargo-metadata-derived OCCT-touching set
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Test 3: declared set equals cargo-tree-derived OCCT-touching set ---"
+echo "--- Test 3: declared set equals cargo-metadata-derived OCCT-touching set ---"
 
-# Compute the actual OCCT-touching set via cargo tree.
-# A crate is OCCT-touching iff `cargo tree --prefix none -p <crate>` mentions reify-kernel-occt.
-ACTUAL_TOUCHING=""
-while IFS= read -r crate; do
-    [ -z "$crate" ] && continue
-    if cargo tree --prefix none -p "$crate" 2>/dev/null | grep -q 'reify-kernel-occt'; then
-        ACTUAL_TOUCHING="${ACTUAL_TOUCHING}${crate}"$'\n'
-    fi
-done <<< "$WORKSPACE_MEMBERS"
-# Strip trailing newline for clean comparison.
-ACTUAL_TOUCHING="${ACTUAL_TOUCHING%$'\n'}"
+# Derive the actual OCCT-touching set from a SINGLE `cargo metadata` invocation.
+# Using the workspace-unified resolve graph is both faster (one cargo process instead
+# of one per workspace member) and more accurate: workspace feature unification can
+# activate optional deps (e.g. a future crate that enables the reify-gui 'gui' feature
+# would pull in reify-kernel-occt via normal dep, but per-crate `cargo tree -p <crate>`
+# only sees each crate's own default features and would miss it).
+ACTUAL_TOUCHING="$(cargo metadata --format-version 1 2>/dev/null | python3 -c "
+import sys, json
+m = json.load(sys.stdin)
+id_to_name = {p['id']: p['name'] for p in m['packages']}
 
-assert "declared OCCT-touching set equals cargo-tree-derived set (no missing or extra entries)" \
-    bash -c "diff <(echo '$DECLARED_CRATES' | sort) <(echo '$ACTUAL_TOUCHING' | sort) >/dev/null"
+# Build separate adjacency maps for normal/build vs dev deps.
+# dep_kinds[].kind: null -> normal, 'build' -> build dep, 'dev' -> dev dep.
+# We must NOT conflate them: dev-deps of a transitive dep are never compiled when
+# testing a crate that only has a normal dep on it.
+adj_normal = {}  # kind=null or kind='build' (compiled transitively)
+adj_dev = {}     # kind='dev' (only the DIRECT dev-deps of the tested crate matter)
+for node in m['resolve']['nodes']:
+    adj_normal[node['id']] = set()
+    adj_dev[node['id']] = set()
+    for d in node['deps']:
+        kinds = {dk.get('kind') for dk in d.get('dep_kinds', [])}
+        if None in kinds or 'build' in kinds:
+            adj_normal[node['id']].add(d['pkg'])
+        if 'dev' in kinds:
+            adj_dev[node['id']].add(d['pkg'])
+
+def normal_closure(start):
+    '''All packages reachable via normal/build edges only.'''
+    visited, queue = set(), [start]
+    while queue:
+        curr = queue.pop()
+        if curr in visited:
+            continue
+        visited.add(curr)
+        queue.extend(adj_normal.get(curr, []))
+    return visited
+
+occt_ids = {p['id'] for p in m['packages'] if p['name'] == 'reify-kernel-occt'}
+workspace_ids = set(m['workspace_members'])
+touching = []
+for pkg_id in workspace_ids:
+    # A crate's test compilation includes:
+    #   - normal/build closure of the crate itself, PLUS
+    #   - normal/build closure of each DIRECT dev-dep of the crate
+    # Dev-deps of transitive normal deps do NOT propagate (Cargo does not
+    # propagate dev-deps transitively).
+    compiled = normal_closure(pkg_id)
+    for dev_dep_id in adj_dev.get(pkg_id, []):
+        compiled |= normal_closure(dev_dep_id)
+    if compiled & occt_ids:
+        touching.append(id_to_name[pkg_id])
+
+for name in sorted(touching):
+    print(name)
+")"
+
+# Write both sets to temp files and diff for actionable failure output.
+# On mismatch the diff is printed so the reader can see exactly which crate
+# drifted without re-running locally.
+_DECLARED_TMP="$(mktemp)"
+_ACTUAL_TMP="$(mktemp)"
+echo "$DECLARED_CRATES" | sort > "$_DECLARED_TMP"
+echo "$ACTUAL_TOUCHING" | sort > "$_ACTUAL_TMP"
+_DIFF_OUT="$(diff "$_DECLARED_TMP" "$_ACTUAL_TMP" 2>&1 || true)"
+rm -f "$_DECLARED_TMP" "$_ACTUAL_TMP"
+if [ -n "$_DIFF_OUT" ]; then
+    echo "  OCCT-touching set drift detected (< declared, > cargo-metadata-derived):"
+    echo "$_DIFF_OUT" | sed 's/^/    /'
+fi
+assert "declared OCCT-touching set equals cargo-metadata-derived set (no missing or extra entries)" \
+    test -z "$_DIFF_OUT"
 
 # ---------------------------------------------------------------------------
 # Tests 4–5: gated invocations use -p <crate> (not --workspace)
