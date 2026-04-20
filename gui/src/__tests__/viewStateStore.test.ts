@@ -31,10 +31,10 @@ describe('viewStateStore — default rules', () => {
     });
   });
 
-  it('node with kind="let" and type_name containing "Solid" → "hidden"', () => {
+  it('node with kind="let" and type_name "Solid" → "hidden"', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree([makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'MySolid' })]);
+      store.setTree([makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'Solid' })]);
       expect(store.getEffectiveVisibility('Root.geo')).toBe('hidden');
       dispose();
     });
@@ -789,7 +789,7 @@ describe('viewStateStore — regenerateAutoViews — populate and preserve', () 
         kind: 'structure',
         children: [
           makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
-          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Solid' }),
         ],
       }),
     ];
@@ -860,7 +860,7 @@ describe('viewStateStore — regenerateAutoViews — active view reconciliation'
         kind: 'structure',
         children: [
           makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
-          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Solid' }),
         ],
       }),
     ];
@@ -1013,7 +1013,7 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
    * defaultRuleFor delegates to defaultVisibilityFor.
    */
 
-  it('(a) let node with type_name="Surface3D" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
+  it('(a) let node with type_name="Surface" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
       const leaf = 'Root.surf';
@@ -1022,7 +1022,7 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
           entity_path: 'Root',
           kind: 'structure',
           children: [
-            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Surface3D' }),
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Surface' }),
           ],
         }),
       ]);
@@ -1032,7 +1032,7 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
     });
   });
 
-  it('(b) let node with type_name="Curve3D" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
+  it('(b) let node with type_name="Curve" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
       const leaf = 'Root.crv';
@@ -1041,7 +1041,7 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
           entity_path: 'Root',
           kind: 'structure',
           children: [
-            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Curve3D' }),
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Curve' }),
           ],
         }),
       ]);
@@ -1050,7 +1050,7 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
     });
   });
 
-  it('(c) let node with type_name="SolidBody" and no explicit entry → still "hidden" (regression guard)', () => {
+  it('(c) let node with type_name="Solid" and no explicit entry → "hidden" (regression guard)', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
       const leaf = 'Root.solid';
@@ -1059,7 +1059,7 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
           entity_path: 'Root',
           kind: 'structure',
           children: [
-            makeNode({ entity_path: leaf, kind: 'let', type_name: 'SolidBody' }),
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Solid' }),
           ],
         }),
       ]);
@@ -1077,7 +1077,7 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
           entity_path: 'Root',
           kind: 'structure',
           children: [
-            makeNode({ entity_path: leaf, kind: 'let', type_name: 'MySurface' }),
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Surface' }),
           ],
         }),
       ];
@@ -1107,8 +1107,8 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
       store.seedView(userView);
       store.setActiveView('user:sparse');
       // explicit is now {} → falls through to defaultRuleFor.
-      // After step-16: defaultRuleFor('let', 'MySurface') → 'hidden' (same as above, no flicker).
-      // Before step-16: defaultRuleFor only hides 'Solid' → returns 'show' (flicker!).
+      // defaultRuleFor now delegates to defaultVisibilityFor (anchored regex), so
+      // 'let Surface' → 'hidden' (same as above, no flicker).
       expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
 
       dispose();
@@ -1131,7 +1131,7 @@ describe('viewStateStore — regenerateAutoViews — internal setTree contract',
           kind: 'structure',
           children: [
             makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
-            makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+            makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Solid' }),
           ],
         }),
       ];
@@ -1153,8 +1153,8 @@ describe('viewStateStore — auto view generators — integration sanity', () =>
    * Realistic tree: Assembly (structure)
    *   └─ Physical (structure)
    *        ├─ geometry  (param, trait_geometry=true)  → Default: show
-   *        ├─ body1     (let, SolidBody)               → Default: hidden
-   *        └─ body2     (let, SolidExtrude)            → Default: hidden
+   *        ├─ body1     (let, Solid)                  → Default: hidden
+   *        └─ body2     (let, Option<Solid>)          → Default: hidden
    */
   function makeRealisticTree() {
     return [
@@ -1167,8 +1167,8 @@ describe('viewStateStore — auto view generators — integration sanity', () =>
             kind: 'structure',
             children: [
               makeNode({ entity_path: 'Assembly.Physical.geometry', kind: 'param', trait_geometry: true }),
-              makeNode({ entity_path: 'Assembly.Physical.body1', kind: 'let', type_name: 'SolidBody' }),
-              makeNode({ entity_path: 'Assembly.Physical.body2', kind: 'let', type_name: 'SolidExtrude' }),
+              makeNode({ entity_path: 'Assembly.Physical.body1', kind: 'let', type_name: 'Solid' }),
+              makeNode({ entity_path: 'Assembly.Physical.body2', kind: 'let', type_name: 'Option<Solid>' }),
             ],
           }),
         ],
