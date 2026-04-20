@@ -8,6 +8,7 @@ import type {
   EvaluationStatus,
   DiagnosticInfo,
 } from '../types';
+import type { KernelStatus } from '../bridge';
 
 // Mock the bridge module
 vi.mock('../bridge', () => ({
@@ -19,6 +20,7 @@ vi.mock('../bridge', () => ({
   onValueRemoved: vi.fn(),
   onConstraintRemoved: vi.fn(),
   onTessellationDiagnostics: vi.fn(),
+  onKernelStatus: vi.fn(),
 }));
 
 import {
@@ -588,6 +590,33 @@ describe('engineStore tessellationDiagnostics', () => {
 
       tessCb!([diag]);
       expect(store.state.tessellationDiagnostics).toEqual([diag]);
+      dispose();
+    });
+  });
+});
+
+describe('engineStore kernelStatus', () => {
+  it('initial state.kernelStatus is null', () => {
+    createRoot((dispose) => {
+      const { state } = createEngineStore();
+      expect(state.kernelStatus).toBeNull();
+      dispose();
+    });
+  });
+
+  it('setKernelStatus updates kernelStatus and subsequent calls replace it', () => {
+    createRoot((dispose) => {
+      const { state, setKernelStatus } = createEngineStore();
+      const degraded: KernelStatus = {
+        available: false,
+        message: 'Geometry kernel not available — OCCT not linked',
+      };
+      setKernelStatus(degraded);
+      expect(state.kernelStatus).toEqual(degraded);
+
+      const ok: KernelStatus = { available: true, message: null };
+      setKernelStatus(ok);
+      expect(state.kernelStatus).toEqual(ok);
       dispose();
     });
   });
