@@ -11395,6 +11395,7 @@
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/stdlib_loader.rs",
             "crates/reify-compiler/tests/stdlib_loader_tests.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
             "crates/reify-eval/src/lib.rs",
             "crates/reify-eval/tests/stdlib_prelude_tests.rs"
           ],
