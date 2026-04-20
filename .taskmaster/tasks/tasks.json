@@ -36812,9 +36812,16 @@
             "gui/src"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "View persistence",
+              "EntityIdentity",
+              "fuzzy path matching",
+              "Design Tree"
+            ],
             "queries": [
-              "resolution for: View persistence: localStorage + sidecar file + fuzzy path matching"
+              "view persistence localStorage sidecar file",
+              "entity identity map fuzzy matching content hash structural fingerprint",
+              "get_entity_identity_map view persistence matching"
             ]
           }
         },
