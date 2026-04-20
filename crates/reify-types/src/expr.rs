@@ -889,21 +889,16 @@ impl CompiledExpr {
 
     /// Create a match expression.
     ///
-    /// Hash tag byte: `[6]`, matching the inline implementation in
+    /// Hash tag byte: `[24]`, matching the inline implementation in
     /// `reify-compiler/src/expr.rs`. Combines the discriminant hash then, for
     /// each arm, each pattern string followed by the arm body hash — the same
     /// combine order as the production inline code.
-    ///
-    /// **Note:** the compiler uses tag `[6]` for both `UserFunctionCall` and
-    /// `Match` (a pre-existing collision in the production path); this
-    /// constructor preserves that behaviour so hashes agree with what the
-    /// compiler emits.
     pub fn match_expr(
         discriminant: CompiledExpr,
         arms: Vec<CompiledMatchArm>,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[6]).combine(discriminant.content_hash);
+        let mut content_hash = ContentHash::of(&[24]).combine(discriminant.content_hash);
         for arm in &arms {
             for pattern in &arm.patterns {
                 content_hash = content_hash.combine(ContentHash::of_str(pattern));

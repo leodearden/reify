@@ -1313,9 +1313,9 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
 
-            // Content hash: tag [6] + discriminant + all arms
+            // Content hash: tag [24] + discriminant + all arms
             let mut content_hash =
-                ContentHash::of(&[6]).combine(compiled_discriminant.content_hash);
+                ContentHash::of(&[24]).combine(compiled_discriminant.content_hash);
             for arm in &compiled_arms {
                 for pattern in &arm.patterns {
                     content_hash = content_hash.combine(ContentHash::of_str(pattern));
