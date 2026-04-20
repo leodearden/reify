@@ -42429,7 +42429,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:05:21.190Z"
+        "updatedAt": "2026-04-20T11:05:21.190Z",
+        "metadata": {
+          "modules": [
+            "gui/src/App.tsx",
+            "gui/src/__tests__/navigation.test.ts",
+            "gui/src/navigation.ts"
+          ]
+        }
       },
       {
         "id": "2021",
@@ -42463,7 +42470,9 @@
       "completedCount": 1720,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T11:09:03.276Z",
+      "description": "Tasks for master context"
     }
   }
 }
