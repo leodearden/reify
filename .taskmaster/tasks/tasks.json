@@ -41539,7 +41539,7 @@
         "description": "Move get_let_expr / get_let_expr_in / assert_no_type_cascade from crates/reify-compiler/tests/expr_error_sentinel_tests.rs and type_error_propagation_tests.rs into the existing reify-test-support crate (likely helpers.rs) to deduplicate ~35 lines. Source: review suggestion S2 in esc-1921-36 (code_duplication).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41554,7 +41554,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-20T11:35:43.937Z"
+        "updatedAt": "2026-04-20T11:39:36.331Z"
       },
       {
         "id": "1981",
@@ -42674,12 +42674,25 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-20T11:38:39.866Z"
+      },
+      {
+        "id": "2034",
+        "title": "Extract `MergeContext` + `collect_all_requirements` from conformance.rs into sibling module",
+        "description": "After task #2033 lands (tests moved out), extract the `MergeContext` struct and `collect_all_requirements` fn (L697-926, ~230 lines) from `crates/reify-compiler/src/conformance.rs` into a new sibling file `crates/reify-compiler/src/trait_requirements.rs`.\n\nThese functions are conceptually distinct from `check_trait_conformance`: they walk the trait refinement hierarchy (handling diamond patterns, depth guards, MAX_TRAIT_DEPTH) to collect all requirements and defaults — an independent responsibility from comparing structure members against a flattened requirement set.\n\nImplementation:\n- Create `crates/reify-compiler/src/trait_requirements.rs` with `MergeContext` struct + `impl MergeContext` + `collect_all_requirements` fn. Add `pub(crate) mod trait_requirements;` and `pub(crate) use trait_requirements::*;` to lib.rs.\n- Update `conformance.rs` — the remaining `check_trait_conformance` call site already uses `collect_all_requirements` as a free fn, so re-export makes the move transparent.\n- Keep `MAX_TRAIT_DEPTH` const with `collect_all_requirements` (it's only used there).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically.\n- `conformance.rs` drops to ~830 lines with only `check_trait_conformance` and `check_trait_arg_conformance`.\n\nWhy: separates the hierarchy-walk responsibility from the conformance-check responsibility, reducing the set of tasks that need to touch conformance.rs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2033"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:39:06.623Z",
-      "taskCount": 2025,
+      "lastModified": "2026-04-20T11:39:36.331Z",
+      "taskCount": 2026,
       "completedCount": 1730,
       "tags": [
         "master"
