@@ -323,3 +323,38 @@ fn alias_wins_over_trait_name_for_param_type() {
         m_cell.cell_type
     );
 }
+
+// ─── Call-site conformance tests (task 1874) ─────────────────────────────────
+
+/// Negative test: passing a non-conforming struct to a trait-typed param must
+/// produce an error containing "does not conform to trait" and the trait name.
+///
+/// This MUST fail on the base branch (before step-2 implementation) because no
+/// call-site conformance check exists yet.
+#[test]
+fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
+    // NotAMaterial does NOT declare `: Material` — it just has `density : Real`.
+    let source = r#"
+        structure def Host { param m : Material }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Top {
+            sub x = Host(m = NotAMaterial())
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("Material")),
+        "expected a 'does not conform to trait Material' error, got: {:?}",
+        errors
+    );
+}
