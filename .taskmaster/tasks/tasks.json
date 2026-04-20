@@ -42910,11 +42910,16 @@
         "description": "Add positive assertion to test at crates/reify-compiler/tests/constraint_def_compile_tests.rs line ~977: find `Aligned` in module.constraint_defs, assert params.len()==2, type_params.len()==1. Source: esc-1964-55.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:34:51.450Z"
+        "updatedAt": "2026-04-20T13:36:26.649Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ]
+        }
       },
       {
         "id": "2045",
@@ -42922,10 +42927,11 @@
         "description": "The `PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))` + `CliToolContext::new(project_dir)` pattern is duplicated across many tests in `crates/reify-cli/src/mcp_context.rs` (lines 807, 832, 865, 891, 931, 1115, 1136, etc.). Introduce a private test helper such as `fn fresh_ctx() -> CliToolContext { CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))) }` in the test module and update existing tests to use it. Keeps future fixture-path changes localized to a single helper.",
         "details": "Source: review suggestion on Task 2015 (reviewer_comprehensive, code_reuse). Reviewer explicitly noted \"Out of scope for this diff but worth a follow-up.\"\n\nScope:\n- Add `fresh_ctx()` (or equivalent) helper in the `mod tests` block of `crates/reify-cli/src/mcp_context.rs`.\n- Replace the repeated `PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))` + `CliToolContext::new(...)` incantations at sites including lines 807, 832, 865, 891, 931, 1115, 1136.\n- If a test needs a non-default fixture dir, keep the direct constructor call.\n- Run `cargo test -p reify-cli` to verify.\n\nPriority: low (refactor, no behavior change).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:36:27.362Z"
       },
       {
         "id": "2046",
@@ -42981,12 +42987,23 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2051",
+        "title": "Extract fresh_ctx() test helper in reify-cli mcp_context.rs",
+        "description": "Dedup repeated PathBuf+CliToolContext::new in test module of crates/reify-cli/src/mcp_context.rs (sites ~807,832,865,891,931,1115,1136). Introduce `fn fresh_ctx() -> CliToolContext` helper and update callers. Spawned from Task 2015 review (reviewer_comprehensive, code_reuse).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:34:51.456Z",
-      "taskCount": 2042,
+      "lastModified": "2026-04-20T13:36:27.363Z",
+      "taskCount": 2043,
       "completedCount": 1741,
       "tags": [
         "master"
