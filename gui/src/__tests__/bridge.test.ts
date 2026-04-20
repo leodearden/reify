@@ -383,11 +383,11 @@ describe('bridge event listeners', () => {
     expect(result).toBe(unlisten);
   });
 
-  it('onNavigateToSource passes {file, line, column} payload to callback', async () => {
+  it('onNavigateToSource passes {file, line, column, end_line, end_column} payload to callback', async () => {
     const unlisten = vi.fn();
     mockListen.mockImplementation(async (_name, handler) => {
       (handler as (event: { payload: unknown }) => void)({
-        payload: { file: 'bracket.ri', line: 5, column: 3 },
+        payload: { file: 'bracket.ri', line: 5, column: 3, end_line: 20, end_column: 7 },
       });
       return unlisten;
     });
@@ -395,6 +395,6 @@ describe('bridge event listeners', () => {
     const callback = vi.fn();
     await onNavigateToSource(callback);
 
-    expect(callback).toHaveBeenCalledWith({ file: 'bracket.ri', line: 5, column: 3 });
+    expect(callback).toHaveBeenCalledWith({ file: 'bracket.ri', line: 5, column: 3, end_line: 20, end_column: 7 });
   });
 });
