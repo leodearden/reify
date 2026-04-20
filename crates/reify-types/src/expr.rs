@@ -1199,6 +1199,41 @@ mod tests {
         );
     }
 
+    /// Regression guard: Match must not share UserFunctionCall's tag byte `[6]`.
+    ///
+    /// This test deliberately reconstructs the hash that Match *would* produce if it
+    /// still used tag `[6]` and asserts that the actual `match_expr` hash is different.
+    /// It fails against the pre-fix code (where both kinds share `[6]`) and passes once
+    /// Match is retagged to `[24]`.
+    #[test]
+    fn match_expr_does_not_share_tag_byte_with_user_function_call() {
+        let disc = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let body = CompiledExpr::literal(Value::Int(1), Type::Int);
+
+        // Capture sub-hashes before the values are moved into the constructor.
+        let disc_hash = disc.content_hash;
+        let body_hash = body.content_hash;
+
+        let arm = CompiledMatchArm {
+            patterns: vec!["p".to_string()],
+            body,
+        };
+        let match_expr = CompiledExpr::match_expr(disc, vec![arm], Type::Int);
+
+        // Hypothetical hash that would result from still using tag byte [6].
+        let hypothetical_tag_6_hash = ContentHash::of(&[6])
+            .combine(disc_hash)
+            .combine(ContentHash::of_str("p"))
+            .combine(body_hash);
+
+        assert_ne!(
+            match_expr.content_hash,
+            hypothetical_tag_6_hash,
+            "Match must use a tag byte distinct from UserFunctionCall's [6] \
+             to prevent latent hash collisions between structurally-distinct expressions"
+        );
+    }
+
     #[test]
     fn walk_traverses_deeply_nested() {
         let a = CompiledExpr::value_ref(ValueCellId::new("P", "a"), Type::length());
