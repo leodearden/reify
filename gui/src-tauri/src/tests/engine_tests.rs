@@ -3213,6 +3213,48 @@ fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
     let _ = session.get_entity_tree();
 }
 
+/// In release builds, get_entity_tree must emit exactly one tracing::warn! and still
+/// return a node for each template entry when the compiled module contains duplicate
+/// template names (graceful first-match degradation).
+///
+/// Compare with the sibling debug-mode test
+/// `get_entity_tree_panics_on_duplicate_template_names_in_debug` which pins the
+/// debug_assert panic.  The orchestrator runs both `cargo test` and
+/// `cargo test --release` (orchestrator.yaml), so both modes are exercised in CI —
+/// following the precedent at `crates/reify-expr/tests/field_eval_tests.rs:1066-1126`.
+#[cfg(not(debug_assertions))]
+#[test]
+fn get_entity_tree_warns_on_duplicate_template_names_in_release() {
+    use reify_types::ModulePath;
+
+    let dup1 = TopologyTemplateBuilder::new("Dup").build();
+    let dup2 = TopologyTemplateBuilder::new("Dup").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
+        .template(dup1)
+        .template(dup2)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // Inject the malformed module directly via test helper; the runtime warn in
+    // get_entity_tree fires because compiled.templates contains two "Dup" entries.
+    session.inject_compiled_for_test(compiled);
+
+    let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
+    let tree = tracing::subscriber::with_default(subscriber, || session.get_entity_tree());
+
+    reify_test_support::assert_warn_count(
+        &warn_count,
+        1,
+        "expected exactly one warn for duplicate template name in release build",
+    );
+    assert_eq!(
+        tree.len(),
+        2,
+        "release build should still return a node per template entry (first-match semantics)"
+    );
+}
+
 // ---- Cache tests: parsed_cache + line_offsets_cache ----
 
 /// Fresh session returns None from parsed_cache_for_test.
