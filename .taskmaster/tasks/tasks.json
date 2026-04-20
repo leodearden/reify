@@ -29327,11 +29327,11 @@
         "description": "The ICE diagnostic pattern (format ICE message + DiagnosticLabel + push + fallback to Type::Real) is repeated nearly identically across four sites:\n- entity.rs:534-546 (structure param pass 2 resolution)\n- entity.rs:877-889 (port param pass 2 resolution)\n- guards.rs:269-281 (guarded member pass 2 resolution)\n\nAll share the same structure: \"internal compiler error: unresolved name '...' in pass 2\" with label \"ICE: name should have been registered in pass 1\".\n\nExtract a helper like `fn emit_ice_unresolved(diagnostics: &mut Vec<Diagnostic>, name: &str, span: Span, context: &str) -> Type` that pushes the ICE diagnostic and returns `Type::Real`. This reduces ~12 lines per site to 1 and centralizes the ICE format.\n\nmemory_hints: search(\"ICE diagnostic pattern entity guards unresolved pass 2\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T06:10:22.742Z",
+        "updatedAt": "2026-04-20T11:21:56.606Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -40869,11 +40869,11 @@
         "description": "In `crates/reify-compiler/src/conformance.rs` the `available_defaults` map still emits a `(name, Let) -> Type::Real` entry when Pass 2 recorded the name in `pass2_skipped` (an annotated Param/Let won the slot). The rationale comment at ~324-330 asserts \"the requirement is structurally unsatisfied anyway (kind mismatch)\" — but a Let requirement looking up `(name, Let)` gets a kind MATCH and will emit a spurious `requirement expects <T>, available default has Real` type-mismatch when \"missing required member\" would be clearer.\n\nScenario: trait X requires `let x : Length`; trait Y provides `param x : Length`; trait Z provides unannotated `let x = 5.0`. The Let from Z survives `collect_all_requirements` dedup, Pass 2 skips registering it because Y's Param claimed the slot, and the requirement in X is evaluated against a phantom `Let -> Real` advertisement.\n\nMemory hints: search \"task 1907 pass2_skipped available_defaults phantom Let entry\"; entities: DefaultKind, AvailableDefaultKind, Type.",
         "details": "Two viable fixes (reviewer proposed both):\n\nOption A — In Pass 2's conflict branch (`if let Some(ignored_ty)` arm), still insert the compiled expression into `inferred_let_exprs` (or a parallel map) so `available_defaults` can advertise the inferred type for the `(name, Let)` slot. This preserves the Let requirement-matching path even when Pass 1 won the scope slot.\n\nOption B — In the `available_defaults` builder, skip emitting the `(name, Let)` entry entirely when `pass2_skipped.contains(name)` — since no Let cell is actually injected, advertising one is misleading. Update the rationale comment at ~324-330 to reflect this.\n\nOption B is simpler and keeps the invariant \"only one default satisfies a given (name, kind)\"; Option A preserves the old shape but requires reasoning about why the skipped expression is still useful. Prefer Option B unless the Let-requirement-survives-slot-claim behavior is intentional.\n\nAdd regression test in `crates/reify-compiler/tests/trait_merge_tests.rs` covering the 3-trait scenario: structure bound to traits X (requires `let x : Length`), Y (provides `param x : Length`), Z (provides unannotated `let x = 5.0`). Assert ONE diagnostic (\"missing required Let member `x`\" or \"kind mismatch\" or the chosen wording) — NOT a secondary \"available default has Real\" type-mismatch.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 1). Complements but distinct from task 1914 item 1 (compile_expr error-cascade), which addresses the Type::Real fallback when inference FAILS; this task addresses the fallback when Pass 2 deliberately DISCARDS the inferred expression.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:21:55.909Z",
+        "updatedAt": "2026-04-20T11:21:56.812Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -42575,9 +42575,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:21:55.909Z",
+      "lastModified": "2026-04-20T11:21:56.813Z",
       "taskCount": 2020,
-      "completedCount": 1723,
+      "completedCount": 1724,
       "tags": [
         "master"
       ]
