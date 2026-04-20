@@ -43132,11 +43132,11 @@
         "description": "Three minor polish items on the newly-introduced resolve_loft_like_args helper in crates/reify-compiler/src/geometry.rs (from task 2030 review).",
         "details": "All three changes in crates/reify-compiler/src/geometry.rs:\n\n1. **Trim docstring de-duplication (lines 124-170).** The `resolve_loft_like_args` docstring currently restates the silent-fallback policy that now lives in the module-level doc block (lines 1-25). Shrink the per-function doc to describe only the mechanical contract (inputs/outputs, fallback rule, key-naming rule) and keep just a one-line cross-reference to the module-level policy note. Rationale single-sourced in the module header.\n\n2. **Pin CompiledExpr ordering in the unit test (lines ~1490-1560).** The `resolve_loft_like_args_builds_profiles_and_named_args` test currently uses identical `Value::Real(1.0)` placeholders for every slot, so it cannot catch an accidental re-order in the `into_iter().enumerate()` pipeline. Change `make_args(n)` to produce `Value::Real(i as f64)` per slot, and after calling the helper, assert that `named_args[i].1` carries the i-th marker (e.g. by matching on `CompiledExpr.value` for `Value::Real(f)` and checking `f == i as f64`). This pins ordering against future refactors (`.rev()`, shuffled zip, etc.).\n\n3. **Add debug_assert precondition for guide_suffix (around line 161).** The `guide_suffix && n > 0 && i == n - 1` guard handles `n == 0` gracefully, but an arity-0 or arity-1 caller with `guide_suffix=true` silently returns `(vec![], vec![])` / `(vec![guide], [(guide, _)])` instead of signalling the invalid state. Callers currently guard upstream (`loft_guided` requires >= 3), but since the helper is now a shared abstraction, a `debug_assert!(!guide_suffix || n >= 2, \"loft_guided requires at least 2 args: profiles + guide\")` at the top of the function documents and enforces the precondition for future call sites.\n\nmemory_hints: search \"resolve_loft_like_args loft_guided silent fallback\" entity \"SweepKind\"\n\nSource: reviewer_comprehensive suggestions from esc-2030-60 on task 2030.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:40:37.280Z"
+        "updatedAt": "2026-04-20T14:01:01.302Z"
       },
       {
         "id": "2057",
@@ -43185,7 +43185,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:00:54.572Z",
+      "lastModified": "2026-04-20T14:01:01.302Z",
       "taskCount": 2050,
       "completedCount": 1753,
       "tags": [
