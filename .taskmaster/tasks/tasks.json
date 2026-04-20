@@ -42493,7 +42493,13 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:13:25.313Z"
+        "updatedAt": "2026-04-20T11:13:25.313Z",
+        "metadata": {
+          "modules": [
+            "gui/src/stores/autoViewGenerator.ts",
+            "gui/src/stores/viewStateStore.ts"
+          ]
+        }
       },
       {
         "id": "2024",
@@ -42517,7 +42523,9 @@
       "completedCount": 1722,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T11:17:49.560Z",
+      "description": "Tasks for master context"
     }
   }
 }
