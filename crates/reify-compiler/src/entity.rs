@@ -849,6 +849,13 @@ pub(crate) fn compile_entity(
                     // (e.g. `Steel()` or `Steel(density: 100.0)`).  The post-pass
                     // promoter gates on `template_registry.contains_key(call_name)`
                     // so non-structure calls are unaffected.
+                    //
+                    // TODO(follow-up): a cleaner approach is to have compile_expr
+                    // emit Type::StructureRef directly for FunctionCall nodes whose
+                    // callee is a known structure (subject to the same post-pass
+                    // deferral).  That would let us remove arg_call_name and the
+                    // promotion branch in conformance.rs::check_trait_arg_conformance,
+                    // collapsing the two-layer path-splitting into one.
                     let arg_call_name = match &compiled_arg.kind {
                         CompiledExprKind::FunctionCall { function, .. } => {
                             Some(function.name.clone())

@@ -507,12 +507,39 @@ fn sub_component_arg_conforming_via_refinement_chain_accepted() {
     );
 }
 
-// NOTE: Parser limitation for non-empty struct-instantiation args in sub arg
-// positions. The scenario `sub x = Host(m: Steel(density: 1000.0))` would
-// exercise the non-zero-arg FunctionCall path in the arg_call_name capture,
-// but the Reify parser currently rejects nested calls with args in sub arg
-// value positions (e.g. `Steel(density: 1000.0)` is not valid expression syntax
-// inside a sub arg). The entity.rs code has been defensively widened to use
-// `CompiledExprKind::FunctionCall { function, .. }` (any args) rather than
-// `if args.is_empty()` so it will handle this correctly when parser support is
-// added. See reviewer suggestion 1 (task 1874 amendment pass).
+/// Non-empty struct-instantiation call in a sub arg value position.
+///
+/// `sub x = Host(m: Steel(density: 1000.0))` exercises the non-zero-arg
+/// FunctionCall path in the arg_call_name capture in entity.rs.  The
+/// entity.rs code is already defensively widened to `FunctionCall { function, .. }`
+/// (any args) rather than an is_empty() guard, so this path should be handled
+/// correctly once the parser accepts nested calls with args in sub arg positions.
+///
+/// **Currently ignored** because the Reify parser rejects `Steel(density: 1000.0)`
+/// as an expression inside a sub arg value (follow-up task to extend the parser).
+#[test]
+#[ignore = "parser does not yet accept nested calls with args in sub arg positions (follow-up task)"]
+fn sub_component_arg_structure_instantiation_with_args_accepted() {
+    let source = r#"
+        trait Material {}
+        structure def Steel : Material {
+            param density : Real = 7850.0
+        }
+        structure def Host { param m : Material }
+        structure def Top {
+            sub x = Host(m: Steel(density: 1000.0))
+        }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: Steel(density: 1000.0) conforms to Material, got: {:?}",
+        errors
+    );
+}

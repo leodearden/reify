@@ -951,6 +951,9 @@ pub(crate) fn check_trait_arg_conformance(
     };
 
     // Only act when the param's declared type is a trait object.
+    // TODO(follow-up): handle Option<TraitObject> and collection-typed trait params —
+    // wrapping a trait type in Option or a collection currently bypasses call-site
+    // conformance silently (known gap, not forgotten).
     let Type::TraitObject(required_trait) = &cell.cell_type else {
         return; // Non-trait param — no call-site type-check is performed in the compiler today.
     };
@@ -1014,6 +1017,15 @@ pub(crate) fn check_trait_arg_conformance(
             }
         }
         _ => {
+            // Anti-cascade: when arg_type is Type::Real and arg_call_name is Some
+            // but the callee was not in the template registry (so promotion returned
+            // None), an "undefined function" diagnostic already fired for that
+            // unknown call.  Emitting "type 'real' does not conform to trait 'X'"
+            // here would be misleading — Real is the expression compiler's fallback
+            // for unresolved calls, not the author's intended type.  Suppress.
+            if matches!(arg_type, Type::Real) && arg_call_name.is_some() {
+                return;
+            }
             // Neither StructureRef nor TraitObject — cannot conform to a trait.
             // The original arg_type is used in the message (not the effective type,
             // which equals arg_type here since promotion didn't apply).
