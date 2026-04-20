@@ -42952,16 +42952,22 @@
         "description": "Test in crates/reify-compiler/tests/constraint_def_compile_tests.rs (~line 977) only asserts absence of unknown-type errors. Add positive assertion: find Aligned in module.constraint_defs, assert params.len()==2, type_params.len()==1. Source: esc-1964-55 review suggestion.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen generic_constraint_def_with_type_param test with positive shape assertion"
+            ]
+          }
         },
-        "updatedAt": "2026-04-20T14:08:23.827Z"
+        "updatedAt": "2026-04-20T14:08:29.987Z"
       },
       {
         "id": "2044",
@@ -43242,9 +43248,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:08:23.827Z",
+      "lastModified": "2026-04-20T14:08:29.987Z",
       "taskCount": 2050,
-      "completedCount": 1758,
+      "completedCount": 1759,
       "tags": [
         "master"
       ]
