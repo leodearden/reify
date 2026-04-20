@@ -962,3 +962,48 @@ fn non_pub_constraint_def_not_instantiable_cross_module() {
         b_errors
     );
 }
+
+// ── Test 17: generic constraint def with type-param type param compiles cleanly ──
+
+/// A constraint def that declares a type parameter `T` and uses `T` as the type
+/// of one of its params must compile without any "unknown type" error.
+///
+/// This characterizes the behaviour preserved by the step-2 cleanup that removes
+/// the redundant `!type_param_names.contains(name)` guard from
+/// `compile_constraint_def` — the `resolve_type_expr_with_aliases` call already
+/// returns `Some` for any name in `type_param_names`, making the guard dead code.
+/// Adding the test first ensures the cleanup cannot silently regress this contract.
+#[test]
+fn generic_constraint_def_with_type_param_type_compiles_cleanly() {
+    let source = r#"
+constraint def Aligned<T> {
+    param t: T
+    param w: Length
+    w > 0
+}
+"#;
+    let module = compile_source(source);
+    let errors = error_diags(&module.diagnostics);
+
+    // No error must mention "unknown type" for the declared type parameter T.
+    let unknown_type_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.starts_with("unknown type '"))
+        .collect();
+    assert!(
+        unknown_type_errors.is_empty(),
+        "expected no 'unknown type' errors for declared type param T, got: {:?}",
+        unknown_type_errors
+    );
+
+    // More specifically, no error must mention T as an unknown type.
+    let t_unknown: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("unknown type 'T'"))
+        .collect();
+    assert!(
+        t_unknown.is_empty(),
+        "expected no 'unknown type T' error (T is a declared type param), got: {:?}",
+        t_unknown
+    );
+}
