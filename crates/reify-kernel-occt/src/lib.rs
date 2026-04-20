@@ -521,14 +521,36 @@ impl OcctKernel {
                 ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            // NOTE: ExtrudeSymmetric / SweepGuided / LoftGuided land in steps
-            // 18/20/22 of task-322. The catch-all below keeps the kernel lib
-            // compiling while e2e tests are authored (TDD).
-            GeometryOp::ExtrudeSymmetric { .. }
-            | GeometryOp::SweepGuided { .. }
-            | GeometryOp::LoftGuided { .. } => {
+            GeometryOp::ExtrudeSymmetric { profile, distance } => {
+                let dist = extract_f64(distance)?;
+                if !dist.is_finite() {
+                    return Err(GeometryError::OperationFailed(
+                        "extrude_symmetric distance must be finite".into(),
+                    ));
+                }
+                if dist == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "extrude_symmetric distance must not be zero".into(),
+                    ));
+                }
+                // Compose: prism the profile by the full distance, then
+                // translate by -distance/2 along the extrusion axis so the
+                // resulting solid's centroid (in z) aligns with the
+                // profile's centroid. This reuses the validated make_prism
+                // + translate_shape FFI calls rather than adding a bespoke
+                // C++ wrapper.
+                let profile_shape = self.get_shape(*profile)?;
+                let prism = ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ffi::ffi::translate_shape(&prism, 0.0, 0.0, -dist / 2.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            // NOTE: SweepGuided / LoftGuided land in steps 20/22 of
+            // task-322. The catch-all below keeps the kernel lib compiling
+            // while e2e tests are authored (TDD).
+            GeometryOp::SweepGuided { .. } | GeometryOp::LoftGuided { .. } => {
                 return Err(GeometryError::OperationFailed(
-                    "geometry op not yet implemented in kernel (task-322 steps 18/20/22)".into(),
+                    "geometry op not yet implemented in kernel (task-322 steps 20/22)".into(),
                 ));
             }
             GeometryOp::LineSegment {

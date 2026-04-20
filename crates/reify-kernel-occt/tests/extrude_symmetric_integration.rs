@@ -2,117 +2,136 @@
 //! OcctKernel API.
 //!
 //! These tests exercise GeometryOp::ExtrudeSymmetric through
-//! OcctKernel::execute(), verifying both the centroid-alignment invariant
-//! (the extruded solid's centroid matches the profile's centroid in the
-//! extrusion direction) and the standard degeneracy error paths
-//! (zero / NaN / infinity distance).
+//! OcctKernel::execute(), verifying both the symmetry invariant
+//! (the extruded shape spans +/- distance/2 about the profile's plane,
+//! i.e. the z-centroid of the result aligns with the profile's z-centroid)
+//! and the standard degeneracy error paths (zero / NaN / infinity distance).
+//!
+//! The centroid-alignment invariant is verified via a BoundingBox query on
+//! a wire profile at z=0 extruded along Z: the resulting shell's z-extent
+//! must be [-distance/2, +distance/2]. This exercises the public API only
+//! — a Face-based centroid check would need private FFI access (OcctKernel
+//! does not expose face primitives) and is covered by in-crate unit tests
+//! in lib.rs.
 
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
 use reify_types::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
-/// Helper: create a kernel with a 1m × 1m × 1m Box profile centered at
-/// the origin. We build the Box and translate it so its centroid is at
-/// (0, 0, 0) — this lets extrude_symmetric's centroid-preservation
-/// invariant be tested against a known profile centroid.
-fn kernel_with_centered_box_profile() -> (OcctKernel, GeometryHandleId) {
+/// Helper: create a kernel with a horizontal line-segment wire at z=0 as
+/// profile. Extruding this along Z produces a vertical rectangular shell
+/// whose z-extent mirrors the extrusion distance. We use this (rather than
+/// a Box) because `make_prism` requires an Edge/Wire/Face — not a Solid.
+fn kernel_with_line_profile_at_z0() -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
-    let box_h = kernel
-        .execute(&GeometryOp::Box {
-            width: Value::Real(1.0),
-            height: Value::Real(1.0),
-            depth: Value::Real(1.0),
+    let wire = kernel
+        .execute(&GeometryOp::LineSegment {
+            x1: -0.5,
+            y1: 0.0,
+            z1: 0.0,
+            x2: 0.5,
+            y2: 0.0,
+            z2: 0.0,
         })
-        .expect("Box creation should succeed");
-    let centered = kernel
-        .execute(&GeometryOp::Translate {
-            target: box_h.id,
-            dx: -0.5,
-            dy: -0.5,
-            dz: -0.5,
-        })
-        .expect("Translate should succeed");
-    (kernel, centered.id)
+        .expect("LineSegment creation should succeed");
+    (kernel, wire.id)
 }
 
-/// Parse the JSON-encoded centroid string returned by
-/// `GeometryQuery::Centroid` into (x, y, z).
-fn parse_centroid(s: &str) -> (f64, f64, f64) {
-    // Expected format: {"x":<f>,"y":<f>,"z":<f>}
-    let inner = s.trim_start_matches('{').trim_end_matches('}');
-    let mut x = f64::NAN;
-    let mut y = f64::NAN;
-    let mut z = f64::NAN;
-    for pair in inner.split(',') {
+/// Parse the JSON-encoded bounding box string returned by
+/// `GeometryQuery::BoundingBox` into (zmin, zmax). (We only need Z here.)
+fn parse_bbox_z(s: &str) -> (f64, f64) {
+    // Expected format:
+    // {"xmin":<f>,"ymin":<f>,"zmin":<f>,"xmax":<f>,"ymax":<f>,"zmax":<f>}
+    let mut zmin = f64::NAN;
+    let mut zmax = f64::NAN;
+    let trimmed = s.trim_start_matches('{').trim_end_matches('}');
+    for pair in trimmed.split(',') {
         let mut parts = pair.splitn(2, ':');
-        let key = parts
-            .next()
-            .unwrap()
-            .trim_matches('"')
-            .trim_matches('{')
-            .trim();
+        let key = parts.next().unwrap().trim().trim_matches('"');
         let val: f64 = parts.next().unwrap().trim().parse().unwrap();
         match key {
-            "x" => x = val,
-            "y" => y = val,
-            "z" => z = val,
+            "zmin" => zmin = val,
+            "zmax" => zmax = val,
             _ => {}
         }
     }
-    (x, y, z)
+    (zmin, zmax)
 }
 
-/// The core centroid-alignment invariant: after ExtrudeSymmetric along
-/// +z by distance d, the resulting solid's centroid in z equals the
-/// profile's centroid in z (profile centered at z=0 → result centroid
-/// z ≈ 0).
+/// The core symmetry invariant: after ExtrudeSymmetric along +Z by
+/// distance d on a profile at z=0, the resulting shape's z-extent is
+/// [-d/2, +d/2]. This is equivalent to "result centroid z aligns with
+/// profile centroid z (=0)" for translation-symmetric profiles.
 #[test]
 fn extrude_symmetric_centroid_at_z_zero() {
-    let (mut kernel, profile_id) = kernel_with_centered_box_profile();
+    let (mut kernel, profile_id) = kernel_with_line_profile_at_z0();
 
-    // Sanity check: the centered profile's centroid is at (0,0,0).
-    let profile_centroid = kernel
-        .query(&GeometryQuery::Centroid(profile_id))
-        .expect("profile centroid query should succeed");
-    let (px, py, pz) = match profile_centroid {
-        Value::String(s) => parse_centroid(&s),
-        other => panic!("expected centroid String, got {:?}", other),
+    // Sanity check: the profile's z-extent is essentially [0, 0] (flat at
+    // z=0). OCCT BRepBndLib applies a tiny positive pad to every bounding
+    // box (typically ≤1e-6 for a 1m-scale shape), so we use a matching
+    // tolerance.
+    let bbox_tol = 1e-6_f64;
+    let profile_bbox = kernel
+        .query(&GeometryQuery::BoundingBox(profile_id))
+        .expect("profile bbox query should succeed");
+    let (p_zmin, p_zmax) = match profile_bbox {
+        Value::String(s) => parse_bbox_z(&s),
+        other => panic!("expected bbox String, got {:?}", other),
     };
     assert!(
-        px.abs() < 1e-9 && py.abs() < 1e-9 && pz.abs() < 1e-9,
-        "profile centroid should be at origin, got ({}, {}, {})",
-        px,
-        py,
-        pz
+        p_zmin.abs() < bbox_tol && p_zmax.abs() < bbox_tol,
+        "profile z-extent should be ≈ [0, 0], got [{}, {}]",
+        p_zmin,
+        p_zmax
     );
 
     // Extrude symmetrically by 0.02 m along +z (distance/2 each way).
+    let distance = 0.02_f64;
     let result = kernel
         .execute(&GeometryOp::ExtrudeSymmetric {
             profile: profile_id,
-            distance: Value::Real(0.02),
+            distance: Value::Real(distance),
         })
         .expect("ExtrudeSymmetric should succeed");
 
-    let centroid = kernel
-        .query(&GeometryQuery::Centroid(result.id))
-        .expect("centroid query should succeed");
-    let (_cx, _cy, cz) = match centroid {
-        Value::String(s) => parse_centroid(&s),
-        other => panic!("expected centroid String, got {:?}", other),
+    let bbox = kernel
+        .query(&GeometryQuery::BoundingBox(result.id))
+        .expect("bbox query should succeed");
+    let (zmin, zmax) = match bbox {
+        Value::String(s) => parse_bbox_z(&s),
+        other => panic!("expected bbox String, got {:?}", other),
     };
+    let half = distance / 2.0;
     assert!(
-        cz.abs() < 1e-9,
-        "ExtrudeSymmetric result centroid z should align with profile \
-         centroid z (0), got z={}",
-        cz
+        (zmin - (-half)).abs() < bbox_tol,
+        "ExtrudeSymmetric zmin should be ≈ -distance/2 = {}, got {}",
+        -half,
+        zmin
+    );
+    assert!(
+        (zmax - half).abs() < bbox_tol,
+        "ExtrudeSymmetric zmax should be ≈ +distance/2 = {}, got {}",
+        half,
+        zmax
+    );
+    // And centroid (midpoint) aligns with profile's z-centroid (0).
+    // bbox padding is symmetric so cancels in the midpoint → assertion can
+    // be tighter than bbox_tol.
+    let center = (zmin + zmax) / 2.0;
+    assert!(
+        center.abs() < 1e-9,
+        "ExtrudeSymmetric result z-centroid should align with profile \
+         centroid z (0), got center_z={} (zmin={}, zmax={})",
+        center,
+        zmin,
+        zmax
     );
 }
 
 #[test]
 fn extrude_symmetric_zero_distance_returns_error() {
-    let (mut kernel, profile_id) = kernel_with_centered_box_profile();
+    let (mut kernel, profile_id) = kernel_with_line_profile_at_z0();
 
     let result = kernel.execute(&GeometryOp::ExtrudeSymmetric {
         profile: profile_id,
@@ -133,7 +152,7 @@ fn extrude_symmetric_zero_distance_returns_error() {
 
 #[test]
 fn extrude_symmetric_non_finite_distance_returns_error_nan() {
-    let (mut kernel, profile_id) = kernel_with_centered_box_profile();
+    let (mut kernel, profile_id) = kernel_with_line_profile_at_z0();
 
     let result = kernel.execute(&GeometryOp::ExtrudeSymmetric {
         profile: profile_id,
@@ -154,7 +173,7 @@ fn extrude_symmetric_non_finite_distance_returns_error_nan() {
 
 #[test]
 fn extrude_symmetric_non_finite_distance_returns_error_infinity() {
-    let (mut kernel, profile_id) = kernel_with_centered_box_profile();
+    let (mut kernel, profile_id) = kernel_with_line_profile_at_z0();
 
     let result = kernel.execute(&GeometryOp::ExtrudeSymmetric {
         profile: profile_id,
