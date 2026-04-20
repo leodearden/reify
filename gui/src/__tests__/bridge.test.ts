@@ -32,7 +32,10 @@ import {
   pickOpenPath,
   onFocusEntity,
   onNavigateToSource,
+  getKernelStatus,
+  onKernelStatus,
 } from '../bridge';
+import type { KernelStatus } from '../bridge';
 import { open } from '@tauri-apps/plugin-dialog';
 
 const mockOpen = vi.mocked(open);
@@ -396,5 +399,42 @@ describe('bridge event listeners', () => {
     await onNavigateToSource(callback);
 
     expect(callback).toHaveBeenCalledWith({ file: 'bracket.ri', line: 5, column: 3, end_line: 20, end_column: 7 });
+  });
+
+  it("onKernelStatus calls listen with 'kernel-status' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onKernelStatus(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('kernel-status', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onKernelStatus passes KernelStatus payload to callback', async () => {
+    const unlisten = vi.fn();
+    const sample: KernelStatus = { available: false, message: 'Geometry kernel not available — OCCT not linked' };
+    mockListen.mockImplementation(async (_name, handler) => {
+      (handler as (event: { payload: KernelStatus }) => void)({ payload: sample });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onKernelStatus(callback);
+
+    expect(callback).toHaveBeenCalledWith(sample);
+  });
+});
+
+describe('bridge kernel commands', () => {
+  it('getKernelStatus calls invoke with get_kernel_status and returns payload', async () => {
+    const sample: KernelStatus = { available: false, message: 'Geometry kernel not available — OCCT not linked' };
+    mockInvoke.mockResolvedValue(sample);
+
+    const result = await getKernelStatus();
+
+    expect(mockInvoke).toHaveBeenCalledWith('get_kernel_status');
+    expect(result).toEqual(sample);
   });
 });
