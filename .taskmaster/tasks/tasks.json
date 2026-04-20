@@ -6697,7 +6697,7 @@
           "309",
           "310"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6714,7 +6714,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:39:57.019Z"
+        "updatedAt": "2026-04-20T11:33:35.606Z"
       },
       {
         "id": "323",
@@ -40304,11 +40304,11 @@
         "description": "In crates/reify-eval/src/lib.rs (~line 101-143, `value_type_kind_matches`), every value/type predicate (e.g. `Value::Real(_) => matches!(ty, Type::Real | Type::Int)`) enumerates concrete Type variants but never accepts Type::Error. Since Type::Error now propagates further into compiled expressions (task-448, task-1912), a CompiledExpr carrying Type::Error could reach evaluation during incremental/LSP scenarios and produce spurious TypeKindMismatch diagnostics or panics. Either add an explicit Type::Error arm in each predicate (returning true as \"don't second-guess a poisoned type\"), or guard the evaluator to refuse evaluation when diagnostics contain errors, and document the contract. Related: tasks 1867, 1893, 1913. Review followup from task 1912 (S6).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:59.867Z",
+        "updatedAt": "2026-04-20T11:33:35.850Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
@@ -42605,14 +42605,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:29:43.973Z"
+        "updatedAt": "2026-04-20T11:29:43.973Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:33:35.506Z",
+      "lastModified": "2026-04-20T11:33:35.850Z",
       "taskCount": 2022,
-      "completedCount": 1725,
+      "completedCount": 1726,
       "tags": [
         "master"
       ]
