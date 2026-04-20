@@ -43381,20 +43381,20 @@
         "description": "Two low-priority robustness improvements to `crates/reify-test-support/src/helpers.rs` identified by reviewer_comprehensive on esc-1973-144.",
         "details": "**S2 — Document substring-matching trade-off in `assert_no_type_cascade` (helpers.rs:564)**\nThe function uses `msg.contains(fragment)` on diagnostic messages. A fragment like `\"ambiguous\"` or `\"duplicate\"` could match unrelated future diagnostic wording, silently weakening the whitelist. Reviewer rated this low-impact (call sites use specific phrases) and explicitly said \"not worth blocking on.\"\n\nAction: add a short rustdoc paragraph noting the trade-off — callers should prefer specific phrases over common English words. Alternative (heavier): accept a predicate instead of `&[&str]`; defer unless a real collision surfaces.\n\n**S3 — Make `test_get_let_expr_in_panics_on_missing_default_expr` self-sufficient (helpers.rs:1175-1187 → actually ~1188-1199)**\nThe test relies on `TopologyTemplateBuilder::auto_param` producing a value cell with `default_expr: None`, which is an implementation detail rather than a documented invariant. `#[should_panic(expected = \"has no default expr\")]` would catch a regression, but an explicit guard makes the intent clearer.\n\nAction: either (a) add `assert!(cell.default_expr.is_none());` before the `get_let_expr_in` call, or (b) construct the `ValueCell` directly with `default_expr: None` to remove the builder dependency.\n\nRisk: low; both are mechanical one-line edits.\n\nSource: esc-1973-144 review suggestions S2 and S3. S1 from the same escalation (constructor_hash_tests.rs duplicate) is already covered by task #2061.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1973"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T17:15:15.629Z"
+        "updatedAt": "2026-04-20T17:31:53.208Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:30:12.253Z",
+      "lastModified": "2026-04-20T17:31:53.209Z",
       "taskCount": 2054,
-      "completedCount": 1782,
+      "completedCount": 1783,
       "tags": [
         "master"
       ]
