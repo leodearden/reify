@@ -42561,11 +42561,23 @@
         "description": "The `arg_call_name` capture in entity.rs plus the Real→StructureRef promotion in conformance.rs form a two-layer path-split that exists only because `compile_expr` does not know about the template registry when it lowers `FunctionCall` nodes. Have `compile_expr` emit `Type::StructureRef` for calls whose callee is a structure template (deferring to the post-pass if necessary), then drop `arg_call_name` and the Real→StructureRef promotion branch in conformance.rs.",
         "details": "## Scope\nReview suggestion on task 1874 (esc-1874-31, reviewer_comprehensive).\n\n## Location\n- crates/reify-compiler/src/entity.rs:859-864 (arg_call_name capture)\n- crates/reify-compiler/src/conformance.rs (Real→StructureRef promotion branch)\n\n## Problem\nCurrent design smell acknowledged by TODO in the diff. The indirection:\n1. `compile_expr` assigns `Type::Real` (or similar) to structure-instantiation FunctionCalls because template info is unavailable at that point.\n2. entity.rs captures the callee name into `arg_call_name` on the side.\n3. conformance.rs post-pass promotes the Type based on `arg_call_name` before checking trait conformance.\n\n## Approach\n- Route template lookups into `compile_expr` (or defer the final type assignment of FunctionCall to the post-pass with enough information to resolve it directly).\n- When the callee resolves to a structure template, emit `Type::StructureRef(name)` instead of Real.\n- Drop `arg_call_name` threading in entity.rs.\n- Drop the Real→StructureRef promotion branch in conformance.rs.\n\n## Acceptance\n- All existing trait-typed-param tests pass unchanged.\n- `arg_call_name` field removed.\n- Promotion branch in conformance.rs removed.\n- No new `Type::StructureRef` mishandling regressions across the rest of the compiler.\n\n### memory_hints\n- search: \"arg_call_name capture entity compile_expr\"\n- search: \"StructureRef promotion trait conformance\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:34:19.067Z"
+        "updatedAt": "2026-04-20T11:34:38.960Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Eliminate `arg_call_name` capture by teaching `compile_expr` about structure templates"
+            ]
+          },
+          "done_provenance": {
+            "commit": "7b66d4f6e89bd007e432e7b527f79daf6f621c14",
+            "note": "Task 2027 branch (task/2027) HEAD is already an ancestor of main — work was merged prior to the planning escalation."
+          }
+        }
       },
       {
         "id": "2028",
@@ -42616,9 +42628,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:34:19.068Z",
+      "lastModified": "2026-04-20T11:34:38.960Z",
       "taskCount": 2022,
-      "completedCount": 1726,
+      "completedCount": 1727,
       "tags": [
         "master"
       ]
