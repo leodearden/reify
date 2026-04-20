@@ -34210,11 +34210,11 @@
         "description": "In crates/reify-types/src/value.rs (~line 164), Value::Field::lambda is currently Box<Value>. In crates/reify-expr/src/calculus.rs, compute_gradient (~line 225), compute_divergence (~line 294), compute_curl (~line 365), and compute_laplacian (~line 423) each do `lambda: Box::new(field_val.clone())`, which deep-clones the entire source field (including its own inner lambda, captures, etc.) on every gradient/divergence/curl/laplacian call. Replacing Box<Value> with Arc<Value> would make these clones O(1) refcount bumps.\n\nScope: cross-crate type change. All constructors and destructurings of Value::Field need updating in: crates/reify-types/src, crates/reify-expr/src, crates/reify-eval/src, crates/reify-stdlib/src, crates/reify-test-support/src, gui/src-tauri/src, plus test code in crates/reify-expr/tests. Watch for derive impls (PartialEq, Clone, Debug, Ord, Hash) which should work transparently with Arc.\n\nVerification: cargo test -p reify-expr after the type change, plus full workspace build. Benchmark gradient sampling if a bench exists.\n\nContext: this is the one remaining unresolved item from task 412. Items (2) coords cloning and (3) captures.clone() have already been fixed — coords via scratch buffers + std::mem::take in eval_perturbed_point, captures via ValueMap's im::HashMap backing.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T17:59:42.717Z",
+        "updatedAt": "2026-04-20T20:20:07.073Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -42593,11 +42593,11 @@
         "description": "gui/src/__tests__/App.test.tsx:642-670 asserts mockFlyToEntity was called and that one selected group appears in PropertyEditor, but does not check that the entity path routed to selectionStore.selectEntity is 'Bracket'. A regression that selected the wrong entity would still satisfy `selectedGroups.length === 1`.\n\nFix: Also assert the selected group's identity (e.g. that the data-selected element corresponds to 'Bracket', or inspect selectionStore state) so the test verifies the value routed through, not merely that something got selected.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T17:59:45.970Z",
+        "updatedAt": "2026-04-20T20:20:07.228Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -43499,14 +43499,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T20:03:29.221Z",
+      "lastModified": "2026-04-20T20:20:07.228Z",
       "taskCount": 2056,
       "completedCount": 1788,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T20:20:04.018Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
