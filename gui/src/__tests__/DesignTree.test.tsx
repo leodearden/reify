@@ -4,17 +4,7 @@ import { createRoot } from 'solid-js';
 import { DesignTree } from '../panels/DesignTree';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
-
-function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }): EntityTreeNode {
-  return {
-    kind: 'structure',
-    type_name: null,
-    has_mesh: false,
-    trait_geometry: false,
-    children: [],
-    ...overrides,
-  };
-}
+import { makeNode } from './test-utils';
 
 function makeStore(nodes: EntityTreeNode[]) {
   let store: ReturnType<typeof createViewStateStore>;

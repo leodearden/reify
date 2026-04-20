@@ -1,7 +1,111 @@
 /**
- * Shared test helpers for async patterns.
+ * Shared test helpers for async patterns and tree fixtures.
  */
 import { vi, expect, type MockInstance } from 'vitest';
+import type { EntityTreeNode } from '../types';
+
+// ---------------------------------------------------------------------------
+// Tree fixture builders
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an EntityTreeNode with sensible defaults.
+ *
+ * `entity_path` is required; all other fields default to the canonical "blank"
+ * values used throughout the DesignTree and viewStateStore tests.
+ */
+export function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }): EntityTreeNode {
+  return {
+    kind: 'structure',
+    type_name: null,
+    has_mesh: false,
+    trait_geometry: false,
+    children: [],
+    ...overrides,
+  };
+}
+
+/**
+ * Return the canonical Root/A/a1/a2/B tree used by the majority of
+ * viewStateStore tests.  Shape: Root { A { a1, a2 }, B }
+ * where Root/A/B are `kind='structure'` and a1/a2 are `kind='param'`.
+ */
+export function makeTree(): EntityTreeNode[] {
+  return [
+    makeNode({
+      entity_path: 'Root',
+      kind: 'structure',
+      children: [
+        makeNode({
+          entity_path: 'Root.A',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
+          ],
+        }),
+        makeNode({ entity_path: 'Root.B', kind: 'structure' }),
+      ],
+    }),
+  ];
+}
+
+/**
+ * Return Root { A { a1, a2 }, B { b1, b2 } } — a fully-expanded tree where
+ * both A and B have leaf-param children.
+ * Used by the `showOnly` and `full PRD integration scenario` describe blocks.
+ */
+export function makeTreeWithTwoSubtrees(): EntityTreeNode[] {
+  return [
+    makeNode({
+      entity_path: 'Root',
+      kind: 'structure',
+      children: [
+        makeNode({
+          entity_path: 'Root.A',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
+          ],
+        }),
+        makeNode({
+          entity_path: 'Root.B',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.B.b1', kind: 'param' }),
+            makeNode({ entity_path: 'Root.B.b2', kind: 'param' }),
+          ],
+        }),
+      ],
+    }),
+  ];
+}
+
+/**
+ * Return Root { A(trait_geometry=true) { a1 }, B } — a tree where A carries
+ * `trait_geometry: true` so that geometry-node behaviour can be verified.
+ * Used by the `getAllEffective` describe block.
+ */
+export function makeTreeWithGeometryA(): EntityTreeNode[] {
+  return [
+    makeNode({
+      entity_path: 'Root',
+      kind: 'structure',
+      children: [
+        makeNode({
+          entity_path: 'Root.A',
+          kind: 'structure',
+          trait_geometry: true,
+          children: [
+            makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+          ],
+        }),
+        makeNode({ entity_path: 'Root.B', kind: 'structure' }),
+      ],
+    }),
+  ];
+}
 
 /**
  * Compute the median of a non-empty array of numbers.

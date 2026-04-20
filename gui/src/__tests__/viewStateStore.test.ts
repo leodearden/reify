@@ -4,23 +4,8 @@ import { join } from 'node:path';
 import { createRoot, createComputed } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
-import type { EntityTreeNode } from '../types';
 import type { ViewStateStore } from '../stores';
-
-// ---------------------------------------------------------------------------
-// Local fixture builder
-// ---------------------------------------------------------------------------
-
-function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }): EntityTreeNode {
-  return {
-    kind: 'structure',
-    type_name: null,
-    has_mesh: false,
-    trait_geometry: false,
-    children: [],
-    ...overrides,
-  };
-}
+import { makeNode, makeTree, makeTreeWithTwoSubtrees, makeTreeWithGeometryA } from './test-utils';
 
 describe('viewStateStore — default rules', () => {
   it('node with trait_geometry=true → getEffectiveVisibility returns "show"', () => {
@@ -142,24 +127,6 @@ describe('viewStateStore — setVisibility with cascade=true', () => {
 });
 
 describe('viewStateStore — setVisibilityWithoutCascade and walk-up', () => {
-  function makeTree() {
-    return [
-      makeNode({
-        entity_path: 'Root',
-        kind: 'structure',
-        children: [
-          makeNode({
-            entity_path: 'Root.A',
-            kind: 'structure',
-            children: [
-              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
-            ],
-          }),
-        ],
-      }),
-    ];
-  }
-
   it('setVisibilityWithoutCascade does not clear any descendant explicit state', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
@@ -197,26 +164,6 @@ describe('viewStateStore — setVisibilityWithoutCascade and walk-up', () => {
 });
 
 describe('viewStateStore — resetToInherit', () => {
-  function makeTree() {
-    return [
-      makeNode({
-        entity_path: 'Root',
-        kind: 'structure',
-        children: [
-          makeNode({
-            entity_path: 'Root.A',
-            kind: 'structure',
-            children: [
-              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
-              makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
-            ],
-          }),
-          makeNode({ entity_path: 'Root.B', kind: 'structure' }),
-        ],
-      }),
-    ];
-  }
-
   it('clears explicit[path] to null', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
@@ -284,38 +231,10 @@ describe('viewStateStore — resetToInherit', () => {
 });
 
 describe('viewStateStore — showOnly', () => {
-  function makeTree() {
-    // Root { A { a1, a2 }, B { b1, b2 } }
-    return [
-      makeNode({
-        entity_path: 'Root',
-        kind: 'structure',
-        children: [
-          makeNode({
-            entity_path: 'Root.A',
-            kind: 'structure',
-            children: [
-              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
-              makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
-            ],
-          }),
-          makeNode({
-            entity_path: 'Root.B',
-            kind: 'structure',
-            children: [
-              makeNode({ entity_path: 'Root.B.b1', kind: 'param' }),
-              makeNode({ entity_path: 'Root.B.b2', kind: 'param' }),
-            ],
-          }),
-        ],
-      }),
-    ];
-  }
-
   it('showOnly(cascade=true): target has explicit show, all nodes not in {target, ancestors} are hidden', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree(makeTree());
+      store.setTree(makeTreeWithTwoSubtrees());
       store.showOnly('Root.A.a1', true);
       // Target
       expect(store.state.explicit['Root.A.a1']).toBe('show');
@@ -334,7 +253,7 @@ describe('viewStateStore — showOnly', () => {
   it('showOnly(cascade=true): descendants of target have explicit=null (inherit show)', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree(makeTree());
+      store.setTree(makeTreeWithTwoSubtrees());
       // Prime a1's child (add a deeper node)
       const tree = [
         makeNode({
@@ -368,7 +287,7 @@ describe('viewStateStore — showOnly', () => {
   it('showOnly(cascade=false): descendants of target are hidden (not cleared to null)', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree(makeTree());
+      store.setTree(makeTreeWithTwoSubtrees());
       store.showOnly('Root.A', false);
       // cascade=false: a1 and a2 are set hidden by the universal-hide pass (not null)
       expect(store.state.explicit['Root.A.a1']).toBe('hidden');
@@ -386,7 +305,7 @@ describe('viewStateStore — showOnly', () => {
   it('ancestors of target have explicit=null so they do not block target', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree(makeTree());
+      store.setTree(makeTreeWithTwoSubtrees());
       // Pre-set an ancestor to hidden
       store.setVisibility('Root.A', 'hidden', false);
       store.showOnly('Root.A.a1', true);
@@ -399,30 +318,10 @@ describe('viewStateStore — showOnly', () => {
 });
 
 describe('viewStateStore — getAllEffective', () => {
-  function makeTree() {
-    return [
-      makeNode({
-        entity_path: 'Root',
-        kind: 'structure',
-        children: [
-          makeNode({
-            entity_path: 'Root.A',
-            kind: 'structure',
-            trait_geometry: true,
-            children: [
-              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
-            ],
-          }),
-          makeNode({ entity_path: 'Root.B', kind: 'structure' }),
-        ],
-      }),
-    ];
-  }
-
   it('returns Record covering every node with their resolved effective state', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree(makeTree());
+      store.setTree(makeTreeWithGeometryA());
       const all = store.getAllEffective();
       expect(Object.keys(all)).toHaveLength(4);
       expect(all['Root']).toBe('show');
@@ -436,7 +335,7 @@ describe('viewStateStore — getAllEffective', () => {
   it('after setVisibility(hidden, cascade=true) every descendant appears as hidden', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree(makeTree());
+      store.setTree(makeTreeWithGeometryA());
       store.setVisibility('Root.A', 'hidden', true);
       const all = store.getAllEffective();
       expect(all['Root.A']).toBe('hidden');
@@ -450,7 +349,7 @@ describe('viewStateStore — getAllEffective', () => {
   it('sibling with trait_geometry=true appears as show when no explicit set', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree(makeTree());
+      store.setTree(makeTreeWithGeometryA());
       store.setVisibility('Root.A', 'hidden', true);
       const all = store.getAllEffective();
       // Root.A has trait_geometry but is hidden by explicit
@@ -463,24 +362,6 @@ describe('viewStateStore — getAllEffective', () => {
 });
 
 describe('viewStateStore — cycleCascading', () => {
-  function makeTree() {
-    return [
-      makeNode({
-        entity_path: 'Root',
-        kind: 'structure',
-        children: [
-          makeNode({
-            entity_path: 'Root.A',
-            kind: 'structure',
-            children: [
-              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
-            ],
-          }),
-        ],
-      }),
-    ];
-  }
-
   it('show → ghost', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
@@ -532,25 +413,6 @@ describe('viewStateStore — cycleCascading', () => {
 });
 
 describe('viewStateStore — hasOverride', () => {
-  function makeTree() {
-    // Root(show-by-default) > A(explicit='hidden') > a1(explicit=null)
-    return [
-      makeNode({
-        entity_path: 'Root',
-        kind: 'structure',
-        children: [
-          makeNode({
-            entity_path: 'Root.A',
-            kind: 'structure',
-            children: [
-              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
-            ],
-          }),
-        ],
-      }),
-    ];
-  }
-
   it('explicit=null → false', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
@@ -648,38 +510,10 @@ describe('viewStateStore — skeleton', () => {
 });
 
 describe('viewStateStore — full PRD integration scenario', () => {
-  // Tree: Root { A { a1, a2 }, B { b1, b2 } }
-  function makeTree() {
-    return [
-      makeNode({
-        entity_path: 'Root',
-        kind: 'structure',
-        children: [
-          makeNode({
-            entity_path: 'Root.A',
-            kind: 'structure',
-            children: [
-              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
-              makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
-            ],
-          }),
-          makeNode({
-            entity_path: 'Root.B',
-            kind: 'structure',
-            children: [
-              makeNode({ entity_path: 'Root.B.b1', kind: 'param' }),
-              makeNode({ entity_path: 'Root.B.b2', kind: 'param' }),
-            ],
-          }),
-        ],
-      }),
-    ];
-  }
-
   it('simulates the full 4-step PRD scenario', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      store.setTree(makeTree());
+      store.setTree(makeTreeWithTwoSubtrees());
 
       // Step 1: setVisibility('Root.A', 'ghost', true)
       // → A, a1, a2 all effective 'ghost'; B, b1, b2 still 'show'

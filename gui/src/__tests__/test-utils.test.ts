@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections, median, formatPerfSamples } from './test-utils';
+import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections, median, formatPerfSamples, makeNode, makeTree, makeTreeWithTwoSubtrees, makeTreeWithGeometryA } from './test-utils';
 
 describe('flushMacrotasks', () => {
   it('returns a Promise that resolves after yielding to the macrotask queue', async () => {
@@ -332,6 +332,110 @@ describe('expectNoUnhandledRejections', () => {
         window.dispatchEvent(new Event('unhandledrejection'));
       }),
     ).rejects.toThrow(/expected.*not.*called/i);
+  });
+});
+
+describe('makeNode', () => {
+  it('returns an EntityTreeNode with default fields when only entity_path is supplied', () => {
+    const node = makeNode({ entity_path: 'Root.A' });
+    expect(node.kind).toBe('structure');
+    expect(node.type_name).toBeNull();
+    expect(node.has_mesh).toBe(false);
+    expect(node.trait_geometry).toBe(false);
+    expect(node.children).toEqual([]);
+  });
+
+  it('sets entity_path from the overrides argument', () => {
+    const node = makeNode({ entity_path: 'Root.A' });
+    expect(node.entity_path).toBe('Root.A');
+  });
+
+  it('override fields win over defaults (kind, trait_geometry, type_name, has_mesh)', () => {
+    const node = makeNode({ entity_path: 'Root.A', kind: 'param', trait_geometry: true, type_name: 'Bracket', has_mesh: true });
+    expect(node.kind).toBe('param');
+    expect(node.trait_geometry).toBe(true);
+    expect(node.type_name).toBe('Bracket');
+    expect(node.has_mesh).toBe(true);
+  });
+
+  it('passing children in overrides replaces the default empty array', () => {
+    const child = makeNode({ entity_path: 'Root.A.a1' });
+    const parent = makeNode({ entity_path: 'Root.A', children: [child] });
+    expect(parent.children).toHaveLength(1);
+    expect(parent.children[0].entity_path).toBe('Root.A.a1');
+  });
+});
+
+describe('makeTree', () => {
+  it('returns the canonical Root{A{a1,a2},B} tree structure', () => {
+    expect(makeTree()).toEqual([
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+              makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
+            ],
+          }),
+          makeNode({ entity_path: 'Root.B', kind: 'structure' }),
+        ],
+      }),
+    ]);
+  });
+});
+
+describe('makeTreeWithTwoSubtrees', () => {
+  it('returns Root{A{a1,a2},B{b1,b2}} with both A and B having two param children', () => {
+    expect(makeTreeWithTwoSubtrees()).toEqual([
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+              makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
+            ],
+          }),
+          makeNode({
+            entity_path: 'Root.B',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.B.b1', kind: 'param' }),
+              makeNode({ entity_path: 'Root.B.b2', kind: 'param' }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+  });
+});
+
+describe('makeTreeWithGeometryA', () => {
+  it('returns Root{A(trait_geometry=true){a1},B} with A carrying trait_geometry', () => {
+    expect(makeTreeWithGeometryA()).toEqual([
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            trait_geometry: true,
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            ],
+          }),
+          makeNode({ entity_path: 'Root.B', kind: 'structure' }),
+        ],
+      }),
+    ]);
   });
 });
 
