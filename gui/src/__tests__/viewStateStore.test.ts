@@ -1549,6 +1549,180 @@ describe('viewStateStore — COW on setVisibility', () => {
 });
 
 // ---------------------------------------------------------------------------
+// COW — copy-on-write via remaining mutation entry points
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — COW on setVisibilityWithoutCascade, resetToInherit, showOnly, cycleCascading', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.A', kind: 'param' }),
+          makeNode({ entity_path: 'Root.B', kind: 'param' }),
+        ],
+      }),
+    ];
+  }
+
+  /**
+   * Common assertion: after calling a mutation while an auto view is active,
+   * exactly one user view should exist, it should be named "{autoName} (modified)",
+   * it should have modified: true, and it should be the active view.
+   */
+  function assertCowProduced(store: ReturnType<typeof createViewStateStore>, autoName = 'Default') {
+    const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+    expect(userViewIds).toHaveLength(1);
+    const cowView = store.state.views[userViewIds[0]];
+    expect(cowView.name).toBe(`${autoName} (modified)`);
+    expect(cowView.modified).toBe(true);
+    expect(store.state.activeViewId).toBe(userViewIds[0]);
+  }
+
+  it('setVisibilityWithoutCascade triggers COW when an auto view is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      store.setVisibilityWithoutCascade('Root.A', 'hidden');
+      assertCowProduced(store);
+      // Mutation is recorded in the COW view
+      expect(store.state.views[store.state.activeViewId].visibility['Root.A']).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('setVisibilityWithoutCascade does NOT trigger COW when a user view is already active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const uid = store.createView('My View');
+      store.switchView(uid);
+
+      store.setVisibilityWithoutCascade('Root.A', 'hidden');
+      // Still only one user view (the one we created, no new COW)
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      expect(store.state.activeViewId).toBe(uid);
+      dispose();
+    });
+  });
+
+  it('resetToInherit triggers COW when an auto view is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      store.resetToInherit('Root.A');
+      assertCowProduced(store);
+      // After COW + resetToInherit, Root.A should have no explicit entry
+      expect(store.state.explicit['Root.A']).toBeUndefined();
+      dispose();
+    });
+  });
+
+  it('resetToInherit does NOT trigger COW when a user view is already active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const uid = store.createView('My View');
+      store.switchView(uid);
+
+      store.resetToInherit('Root.A');
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      expect(store.state.activeViewId).toBe(uid);
+      dispose();
+    });
+  });
+
+  it('showOnly triggers COW when an auto view is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      store.showOnly('Root.A', true);
+      assertCowProduced(store);
+      // Target is explicit 'show' in the COW view
+      expect(store.state.views[store.state.activeViewId].visibility['Root.A']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('showOnly does NOT trigger COW when a user view is already active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const uid = store.createView('My View');
+      store.switchView(uid);
+
+      store.showOnly('Root.A', true);
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      expect(store.state.activeViewId).toBe(uid);
+      dispose();
+    });
+  });
+
+  it('cycleCascading triggers COW when an auto view is active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      expect(store.state.activeViewId).toBe('auto:default');
+
+      // Root.A default effective is 'show'; cycle → 'ghost'
+      store.cycleCascading('Root.A');
+      assertCowProduced(store);
+      expect(store.state.views[store.state.activeViewId].visibility['Root.A']).toBe('ghost');
+      dispose();
+    });
+  });
+
+  it('cycleCascading does NOT trigger COW when a user view is already active', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const uid = store.createView('My View');
+      store.switchView(uid);
+
+      store.cycleCascading('Root.A');
+      const userViewIds = Object.keys(store.state.views).filter((k) => k.startsWith('user:'));
+      expect(userViewIds).toHaveLength(1);
+      expect(store.state.activeViewId).toBe(uid);
+      dispose();
+    });
+  });
+
+  it('original auto view is untouched after COW via setVisibilityWithoutCascade', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const originalAutoVisibility = { ...store.state.views['auto:default'].visibility };
+
+      store.setVisibilityWithoutCascade('Root.A', 'hidden');
+      expect(store.state.views['auto:default'].visibility).toEqual(originalAutoVisibility);
+      dispose();
+    });
+  });
+
+  it('original auto view is untouched after COW via showOnly', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const originalAutoVisibility = { ...store.state.views['auto:default'].visibility };
+
+      store.showOnly('Root.A', true);
+      expect(store.state.views['auto:default'].visibility).toEqual(originalAutoVisibility);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // reorderUserViews
 // ---------------------------------------------------------------------------
 

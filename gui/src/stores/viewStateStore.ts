@@ -255,6 +255,7 @@ export function createViewStateStore() {
     // rather than introducing a separate setState call.
     setState(
       produce((s) => {
+        cowIfAuto(s);
         s.explicit[path] = vs;
         mirrorExplicitToActiveUserView(s);
       }),
@@ -264,6 +265,7 @@ export function createViewStateStore() {
   function resetToInherit(path: string): void {
     setState(
       produce((s) => {
+        cowIfAuto(s);
         delete s.explicit[path];
         for (const desc of walkDescendants(path, nodeByPath)) {
           delete s.explicit[desc];
@@ -284,6 +286,7 @@ export function createViewStateStore() {
 
     setState(
       produce((s) => {
+        cowIfAuto(s);
         // Clear all ancestors so they don't override-hide the target.
         for (const anc of ancestors) {
           delete s.explicit[anc];
