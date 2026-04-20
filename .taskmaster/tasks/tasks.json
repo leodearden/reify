@@ -29329,11 +29329,11 @@
         "description": "The ICE diagnostic pattern (format ICE message + DiagnosticLabel + push + fallback to Type::Real) is repeated nearly identically across four sites:\n- entity.rs:534-546 (structure param pass 2 resolution)\n- entity.rs:877-889 (port param pass 2 resolution)\n- guards.rs:269-281 (guarded member pass 2 resolution)\n\nAll share the same structure: \"internal compiler error: unresolved name '...' in pass 2\" with label \"ICE: name should have been registered in pass 1\".\n\nExtract a helper like `fn emit_ice_unresolved(diagnostics: &mut Vec<Diagnostic>, name: &str, span: Span, context: &str) -> Type` that pushes the ICE diagnostic and returns `Type::Real`. This reduces ~12 lines per site to 1 and centralizes the ICE format.\n\nmemory_hints: search(\"ICE diagnostic pattern entity guards unresolved pass 2\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:21:56.606Z",
+        "updatedAt": "2026-04-20T11:29:44.362Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -42568,11 +42568,11 @@
         "description": "Two small polish items in `crates/reify-compiler/tests/trait_typed_param_tests.rs`:\n1. The `#[ignore]`d test at 407-453 guards a parser-limitation path that is already covered indirectly by the defensively-widened entity.rs capture logic. Either delete it (and move the acceptance criterion to an explicit parser follow-up task) or convert it to an explicit parse-rejection test asserting current behaviour.\n2. The negative test at 339-346 mentions an expected Warning-severity 'cannot infer return type of zero-arg function NotAMaterial' in a comment but does not assert it. Either add an explicit assertion (and filter the warning from error counts) or drop the comment.",
         "details": "## Scope\nTwo review suggestions on task 1874 (esc-1874-31, reviewer_comprehensive).\n\n## Locations\n- crates/reify-compiler/tests/trait_typed_param_tests.rs:407-453 (ignored nested-call test)\n- crates/reify-compiler/tests/trait_typed_param_tests.rs:339-346 (warning-severity comment)\n\n## Acceptance\n- Ignored test either deleted or replaced with an assertive parse-rejection test.\n- If deleted, follow-up task is filed that captures the parser limitation + its acceptance criterion.\n- Warning comment in negative test either becomes an explicit assertion or is removed; the test keeps passing either way.\n- Full `cargo test -p reify-compiler` still green.\n\n### memory_hints\n- search: \"trait_typed_param_tests ignored nested call\"\n- search: \"NotAMaterial zero-arg function warning\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:21:53.146Z",
+        "updatedAt": "2026-04-20T11:29:44.508Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
@@ -42606,14 +42606,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:29:43.973Z",
+      "lastModified": "2026-04-20T11:29:44.508Z",
       "taskCount": 2022,
       "completedCount": 1725,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T11:29:44.077Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
