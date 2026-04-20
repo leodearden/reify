@@ -207,6 +207,10 @@ describe('SHORTCUTS bind fields', () => {
   it('every entry with a non-empty key display string has a bind field', () => {
     for (const s of SHORTCUTS) {
       if (s.key !== '') {
+        // switchViewByIndex uses a descriptive range "1-9" as its display key, not a
+        // literal binding — the actual dispatch is a special-case block in
+        // useKeyboardShortcuts (mirroring how Escape is handled).
+        if (s.id === 'switchViewByIndex') continue;
         expect(s.bind, `shortcut "${s.id}" has a display key but no bind field`).toBeDefined();
       }
     }
@@ -295,6 +299,41 @@ describe('SHORTCUTS bind fields', () => {
   it('fitToView has no bind field (empty key, no shortcut)', () => {
     const entry = getShortcut('fitToView');
     expect(entry?.bind).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// switchViewByIndex display-only shortcut entry (VM-6)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — switchViewByIndex entry', () => {
+  it('SHORTCUTS registry contains a switchViewByIndex entry', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'switchViewByIndex');
+    expect(entry).toBeDefined();
+  });
+
+  it('switchViewByIndex entry has display key "1-9"', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'switchViewByIndex');
+    expect(entry?.key).toBe('1-9');
+  });
+
+  it('switchViewByIndex entry has category "View"', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'switchViewByIndex');
+    // category is a new optional field added to ShortcutDef in step-18
+    expect((entry as ShortcutDef & { category?: string })?.category).toBe('View');
+  });
+
+  it('switchViewByIndex description mentions view switching', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'switchViewByIndex');
+    expect(entry?.description).toBeTruthy();
+    expect(entry?.description.toLowerCase()).toContain('view');
+  });
+
+  it('ShortcutId union includes "switchViewByIndex" — verified via getShortcut lookup', () => {
+    // ShortcutId is derived from _SHORTCUTS_DEF; once 'switchViewByIndex' is added
+    // the literal type flows into ShortcutId and getShortcut accepts it without cast.
+    const entry = getShortcut('switchViewByIndex');
+    expect(entry).toBeDefined();
   });
 });
 

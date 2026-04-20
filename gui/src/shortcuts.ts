@@ -51,6 +51,8 @@ export interface ShortcutDef {
   key: string;
   /** Human-readable description of the action */
   description: string;
+  /** Optional grouping category shown in the keyboard-help dialog (e.g. "View", "File"). */
+  category?: string;
   /** When true, the shortcut is defined but not currently functional */
   disabled?: boolean;
   /** Structured binding for event matching. Absent when there is no keyboard shortcut. */
@@ -77,6 +79,11 @@ const _SHORTCUTS_DEF = [
   { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true, shift: false } },
   { id: 'reload',     key: 'Ctrl+Shift+R', description: 'Reload changed files', bind: { key: 'r', ctrl: true, shift: true } },
   { id: 'help',       key: '?',            description: 'Toggle this help',     bind: { key: '?', ctrl: false, alt: false } },
+  // Display-only entry for the 1–9 view-switch shortcut.  No `bind` field: the "1-9" key
+  // is a descriptive range shown in the help dialog, not a literal binding matched by
+  // matchesEvent.  Actual dispatch is a special-case block in useKeyboardShortcuts
+  // (mirroring the Escape handler pattern).
+  { id: 'switchViewByIndex', key: '1-9', description: 'Switch to view N in the view selector', category: 'View' },
 ] as const satisfies readonly ShortcutDef[];
 
 /**
