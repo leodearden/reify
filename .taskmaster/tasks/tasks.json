@@ -41911,13 +41911,13 @@
         "description": "In crates/reify-compiler/src/expr.rs, `propagate_poison()` (L128-140) has no debug_assert safety net by design — it is for pure consumer-propagation sites where an already-`Type::Error` operand short-circuits. Add either (a) a `#[track_caller]` debug-only check that the caller's object operand was already `Type::Error` where a handle is easily threadable (e.g. `propagate_poison(compiled_obj)` taking the poisoned operand for the invariant check), or (b) at minimum a comment at each `propagate_poison()` call site reminding the reader that switching to a diagnostic push requires migrating to `make_poison_literal`. This mirrors the producer-side guard and prevents regression if a future refactor adds a diagnostic push at a current consumer site. Current callers: aggregation poisoned short-circuit, non-aggregation member-access poisoned short-circuit. Source: review suggestion S2 in esc-1921-7.",
         "details": "<info added on 2026-04-20T11:21:52.978Z>\nBlocked due to dependency on task 1921, which introduces `propagate_poison()` on the unmerged `task/1921` branch. Implementing `propagate_poison` independently would cause merge conflicts. The task will proceed only after 1921 is merged into the main branch. An alternative approach is to integrate the S2 debug_assert-or-comment directly into task 1921, as it introduces `propagate_poison`.\n</info added on 2026-04-20T11:21:52.978Z>",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "1921"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:21:03.904Z",
+        "updatedAt": "2026-04-20T11:22:01.630Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -42575,9 +42575,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:21:58.869Z",
+      "lastModified": "2026-04-20T11:22:01.630Z",
       "taskCount": 2020,
-      "completedCount": 1724,
+      "completedCount": 1725,
       "tags": [
         "master"
       ]
