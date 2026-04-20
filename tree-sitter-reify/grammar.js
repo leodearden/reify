@@ -28,6 +28,7 @@ module.exports = grammar({
     [$.sub_declaration],
     [$.port_declaration],
     [$.pragma],
+    [$.named_argument_list, $.argument_list],
   ],
 
   rules: {
@@ -749,8 +750,8 @@ module.exports = grammar({
     )),
 
     argument_list: $ => seq(
-      $._expression,
-      repeat(seq(',', $._expression)),
+      choice($.named_argument, $._expression),
+      repeat(seq(',', choice($.named_argument, $._expression))),
       optional(','),
     ),
 
