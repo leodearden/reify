@@ -42482,6 +42482,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-20T11:05:32.764Z"
+      },
+      {
+        "id": "2023",
+        "title": "viewStateStore: purge stale null-sentinel references from JSDoc after absence-of-key refactor",
+        "description": "Task #2018 changed `s.explicit[path]` clearing from `= null` to `delete`, but two JSDoc blocks still describe the old null-sentinel contract and will mislead future readers.",
+        "details": "Two stale comments identified in the post-merge review of #2018:\n\n1. gui/src/stores/viewStateStore.ts lines 153-166 (JSDoc on `mirrorExplicitToActiveUserView`):\n   - Rewrite \"mirror the current (non-null) entries in `s.explicit`\" → \"mirror the current entries in `s.explicit` (cleared keys are simply absent)\".\n   - Drop the paragraph starting \"Null entries in `s.explicit`...\" — no null entries ever exist at runtime under the new convention established in #2018.\n   - Decide whether to keep the `val != null` guard in the body (around line 173): since `Object.entries` never yields undefined values for present keys, the guard is dead under the new invariant. Either remove it, or keep it as defensive redundancy with a one-line comment explaining why. Recommendation: remove, since keeping defensive code without a reason leaks the old model.\n\n2. gui/src/stores/autoViewGenerator.ts around line 25 (module doc comment on live user-view mirror):\n   - Replace \"dropping null (inherit-cleared) entries\" with \"omitting cleared (deleted/absent) entries\" (or equivalent wording) to match the #2018 convention.\n\nVerification:\n- `cd gui && npm run typecheck` passes.\n- `cd gui && npx vitest run src/__tests__/viewStateStore.test.ts src/__tests__/autoViewGenerator.test.ts` passes.\n- Grep to confirm no remaining references to \"null entries\" / \"non-null entries\" in the viewStateStore or autoViewGenerator doc comments.\n\nReviewer: reviewer_comprehensive (post-merge review of task #2018).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -42491,7 +42502,10 @@
       "completedCount": 1721,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T11:12:47.841Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-20T11:12:47.856Z"
     }
   }
 }
