@@ -41377,7 +41377,13 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix Lambda-body test fixture and deduplicate compound-variant coverage in type_error_propagation_tests"
+            ]
+          }
         }
       },
       {
@@ -42240,7 +42246,9 @@
       "completedCount": 1713,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T06:51:21.531Z",
+      "description": "Tasks for master context"
     }
   }
 }
