@@ -43279,17 +43279,28 @@
         "description": "Follow-up from task 1999. Replace literal hash tag bytes with pub(crate) TAG_* constants shared between reify-types/src/expr.rs and reify-compiler/src/expr.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T18:07:12.117Z",
+        "updatedAt": "2026-04-20T18:07:50.351Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
             "crates/reify-compiler/tests/constructor_hash_tests.rs",
             "crates/reify-types/src/expr.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Promote CompiledExpr hash tag bytes to named constants"
+            ]
+          },
+          "done_provenance": {
+            "commit": "504615cd40dbb77ecca92b65a86b6915aa8abdc8",
+            "commit_input": "504615cd4",
+            "note": "Duplicate of task 2053 (same title/intent). All three in-scope files (reify-types/src/expr.rs, reify-compiler/src/expr.rs, reify-compiler/tests/constructor_hash_tests.rs) already use TAG_* constants shipped in 2053's merge; zero raw tag-byte literals remain. Visibility is pub (not pub(crate)) because constants cross the reify-types→reify-compiler crate boundary."
+          }
         }
       },
       {
@@ -43424,9 +43435,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T18:07:12.117Z",
+      "lastModified": "2026-04-20T18:07:50.351Z",
       "taskCount": 2054,
-      "completedCount": 1784,
+      "completedCount": 1785,
       "tags": [
         "master"
       ]
