@@ -42005,7 +42005,7 @@
         "description": "The known LSP didChange \"new Engine per call\" antipattern (tracked in tasks 479/480) has crept into reify-cli's MCP tool context:\n\n- `crates/reify-cli/src/mcp_context.rs:80` — `CliToolContext::load_file` constructs a fresh `reify_eval::Engine`\n- `crates/reify-cli/src/mcp_context.rs:366` — `update_source` same\n- `crates/reify-cli/src/mcp_context.rs:482` — `open_file` same\n\nEach call throws away the previous Engine, losing all incremental state. Consecutive `update_source` calls re-compile and re-evaluate from scratch instead of using incremental re-eval.\n\nFix: hold a long-lived Engine on CliToolContext and route load/update/open through `edit_source`/`edit_param` APIs that preserve incremental state, consistent with the intended design.\n\nNote: briefing explicitly tracks this pattern for LSP under 479/480 — this is a separate instance in a different module and deserves its own task. Coordinate fix approach with 479/480 so the caching strategy stays uniform.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42017,7 +42017,8 @@
           "modules": [
             "crates/reify-cli/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-20T05:43:14.902Z"
       },
       {
         "id": "2009",
@@ -42085,7 +42086,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:43:13.758Z",
+      "lastModified": "2026-04-20T05:43:14.902Z",
       "taskCount": 2003,
       "completedCount": 1702,
       "tags": [
