@@ -43367,13 +43367,13 @@
         "description": "Replace the local private `get_let_expr` function in crates/reify-compiler/tests/constructor_hash_tests.rs (line 23) with the canonical version now exported from `reify_test_support`. Straightforward import swap — same refactor pattern applied in step-8 of task 1973 to expr_error_sentinel_tests.rs and type_error_propagation_tests.rs.",
         "details": "Edit crates/reify-compiler/tests/constructor_hash_tests.rs:\n1. Delete the local `get_let_expr` function (lines ~20-36).\n2. Update the existing `use reify_test_support::compile_source;` to `use reify_test_support::{compile_source, get_let_expr};`.\n3. Run `cargo test -p reify-compiler --test constructor_hash_tests` to verify.\n\nRisk: low; mechanical move + import update. No behavior change expected. The local copy is identical in shape to the canonical helper (inlines `templates.first()`).\n\nSource: esc-1973-143 (info-level cleanup_needed). Task 1973 was scoped to only expr_error_sentinel_tests.rs and type_error_propagation_tests.rs, leaving this third duplicate untouched.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1973"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T17:15:15.883Z"
+        "updatedAt": "2026-04-20T17:23:55.451Z"
       },
       {
         "id": "2062",
@@ -43392,9 +43392,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:15:15.883Z",
+      "lastModified": "2026-04-20T17:23:55.451Z",
       "taskCount": 2054,
-      "completedCount": 1784,
+      "completedCount": 1785,
       "tags": [
         "master"
       ]
