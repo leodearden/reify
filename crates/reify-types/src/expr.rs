@@ -209,6 +209,30 @@ pub struct CompiledFnBody {
     pub result_expr: CompiledExpr,
 }
 
+// Content-hash tag-byte allocation for `CompiledExpr` constructors
+// ---------------------------------------------------------------
+// Each constructor seeds its hash with a unique tag byte so that
+// structurally-different expression kinds can never collide on the same
+// `ContentHash` for identical sub-hashes.  Current allocation:
+//
+//   [0]  Literal            [10] MapLiteral
+//   [1]  ValueRef           [11] IndexAccess
+//   [2]  BinOp              [12] MethodCall
+//   [3]  UnOp               [13] Quantifier
+//   [4]  FunctionCall       [14] OptionSome
+//   [5]  Conditional        [15] OptionNone
+//   [6]  UserFunctionCall   [16] MetaAccess
+//   [7]  Lambda             [17] DeterminacyPredicate
+//   [8]  ListLiteral        [18] RangeConstructor
+//   [9]  SetLiteral         [19] AdHocSelector
+//
+//   [20]–[23] — intentionally skipped; used by `CachedResult::content_hash`
+//               in `reify-eval/src/cache.rs` (a distinct hash domain, but
+//               sharing bytes with it would confuse future readers)
+//
+//   [24] Match
+//
+// Next new `CompiledExpr` variant: use [25].
 impl CompiledExpr {
     /// Create a literal expression.
     pub fn literal(value: Value, result_type: Type) -> Self {
@@ -1194,12 +1218,19 @@ mod tests {
         );
     }
 
-    /// Regression guard: Match must not share UserFunctionCall's tag byte `[6]`.
+    /// Regression guard: Match must not share any occupied tag byte.
     ///
-    /// This test deliberately reconstructs the hash that Match *would* produce if it
-    /// still used tag `[6]` and asserts that the actual `match_expr` hash is different.
-    /// It fails against the pre-fix code (where both kinds share `[6]`) and passes once
-    /// Match is retagged to `[24]`.
+    /// This test reconstructs the hash that Match *would* produce using each
+    /// tag byte from [0] through [23] (all CompiledExpr tags [0..=19] plus the
+    /// [20..=23] range reserved for `CachedResult` in `reify-eval`) and asserts
+    /// that the actual `match_expr` hash is different from every one of them.
+    ///
+    /// This guards against two classes of regression:
+    /// - Accidentally reverting to [6] (the pre-fix UserFunctionCall collision).
+    /// - Accidentally picking any other already-occupied tag byte for Match.
+    ///
+    /// The test fails against the pre-fix code (where Match used [6]) and passes
+    /// once Match is assigned tag [24].
     #[test]
     fn match_expr_does_not_share_tag_byte_with_user_function_call() {
         let disc = CompiledExpr::literal(Value::Int(0), Type::Int);
@@ -1208,6 +1239,7 @@ mod tests {
         // Capture sub-hashes before the values are moved into the constructor.
         let disc_hash = disc.content_hash;
         let body_hash = body.content_hash;
+        let pattern_hash = ContentHash::of_str("p");
 
         let arm = CompiledMatchArm {
             patterns: vec!["p".to_string()],
@@ -1215,18 +1247,24 @@ mod tests {
         };
         let match_expr = CompiledExpr::match_expr(disc, vec![arm], Type::Int);
 
-        // Hypothetical hash that would result from still using tag byte [6].
-        let hypothetical_tag_6_hash = ContentHash::of(&[6])
-            .combine(disc_hash)
-            .combine(ContentHash::of_str("p"))
-            .combine(body_hash);
-
-        assert_ne!(
-            match_expr.content_hash,
-            hypothetical_tag_6_hash,
-            "Match must use a tag byte distinct from UserFunctionCall's [6] \
-             to prevent latent hash collisions between structurally-distinct expressions"
-        );
+        // For every tag byte in [0..=23], reconstruct the hash using the same
+        // combine formula as `match_expr` and assert the actual hash differs.
+        // ContentHash is Copy, so disc_hash/body_hash/pattern_hash can be reused
+        // across loop iterations.
+        for tag in 0u8..=23 {
+            let hypothetical = ContentHash::of(&[tag])
+                .combine(disc_hash)
+                .combine(pattern_hash)
+                .combine(body_hash);
+            assert_ne!(
+                match_expr.content_hash,
+                hypothetical,
+                "Match hash must not equal the hash produced by tag byte [{}] \
+                 (Match must use a unique tag to avoid collisions with existing \
+                 CompiledExpr or CachedResult variants)",
+                tag
+            );
+        }
     }
 
     #[test]
