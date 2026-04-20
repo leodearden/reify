@@ -43113,11 +43113,11 @@
         "description": "Dedup repeated CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"),\"/tests/fixtures\"))) in mcp_context.rs tests (lines ~807,832,865,891,931,1115,1136). Extract private fresh_ctx helper. Spawned from task 2015 review.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:39:33.824Z",
+        "updatedAt": "2026-04-20T16:29:27.567Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43300,7 +43300,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:23:31.799Z",
+      "lastModified": "2026-04-20T16:29:27.567Z",
       "taskCount": 2050,
       "completedCount": 1772,
       "tags": [
