@@ -42134,7 +42134,7 @@
         "description": "Follow-up to task 1992 review. Current wrapper gates `cargo test --workspace` which serializes ALL crates, not just OCCT-touching ones. Split test_command into gated OCCT pass and ungated pass for other crates (tree-sitter, protocol, persistence, etc). Depends on 1992.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "1992"
         ],
@@ -42147,9 +42147,15 @@
           ],
           "modules": [
             "scripts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: OCCT flock gate: narrow scope from workspace-wide to OCCT-touching crates only"
+            ]
+          }
         },
-        "updatedAt": "2026-04-20T14:50:17.104Z"
+        "updatedAt": "2026-04-20T14:50:31.529Z"
       },
       {
         "id": "2005",
@@ -43249,9 +43255,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:50:17.104Z",
+      "lastModified": "2026-04-20T14:50:31.547Z",
       "taskCount": 2050,
-      "completedCount": 1761,
+      "completedCount": 1762,
       "tags": [
         "master"
       ]
