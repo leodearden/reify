@@ -42963,10 +42963,11 @@
         "description": "Duplicated PathBuf+CliToolContext::new pattern across mcp_context.rs tests. Add fn fresh_ctx() helper in test module. From review of task 2015.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:37:11.102Z"
       },
       {
         "id": "2049",
@@ -43000,12 +43001,23 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2052",
+        "title": "Promote CompiledExpr hash tag bytes to named constants",
+        "description": "Review follow-up from task 1999 (suggestion 2, reviewer_comprehensive, non-blocking).\n\nThe tag-byte allocation table at crates/reify-types/src/expr.rs:212-235 is a manually-maintained comment registry separate from the call sites. Each CompiledExpr constructor seeds ContentHash with a literal tag byte (e.g. `ContentHash::of(&[24])` for Match), and the reify-compiler's inline emission paths (crates/reify-compiler/src/expr.rs:554, :1318) also use literal bytes. This makes drift likely the next time a variant is added.\n\nFix: Introduce `pub(crate) const TAG_LITERAL: u8 = 0; ... TAG_MATCH: u8 = 24;` (or similar, re-export as needed) in one authoritative location and reference them from both the reify-types constructors and the reify-compiler inline paths. Keep the comment table, but make it reflect the constants. Verify existing golden fixtures / hash-pinning tests still pass — the constant values must equal the current literals exactly.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:36:28.829Z",
-      "taskCount": 2043,
+      "lastModified": "2026-04-20T13:37:11.114Z",
+      "taskCount": 2044,
       "completedCount": 1743,
       "tags": [
         "master"
