@@ -41691,7 +41691,7 @@
         "description": "OCCT's kernel is not thread-safe beyond STEP export (documented in memory: `feedback_occt_thread_safety.md`). When the orchestrator runs multiple tasks concurrently, each worktree runs its own `cargo test --workspace` — this produces multiple OCCT test processes executing in parallel, which has been observed to deadlock: three cargo test runs sat at 0% CPU for ~10 hours on 2026-04-19.",
         "details": "## Observed incident — 2026-04-19\n\nThree concurrent `cargo test --workspace --release` invocations (one per active task's worktree) entered 0% CPU state and never progressed. Each worktree had its own `target/` dir, so this wasn't cargo's own build-lock contention. The most likely culprit is OCCT kernel thread-safety: cross-process OCCT calls through shared system resources (filesystem temp files, OCCT's own global state in the C++ library) can serialize or deadlock when multiple test processes hit them simultaneously.\n\n## What exists today\n\n- `feedback_occt_thread_safety.md`: \"OCCT kernel not thread-safe beyond STEP export, M4 needs dedicated kernel thread\"\n- The kernel is accessed via `crates/reify-kernel-occt/` with FFI bindings to the C++ library.\n\n## Proposed fix\n\n### Option A — file-lock gate around OCCT test binaries (cheap, recommended)\n\nWrap `cargo test` for OCCT-touching crates with a flock on a file in `/tmp`:\n\n```\nflock /tmp/reify-occt.lock cargo test -p reify-kernel-occt ...\n```\n\nThis serializes OCCT test execution across all concurrent worktrees without changing any test code. Add a helper (e.g. `scripts/cargo-test-occt-gated.sh`) and have the orchestrator's test_command route OCCT-touching tests through it.\n\n### Option B — `#[serial]` attribute via the `serial_test` crate (in-process only)\n\nInside a single cargo test process, marks OCCT tests as serial so Rust's test harness runs them one at a time. Does not address cross-process concurrency — multiple `cargo test` runs in parallel would still collide. Useful as defence-in-depth alongside Option A.\n\n### Option C — dedicated kernel thread (M4 long-term plan)\n\nFunnel all OCCT calls through a single dedicated thread per process. Does not address cross-process concurrency; multiple processes would each have their own kernel thread and still collide. Slower to implement but right for in-GUI concurrency.\n\n## Recommendation\n\nShip Option A first — it directly addresses the observed cross-worktree deadlock with a 5-line shell wrapper. Option C remains the right long-term answer for in-process concurrency. Option B is defensive.\n\n## Failing tests to write\n\n- Repro test: spawn two background `cargo test -p reify-kernel-occt` invocations (in two copies of the repo or two worktrees), verify both complete within a bounded time when the flock gate is active, deadlock-or-timeout when it isn't.\n- Assertion that the flock gate path covers all OCCT-touching crates (`reify-kernel-occt`, `reify-eval` when geometry tests run, `reify-compiler` geometry integration tests).\n\n## Module tags\n\ncrates/reify-kernel-occt, crates/reify-eval, crates/reify-compiler, scripts\n\n## Memory hints\n\n- search: \"OCCT thread safety\" \"kernel thread\"\n- entity: feedback_occt_thread_safety.md\n- Related: orchestrator verify timeouts (orchestrator.yaml, 2026-04-19) catch hangs but waste budget; this task prevents the hangs themselves.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -41705,7 +41705,7 @@
             "scripts"
           ]
         },
-        "updatedAt": "2026-04-19T21:14:37.608Z"
+        "updatedAt": "2026-04-20T05:43:06.505Z"
       },
       {
         "id": "1993",
@@ -41713,11 +41713,11 @@
         "description": "Post-merge review suggestions for Task 1853 (ID_TO_CALLBACK wiring invariant test). Two low-severity polish items:\n\n1) Test title/docstring drift (gui/src/__tests__/useKeyboardShortcuts.test.ts:262 and gui/src/hooks/useKeyboardShortcuts.ts:20-21). The `it(...)` description says \"minus known no-callback IDs\" but the actual predicate filters via `!s.disabled`. Current `disabled` shortcuts (undo, redo) happen to coincide with the no-callback ones, so the test passes, but the title misleads future readers. Rename to something like \"every enabled shortcut with a bind has an ID_TO_CALLBACK entry\" and update the ID_TO_CALLBACK docstring (\"undo, redo, fitToView are omitted\") to make the coupling with the `disabled` flag explicit.\n\n2) (Optional, non-blocking) Narrower export surface (gui/src/hooks/useKeyboardShortcuts.ts:26). ID_TO_CALLBACK is exported solely to satisfy the invariant test, which widens the module's public surface for an internal mapping. Consider either (a) adding an \"exported for test only — do not import elsewhere\" comment, or (b) replacing the export with a narrow `hasCallbackWiring(id: ShortcutId): boolean` predicate (and using `__test__` / internals-for-test style if a richer view is needed). Risk is low since it's a GUI-internal module.\n\nScope is small; both items can be a single PR.\n\nmemory_hints: search \"ID_TO_CALLBACK wiring invariant shortcuts\" ; get_task 1853",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:14:41.981Z",
+        "updatedAt": "2026-04-20T05:43:06.595Z",
         "metadata": {
           "files": [
             "gui/src/__tests__/useKeyboardShortcuts.test.ts",
@@ -41777,11 +41777,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, `propagate_poison()` (L128-140) has no debug_assert safety net by design — it is for pure consumer-propagation sites where an already-`Type::Error` operand short-circuits. Add either (a) a `#[track_caller]` debug-only check that the caller's object operand was already `Type::Error` where a handle is easily threadable (e.g. `propagate_poison(compiled_obj)` taking the poisoned operand for the invariant check), or (b) at minimum a comment at each `propagate_poison()` call site reminding the reader that switching to a diagnostic push requires migrating to `make_poison_literal`. This mirrors the producer-side guard and prevents regression if a future refactor adds a diagnostic push at a current consumer site. Current callers: aggregation poisoned short-circuit, non-aggregation member-access poisoned short-circuit. Source: review suggestion S2 in esc-1921-7.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:36:22.921Z",
+        "updatedAt": "2026-04-20T05:43:06.733Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -42084,7 +42084,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:43:06.412Z",
+      "lastModified": "2026-04-20T05:43:06.733Z",
       "taskCount": 2003,
       "completedCount": 1702,
       "tags": [
