@@ -1518,11 +1518,15 @@ mod tests {
 
     #[test]
     fn resolve_loft_like_args_builds_profiles_and_named_args() {
+        // Each slot carries a distinct Real marker (slot index as f64) so that
+        // any accidental reordering in the into_iter().enumerate() pipeline
+        // (e.g. .rev(), shuffled zip) would be caught by the ordering assertions
+        // below.  Using identical 1.0 markers for every slot would hide such regressions.
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
-                .map(|_| {
+                .map(|i| {
                     CompiledExpr::literal(
-                        Value::Real(1.0),
+                        Value::Real(i as f64),
                         reify_types::Type::Real,
                     )
                 })
@@ -1550,6 +1554,18 @@ mod tests {
                 vec!["profile_0", "profile_1", "profile_2"],
                 "loft: all keys should be profile_N"
             );
+            // Ordering pin: named_args[i] must carry the marker for slot i (i as f64).
+            for (i, (_, expr)) in named_args.iter().enumerate() {
+                match &expr.kind {
+                    CompiledExprKind::Literal(Value::Real(f)) => {
+                        assert!(
+                            (f - i as f64).abs() < f64::EPSILON,
+                            "loft: named_args[{i}] has marker {f}, expected {i} — ordering broken"
+                        );
+                    }
+                    other => panic!("loft: named_args[{i}].kind is {other:?}, expected Literal(Real)"),
+                }
+            }
         }
 
         // ── (b) guide_suffix = true (loft_guided) ───────────────────────────
@@ -1573,6 +1589,18 @@ mod tests {
                 vec!["profile_0", "profile_1", "guide"],
                 "loft_guided: last key should be 'guide'"
             );
+            // Ordering pin: named_args[i] must carry the marker for slot i (i as f64).
+            for (i, (_, expr)) in named_args.iter().enumerate() {
+                match &expr.kind {
+                    CompiledExprKind::Literal(Value::Real(f)) => {
+                        assert!(
+                            (f - i as f64).abs() < f64::EPSILON,
+                            "loft_guided: named_args[{i}] has marker {f}, expected {i} — ordering broken"
+                        );
+                    }
+                    other => panic!("loft_guided: named_args[{i}].kind is {other:?}, expected Literal(Real)"),
+                }
+            }
         }
     }
 }
