@@ -1,3 +1,29 @@
+//! Geometry function dispatch for the Reify compiler.
+//!
+//! # Silent-fallback vs. labelled-per-arg policy
+//!
+//! When a positional argument to a geometry call is **not** a geometry expression,
+//! two policies apply depending on the function family:
+//!
+//! - **sweep / sweep_guided** → labelled per-arg diagnostic via `resolve_named_geom_arg`.
+//!   Arity is fixed and each slot is individually meaningful (profile, path, guide), so
+//!   one actionable error per slot is the right UX.
+//!
+//! - **loft / loft_guided** → silent fallback to `GeomRef::Step(step_offset + i)` via
+//!   `resolve_loft_like_args`. The loft family is variadic (≥ 2 profiles), so emitting
+//!   one diagnostic per profile slot would flood the user with N near-duplicate
+//!   "argument K must be a geometry expression" errors instead of one actionable signal.
+//!   The silent fallback also preserves per-profile index uniqueness for downstream
+//!   analysis.
+//!
+//! - **Single-geom-arg ops** (extrude, revolve, translate, …) → silent fallback via the
+//!   local `geom_ref` closure. Same rationale as loft: one geometry slot, no actionable
+//!   per-slot error needed.
+//!
+//! See `loft_guided_compiler_non_geom_args_silent_fallback` and
+//! `loft_non_geom_args_fallback_uses_step_offset` for the behavioural tests that pin
+//! this policy.
+
 use super::*;
 
 pub(crate) fn is_geometry_let(
@@ -59,15 +85,15 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
 
 /// Resolve the geometry ref for a named positional argument of a sweep-family
 /// dispatch arm, emitting a per-argument diagnostic when the arg is not a
-/// geometry expression and falling back to `GeomRef::Step(step_offset + idx)`
-/// so the caller can still produce its op for downstream analysis.
+/// geometry expression and falling back to `GeomRef::Step(step_offset + idx)`.
 ///
-/// Used by `sweep`, `sweep_guided`, and any future guided-sweep variant whose
-/// surface contract is to surface a numbered, labelled error for each bad
-/// argument (rather than the silent fallback used by single-geom-arg ops and
-/// the `loft` family). Centralising the resolve+diagnose+fallback in one place
-/// keeps the diagnostic wording (`"{name}() {label} (argument {n}) must be a
-/// geometry expression"`) and the fallback step index in sync across arms.
+/// Used by `sweep` and `sweep_guided`. Centralising here keeps the diagnostic
+/// wording (`"{name}() {label} (argument {n}) must be a geometry expression"`)
+/// and the fallback step index in sync across arms.
+///
+/// For the loft family (silent fallback, no diagnostic), see
+/// `resolve_loft_like_args` and the module-level note on
+/// silent-fallback vs. labelled-per-arg policy.
 fn resolve_named_geom_arg(
     idx: usize,
     fn_name: &str,
@@ -261,16 +287,7 @@ pub(crate) fn compile_geometry_call(
         .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))
         .collect();
 
-    // Helper: look up resolved geometry ref or fall back to step_offset.
-    // Used by single-geometry-arg functions (extrude, revolve, revolve_full,
-    // translate, rotate, etc.) and by loft (which calls the equivalent
-    // step_offset+i form inline to preserve per-profile index uniqueness).
-    // These functions intentionally emit no diagnostic when the geometry arg
-    // is non-geometry: their callers are responsible for providing a geometry
-    // expression, and the silent fallback keeps compilation from
-    // short-circuiting while still producing an op for downstream analysis.
-    // sweep() is the exception — it emits per-argument diagnostics with span
-    // labels so users get a precise numbered error for each bad argument.
+    // Silent fallback for single-geom-arg ops — see module-level note on silent-fallback vs. labelled-per-arg.
     let geom_ref = |idx: usize| -> GeomRef {
         geom_refs.get(&idx).cloned().unwrap_or(GeomRef::Step(step_offset))
     };
@@ -661,14 +678,7 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
-            // sweep() emits per-argument diagnostics when an arg is not a geometry
-            // expression, then falls back to GeomRef::Step so the op is still
-            // produced for downstream analysis.  (loft() differs: it falls back
-            // silently per profile to preserve index uniqueness without
-            // duplicating the type-check error category at each profile slot.)
-            // Per-arg resolve+diagnose+fallback is centralised in
-            // `resolve_named_geom_arg` so this arm and `sweep_guided` (and any
-            // future guided variant) emit identically-shaped diagnostics.
+            // Labelled per-arg diagnostic — see module-level note on silent-fallback vs. labelled-per-arg.
             let profile = resolve_named_geom_arg(
                 0, "sweep", "profile", args, &geom_refs, diagnostics, step_offset,
             );
@@ -701,11 +711,7 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
-            // Like sweep(), sweep_guided() emits per-argument diagnostics when
-            // an arg is not a geometry expression, falling back to GeomRef::Step
-            // so the op is still produced for downstream analysis. Resolve via
-            // the shared `resolve_named_geom_arg` helper so each arg-slot uses
-            // the same diagnostic wording and fallback step index as `sweep`.
+            // Labelled per-arg diagnostic — see module-level note on silent-fallback vs. labelled-per-arg.
             let profile = resolve_named_geom_arg(
                 0, "sweep_guided", "profile", args, &geom_refs, diagnostics, step_offset,
             );
