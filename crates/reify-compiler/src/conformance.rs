@@ -1023,6 +1023,43 @@ pub(crate) fn check_trait_arg_conformance(
 }
 
 #[cfg(test)]
+/// # Why these tests live here (and cannot move to `tests/*.rs`)
+///
+/// All four tests in this module call `pub(crate) check_trait_conformance` via
+/// `use super::*;`.  Rust integration-test binaries in `tests/*.rs` are separate
+/// crates and can only access `pub` (not `pub(crate)`) items, so none of these
+/// tests can be moved to an integration-test file without also making
+/// `check_trait_conformance` (and `MergeContext`, `collect_all_requirements`,
+/// `check_trait_arg_conformance`) part of the public API — a non-trivial
+/// architectural change that would require its own RFC-level task.
+///
+/// **Tests 1–2** (`check_trait_conformance_resolves_enum_typed_param_and_let`,
+/// `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`) hand-build
+/// `RequirementKind::Let` fixtures.  `RequirementKind::Let` is **not
+/// parser-reachable** from reify source today (see `trait_merge_tests.rs:282`
+/// and `let_type_disambiguation_tests.rs:234`), so there is no
+/// `compile_source(...)` string that produces this variant.  An integration-level
+/// rewrite is therefore impossible, not just inconvenient.
+///
+/// **Tests 3–4** (`enum_with_type_args_emits_error_diagnostic`,
+/// `unknown_named_type_with_type_args_produces_unresolved_diagnostic`) assert an
+/// **exact count of 1** on diagnostic substrings.  Under full-pipeline
+/// compilation the same diagnostics are also emitted from `entity.rs:329` and
+/// `traits.rs:36`, so a `compile_source`-based rewrite would see 2+ emissions
+/// and break the exact-count assertions.  Relaxing to `any(...)` would lose the
+/// path-specificity that makes these tests load-bearing (they pin that the
+/// `conformance.rs:42` emission site fires in both debug and release builds).
+///
+/// **Closest integration-level siblings** that cover the *parser-reachable*
+/// scenarios:
+/// - `phantom_let_advertisement_contract_for_future_parser_extension`
+///   (`tests/trait_merge_tests.rs:1445`)
+/// - `reject_unresolved_type_in_trait_conformance`
+///   (`tests/boundary1_consumer.rs:280`)
+///
+/// For full rationale and alternative paths (structural extraction,
+/// test-only feature-flag API, `src/conformance_tests.rs` sibling module)
+/// see the escalate_info record for task 2033.
 mod tests {
     use super::*;
 
