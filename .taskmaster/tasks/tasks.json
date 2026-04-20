@@ -42789,7 +42789,7 @@
         "id": "2031",
         "title": "Move reify-compiler lib.rs `mod tests` to integration test file",
         "description": "Move the `mod tests` block from `crates/reify-compiler/src/lib.rs` (L1067-2656, 58 `#[test]` fns, ~1600 lines) into appropriate test files based on the type of API they test.\n\nThe `mod tests` block mixes two categories:\n\n1. **Public-API tests (~48)** — Move these to a new integration test file at `crates/reify-compiler/tests/compile_api_tests.rs`.\n2. **Internal-API tests (~10)** — Relocate each to a `#[cfg(test)] mod tests { ... }` block inside the file that owns the helper under test:\n   - Tests of `compile_curve_op` → `geometry_curve.rs`\n   - Tests of `compile_transform_op` → `geometry_transform.rs`\n   - Tests of `compile_modify_op` → `geometry_modify.rs`\n   - Tests of `compile_geometry_call` + `CompilationScope::new` → `geometry.rs` (or `scope.rs` if that's a cleaner fit — architect to decide)\n   - Tests referencing only `is_geometry_function` → `units.rs`\n\nRemove the now-empty or trimmed `mod tests` block in `lib.rs`.\n\nRevised success criteria:\n- `cargo test -p reify-compiler` runs the same total test count (all 58 + any pre-existing others) and they all pass.\n- `crates/reify-compiler/src/lib.rs` drops from 2656 → ≤ 1500 lines.\n- No visibility changes to `pub(crate)` items; no new `pub` surface; no `#[doc(hidden)]` re-exports.\n\nWhy: lib.rs is the #1 contended file (35 pending tasks serialized behind it). Shedding the test bulk unblocks wide parallelism, and this split keeps unit tests next to the units under test (standard Rust convention) while moving public-API tests out of the crate root.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "details": "",
@@ -42816,7 +42816,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-20T21:08:20.135Z"
+        "updatedAt": "2026-04-20T21:17:33.104Z"
       },
       {
         "id": "2032",
@@ -43577,7 +43577,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T21:08:21.079Z",
+      "lastModified": "2026-04-20T21:17:33.104Z",
       "taskCount": 2057,
       "completedCount": 1791,
       "tags": [
