@@ -54,7 +54,8 @@ use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash,
     DeterminacyPredicateKind, Diagnostic, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX,
     OptimizationObjective, RealizationNodeId, ResolvedFunction, SelectorKind, SourceSpan,
-    TAG_MATCH, TAG_USER_FUNCTION_CALL, Type, UnOp, Value, ValueCellId,
+    TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, Type, UnOp, Value,
+    ValueCellId,
 };
 
 /// Format a constraint-def shadow-warning message for a name collision between two prelude modules.

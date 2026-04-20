@@ -976,7 +976,7 @@ mod tests {
         else_branch: CompiledExpr,
         result_type: Type,
     ) -> CompiledExpr {
-        let hash = ContentHash::of(&[5])
+        let hash = ContentHash::of(&[TAG_CONDITIONAL])
             .combine(condition.content_hash)
             .combine(then_branch.content_hash)
             .combine(else_branch.content_hash);

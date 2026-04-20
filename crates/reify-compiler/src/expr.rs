@@ -698,7 +698,7 @@ pub(crate) fn compile_expr_guarded(
                     };
 
                     let content_hash = {
-                        let mut h = ContentHash::of(&[4])
+                        let mut h = ContentHash::of(&[TAG_FUNCTION_CALL])
                             .combine(ContentHash::of_str(&resolved.qualified_name));
                         for arg in &compiled_args {
                             h = h.combine(arg.content_hash);
@@ -1372,7 +1372,7 @@ pub(crate) fn compile_expr_guarded(
             );
             let result_type = compiled_then.result_type.clone();
 
-            let content_hash = ContentHash::of(&[5])
+            let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
                 .combine(compiled_cond.content_hash)
                 .combine(compiled_then.content_hash)
                 .combine(compiled_else.content_hash);
