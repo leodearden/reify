@@ -1198,6 +1198,130 @@ mod tests {
         super::get_let_expr_in(&module, "S", "x");
     }
 
+    // ── get_let_expr ─────────────────────────────────────────────────────
+
+    /// get_let_expr should return the default_expr of the named cell in the
+    /// first template. Uses non-integer float (42.7) so result_type == Type::Real
+    /// (whole-number floats like 42.0 compile to Type::Int in Reify).
+    #[test]
+    fn test_get_let_expr_finds_first_template_cell() {
+        let source = r#"structure S { let x = 42.7 }"#;
+        let module = super::compile_source(source);
+        let expr = super::get_let_expr(&module, "x");
+        assert_eq!(
+            expr.result_type,
+            reify_types::Type::Real,
+            "expected result_type == Type::Real for S.x, got {:?}",
+            expr.result_type
+        );
+    }
+
+    /// get_let_expr targets the FIRST template only; a cell in the second
+    /// template is not reachable via get_let_expr.
+    #[test]
+    fn test_get_let_expr_uses_first_template_by_name() {
+        let source = r#"
+            structure Alpha { let a = 1.5 }
+            structure Beta  { let b = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        // Alpha is first — cell `a` should be found.
+        let expr = super::get_let_expr(&module, "a");
+        assert_eq!(expr.result_type, reify_types::Type::Real);
+    }
+
+    /// get_let_expr with a cell name that only exists in the SECOND template
+    /// should panic with "no value cell named", because the helper only looks
+    /// inside the first template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_let_expr_does_not_search_other_templates() {
+        let source = r#"
+            structure Alpha { let a = 1.5 }
+            structure Beta  { let b = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        // `b` is in Beta (second template), not Alpha (first) — must panic.
+        super::get_let_expr(&module, "b");
+    }
+
+    /// get_let_expr should panic with "expected at least one template" when
+    /// the module has no templates at all (empty module built via builder).
+    #[test]
+    #[should_panic(expected = "expected at least one template")]
+    fn test_get_let_expr_panics_on_empty_templates() {
+        use reify_types::ModulePath;
+        let module =
+            crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
+        super::get_let_expr(&module, "anything");
+    }
+
+    // ── assert_no_type_cascade ────────────────────────────────────────────
+
+    /// assert_no_type_cascade should not panic when the diagnostics slice
+    /// contains at least one error matching a provided fragment, and ALL
+    /// errors match at least one fragment.
+    #[test]
+    fn test_assert_no_type_cascade_passes_when_only_expected_errors() {
+        let diags = vec![Diagnostic::error("unknown member 'x' on self")];
+        super::assert_no_type_cascade(&diags, &["unknown member"]);
+    }
+
+    /// Warnings must be ignored by assert_no_type_cascade (it only filters
+    /// to Severity::Error entries).
+    #[test]
+    fn test_assert_no_type_cascade_passes_with_mixed_severities() {
+        let diags = vec![
+            Diagnostic::error("unknown member 'x' on self"),
+            Diagnostic::warning("unused port p"),
+        ];
+        super::assert_no_type_cascade(&diags, &["unknown member"]);
+    }
+
+    /// assert_no_type_cascade should panic with "expected root-cause error"
+    /// when no error in the slice matches any of the expected fragments.
+    #[test]
+    #[should_panic(expected = "expected root-cause error")]
+    fn test_assert_no_type_cascade_panics_when_no_root_cause() {
+        let diags = vec![Diagnostic::error("parse error")];
+        // "parse error" does not contain "unknown member", so assertion (a) fails.
+        super::assert_no_type_cascade(&diags, &["unknown member"]);
+    }
+
+    /// assert_no_type_cascade should panic with "unexpected cascade errors"
+    /// when at least one error does NOT match any expected fragment.
+    #[test]
+    #[should_panic(expected = "unexpected cascade errors")]
+    fn test_assert_no_type_cascade_panics_on_unexpected_cascade() {
+        let diags = vec![
+            Diagnostic::error("unknown member 'x'"),
+            Diagnostic::error("type mismatch for y"),
+        ];
+        // First matches, second doesn't → assertion (b) fails.
+        super::assert_no_type_cascade(&diags, &["unknown member"]);
+    }
+
+    /// Multi-fragment whitelist: each error must match at least one fragment;
+    /// assertion should not panic when all errors are covered.
+    #[test]
+    fn test_assert_no_type_cascade_multi_fragment_whitelist() {
+        let diags = vec![
+            Diagnostic::error("duplicate function signature"),
+            Diagnostic::error("ambiguous function call"),
+        ];
+        // Both fragments are present; each error matches at least one.
+        super::assert_no_type_cascade(&diags, &["ambiguous", "duplicate"]);
+    }
+
+    /// assert_no_type_cascade with an empty diagnostics slice should panic
+    /// with "expected root-cause error" because no error matches any fragment.
+    #[test]
+    #[should_panic(expected = "expected root-cause error")]
+    fn test_assert_no_type_cascade_panics_on_empty_diagnostics() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_type_cascade(&diags, &["anything"]);
+    }
+
     // ── run_modify_pipeline smoke ─────────────────────────────────────────
 
     /// Smoke test for `run_modify_pipeline`: verifies the helper produces 2 ops
