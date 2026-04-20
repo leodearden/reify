@@ -180,3 +180,89 @@ impl Default for UnitRegistry {
 }
 
 // --- Type alias registry ---
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Step 21: Verify new geometry function names are recognized ---
+
+    #[test]
+    fn compile_geometry_linear_pattern_recognized() {
+        assert!(is_geometry_function("linear_pattern"));
+    }
+
+    #[test]
+    fn compile_geometry_circular_pattern_recognized() {
+        assert!(is_geometry_function("circular_pattern"));
+    }
+
+    #[test]
+    fn compile_geometry_mirror_recognized() {
+        assert!(is_geometry_function("mirror"));
+    }
+
+    #[test]
+    fn compile_geometry_loft_recognized() {
+        assert!(is_geometry_function("loft"));
+    }
+
+    #[test]
+    fn compile_geometry_shell_recognized() {
+        assert!(is_geometry_function("shell"));
+    }
+
+    #[test]
+    fn compile_geometry_thicken_recognized() {
+        assert!(is_geometry_function("thicken"));
+    }
+
+    #[test]
+    fn compile_geometry_draft_recognized() {
+        assert!(is_geometry_function("draft"));
+    }
+
+    // --- Boolean function recognition tests (step-1) ---
+
+    #[test]
+    fn compile_geometry_union_recognized() {
+        assert!(is_geometry_function("union"));
+    }
+
+    #[test]
+    fn compile_geometry_intersection_recognized() {
+        assert!(is_geometry_function("intersection"));
+    }
+
+    #[test]
+    fn compile_geometry_difference_recognized() {
+        assert!(is_geometry_function("difference"));
+    }
+
+    #[test]
+    fn compile_geometry_union_all_recognized() {
+        assert!(is_geometry_function("union_all"));
+    }
+
+    #[test]
+    fn compile_geometry_intersection_all_recognized() {
+        assert!(is_geometry_function("intersection_all"));
+    }
+
+    #[test]
+    fn compile_geometry_linear_pattern_2d_recognized() {
+        assert!(is_geometry_function("linear_pattern_2d"));
+    }
+
+    #[test]
+    fn compile_geometry_arbitrary_pattern_recognized() {
+        assert!(is_geometry_function("arbitrary_pattern"));
+    }
+
+    // --- Sweep (pipe) compiler tests (task-310 step-13) ---
+
+    #[test]
+    fn is_geometry_function_sweep() {
+        assert!(is_geometry_function("sweep"));
+    }
+}
