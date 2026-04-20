@@ -42832,11 +42832,11 @@
         "description": "The Reify parser currently rejects nested struct-instantiation calls with arguments in sub arg value positions (e.g. `sub x = Host(m: Steel(density: 1000.0))`). This task tracks the acceptance criterion so that when the parser is extended, the end-to-end compilation path can be verified.",
         "details": "Acceptance criterion: compiling the following source (with appropriate stdlib Material trait in scope) produces zero Error-severity diagnostics:\n\n```\nstructure def Steel : Material {\n    param density : Real = 7850.0\n}\nstructure def Host { param m : Material }\nstructure def Top {\n    sub x = Host(m: Steel(density: 1000.0))\n}\n```\n\nBackground: The ignored test `sub_component_arg_structure_instantiation_with_args_accepted` was deleted from `crates/reify-compiler/tests/trait_typed_param_tests.rs` (task 2028) because it pinned an uncertain failure mode (parse-level vs. semantic). The entity.rs code is already defensively widened to `FunctionCall { function, .. }` (any args) rather than an is_empty() guard. The tree-sitter grammar's `sub_declaration` + `named_argument` both accept `_expression` which includes `function_call` — suggesting the failure may be semantic rather than syntactic. Investigate by checking if the parser actually rejects this construct and if so, extend the grammar rule for sub arg values to accept function calls with named arguments.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:08:19.404Z",
+        "updatedAt": "2026-04-20T13:54:24.095Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_typed_param_tests.rs",
@@ -43134,12 +43134,25 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2058",
+        "title": "Measure and tune ungated workspace-pass timeout budgets introduced by OCCT gate split",
+        "description": "Follow-up to task 2000 review. The two-pass split introduced a separate outer `timeout --kill-after=60 30m/45m` on the ungated `cargo test --workspace --exclude ...` pass. Previously these 11 non-OCCT crates were folded into a 45m budget covering the whole workspace. Verify the new 30m/45m budgets have 2× headroom against real pipeline runtimes.",
+        "details": "## Context\n\nBefore task 2000, debug+release `cargo test --workspace` each ran under a single outer `timeout` (historically 2700s = 45m). After the split, the ungated workspace-exclude pass has:\n\n- debug: `timeout --kill-after=60 30m`\n- release: `timeout --kill-after=60 45m`\n\ncovering 11 non-OCCT crates (tree-sitter bindings, protocol, persistence, etc.). If those crates collectively take >30m on a loaded CI host, verify will now time out where the old command would not.\n\n## Acceptance\n\n- Measure peak observed ungated non-OCCT-pass runtime on the pipeline (debug and release).\n- Set the outer `timeout --kill-after=60 <N>m` to ~2× that peak.\n- If no measurement data is available yet, bump the debug ungated pass to 45m to match the pre-split historical budget, and document the decision in orchestrator.yaml's comment block.\n- Write the rationale and the measured/assumed runtimes into the comment block at orchestrator.yaml:12-26 so the next tightening doesn't revert blind.\n\n## Modules\n\norchestrator.yaml\n\n## Memory hints\n\n- See task 2000 for the two-pass split. See commit 5cb5fb951 for the initial budgets.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2000"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:53:44.597Z",
-      "taskCount": 2049,
+      "lastModified": "2026-04-20T13:54:24.096Z",
+      "taskCount": 2050,
       "completedCount": 1747,
       "tags": [
         "master"
