@@ -42923,11 +42923,11 @@
         "description": "The regression test `generic_constraint_def_with_type_param_type_compiles_cleanly` in crates/reify-compiler/tests/constraint_def_compile_tests.rs (added by task 1964) currently only asserts the absence of 'unknown type' errors. Add a positive assertion that the `Aligned` constraint def was actually compiled with the expected shape (e.g. `module.constraint_defs` contains `Aligned` with 2 params and 1 type_param). This turns a negative-only guard into a stronger regression guard against silent drops where the def is never compiled but no unknown-type error is emitted either.",
         "details": "Location: crates/reify-compiler/tests/constraint_def_compile_tests.rs ~lines 977-998 (after the unknown_type_errors.is_empty() assertion).\n\nSuggested additions (adjust to actual API):\n```\nlet def = module\n    .constraint_defs\n    .iter()\n    .find(|d| d.name == \"Aligned\")\n    .expect(\"Aligned constraint def must compile\");\nassert_eq!(def.params.len(), 2, \"expected params t and w\");\nassert_eq!(def.type_params.len(), 1, \"expected type param T\");\n```\n\nCompiledConstraintDef fields (from crates/reify-compiler/src/types.rs ~line 612):\n- pub name: String\n- pub type_params: Vec<reify_types::TypeParam>\n- pub params: Vec<CompiledConstraintParam>\n\nmemory_hints: search \"task 1964 format_shadow_warning type-param guard\" for context. This was suggestion from esc-1964-55.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:20:26.051Z"
+        "updatedAt": "2026-04-20T14:08:14.500Z"
       },
       {
         "id": "2042",
@@ -43241,9 +43241,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:02:46.685Z",
+      "lastModified": "2026-04-20T14:08:14.500Z",
       "taskCount": 2050,
-      "completedCount": 1757,
+      "completedCount": 1758,
       "tags": [
         "master"
       ]
