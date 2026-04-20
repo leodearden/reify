@@ -42616,7 +42616,17 @@
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "App test",
+              "Bracket entity"
+            ],
+            "queries": [
+              "focus entity App test selected entity identity assertion",
+              "Bracket entity selection test reify gui"
+            ]
+          }
         }
       },
       {
