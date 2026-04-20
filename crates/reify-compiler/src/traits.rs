@@ -26,9 +26,9 @@ pub(crate) fn compile_trait(
                             resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
                         {
                             t
-                        } else if enum_defs.iter().any(|e| e.name == name) {
+                        } else if let Some(t) = resolve_enum_type(name, enum_defs) {
                             // Enum type defined in the same module
-                            Type::Enum(name.to_string())
+                            t
                         } else {
                             diagnostics.push(
                                 Diagnostic::error(format!(

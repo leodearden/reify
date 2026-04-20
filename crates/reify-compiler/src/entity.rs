@@ -319,9 +319,9 @@ pub(crate) fn compile_entity(
                         None => {
                             // Check if it's an enum type defined in the same module or prelude
                             if let reify_syntax::TypeExprKind::Named { name, .. } = &type_expr.kind
-                                && enum_defs.iter().any(|e| e.name == *name)
+                                && let Some(t) = resolve_enum_type(name, enum_defs)
                             {
-                                Type::Enum(name.clone())
+                                t
                             } else {
                                 diagnostics.push(
                                     Diagnostic::error(format!(

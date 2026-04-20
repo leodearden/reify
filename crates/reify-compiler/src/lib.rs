@@ -120,7 +120,7 @@ fn compile_constraint_def(
                 )
                 .is_none()
                 && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
-                && !enum_defs.iter().any(|e| e.name == *name)
+                && resolve_enum_type(name, enum_defs).is_none()
             {
                 diagnostics.push(
                     Diagnostic::error(format!(

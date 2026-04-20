@@ -521,6 +521,18 @@ pub(crate) fn resolve_type_with_aliases(
     None
 }
 
+/// Resolve a simple name to a `Type::Enum` if it matches a declared enum; `None` otherwise.
+///
+/// Does NOT perform builtin/alias/trait fallback — use `resolve_type_with_aliases` first
+/// and chain with `.or_else(|| resolve_enum_type(...))`.
+pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_types::EnumDef]) -> Option<Type> {
+    if enum_defs.iter().any(|e| e.name == name) {
+        Some(Type::Enum(name.to_string()))
+    } else {
+        None
+    }
+}
+
 /// Resolve a type alias's RHS `TypeExpr` to a `Type`.
 ///
 /// Handles three cases:
