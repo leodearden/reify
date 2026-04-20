@@ -40036,11 +40036,11 @@
         "description": "Post-merge test-coverage gaps for the tessellation-diagnostics wiring added in task 1764. Two missing tests, one backend and one frontend.",
         "details": "From reviewer_comprehensive suggestions on task 1764:\n\n1. **Backend: exercise the `code = \"unresolved-source\"` branch** (engine.rs:440-446).\n   - `build_gui_state_captures_tessellation_errors_from_failing_kernel` only covers the resolved-source path because `load_from_source` populates the source map.\n   - Add a Rust test that loads a session, uses a `break_source_map_for_test` (or equivalent `break_*_for_test`) helper to invalidate `resolve_source`, triggers tessellation via a failing kernel, and asserts that every produced `DiagnosticInfo` has `code == Some(\"unresolved-source\")` and `file_path == \"<unknown>\"`.\n\n2. **Frontend: test the diagnostics-clear path in App.tsx end-to-end wiring** (gui/src/__tests__/App.test.tsx:2453-2489).\n   - Existing test only covers Error → StatusBar transition.\n   - Add a second `it(...)` that fires a diagnostics event with one Error, awaits the badge, then fires an event with `[]` and asserts the badge is gone and the status text reverts to \"No geometry\" (not \"Compile error\").\n   - This locks in the backend's deliberate `Some(vec![])`-on-clear wire contract at the consumer end.\n\nVerification: `cargo test -p gui` for (1); `npm test` / `vitest` in `gui/` for (2). No production-code changes expected.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:08:26.530Z",
+        "updatedAt": "2026-04-20T14:02:33.413Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/tests",
@@ -42878,11 +42878,11 @@
         "description": "The Reify parser currently rejects nested struct-instantiation calls with arguments in sub arg value positions (e.g. `sub x = Host(m: Steel(density: 1000.0))`). This task tracks the acceptance criterion so that when the parser is extended, the end-to-end compilation path can be verified.",
         "details": "Acceptance criterion: compiling the following source (with appropriate stdlib Material trait in scope) produces zero Error-severity diagnostics:\n\n```\nstructure def Steel : Material {\n    param density : Real = 7850.0\n}\nstructure def Host { param m : Material }\nstructure def Top {\n    sub x = Host(m: Steel(density: 1000.0))\n}\n```\n\nBackground: The ignored test `sub_component_arg_structure_instantiation_with_args_accepted` was deleted from `crates/reify-compiler/tests/trait_typed_param_tests.rs` (task 2028) because it pinned an uncertain failure mode (parse-level vs. semantic). The entity.rs code is already defensively widened to `FunctionCall { function, .. }` (any args) rather than an is_empty() guard. The tree-sitter grammar's `sub_declaration` + `named_argument` both accept `_expression` which includes `function_call` — suggesting the failure may be semantic rather than syntactic. Investigate by checking if the parser actually rejects this construct and if so, extend the grammar rule for sub arg values to accept function calls with named arguments.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:02:25.677Z",
+        "updatedAt": "2026-04-20T14:02:33.560Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_typed_param_tests.rs",
@@ -43235,7 +43235,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:02:32.455Z",
+      "lastModified": "2026-04-20T14:02:33.560Z",
       "taskCount": 2050,
       "completedCount": 1756,
       "tags": [
