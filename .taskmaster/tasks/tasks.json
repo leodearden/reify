@@ -42354,16 +42354,25 @@
         "description": "Re-scoped replacement for cancelled task #1881. The original scope work (commits bfc97d7f2, 44a1b9af5, 4dea23d1d, a16326895 on branch task/1881) was correct against the viewStateStore as it existed 2026-04-17 but could not be merged because branch task/1881 diverged 140 files / ~16K lines from main. Main has since evolved significantly (added user-view mirror, auto-view generator, ViewState.views/activeViewId fields), so the original diff cannot be cherry-picked cleanly — the scope must be re-applied fresh.\n\nProblem (still present on main as of commit 33c9ef0e6):\n- gui/src/stores/viewStateStore.ts setTree() prunes via `delete s.explicit[path]` (→ undefined) while setVisibility/resetToInherit/showOnly clear descendants via `s.explicit[desc] = null`. Consumers see a mix of undefined and null meaning the same thing. Tests pin the inconsistency via both toBeNull() and toBeUndefined() assertions. Any future code using `path in explicit` or `Object.keys(explicit)` behaves differently depending on which path it checks.\n- gui/src/panels/DesignTree.tsx imports `createViewStateStore` as a value solely to derive `ReturnType<typeof createViewStateStore>` for a prop type — couples the consumer to the factory when a named type alias would suffice.",
         "details": "Scope (five changes, all in gui/):\n\n1. gui/src/stores/viewStateStore.ts — unify \"no override\" to absence-of-key in ALL four mutation sites on main (current file is 444 lines; line numbers will need re-verification on the fresh worktree):\n   - setVisibility: cascade loop `s.explicit[desc] = null` → `delete s.explicit[desc];`\n   - resetToInherit: both the target-path assignment AND the cascade loop → `delete s.explicit[path];` / `delete s.explicit[desc];`\n   - showOnly: ancestors loop `s.explicit[anc] = null` → `delete s.explicit[anc];`, AND the optional post-cascade descendants loop → `delete s.explicit[desc];`\n   - (setTree's existing `delete` stays as-is; it's already correct.)\n   - mirrorExplicitToActiveUserView uses `Object.entries(s.explicit)` and already skips null values via `if (val != null)` — switching to `delete` is semantically equivalent because Object.entries naturally skips missing keys. Verify this is true before/after the change.\n\n2. gui/src/stores/viewStateStore.ts — update the `ViewState` interface JSDoc comment on `explicit` to document the invariant: \"Absence of a key means 'no override' (inherits from nearest explicit ancestor, or falls back to the default rule). Entries are **deleted** on clear; `null` is never stored at runtime even though `ExplicitVisibility` admits it as a type.\"\n\n3. gui/src/stores/viewStateStore.ts — at end of file, add: `export type ViewStateStore = ReturnType<typeof createViewStateStore>;`\n\n4. gui/src/stores/index.ts — add `export type { ViewStateStore } from './viewStateStore';` immediately after the existing `export type { ViewState } from './viewStateStore';` line.\n\n5. gui/src/panels/DesignTree.tsx — replace `import { createViewStateStore } from '../stores/viewStateStore';` with `import type { ViewStateStore } from '../stores/viewStateStore';` (type-only), and change `viewStateStore: ReturnType<typeof createViewStateStore>` in the Props interface to `viewStateStore: ViewStateStore`. Verify no runtime import of `createViewStateStore` remains in DesignTree.tsx.\n\n6. gui/src/__tests__/viewStateStore.test.ts — flip all assertions that read a cleared explicit entry from `toBeNull()` to `toBeUndefined()` (count will differ from original plan — re-scan the file on the fresh worktree). Add a test that asserts `path in explicit` is false after `resetToInherit` — this pins the invariant beyond what `toBeUndefined()` covers.\n\n7. gui/src/__tests__/DesignTree.test.tsx — flip any `toBeNull()` assertions on `store.state.explicit[...]` entries to `toBeUndefined()` (re-scan on fresh worktree — locations have almost certainly shifted since #1881 was drafted).\n\nVerification:\n- `cd gui && npm run typecheck` — passes.\n- `cd gui && npx vitest run` — all tests pass.\n- Grep to confirm zero `s.explicit[...] = null` assignments remain in viewStateStore.ts (only test fixtures and ExplicitVisibility type definition should retain `null`).\n\nDo NOT base this on task/1881 branch. Start from current main.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:54:58.501Z"
+        "updatedAt": "2026-04-20T08:00:19.003Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/DesignTree.test.tsx",
+            "gui/src/__tests__/viewStateStore.test.ts",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/stores/index.ts",
+            "gui/src/stores/viewStateStore.ts"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T07:55:14.988Z",
+      "lastModified": "2026-04-20T08:00:19.003Z",
       "taskCount": 2010,
       "completedCount": 1716,
       "tags": [
