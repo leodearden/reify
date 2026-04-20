@@ -136,3 +136,39 @@ pub(crate) fn compile_curve_op(
         _ => unreachable!("compile_curve_op called with non-curve name: {}", name),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scalar_literal(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(Value::Real(v), Type::Real)
+    }
+
+    #[test]
+    fn compile_curve_op_line_segment_direct() {
+        let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_curve_op("line_segment", args.clone(), &mut diagnostics);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_curve_op line_segment should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Curve { kind: CurveKind::LineSegment, args: op_args } => {
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["x1", "y1", "z1", "x2", "y2", "z2"]);
+                assert_eq!(op_args.len(), 6);
+            }
+            other => panic!("expected Curve(LineSegment), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_curve_op_wrong_arg_count() {
+        let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_curve_op("line_segment", args, &mut diagnostics);
+        assert!(result.is_none(), "expected None for wrong arg count");
+        assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
+    }
+}
