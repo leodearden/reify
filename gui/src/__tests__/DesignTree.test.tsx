@@ -823,3 +823,81 @@ describe('DesignTree — keyboard shortcuts', () => {
     expect(store.state.explicit['Root.B']).toBe('show');
   });
 });
+
+// ---------------------------------------------------------------------------
+// DesignTree — ViewSelector integration (step-25)
+// ---------------------------------------------------------------------------
+
+describe('DesignTree — ViewSelector integration', () => {
+  it('renders a ViewSelector at the top of the panel when onOpenManage is provided', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    let store!: ReturnType<typeof createViewStateStore>;
+    createRoot(() => {
+      store = createViewStateStore();
+      store.regenerateAutoViews(nodes);
+    });
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        onOpenManage={vi.fn()}
+      />
+    ));
+    // ViewSelector trigger button shows the active view name ("Default")
+    expect(screen.getByRole('button', { name: /default/i })).toBeTruthy();
+  });
+
+  it('clicking "Organize views…" in the ViewSelector calls onOpenManage', () => {
+    const onOpenManage = vi.fn();
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    let store!: ReturnType<typeof createViewStateStore>;
+    createRoot(() => {
+      store = createViewStateStore();
+      store.regenerateAutoViews(nodes);
+    });
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        onOpenManage={onOpenManage}
+      />
+    ));
+
+    // Open the ViewSelector dropdown
+    fireEvent.click(screen.getByRole('button', { name: /default/i }));
+    // Click the Organize views… footer
+    fireEvent.click(screen.getByRole('menuitem', { name: /organize views/i }));
+    expect(onOpenManage).toHaveBeenCalledOnce();
+  });
+
+  it('existing h/g/s keyboard shortcuts still work when ViewSelector is present', () => {
+    const onOpenManage = vi.fn();
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    let store!: ReturnType<typeof createViewStateStore>;
+    createRoot(() => {
+      store = createViewStateStore();
+      store.regenerateAutoViews(nodes);
+    });
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntities={['Root.A']}
+        onOpenManage={onOpenManage}
+      />
+    ));
+
+    // h key should hide Root.A (triggers COW since auto view is active)
+    fireEvent.keyDown(screen.getByTestId('design-tree'), { key: 'h' });
+    // After COW, Root.A should be hidden in the explicit map
+    expect(store.state.explicit['Root.A']).toBe('hidden');
+  });
+
+  it('ViewSelector is NOT rendered when onOpenManage is not provided', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    // No ViewSelector trigger button should appear
+    expect(screen.queryByRole('button', { name: /default/i })).toBeNull();
+  });
+});
