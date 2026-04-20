@@ -41911,11 +41911,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, `propagate_poison()` (L128-140) has no debug_assert safety net by design — it is for pure consumer-propagation sites where an already-`Type::Error` operand short-circuits. Add either (a) a `#[track_caller]` debug-only check that the caller's object operand was already `Type::Error` where a handle is easily threadable (e.g. `propagate_poison(compiled_obj)` taking the poisoned operand for the invariant check), or (b) at minimum a comment at each `propagate_poison()` call site reminding the reader that switching to a diagnostic push requires migrating to `make_poison_literal`. This mirrors the producer-side guard and prevents regression if a future refactor adds a diagnostic push at a current consumer site. Current callers: aggregation poisoned short-circuit, non-aggregation member-access poisoned short-circuit. Source: review suggestion S2 in esc-1921-7.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T05:43:06.733Z",
+        "updatedAt": "2026-04-20T11:14:21.685Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -42512,7 +42512,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:14:15.477Z",
+      "lastModified": "2026-04-20T11:14:21.692Z",
       "taskCount": 2016,
       "completedCount": 1722,
       "tags": [
