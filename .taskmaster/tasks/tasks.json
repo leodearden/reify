@@ -41546,7 +41546,7 @@
         "description": "S1: Lambda-body row uses Type::Error as outer lambda result_type so test passes even if Lambda arm is broken; change last arg to Type::Bool. S2: find_node_traverses_previously_unhandled_kinds and find_node_compound_variant_coverage overlap on ListLiteral/OptionSome/Quantifier; consolidate. File: crates/reify-compiler/tests/type_error_propagation_tests.rs. From task 1920 review, S1+S2.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41556,9 +41556,20 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix Lambda-body fixture and dedupe find_node coverage tests (task 1920 followup)"
+            ]
+          },
+          "done_provenance": {
+            "commit": "e367258a31a703777df96910b0fffdfdca7dd997",
+            "commit_input": "e367258a3",
+            "note": "S1 applied in d6a1e6f17 (Lambda-body row outer Type::Bool), S2 applied in e367258a3 (folded smoke-test variants into table, deleted duplicate). Both commits reach main."
+          }
         },
-        "updatedAt": "2026-04-20T10:53:21.911Z"
+        "updatedAt": "2026-04-20T10:54:15.600Z"
       },
       {
         "id": "1982",
@@ -42395,9 +42406,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T10:53:21.918Z",
+      "lastModified": "2026-04-20T10:54:15.603Z",
       "taskCount": 2010,
-      "completedCount": 1718,
+      "completedCount": 1719,
       "tags": [
         "master"
       ]
