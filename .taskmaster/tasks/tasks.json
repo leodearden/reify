@@ -42655,7 +42655,15 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:41:58.840Z"
+        "updatedAt": "2026-04-20T11:41:58.840Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Move reify-compiler lib.rs `mod tests` to integration test file"
+            ]
+          }
+        }
       },
       {
         "id": "2032",
@@ -42675,11 +42683,11 @@
         "description": "Move the `mod tests` block from `crates/reify-compiler/src/conformance.rs` (L1046-1272, ~225 lines) into a new integration test file at `crates/reify-compiler/tests/conformance_tests.rs`.\n\nIf any test accesses `pub(crate)` items (`check_trait_conformance`, `MergeContext`, `collect_all_requirements`, `check_trait_arg_conformance`), keep those tests as a `#[cfg(test)] mod tests` submodule inside conformance.rs and move only the tests that exercise conformance checking through the public `compile()` API. Preserve the same assertion behavior.\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically.\n- `conformance.rs` drops from 1272 → ~1050 lines (or less, depending on how many tests can move to integration tests).\n\nWhy: conformance.rs is the #3 contended file (12 pending tasks). Shedding tests is a low-risk first step; the structural extraction follows in the next task.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:41:13.765Z",
+        "updatedAt": "2026-04-20T11:43:35.007Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -42732,7 +42740,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T11:41:58.841Z",
+      "lastModified": "2026-04-20T11:43:35.007Z",
       "taskCount": 2028,
       "completedCount": 1730,
       "tags": [
