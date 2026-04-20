@@ -43091,11 +43091,11 @@
         "description": "Duplicated PathBuf+CliToolContext::new pattern across mcp_context.rs tests. Add fn fresh_ctx() helper. From review of task 2015.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:39:33.410Z",
+        "updatedAt": "2026-04-20T16:16:04.893Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43295,7 +43295,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:13:01.029Z",
+      "lastModified": "2026-04-20T16:16:04.893Z",
       "taskCount": 2050,
       "completedCount": 1771,
       "tags": [
