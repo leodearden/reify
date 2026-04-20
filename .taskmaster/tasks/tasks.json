@@ -43367,12 +43367,13 @@
         "description": "Replace the local private `get_let_expr` function in crates/reify-compiler/tests/constructor_hash_tests.rs (line 23) with the canonical version now exported from `reify_test_support`. Straightforward import swap — same refactor pattern applied in step-8 of task 1973 to expr_error_sentinel_tests.rs and type_error_propagation_tests.rs.",
         "details": "Edit crates/reify-compiler/tests/constructor_hash_tests.rs:\n1. Delete the local `get_let_expr` function (lines ~20-36).\n2. Update the existing `use reify_test_support::compile_source;` to `use reify_test_support::{compile_source, get_let_expr};`.\n3. Run `cargo test -p reify-compiler --test constructor_hash_tests` to verify.\n\nRisk: low; mechanical move + import update. No behavior change expected. The local copy is identical in shape to the canonical helper (inlines `templates.first()`).\n\nSource: esc-1973-143 (info-level cleanup_needed). Task 1973 was scoped to only expr_error_sentinel_tests.rs and type_error_propagation_tests.rs, leaving this third duplicate untouched.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1973"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T17:15:15.883Z"
       },
       {
         "id": "2062",
@@ -43380,17 +43381,18 @@
         "description": "Two low-priority robustness improvements to `crates/reify-test-support/src/helpers.rs` identified by reviewer_comprehensive on esc-1973-144.",
         "details": "**S2 — Document substring-matching trade-off in `assert_no_type_cascade` (helpers.rs:564)**\nThe function uses `msg.contains(fragment)` on diagnostic messages. A fragment like `\"ambiguous\"` or `\"duplicate\"` could match unrelated future diagnostic wording, silently weakening the whitelist. Reviewer rated this low-impact (call sites use specific phrases) and explicitly said \"not worth blocking on.\"\n\nAction: add a short rustdoc paragraph noting the trade-off — callers should prefer specific phrases over common English words. Alternative (heavier): accept a predicate instead of `&[&str]`; defer unless a real collision surfaces.\n\n**S3 — Make `test_get_let_expr_in_panics_on_missing_default_expr` self-sufficient (helpers.rs:1175-1187 → actually ~1188-1199)**\nThe test relies on `TopologyTemplateBuilder::auto_param` producing a value cell with `default_expr: None`, which is an implementation detail rather than a documented invariant. `#[should_panic(expected = \"has no default expr\")]` would catch a regression, but an explicit guard makes the intent clearer.\n\nAction: either (a) add `assert!(cell.default_expr.is_none());` before the `get_let_expr_in` call, or (b) construct the `ValueCell` directly with `default_expr: None` to remove the builder dependency.\n\nRisk: low; both are mechanical one-line edits.\n\nSource: esc-1973-144 review suggestions S2 and S3. S1 from the same escalation (constructor_hash_tests.rs duplicate) is already covered by task #2061.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1973"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T17:15:15.629Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:15:13.472Z",
+      "lastModified": "2026-04-20T17:15:15.883Z",
       "taskCount": 2054,
       "completedCount": 1784,
       "tags": [
