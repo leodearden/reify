@@ -496,9 +496,8 @@ impl EngineSession {
         // build_template_node call (which would be O(N²) across the full tree build).
         // In release builds the first duplicate emits a tracing::warn! and the tree
         // is still built with first-match semantics (graceful degradation).  In debug
-        // builds the debug_assert!(false, ...) panics loudly with the same message
-        // substring that `get_entity_tree_panics_on_duplicate_template_names_in_debug`
-        // pins via #[should_panic(expected = "template names must be unique")].
+        // builds the debug_assert!(false, ...) panics loudly — the panic message
+        // begins with "template names must be unique".
         {
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for t in &compiled.templates {
@@ -908,8 +907,9 @@ fn build_preview_gui_state(
 ///
 /// # Preconditions
 /// Caller must ensure `compiled.templates` has no duplicate names — the compiler
-/// guarantees this for well-formed modules. `get_entity_tree` performs a
-/// debug-only uniqueness check (O(N)) before iterating templates.
+/// guarantees this for well-formed modules. `get_entity_tree` performs a runtime
+/// uniqueness check (O(N)) before iterating templates, emitting a `tracing::warn!`
+/// in release builds and panicking via `debug_assert!` in debug builds.
 pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
