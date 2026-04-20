@@ -6,7 +6,7 @@
 //! stub at `expr.rs:997` is the designated `Type::Error` producer that these
 //! tests exercise (see step-12).
 
-use reify_test_support::compile_source;
+use reify_test_support::{compile_source, get_let_expr};
 use reify_types::{
     CompiledExpr, CompiledExprKind, CompiledMatchArm, QuantifierKind, SelectorKind, Severity,
     Type, Value, ValueCellId,
@@ -84,22 +84,6 @@ fn find_node<'a>(
         CompiledExprKind::AdHocSelector { base, args, .. } => find_node(base, pred)
             .or_else(|| args.iter().find_map(|a| find_node(a, pred))),
     }
-}
-
-/// Retrieve the compiled `default_expr` of a let binding by name.
-fn get_let_expr<'a>(module: &'a reify_compiler::CompiledModule, name: &str) -> &'a CompiledExpr {
-    let template = module
-        .templates
-        .first()
-        .expect("expected at least one template in module");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == name)
-        .unwrap_or_else(|| panic!("no value cell named '{}'", name));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{}' has no default expr", name))
 }
 
 // ── step-5: member aggregation on error-typed object ────────────────────────

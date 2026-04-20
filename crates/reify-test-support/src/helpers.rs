@@ -1,7 +1,7 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
 use reify_compiler::TopologyTemplate;
-use reify_types::{Diagnostic, ModulePath, Severity};
+use reify_types::{CompiledExpr, Diagnostic, ModulePath, Severity};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
@@ -479,6 +479,113 @@ pub fn run_modify_pipeline(
 
     let ops = ops_ref.lock().unwrap().clone();
     (result, ops)
+}
+
+/// Retrieve the compiled `default_expr` of a let binding by name from a named template.
+///
+/// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
+/// not be the desired template. `get_let_expr` delegates to this function.
+///
+/// # Panics
+/// - `"no template named '{template_name}'"` if no template with that name exists.
+/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+/// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+pub fn get_let_expr_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    template_name: &str,
+    cell_name: &str,
+) -> &'a CompiledExpr {
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == template_name)
+        .unwrap_or_else(|| panic!("no template named '{template_name}'"));
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == cell_name)
+        .unwrap_or_else(|| {
+            panic!("no value cell named '{cell_name}' in template '{template_name}'")
+        });
+    cell.default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("value cell '{cell_name}' in '{template_name}' has no default expr"))
+}
+
+/// Retrieve the compiled `default_expr` of a let binding by name from the first template.
+///
+/// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
+/// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
+/// templates and you need to target a specific one.
+///
+/// # Panics
+/// - `"expected at least one template in module"` if `templates` is empty.
+/// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+pub fn get_let_expr<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a CompiledExpr {
+    let template_name = module
+        .templates
+        .first()
+        .expect("expected at least one template in module")
+        .name
+        .as_str();
+    get_let_expr_in(module, template_name, name)
+}
+
+/// Assert the anti-cascade contract: exactly the expected root-cause error(s) are present
+/// and no unexpected additional errors appear.
+///
+/// # Parameters
+/// - `diagnostics`: All diagnostics from the compiled module.
+/// - `expected_root_fragments`: One or more substrings.  At least one
+///   `Severity::Error` diagnostic must contain at least one of the fragments
+///   (the root-cause error).  EVERY error must match at least one fragment;
+///   any error that matches none is treated as an unexpected cascade error and
+///   causes the assertion to fail.
+///
+/// ## Multi-fragment use case
+/// When a single compilation triggers more than one legitimate root-cause error
+/// (e.g. "duplicate function signature" and "ambiguous function call"), pass all
+/// expected fragments as a slice: `&["ambiguous", "duplicate"]`.  This avoids
+/// an inline cascade check and keeps all cascade assertions in one place.
+///
+/// ## Rationale
+/// The previous approach (`!message.contains("mismatch") || !message.contains("incompatible")`)
+/// is fragile: it misses cascade diagnostics with different wording.  The positive-whitelist
+/// approach here fails on ANY unexpected error, making it both stricter and easier to maintain
+/// from a single definition.
+///
+/// # Panics
+/// - `"expected root-cause error matching one of ..."` if no error matches any fragment.
+/// - `"unexpected cascade errors ..."` if any error matches no fragment.
+#[track_caller]
+pub fn assert_no_type_cascade(
+    diagnostics: &[Diagnostic],
+    expected_root_fragments: &[&str],
+) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    let matches_any = |msg: &str| expected_root_fragments.iter().any(|f| msg.contains(f));
+
+    assert!(
+        errors.iter().any(|d| matches_any(&d.message)),
+        "expected root-cause error matching one of {expected_root_fragments:?}; got: {errors:?}",
+    );
+
+    let unexpected: Vec<_> = errors
+        .iter()
+        .filter(|d| !matches_any(&d.message))
+        .collect();
+
+    assert!(
+        unexpected.is_empty(),
+        "unexpected cascade errors (must all match one of {expected_root_fragments:?}): {unexpected:?}",
+    );
 }
 
 #[cfg(test)]
@@ -1028,6 +1135,175 @@ mod tests {
     fn test_assert_no_diagnostics_panics_on_any_diagnostic() {
         let diags = vec![Diagnostic::info("informational note")];
         super::assert_no_diagnostics(&diags, "guard compile");
+    }
+
+    // ── get_let_expr_in ───────────────────────────────────────────────────
+
+    /// get_let_expr_in should return the default_expr of the named cell in the
+    /// named template, even when the module has multiple templates.
+    /// Uses non-integer floats (1.5, 2.7) because whole-number float literals
+    /// (e.g. 1.0, 2.0) are compiled as Type::Int by the Reify compiler when
+    /// they satisfy `*v == (*v as i64) as f64`.
+    #[test]
+    fn test_get_let_expr_in_finds_named_template() {
+        let source = r#"
+            structure Alpha { let v = 1.5 }
+            structure Beta  { let w = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        let expr = super::get_let_expr_in(&module, "Beta", "w");
+        assert_eq!(
+            expr.result_type,
+            reify_types::Type::Real,
+            "expected result_type == Type::Real for Beta.w, got {:?}",
+            expr.result_type
+        );
+    }
+
+    /// get_let_expr_in should panic with "no template named" when the template
+    /// name does not match any template in the module.
+    #[test]
+    #[should_panic(expected = "no template named")]
+    fn test_get_let_expr_in_panics_on_missing_template() {
+        let source = r#"structure S { let v = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_let_expr_in(&module, "DoesNotExist", "v");
+    }
+
+    /// get_let_expr_in should panic with "no value cell named" when the cell
+    /// name does not match any value cell in the named template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_let_expr_in_panics_on_missing_cell() {
+        let source = r#"structure S { let x = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_let_expr_in(&module, "S", "y");
+    }
+
+    /// get_let_expr_in should panic with "has no default expr" for a value cell
+    /// whose default_expr is None. Uses a builder-synthesized module with an
+    /// auto_param (which always has default_expr = None) rather than a compiled
+    /// source, since a source-level `param` always carries a default in well-formed
+    /// compiled output.
+    #[test]
+    #[should_panic(expected = "has no default expr")]
+    fn test_get_let_expr_in_panics_on_missing_default_expr() {
+        use reify_types::{ModulePath, Type};
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", Type::Real)
+            .build();
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        super::get_let_expr_in(&module, "S", "x");
+    }
+
+    // ── get_let_expr ─────────────────────────────────────────────────────
+
+    /// get_let_expr targets the FIRST template only; a cell in the second
+    /// template is not reachable via get_let_expr.
+    #[test]
+    fn test_get_let_expr_uses_first_template_by_name() {
+        let source = r#"
+            structure Alpha { let a = 1.5 }
+            structure Beta  { let b = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        // Alpha is first — cell `a` should be found.
+        let expr = super::get_let_expr(&module, "a");
+        assert_eq!(expr.result_type, reify_types::Type::Real);
+    }
+
+    /// get_let_expr with a cell name that only exists in the SECOND template
+    /// should panic with "no value cell named", because the helper only looks
+    /// inside the first template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_let_expr_does_not_search_other_templates() {
+        let source = r#"
+            structure Alpha { let a = 1.5 }
+            structure Beta  { let b = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        // `b` is in Beta (second template), not Alpha (first) — must panic.
+        super::get_let_expr(&module, "b");
+    }
+
+    /// get_let_expr should panic with "expected at least one template" when
+    /// the module has no templates at all (empty module built via builder).
+    #[test]
+    #[should_panic(expected = "expected at least one template")]
+    fn test_get_let_expr_panics_on_empty_templates() {
+        use reify_types::ModulePath;
+        let module =
+            crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
+        super::get_let_expr(&module, "anything");
+    }
+
+    // ── assert_no_type_cascade ────────────────────────────────────────────
+
+    /// assert_no_type_cascade should not panic when the diagnostics slice
+    /// contains at least one error matching a provided fragment, and ALL
+    /// errors match at least one fragment.
+    #[test]
+    fn test_assert_no_type_cascade_passes_when_only_expected_errors() {
+        let diags = vec![Diagnostic::error("unknown member 'x' on self")];
+        super::assert_no_type_cascade(&diags, &["unknown member"]);
+    }
+
+    /// Warnings must be ignored by assert_no_type_cascade (it only filters
+    /// to Severity::Error entries).
+    #[test]
+    fn test_assert_no_type_cascade_passes_with_mixed_severities() {
+        let diags = vec![
+            Diagnostic::error("unknown member 'x' on self"),
+            Diagnostic::warning("unused port p"),
+        ];
+        super::assert_no_type_cascade(&diags, &["unknown member"]);
+    }
+
+    /// assert_no_type_cascade should panic with "expected root-cause error"
+    /// when no error in the slice matches any of the expected fragments.
+    #[test]
+    #[should_panic(expected = "expected root-cause error")]
+    fn test_assert_no_type_cascade_panics_when_no_root_cause() {
+        let diags = vec![Diagnostic::error("parse error")];
+        // "parse error" does not contain "unknown member", so assertion (a) fails.
+        super::assert_no_type_cascade(&diags, &["unknown member"]);
+    }
+
+    /// assert_no_type_cascade should panic with "unexpected cascade errors"
+    /// when at least one error does NOT match any expected fragment.
+    #[test]
+    #[should_panic(expected = "unexpected cascade errors")]
+    fn test_assert_no_type_cascade_panics_on_unexpected_cascade() {
+        let diags = vec![
+            Diagnostic::error("unknown member 'x'"),
+            Diagnostic::error("type mismatch for y"),
+        ];
+        // First matches, second doesn't → assertion (b) fails.
+        super::assert_no_type_cascade(&diags, &["unknown member"]);
+    }
+
+    /// Multi-fragment whitelist: each error must match at least one fragment;
+    /// assertion should not panic when all errors are covered.
+    #[test]
+    fn test_assert_no_type_cascade_multi_fragment_whitelist() {
+        let diags = vec![
+            Diagnostic::error("duplicate function signature"),
+            Diagnostic::error("ambiguous function call"),
+        ];
+        // Both fragments are present; each error matches at least one.
+        super::assert_no_type_cascade(&diags, &["ambiguous", "duplicate"]);
+    }
+
+    /// assert_no_type_cascade with an empty diagnostics slice should panic
+    /// with "expected root-cause error" because no error matches any fragment.
+    #[test]
+    #[should_panic(expected = "expected root-cause error")]
+    fn test_assert_no_type_cascade_panics_on_empty_diagnostics() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_type_cascade(&diags, &["anything"]);
     }
 
     // ── run_modify_pipeline smoke ─────────────────────────────────────────
