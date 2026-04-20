@@ -41849,13 +41849,13 @@
         "description": "Review follow-up from task 1972 (suggestion 2, reviewer_comprehensive, non-blocking).\n\ncrates/reify-compiler/tests/constructor_hash_tests.rs:72-85 covers single-pattern/single-arg happy paths but not multi-arg UserFunctionCall or multi-arm / multi-pattern Match against the compiler's inline emission. A refactor that e.g. folds arms in reverse, or stops combining the second pattern in a multi-pattern arm, would be caught only by the unit test in expr.rs — not by these integration tests.\n\nFix: add one integration case per variant with ≥2 args and ≥2 arms / multi-pattern arms (e.g. `match c { Red | Blue => 1, _ => 2 }` and a two-arg function call) to pin per-iteration combine order end-to-end against the compiler.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "1972"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T21:42:26.548Z"
+        "updatedAt": "2026-04-20T05:28:31.231Z"
       },
       {
         "id": "2002",
@@ -41925,19 +41925,27 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2008",
+        "title": "Eliminate Engine reconstruction in CliToolContext (same antipattern as LSP didChange)",
+        "description": "The known LSP didChange \"new Engine per call\" antipattern (tracked in tasks 479/480) has crept into reify-cli's MCP tool context:\n\n- `crates/reify-cli/src/mcp_context.rs:80` — `CliToolContext::load_file` constructs a fresh `reify_eval::Engine`\n- `crates/reify-cli/src/mcp_context.rs:366` — `update_source` same\n- `crates/reify-cli/src/mcp_context.rs:482` — `open_file` same\n\nEach call throws away the previous Engine, losing all incremental state. Consecutive `update_source` calls re-compile and re-evaluate from scratch instead of using incremental re-eval.\n\nFix: hold a long-lived Engine on CliToolContext and route load/update/open through `edit_source`/`edit_param` APIs that preserve incremental state, consistent with the intended design.\n\nNote: briefing explicitly tracks this pattern for LSP under 479/480 — this is a separate instance in a different module and deserves its own task. Coordinate fix approach with 479/480 so the caching strategy stays uniform.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T05:23:19.875Z",
-      "taskCount": 1997,
-      "completedCount": 1701,
+      "lastModified": "2026-04-20T05:28:31.231Z",
+      "taskCount": 2000,
+      "completedCount": 1702,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T05:27:20.949Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T05:27:56.041Z"
+      ]
     }
   }
 }
