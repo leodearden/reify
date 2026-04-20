@@ -3182,6 +3182,23 @@ fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
     );
 }
 
+/// Shared fixture: creates an [`EngineSession`] with a compiled module that
+/// contains two templates both named `"Dup"`.  Used by both the debug-mode
+/// panic test and the release-mode warn test so the setup is not duplicated.
+fn build_duplicate_template_session() -> EngineSession {
+    use reify_types::ModulePath;
+    let dup1 = TopologyTemplateBuilder::new("Dup").build();
+    let dup2 = TopologyTemplateBuilder::new("Dup").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
+        .template(dup1)
+        .template(dup2)
+        .build();
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session.inject_compiled_for_test(compiled);
+    session
+}
+
 /// In debug builds, get_entity_tree must panic (via debug_assert) when the
 /// compiled module contains duplicate template names.
 ///
@@ -3196,20 +3213,7 @@ fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
 #[test]
 #[should_panic(expected = "template names must be unique")]
 fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
-    use reify_types::ModulePath;
-
-    let dup1 = TopologyTemplateBuilder::new("Dup").build();
-    let dup2 = TopologyTemplateBuilder::new("Dup").build();
-    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
-        .template(dup1)
-        .template(dup2)
-        .build();
-
-    let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
-    // Inject the malformed module directly via test helper; the debug_assert in
-    // get_entity_tree fires because compiled.templates contains two "Dup" entries.
-    session.inject_compiled_for_test(compiled);
+    let mut session = build_duplicate_template_session();
     let _ = session.get_entity_tree();
 }
 
@@ -3225,22 +3229,10 @@ fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn get_entity_tree_warns_on_duplicate_template_names_in_release() {
-    use reify_types::ModulePath;
-
-    let dup1 = TopologyTemplateBuilder::new("Dup").build();
-    let dup2 = TopologyTemplateBuilder::new("Dup").build();
-    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
-        .template(dup1)
-        .template(dup2)
-        .build();
-
-    let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
-    // Inject the malformed module directly via test helper; the runtime warn in
-    // get_entity_tree fires because compiled.templates contains two "Dup" entries.
-    session.inject_compiled_for_test(compiled);
-
+    let mut session = build_duplicate_template_session();
     let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
+    // Wrap only get_entity_tree() inside with_default so the warn emitted by
+    // the runtime duplicate check is captured.
     let tree = tracing::subscriber::with_default(subscriber, || session.get_entity_tree());
 
     reify_test_support::assert_warn_count(
@@ -3252,6 +3244,17 @@ fn get_entity_tree_warns_on_duplicate_template_names_in_release() {
         tree.len(),
         2,
         "release build should still return a node per template entry (first-match semantics)"
+    );
+    // Pin first-match semantics: the top-level template iterator emits a node for
+    // every entry in compiled.templates without filtering; duplicates appear as
+    // separate nodes.  Both entries are named "Dup", so both entity_paths must be
+    // "Dup".  First-match only matters for sub-component lookup inside
+    // build_template_node, not for this outer iteration.
+    assert!(
+        tree.iter().all(|n| n.entity_path == "Dup"),
+        "both tree nodes should have entity_path 'Dup' — the top-level template \
+         iterator does not filter duplicates; first-match only applies to \
+         sub-component lookup inside build_template_node"
     );
 }
 
