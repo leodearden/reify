@@ -68,9 +68,12 @@ fi
 # so the serialization guarantee is preserved.  We use ">>" (append) rather
 # than ">" to avoid truncating the lock file on every acquisition.
 exec 9>>"$LOCK"
+_FLOCK_START="$(date +%s)"
 if ! flock -x -w "$LOCK_WAIT" 9; then
     echo "ERROR: cargo-test-occt-gated.sh: failed to acquire OCCT lock within ${LOCK_WAIT}s (LOCK=$LOCK)" >&2
     exit 75
 fi
+_ELAPSED=$(( $(date +%s) - _FLOCK_START ))
+echo "INFO: cargo-test-occt-gated.sh: acquired OCCT lock after ${_ELAPSED}s (LOCK=$LOCK)" >&2
 
 exec timeout --kill-after=60 "$TEST_TIMEOUT" "$@"
