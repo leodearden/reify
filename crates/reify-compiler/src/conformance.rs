@@ -1081,6 +1081,159 @@ mod tests {
     /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
     ///
     /// This test **FAILS on the unpatched code** and **PASSES after the Option B fix**.
+    /// Characterization test that enum-typed `param` and `let` members resolve to
+    /// `Type::Enum` through `check_trait_conformance`.
+    ///
+    /// Serves as a tripwire for the step-4 refactor (HashSet + closure extraction):
+    /// any drift in enum resolution or diagnostic messages in the filter_map is caught
+    /// immediately. The test passes today (pre-refactor) and must continue to pass
+    /// after step-4.
+    #[test]
+    fn check_trait_conformance_resolves_enum_typed_param_and_let() {
+        // Direction enum defined in the same module
+        let enum_defs = vec![reify_types::EnumDef {
+            name: "Direction".to_string(),
+            variants: vec!["In".to_string(), "Out".to_string()],
+        }];
+
+        // TypeExpr for `Direction` (bare named type, no type_args)
+        let direction_type_expr = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Direction".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::empty(0),
+        };
+
+        // TraitDir: requires `param dir : Direction` and `let kind : Direction`
+        let trait_dir = CompiledTrait {
+            name: "TraitDir".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![
+                TraitRequirement {
+                    name: "dir".to_string(),
+                    kind: RequirementKind::Param(Type::Enum("Direction".to_string())),
+                    span: SourceSpan::empty(0),
+                },
+                TraitRequirement {
+                    name: "kind".to_string(),
+                    kind: RequirementKind::Let(Type::Enum("Direction".to_string())),
+                    span: SourceSpan::empty(0),
+                },
+            ],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // Structure S : TraitDir { param dir : Direction; let kind : Direction = 0.0; }
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_syntax::TraitBoundRef {
+                name: "TraitDir".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members: vec![
+                reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                    name: "dir".to_string(),
+                    doc: None,
+                    type_expr: Some(direction_type_expr.clone()),
+                    default: None,
+                    where_clause: None,
+                    annotations: vec![],
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                }),
+                reify_syntax::MemberDecl::Let(reify_syntax::LetDecl {
+                    name: "kind".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    type_expr: Some(direction_type_expr),
+                    value: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                        span: SourceSpan::empty(0),
+                    },
+                    where_clause: None,
+                    annotations: vec![],
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                }),
+            ],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let trait_registry: HashMap<String, &CompiledTrait> =
+            [("TraitDir".to_string(), &trait_dir)].into_iter().collect();
+
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // No "unresolved type" → both dir and kind resolved successfully (to Type::Enum)
+        let unresolved_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("unresolved type"))
+            .collect();
+        assert!(
+            unresolved_diags.is_empty(),
+            "Expected no 'unresolved type' diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // No "type mismatch" → both resolved to Type::Enum("Direction"), satisfying the trait
+        let mismatch_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("type mismatch"))
+            .collect();
+        assert!(
+            mismatch_diags.is_empty(),
+            "Expected no 'type mismatch' diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // No "missing required member" → both dir and kind were found in structure_members
+        let missing_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("missing required member"))
+            .collect();
+        assert!(
+            missing_diags.is_empty(),
+            "Expected no 'missing required member' diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name() {
         // --- Build CompiledTrait fixtures ---
