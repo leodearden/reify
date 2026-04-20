@@ -82,4 +82,38 @@ ACTUAL_TOUCHING="${ACTUAL_TOUCHING%$'\n'}"
 assert "declared OCCT-touching set equals cargo-tree-derived set (no missing or extra entries)" \
     bash -c "diff <(echo '$DECLARED_CRATES' | sort) <(echo '$ACTUAL_TOUCHING' | sort) >/dev/null"
 
+# ---------------------------------------------------------------------------
+# Tests 4–5: gated invocations use -p <crate> (not --workspace)
+# ---------------------------------------------------------------------------
+# Split the test_command line on ' && ' to extract per-invocation segments.
+TEST_CMD_LINE="$(grep 'test_command:' "$ORCH")"
+GATED_DEBUG="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g' \
+    | grep 'cargo-test-occt-gated\.sh' | grep -v -- '--release' || true)"
+GATED_RELEASE="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g' \
+    | grep 'cargo-test-occt-gated\.sh' | grep -- '--release' || true)"
+export GATED_DEBUG GATED_RELEASE
+
+echo ""
+echo "--- Test 4: gated debug invocation has '-p <crate>' for each declared crate ---"
+while IFS= read -r crate; do
+    [ -z "$crate" ] && continue
+    assert "gated debug invocation has '-p $crate'" \
+        bash -c "printf '%s' \"\$GATED_DEBUG\" | grep -qF ' -p $crate'"
+done <<< "$DECLARED_CRATES"
+
+echo ""
+echo "--- Test 5: gated release invocation has '-p <crate>' for each declared crate ---"
+while IFS= read -r crate; do
+    [ -z "$crate" ] && continue
+    assert "gated release invocation has '-p $crate'" \
+        bash -c "printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p $crate'"
+done <<< "$DECLARED_CRATES"
+
+echo ""
+echo "--- Test 6: gated invocations do not contain --workspace ---"
+assert "gated debug invocation does not contain --workspace" \
+    bash -c "! printf '%s' \"\$GATED_DEBUG\" | grep -qF ' --workspace'"
+assert "gated release invocation does not contain --workspace" \
+    bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' --workspace'"
+
 test_summary
