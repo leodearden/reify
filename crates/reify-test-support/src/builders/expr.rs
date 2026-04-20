@@ -178,7 +178,7 @@ pub fn fn_call(
     args: Vec<CompiledExpr>,
     result_type: Type,
 ) -> CompiledExpr {
-    let mut content_hash = ContentHash::of(&[5]).combine(ContentHash::of_str(name));
+    let mut content_hash = ContentHash::of(&[4]).combine(ContentHash::of_str(qualified_name));
     for arg in &args {
         content_hash = content_hash.combine(arg.content_hash);
     }
