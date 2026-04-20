@@ -140,4 +140,36 @@ echo "--- Test 13: --workspace flag preserved under gate (coverage assertion) --
 assert "gated debug invocation contains --workspace" \
     bash -c "grep 'test_command:' '$ORCH' | grep -qF 'cargo-test-occt-gated.sh cargo test --workspace'"
 
+# -- Test 14: bounded lock-wait exits non-zero with clear message ---------------
+echo ""
+echo "--- Test 14: REIFY_OCCT_LOCK_WAIT=1 fires within budget, exits non-zero with message ---"
+
+_LOCK14="$(mktemp)"
+_ERR14="$(mktemp)"
+
+# Spawn a background holder that acquires the lock and holds it for 10s.
+( flock -x 9; sleep 10 ) 9>>"$_LOCK14" &
+_HOLDER14=$!
+sleep 0.2  # give the holder time to acquire before we proceed
+
+_START14="$(date +%s)"
+_EXIT14=0
+REIFY_OCCT_LOCK="$_LOCK14" REIFY_OCCT_LOCK_WAIT=1 timeout 5 "$WRAPPER" true 2>"$_ERR14" || _EXIT14=$?
+_END14="$(date +%s)"
+_ELAPSED14=$(( _END14 - _START14 ))
+
+kill "$_HOLDER14" 2>/dev/null || true
+wait "$_HOLDER14" 2>/dev/null || true
+
+assert "Test 14: wrapper exits non-zero when lock-wait limit exceeded (got $_EXIT14)" \
+    test "$_EXIT14" -ne 0
+
+assert "Test 14: wrapper exits within 3s, not blocked until outer safety timeout (elapsed=${_ELAPSED14}s)" \
+    test "$_ELAPSED14" -le 3
+
+assert "Test 14: stderr mentions 'acquire' and lock-wait duration (1s)" \
+    grep -qE 'acquire.*1s|1s.*acquire' "$_ERR14"
+
+rm -f "$_LOCK14" "$_ERR14"
+
 test_summary
