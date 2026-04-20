@@ -14,26 +14,8 @@
 //! Because both sides hash the same sub-expression trees, any difference in the
 //! formula (tag byte, combine order, missing field) will surface here.
 
-use reify_test_support::compile_source;
+use reify_test_support::{compile_source, get_let_expr};
 use reify_types::{CompiledExpr, CompiledExprKind};
-
-// ── shared helper ────────────────────────────────────────────────────────────
-
-/// Retrieve the compiled `default_expr` of a let binding by name.
-fn get_let_expr<'a>(module: &'a reify_compiler::CompiledModule, name: &str) -> &'a CompiledExpr {
-    let template = module
-        .templates
-        .first()
-        .expect("expected at least one template in module");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == name)
-        .unwrap_or_else(|| panic!("no value cell named '{name}'"));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{name}' has no default expr"))
-}
 
 // ── UserFunctionCall ─────────────────────────────────────────────────────────
 
