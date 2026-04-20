@@ -42994,15 +42994,20 @@
         "description": "Add positive assertion to test at crates/reify-compiler/tests/constraint_def_compile_tests.rs line ~977: find `Aligned` in module.constraint_defs, assert params.len()==2, type_params.len()==1. Source: esc-1964-55.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T15:21:54.967Z",
+        "updatedAt": "2026-04-20T15:26:19.711Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "5f63e8a9ea5e9c1f77b51aef28f6d5699a100e46",
+            "commit_input": "5f63e8a9e",
+            "note": "Positive Aligned shape assertion (params.len()==2, type_params.len()==1) landed on main at crates/reify-compiler/tests/constraint_def_compile_tests.rs:999-1017 by commit 5f63e8a9e before task/2044 planning completed. Worktree HEAD 048072a3f is ancestor of main."
+          }
         }
       },
       {
@@ -43279,9 +43284,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T15:26:02.620Z",
+      "lastModified": "2026-04-20T15:26:19.712Z",
       "taskCount": 2050,
-      "completedCount": 1766,
+      "completedCount": 1767,
       "tags": [
         "master"
       ]
