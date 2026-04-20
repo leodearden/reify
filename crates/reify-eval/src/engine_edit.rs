@@ -3,16 +3,18 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::ValueCellKind;
 use reify_types::{
-    AutoParam, CompiledFunction, ContentHash, DeterminacyState, Diagnostic, ResolutionProblem,
-    SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
+    AutoParam, ContentHash, DeterminacyState, Diagnostic, ResolutionProblem, SnapshotId,
+    SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
-use crate::{CheckResult, Engine, EngineError, EvalResult, guard_state_fingerprint, GuardLookup, value_type_kind_matches};
+use crate::{
+    CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
+    value_type_kind_matches,
+};
 
 impl Engine {
     /// Set a parameter override and invalidate cache entries that depend on it.
@@ -25,7 +27,6 @@ impl Engine {
         self.cache
             .invalidate_dependents(std::slice::from_ref(param));
     }
-
 
     /// Incrementally re-evaluate after changing a parameter value.
     ///
@@ -74,7 +75,9 @@ impl Engine {
         // value is Value::Scalar { dimension: got } where got != expected,
         // reject the edit immediately rather than propagating a dimension-corrupt
         // value through the eval graph.
-        if let reify_types::Type::Scalar { dimension: expected } = cell_node.cell_type
+        if let reify_types::Type::Scalar {
+            dimension: expected,
+        } = cell_node.cell_type
             && let reify_types::Value::Scalar { dimension: got, .. } = &new_value
             && *got != expected
         {
@@ -294,10 +297,8 @@ impl Engine {
                         } else {
                             // Skip Auto params — their lifecycle is managed by the
                             // solver, not guard activation/deactivation.
-                            let is_auto = graph
-                                .value_cells
-                                .get(mid)
-                                .is_some_and(|n| n.kind.is_auto());
+                            let is_auto =
+                                graph.value_cells.get(mid).is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -325,10 +326,8 @@ impl Engine {
                         } else {
                             // Skip Auto params — their lifecycle is managed by the
                             // solver, not guard activation/deactivation.
-                            let is_auto = graph
-                                .value_cells
-                                .get(mid)
-                                .is_some_and(|n| n.kind.is_auto());
+                            let is_auto =
+                                graph.value_cells.get(mid).is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -624,8 +623,10 @@ impl Engine {
                     &values,
                     GuardLookup::Strict,
                 );
-                new_snapshot.topology_fingerprint =
-                    new_snapshot.graph.topology_fingerprint().combine(guard_state_hash);
+                new_snapshot.topology_fingerprint = new_snapshot
+                    .graph
+                    .topology_fingerprint()
+                    .combine(guard_state_hash);
             }
         }
 
@@ -774,7 +775,6 @@ impl Engine {
             resolved_params,
         })
     }
-
 
     /// Evaluates ALL constraints (not just dirty ones) to produce a complete
     /// CheckResult, mirroring check()'s pattern but incrementally.

@@ -4,43 +4,34 @@ pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeRe
 pub mod demand;
 pub mod deps;
 pub mod dirty;
+mod engine_admin;
+mod engine_build;
+mod engine_constraints;
+mod engine_edit;
+mod engine_eval;
+mod engine_purposes;
 mod geometry_ops;
-use geometry_ops::compile_geometry_op;
 pub mod graph;
 pub mod journal;
 pub mod snapshot;
 pub mod test_runner;
 mod unfold;
-use unfold::{elaborate_child_instance, unfold_recursive_sub};
-mod engine_admin;
-mod engine_purposes;
-mod engine_constraints;
-mod engine_eval;
-mod engine_edit;
-mod engine_build;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::Instant;
+use std::collections::HashMap;
 
-use reify_compiler::{
-    CompiledConstraint, CompiledModule, CompiledPurpose, TopologyTemplate, ValueCellKind,
-};
+use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_types::{
-    AutoParam, CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintInput,
-    ConstraintNodeId, ConstraintResult, ConstraintSolver, ContentHash, DeterminacyState,
-    Diagnostic, ExportFormat, FIELD_ENTITY_PREFIX, GeometryHandleId, GeometryKernel, Mesh,
-    OptimizationObjective, OptimizedImpl, OptimizedImplInput, PersistentMap, ResolutionProblem,
-    Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
-    VersionId,
+    CompiledFunction, ConstraintChecker, ConstraintNodeId, ConstraintSolver, ContentHash,
+    Diagnostic, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl, Satisfaction,
+    ValueCellId, ValueMap,
 };
 
-use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
+use crate::cache::{CacheStore, NodeId};
 use crate::demand::DemandRegistry;
-use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace};
-use crate::dirty::topological_sort;
+use crate::deps::{DependencyTrace, ReverseDependencyIndex};
 use crate::graph::GuardedGroupInfo;
-use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
+use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 
 /// Error returned when an operation requires prior eval() but none has been performed.
@@ -75,19 +66,24 @@ impl std::fmt::Display for EngineError {
                 )
             }
             EngineError::CellNotFound { cell } => {
-                write!(
-                    f,
-                    "value cell not found in evaluation graph: {cell}"
-                )
+                write!(f, "value cell not found in evaluation graph: {cell}")
             }
-            EngineError::DimensionMismatch { cell, expected, got } => {
+            EngineError::DimensionMismatch {
+                cell,
+                expected,
+                got,
+            } => {
                 write!(
                     f,
                     "dimension mismatch for {cell}: expected {:?}, got {:?}",
                     expected, got
                 )
             }
-            EngineError::TypeKindMismatch { cell, expected, got } => {
+            EngineError::TypeKindMismatch {
+                cell,
+                expected,
+                got,
+            } => {
                 write!(
                     f,
                     "type-kind mismatch for {cell}: expected {expected}, got {got}"
@@ -355,28 +351,19 @@ fn guard_state_fingerprint(
     ContentHash::combine_all(hashes)
 }
 
-impl Engine {
-
-    // activate_purpose, deactivate_purpose, is_purpose_active, active_objectives
-    // methods moved to engine_purposes.rs
-
-    // prepare_concurrent_edit, rollback_concurrent_edit, apply_concurrent_edit,
-    // resolve_concurrent_edit methods moved to concurrent.rs
-
-    // set_param_and_invalidate, edit_param, edit_check methods moved to engine_edit.rs
-
-    // build_snapshot, build, tessellate_realizations, tessellate_snapshot,
-    // tessellate_from_values, execute_realization_ops methods moved to engine_build.rs
-
-}
-
-// geometry_ops functions moved to geometry_ops.rs
-// unfold functions (unfold_recursive_sub, elaborate_child_instance,
-// elaborate_child_params_only, elaborate_child_lets_only) moved to unfold.rs
+// Engine methods are split across sibling modules:
+//   engine_admin.rs     — new, register/unregister_optimized_impl, accessors
+//   engine_purposes.rs  — activate_purpose, deactivate_purpose, …
+//   engine_constraints.rs — dispatch_constraints (pub(crate)), check, check_snapshot, …
+//   engine_eval.rs      — eval, eval_cached, evaluate_let_bindings
+//   engine_edit.rs      — set_param_and_invalidate, edit_param, edit_check
+//   engine_build.rs     — build, build_snapshot, tessellate_*, execute_realization_ops
+//   concurrent.rs       — prepare_concurrent_edit, apply_concurrent_edit, …
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::Value;
 
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
@@ -406,9 +393,10 @@ mod tests {
         values.insert(cell.clone(), val.clone());
         let groups = vec![make_guard_group("E", "g")];
         let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
-        let expected = ContentHash::combine_all(std::iter::once(
-            ContentHash::of_str(&format!("guard:{}={:?}", cell, val)),
-        ));
+        let expected = ContentHash::combine_all(std::iter::once(ContentHash::of_str(&format!(
+            "guard:{}={:?}",
+            cell, val
+        ))));
         assert_eq!(result, expected);
     }
 
@@ -418,9 +406,11 @@ mod tests {
         let values = ValueMap::new(); // cell absent
         let groups = vec![make_guard_group("E", "g")];
         let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
-        let expected = ContentHash::combine_all(std::iter::once(
-            ContentHash::of_str(&format!("guard:{}={:?}", cell, Value::Undef)),
-        ));
+        let expected = ContentHash::combine_all(std::iter::once(ContentHash::of_str(&format!(
+            "guard:{}={:?}",
+            cell,
+            Value::Undef
+        ))));
         assert_eq!(result, expected);
     }
 
@@ -460,11 +450,8 @@ mod tests {
             &values,
             GuardLookup::Lenient,
         );
-        let fp_a = guard_state_fingerprint(
-            &[make_guard_group("A", "g")],
-            &values,
-            GuardLookup::Lenient,
-        );
+        let fp_a =
+            guard_state_fingerprint(&[make_guard_group("A", "g")], &values, GuardLookup::Lenient);
         let fp_ba = guard_state_fingerprint(
             &[make_guard_group("B", "g"), make_guard_group("A", "g")],
             &values,
@@ -493,7 +480,11 @@ mod tests {
             vec![Value::Real(1.0), Value::Real(0.0)],
             vec![Value::Real(0.0), Value::Real(1.0)],
         ]);
-        let t = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) };
+        let t = Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(Type::Real),
+        };
         assert!(
             value_type_kind_matches(&v, &t),
             "Value::Matrix should be accepted by Type::Tensor (cross-variant Ok-path)"
@@ -507,7 +498,11 @@ mod tests {
     fn value_type_kind_matches_tensor_value_into_matrix_type_returns_true() {
         use reify_types::{Type, Value};
         let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-        let t = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
+        let t = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(Type::Real),
+        };
         assert!(
             value_type_kind_matches(&v, &t),
             "Value::Tensor should be accepted by Type::Matrix (cross-variant Ok-path)"
@@ -633,4 +628,3 @@ mod tests {
 
     // execute_realization_ops_* tests moved to engine_build.rs
 }
-

@@ -8,7 +8,7 @@ use reify_types::{
 };
 
 use crate::geometry_ops::compile_geometry_op;
-use crate::{BuildResult, CheckResult, ConstraintCheckEntry, Engine, TessellateResult};
+use crate::{BuildResult, ConstraintCheckEntry, Engine, TessellateResult};
 
 impl Engine {
     /// Build geometry from the current snapshot values, without re-calling eval().
@@ -70,7 +70,9 @@ impl Engine {
         // Execute geometry operations
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-            let had_realization_ops = module.templates.iter()
+            let had_realization_ops = module
+                .templates
+                .iter()
                 .flat_map(|t| &t.realizations)
                 .any(|r| !r.operations.is_empty());
 
@@ -127,7 +129,9 @@ impl Engine {
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-            let had_realization_ops = module.templates.iter()
+            let had_realization_ops = module
+                .templates
+                .iter()
                 .flat_map(|t| &t.realizations)
                 .any(|r| !r.operations.is_empty());
 
@@ -312,15 +316,12 @@ impl Engine {
                         step_handles.push(handle.id);
                     }
                     Err(e) => {
-                        diagnostics
-                            .push(Diagnostic::error(format!("geometry error: {}", e)));
+                        diagnostics.push(Diagnostic::error(format!("geometry error: {}", e)));
                         break;
                     }
                 },
                 None => {
-                    diagnostics.push(Diagnostic::error(
-                        "failed to compile geometry operation",
-                    ));
+                    diagnostics.push(Diagnostic::error("failed to compile geometry operation"));
                     step_handles.push(GeometryHandleId::INVALID);
                     had_failure = true;
                 }
@@ -420,12 +421,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         use reify_types::{CompiledExpr, Type};
 
-        let mm_lit = |v: f64| {
-            CompiledExpr::literal(
-                reify_test_support::mm(v),
-                Type::length(),
-            )
-        };
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -508,11 +504,9 @@ mod tests {
             .filter(|d| d.message.contains("failed to compile geometry operation"))
             .count();
         assert_eq!(
-            compile_failures,
-            1,
+            compile_failures, 1,
             "expected exactly 1 compile-error diagnostic, got {}: {:?}",
-            compile_failures,
-            diagnostics
+            compile_failures, diagnostics
         );
     }
 
@@ -525,9 +519,7 @@ mod tests {
         use reify_test_support::mocks::FailingMockGeometryKernel;
         use reify_types::{CompiledExpr, Type};
 
-        let mm_lit = |v: f64| {
-            CompiledExpr::literal(reify_test_support::mm(v), Type::length())
-        };
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -564,11 +556,9 @@ mod tests {
             .filter(|d| d.message.contains("geometry error"))
             .count();
         assert_eq!(
-            geometry_errors,
-            1,
+            geometry_errors, 1,
             "expected exactly 1 geometry-error diagnostic, got {}: {:?}",
-            geometry_errors,
-            diagnostics
+            geometry_errors, diagnostics
         );
     }
 
@@ -644,11 +634,9 @@ mod tests {
             .filter(|d| d.message.contains("failed to compile geometry operation"))
             .count();
         assert_eq!(
-            compile_failures,
-            1,
+            compile_failures, 1,
             "expected exactly 1 compile-error diagnostic, got {}: {:?}",
-            compile_failures,
-            diagnostics
+            compile_failures, diagnostics
         );
     }
 }

@@ -3,11 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellKind};
+use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    AutoParam, CompiledFunction, ContentHash, DeterminacyState, Diagnostic,
-    FIELD_ENTITY_PREFIX, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult,
-    Value, ValueCellId, ValueMap, VersionId,
+    AutoParam, CompiledFunction, DeterminacyState, Diagnostic, FIELD_ENTITY_PREFIX,
+    ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
+    VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -17,7 +17,10 @@ use crate::dirty::topological_sort;
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
-use crate::{CachedEvalResult, CacheStats, Engine, EvalResult, EvaluationState, guard_state_fingerprint, GuardLookup};
+use crate::{
+    CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
+    guard_state_fingerprint,
+};
 
 impl Engine {
     /// Evaluate a compiled module, returning computed values.
@@ -58,7 +61,8 @@ impl Engine {
         // first-match-wins semantics. The shadow predicate itself is canonical in
         // `merge_prelude_functions`; if the filtering rule changes, update that
         // function and verify the dispatch-time equivalence still holds.
-        self.functions.extend(self.prelude_functions.iter().cloned());
+        self.functions
+            .extend(self.prelude_functions.iter().cloned());
         self.compiled_purposes = module.compiled_purposes.clone();
         // Clear stale purpose state from previous eval() calls — the fresh
         // snapshot discards all purpose-injected constraints/objectives.
@@ -711,10 +715,15 @@ impl Engine {
         // eval() and edit_param() produce identical fingerprints for the same
         // logical guard configuration.
         if !snapshot.graph.guarded_groups.is_empty() {
-            let guard_state_hash =
-                guard_state_fingerprint(&snapshot.graph.guarded_groups, &values, GuardLookup::Lenient);
-            snapshot.topology_fingerprint =
-                snapshot.graph.topology_fingerprint().combine(guard_state_hash);
+            let guard_state_hash = guard_state_fingerprint(
+                &snapshot.graph.guarded_groups,
+                &values,
+                GuardLookup::Lenient,
+            );
+            snapshot.topology_fingerprint = snapshot
+                .graph
+                .topology_fingerprint()
+                .combine(guard_state_hash);
         }
 
         // Store internal state for incremental evaluation
