@@ -995,4 +995,24 @@ constraint def Aligned<T> {
         "expected no 'unknown type' errors for declared type param T, got: {:?}",
         unknown_type_errors
     );
+
+    // Positive shape assertion: Aligned must actually be present in compiled output
+    // with the correct param and type_param counts, ruling out the silent-drop hole.
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "Aligned")
+        .expect("Aligned constraint def must be present in module.constraint_defs");
+    assert_eq!(
+        def.params.len(),
+        2,
+        "expected Aligned to have 2 params (t, w), got {}",
+        def.params.len()
+    );
+    assert_eq!(
+        def.type_params.len(),
+        1,
+        "expected Aligned to have 1 type param (T), got {}",
+        def.type_params.len()
+    );
 }
