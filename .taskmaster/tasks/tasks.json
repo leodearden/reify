@@ -42797,13 +42797,9 @@
         "subtasks": [],
         "metadata": {
           "memory_hints": {
-            "entities": [
-              "reify-compiler",
-              "integration tests"
-            ],
+            "entities": [],
             "queries": [
-              "reify-compiler lib.rs mod tests integration test file relocation",
-              "test file organization reify-compiler conformance tests"
+              "resolution for: Move reify-compiler lib.rs `mod tests` to integration test file"
             ]
           },
           "files": [
@@ -43242,11 +43238,11 @@
         "description": "Dedup repeated PathBuf+CliToolContext::new in test module of crates/reify-cli/src/mcp_context.rs (sites ~807,832,865,891,931,1115,1136). Introduce `fn fresh_ctx() -> CliToolContext` helper and update callers. Spawned from Task 2015 review (reviewer_comprehensive, code_reuse).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T21:03:26.415Z",
+        "updatedAt": "2026-04-20T21:03:58.852Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43256,6 +43252,11 @@
             "queries": [
               "resolution for: Extract fresh_ctx() test helper in reify-cli mcp_context.rs"
             ]
+          },
+          "done_provenance": {
+            "commit": "89835e8faa01e64c0357a712a109a324c54f8c3c",
+            "commit_input": "89835e8fa",
+            "note": "fresh_ctx() helper introduced in cb4146af7 and all call sites migrated in 89835e8fa; both commits on main. Verified: fresh_ctx() defined at line 808 of crates/reify-cli/src/mcp_context.rs, only remaining CliToolContext::new(PathBuf::from(...)) is inside the helper itself."
           }
         }
       },
@@ -43576,9 +43577,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T21:03:44.139Z",
+      "lastModified": "2026-04-20T21:03:58.852Z",
       "taskCount": 2057,
-      "completedCount": 1790,
+      "completedCount": 1791,
       "tags": [
         "master"
       ]
