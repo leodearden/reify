@@ -423,11 +423,11 @@ export async function onFocusEntity(
   });
 }
 
-/** Subscribe to navigate-to-source events emitted by the MCP navigate_to_source tool. Payload carries editor-target coordinates. */
+/** Subscribe to navigate-to-source events emitted by the MCP navigate_to_source tool. Payload carries editor-target coordinates including the full source range. */
 export async function onNavigateToSource(
-  callback: (data: { file: string; line: number; column: number }) => void,
+  callback: (data: { file: string; line: number; column: number; end_line: number; end_column: number }) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ file: string; line: number; column: number }>('navigate-to-source', (event) => {
+  return listen<{ file: string; line: number; column: number; end_line: number; end_column: number }>('navigate-to-source', (event) => {
     callback(event.payload);
   });
 }
