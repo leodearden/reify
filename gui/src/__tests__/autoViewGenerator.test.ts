@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import {
   generateDefaultView,
   generateAllGeometryView,
   generatePurposeViews,
   defaultVisibilityFor,
 } from '../stores/autoViewGenerator';
+import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { EntityTreeNode } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,16 @@ function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }):
     ...overrides,
   };
 }
+
+// ---------------------------------------------------------------------------
+// ViewDefinition shape contract (compile-time, single authoritative check)
+// ---------------------------------------------------------------------------
+
+describe('ViewDefinition shape contract', () => {
+  it('keyset is pinned to {auto, id, name, visibility}', () => {
+    expectTypeOf<keyof ViewDefinition>().toEqualTypeOf<'id' | 'name' | 'auto' | 'visibility'>();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // generateDefaultView
