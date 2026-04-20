@@ -185,12 +185,60 @@ export function createViewStateStore() {
   }
 
   // ---------------------------------------------------------------------------
+  // COW helper
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Copy-on-write helper: call as the **first** line inside any `produce(s => ...)`
+   * mutation block.
+   *
+   * When the currently active view is an auto view (`auto === true`), this helper:
+   * (a) derives a unique name `{autoName} (modified)` (with counter-suffix collision
+   *     handling via `uniqueName`),
+   * (b) creates a new user view whose `visibility` snapshot is seeded from the source
+   *     auto view's current `visibility` map,
+   * (c) sets `modified: true` on the new view,
+   * (d) appends the new id to `s.userViewOrder`,
+   * (e) switches `s.activeViewId` to the new user view.
+   *
+   * The subsequent mutation (setVisibility, etc.) then runs against the new active
+   * user view, and the `mirrorExplicitToActiveUserView(s)` tail call captures the
+   * post-mutation explicit state into the view's `visibility`.
+   *
+   * When the active view is already a user view this is a no-op.
+   */
+  function cowIfAuto(s: ViewState): void {
+    const active = s.views[s.activeViewId];
+    if (!active || !active.auto) return;
+
+    // Build candidate name and resolve collisions.
+    const base = `${active.name} (modified)`;
+    const existingNames = Object.values(s.views).map((v) => v.name);
+    const cowName = uniqueName(base, existingNames);
+
+    // Generate a unique id for the COW user view.
+    const id = `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Create the COW view seeded from the source auto view's visibility snapshot.
+    s.views[id] = {
+      id,
+      name: cowName,
+      auto: false,
+      modified: true,
+      visibility: { ...active.visibility },
+    };
+    s.userViewOrder.push(id);
+    s.activeViewId = id;
+  }
+
+  // ---------------------------------------------------------------------------
   // Mutations
   // ---------------------------------------------------------------------------
 
   function setVisibility(path: string, vs: VisibilityState, cascade = true): void {
     setState(
       produce((s) => {
+        cowIfAuto(s);
         s.explicit[path] = vs;
         if (cascade) {
           for (const desc of walkDescendants(path, nodeByPath)) {

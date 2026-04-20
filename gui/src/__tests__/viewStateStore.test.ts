@@ -1671,9 +1671,16 @@ describe('viewStateStore — duplicateView', () => {
   it('(b) user→user duplication copies visibility verbatim', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
-      const sourceId = store.createView('Source');
-      // Seed some visibility on the source view directly
-      store.state.views[sourceId].visibility = { 'Root': 'hidden', 'Root.A': 'show' };
+      // Use seedView to set up a user view with non-empty visibility; direct
+      // property assignment on SolidJS store state proxies does not trigger
+      // reactive updates, so the proper store mutation path must be used.
+      const sourceId = 'user:source';
+      store.seedView({
+        id: sourceId,
+        name: 'Source',
+        auto: false,
+        visibility: { 'Root': 'hidden', 'Root.A': 'show' },
+      });
 
       const newId = store.duplicateView(sourceId);
       expect(newId).not.toBeNull();
