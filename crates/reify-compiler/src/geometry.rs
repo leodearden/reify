@@ -1500,6 +1500,19 @@ mod tests {
     ///       Expected profiles: [Step(7), Step(6), Step(7)].
     ///       Expected named-arg keys: ["profile_0", "profile_1", "guide"].
     #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "loft_guided requires at least 2 args")]
+    fn resolve_loft_like_args_debug_asserts_guide_suffix_requires_two_args() {
+        let compiled_args = vec![CompiledExpr::literal(
+            Value::Real(0.0),
+            reify_types::Type::Real,
+        )];
+        let geom_refs: HashMap<usize, GeomRef> = HashMap::new();
+        // guide_suffix=true with only 1 arg must panic via debug_assert!
+        resolve_loft_like_args(compiled_args, &geom_refs, 0, true);
+    }
+
+    #[test]
     fn resolve_loft_like_args_builds_profiles_and_named_args() {
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
