@@ -132,10 +132,13 @@ fn resolve_named_geom_arg(
 /// `compiled_args` is consumed by value because both call sites (`loft`,
 /// `loft_guided`) already move it into the helper.
 ///
-/// This helper is the loft-family counterpart of `resolve_named_geom_arg`
-/// (sweep family). The key difference is that it emits **no diagnostic**:
-/// the loft family uses a silent fallback by design — see the module-level
-/// note on silent-fallback vs. labelled-per-arg policy.
+/// This helper is a **batch builder** and the loft-family counterpart of
+/// `resolve_named_geom_arg` (sweep family). Unlike `resolve_named_geom_arg`,
+/// which handles a single index and emits a diagnostic, this function
+/// processes all slots at once and emits **no diagnostic**: the loft family
+/// uses a silent fallback by design, so it does not call
+/// `resolve_named_geom_arg` per slot. See the module-level note on
+/// silent-fallback vs. labelled-per-arg policy.
 fn resolve_loft_like_args(
     compiled_args: Vec<CompiledExpr>,
     geom_refs: &HashMap<usize, GeomRef>,
@@ -155,7 +158,7 @@ fn resolve_loft_like_args(
         .into_iter()
         .enumerate()
         .map(|(i, expr)| {
-            let key = if guide_suffix && i == n - 1 {
+            let key = if guide_suffix && n > 0 && i == n - 1 {
                 "guide".to_string()
             } else {
                 format!("profile_{}", i)
@@ -1484,8 +1487,7 @@ mod tests {
         );
     }
 
-    /// Unit test for the `resolve_loft_like_args` helper (not yet implemented —
-    /// this test is expected to FAIL TO COMPILE until step-2 lands).
+    /// Unit test for the `resolve_loft_like_args` helper.
     ///
     /// Covers:
     ///   (a) `guide_suffix=false` (loft shape): 3 CompiledExprs, geom_refs maps
