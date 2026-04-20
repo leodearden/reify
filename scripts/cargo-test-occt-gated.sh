@@ -30,6 +30,18 @@
 #                         command is NOT executed.  A caller that sees exit 75
 #                         should interpret it as transient contention ("try
 #                         again, nothing ran") rather than a test failure.
+#
+#   REIFY_OCCT_TEST_TIMEOUT  Maximum seconds the command may run AFTER the lock
+#                            is acquired.  Default: 2700 (45 minutes).  The
+#                            budget starts at lock-acquisition time, not at
+#                            wrapper start — lock-wait time does not consume
+#                            the test budget.  On expiry the command is sent
+#                            SIGTERM; if still running after 60s it is sent
+#                            SIGKILL (--kill-after=60 convention used
+#                            project-wide in orchestrator.yaml).  Exit code
+#                            124 signals the command was killed by this
+#                            timeout (GNU timeout convention), distinct from
+#                            exit 75 which means the lock was never acquired.
 
 set -euo pipefail
 
@@ -41,6 +53,7 @@ fi
 
 LOCK="${REIFY_OCCT_LOCK:-${TMPDIR:-/tmp}/reify-occt-$(id -u).lock}"
 LOCK_WAIT="${REIFY_OCCT_LOCK_WAIT:-1800}"
+TEST_TIMEOUT="${REIFY_OCCT_TEST_TIMEOUT:-2700}"
 
 if [ "$#" -eq 0 ]; then
     echo "ERROR: cargo-test-occt-gated.sh: no command provided" >&2
@@ -60,4 +73,4 @@ if ! flock -x -w "$LOCK_WAIT" 9; then
     exit 75
 fi
 
-exec "$@"
+exec timeout --kill-after=60 "$TEST_TIMEOUT" "$@"
