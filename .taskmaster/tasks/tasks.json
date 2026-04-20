@@ -43091,15 +43091,20 @@
         "description": "Duplicated PathBuf+CliToolContext::new pattern across mcp_context.rs tests. Add fn fresh_ctx() helper. From review of task 2015.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T16:16:04.893Z",
+        "updatedAt": "2026-04-20T16:23:31.799Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "343965f2a6cfcc292d2149e0a97cf07fcdb9836e",
+            "commit_input": "343965f2a",
+            "note": "Task 2049 scope (fresh_ctx helper + replace 8 boilerplate ctx blocks + smoke tests) already merged to main across 1d1ef1e5f, cb4146af7, 89835e8fa, 2f25b62ec, 343965f2a. Branch task/2049 has only a cosmetic cargo-fmt commit (5893829e6) beyond main, unrelated to this task's scope. Verified fresh_ctx() present at mcp_context.rs:801 on main."
+          }
         }
       },
       {
@@ -43295,9 +43300,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T16:16:04.893Z",
+      "lastModified": "2026-04-20T16:23:31.799Z",
       "taskCount": 2050,
-      "completedCount": 1771,
+      "completedCount": 1772,
       "tags": [
         "master"
       ]
