@@ -61,11 +61,7 @@ use reify_types::{
 ///
 /// `winner` is the first-imported module path string (whose definition is retained),
 /// `loser` is the later-imported module path string (whose definition is silently discarded).
-///
-/// Exposed as `pub` so tests can build the expected string without duplicating the format
-/// literal — a change to this function propagates to both production code and any test that
-/// calls it, making the coupling explicit rather than hiding it behind substring assertions.
-pub fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> String {
+fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> String {
     format!(
         "constraint def '{}' from '{}' shadows '{}' from '{}' \
          (first-imported definition wins)",
