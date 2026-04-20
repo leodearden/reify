@@ -43268,11 +43268,11 @@
         "description": "Follow-up from task 1999. Replace literal hash tag bytes with pub(crate) TAG_* constants shared between reify-types/src/expr.rs and reify-compiler/src/expr.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:39:46.472Z",
+        "updatedAt": "2026-04-20T17:59:40.237Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -43413,7 +43413,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:59:40.140Z",
+      "lastModified": "2026-04-20T17:59:40.237Z",
       "taskCount": 2054,
       "completedCount": 1783,
       "tags": [
