@@ -552,17 +552,35 @@ fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error(
     );
 }
 
-// ─── Parser gap: nested struct-instantiation calls with args in sub arg values ──
-//
-// TODO(task-2039): The parser currently rejects nested struct-instantiation
-// calls with named arguments in sub arg value positions, e.g.:
-//
-//   structure def Top { sub x = Host(m: Steel(density: 1000.0)) }
-//
-// The ignored test `sub_component_arg_structure_instantiation_with_args_accepted`
-// was removed (task 2028) because it pinned an uncertain failure mode
-// (parse-level vs. semantic). Task 2039 tracks the acceptance criterion:
-// the above source should compile to zero Error-severity diagnostics once
-// the parser/compiler supports this form end-to-end. entity.rs is already
-// defensively widened to `FunctionCall { function, .. }` for the eventual
-// parser support.
+/// Acceptance for task 2039: a sub arg value may itself be a struct-instantiation
+/// call with named arguments (e.g. `Host(m: Steel(density: 1000.0))`), and the
+/// inner call's callee participates in trait conformance as a `StructureRef`.
+/// The discriminator vs. the existing `...accepts_conforming_struct` test is
+/// the inner call's named args: `Steel(density: 1000.0)` rather than `Steel()`.
+/// Zero Error-severity diagnostics expected.
+#[test]
+fn sub_component_arg_structure_instantiation_with_args_accepted() {
+    let source = r#"
+        structure def Steel : Material {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param m : Material }
+        structure def Top {
+            sub x = Host(m: Steel(density: 1000.0))
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for nested struct-instantiation call with named args, got: {:?}",
+        errors
+    );
+}

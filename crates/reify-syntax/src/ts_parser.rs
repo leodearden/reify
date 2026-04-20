@@ -2252,9 +2252,7 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if arg_child.is_named()
-                        && let Some(expr) = self.lower_expr(arg_child)
-                    {
+                    if let Some(expr) = self.lower_call_argument(arg_child) {
                         args.push(expr);
                     }
                 }
@@ -2265,6 +2263,21 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::FunctionCall { name, args },
             span: self.span(node),
         })
+    }
+
+    /// Lower a single child of `argument_list`, which may be either a bare
+    /// `_expression` or a `named_argument`. For named arguments, the name is
+    /// stripped and only the value is kept as a positional arg — matching the
+    /// positional-only shape of `ExprKind::FunctionCall`.
+    fn lower_call_argument(&self, node: tree_sitter::Node) -> Option<Expr> {
+        if !node.is_named() {
+            return None;
+        }
+        if node.kind() == "named_argument" {
+            let value_node = node.child_by_field_name("value")?;
+            return self.lower_expr(value_node);
+        }
+        self.lower_expr(node)
     }
 
     fn lower_list_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -2335,9 +2348,7 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if arg_child.is_named()
-                        && let Some(expr) = self.lower_expr(arg_child)
-                    {
+                    if let Some(expr) = self.lower_call_argument(arg_child) {
                         args.push(expr);
                     }
                 }

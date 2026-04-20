@@ -932,10 +932,13 @@ pub(crate) fn check_trait_arg_conformance(
         return; // Non-trait param — no call-site type-check is performed in the compiler today.
     };
 
-    // When the compiled arg_type defaulted to Type::Real from a FunctionCall
-    // expression and the callee is a known structure template, promote to
-    // StructureRef so the conformance check can walk the structure's trait bounds.
-    let promoted: Option<Type> = if matches!(arg_type, Type::Real) {
+    // When the compiled arg_type defaulted to a numeric fallback (Real or Int)
+    // from a FunctionCall expression and the callee is a known structure
+    // template, promote to StructureRef so the conformance check can walk the
+    // structure's trait bounds. Int appears when the callee's first arg is a
+    // whole-number literal (e.g. `Steel(density: 1000.0)` — the literal 1000.0
+    // is canonicalized to Int by the expression compiler).
+    let promoted: Option<Type> = if matches!(arg_type, Type::Real | Type::Int) {
         arg_call_name
             .filter(|call_name| template_registry.contains_key(*call_name))
             .map(|call_name| Type::StructureRef(call_name.to_string()))
@@ -991,13 +994,15 @@ pub(crate) fn check_trait_arg_conformance(
             }
         }
         _ => {
-            // Anti-cascade: when arg_type is Type::Real and arg_call_name is Some
-            // but the callee was not in the template registry (so promotion returned
-            // None), an "undefined function" diagnostic already fired for that
-            // unknown call.  Emitting "type 'real' does not conform to trait 'X'"
-            // here would be misleading — Real is the expression compiler's fallback
-            // for unresolved calls, not the author's intended type.  Suppress.
-            if matches!(arg_type, Type::Real) && arg_call_name.is_some() {
+            // Anti-cascade: when arg_type is a numeric fallback (Real or Int)
+            // and arg_call_name is Some but the callee was not in the template
+            // registry (so promotion returned None), an "undefined function"
+            // diagnostic already fired for that unknown call. Emitting
+            // "type 'real'/'int' does not conform to trait 'X'" here would be
+            // misleading — the numeric type is the expression compiler's
+            // fallback for unresolved calls, not the author's intended type.
+            // Suppress.
+            if matches!(arg_type, Type::Real | Type::Int) && arg_call_name.is_some() {
                 return;
             }
             // Neither StructureRef nor TraitObject — cannot conform to a trait.

@@ -29,6 +29,7 @@ module.exports = grammar({
     [$.port_declaration],
     [$.pragma],
     [$.named_argument_list, $.argument_list],
+    [$.constraint_instantiation, $.constraint_declaration],
   ],
 
   rules: {
@@ -381,14 +382,19 @@ module.exports = grammar({
     // `constraint ConstraintName(arg: expr, ...)` inside structure bodies.
     // The required named_argument_list (name: value) disambiguates from
     // constraint_declaration (which parses an arbitrary expression).
-    constraint_instantiation: $ => seq(
+    //
+    // prec.dynamic(1, ...) breaks the tie against constraint_declaration —
+    // since `function_call` now accepts named arguments via `argument_list`,
+    // `constraint MinWall(wall: t)` is a valid constraint_declaration too
+    // (a function-call expression). Prefer the named-arg-list interpretation.
+    constraint_instantiation: $ => prec.dynamic(1, seq(
       'constraint',
       field('name', $.identifier),
       '(',
       $.named_argument_list,
       ')',
       optional(field('guard', $.where_clause)),
-    ),
+    )),
 
     // ── Where clause (guard) ────────────────────────────────
     where_clause: $ => seq(
