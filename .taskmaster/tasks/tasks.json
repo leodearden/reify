@@ -42572,11 +42572,11 @@
         "description": "gui/src/__tests__/App.test.tsx:642-670 asserts mockFlyToEntity was called and that one selected group appears in PropertyEditor, but does not check that the entity path routed to selectionStore.selectEntity is 'Bracket'. A regression that selected the wrong entity would still satisfy `selectedGroups.length === 1`.\n\nFix: Also assert the selected group's identity (e.g. that the data-selected element corresponds to 'Bracket', or inspect selectionStore state) so the test verifies the value routed through, not merely that something got selected.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:05:32.521Z",
+        "updatedAt": "2026-04-20T17:59:39.492Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -42747,7 +42747,7 @@
         "id": "2031",
         "title": "Move reify-compiler lib.rs `mod tests` to integration test file",
         "description": "Move the `mod tests` block from `crates/reify-compiler/src/lib.rs` (L1067-2656, 58 `#[test]` fns, ~1600 lines) into appropriate test files based on the type of API they test.\n\nThe `mod tests` block mixes two categories:\n\n1. **Public-API tests (~48)** — Move these to a new integration test file at `crates/reify-compiler/tests/compile_api_tests.rs`.\n2. **Internal-API tests (~10)** — Relocate each to a `#[cfg(test)] mod tests { ... }` block inside the file that owns the helper under test:\n   - Tests of `compile_curve_op` → `geometry_curve.rs`\n   - Tests of `compile_transform_op` → `geometry_transform.rs`\n   - Tests of `compile_modify_op` → `geometry_modify.rs`\n   - Tests of `compile_geometry_call` + `CompilationScope::new` → `geometry.rs` (or `scope.rs` if that's a cleaner fit — architect to decide)\n   - Tests referencing only `is_geometry_function` → `units.rs`\n\nRemove the now-empty or trimmed `mod tests` block in `lib.rs`.\n\nRevised success criteria:\n- `cargo test -p reify-compiler` runs the same total test count (all 58 + any pre-existing others) and they all pass.\n- `crates/reify-compiler/src/lib.rs` drops from 2656 → ≤ 1500 lines.\n- No visibility changes to `pub(crate)` items; no new `pub` surface; no `#[doc(hidden)]` re-exports.\n\nWhy: lib.rs is the #1 contended file (35 pending tasks serialized behind it). Shedding the test bulk unblocks wide parallelism, and this split keeps unit tests next to the units under test (standard Rust convention) while moving public-API tests out of the crate root.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "details": "",
@@ -42774,7 +42774,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-20T17:30:12.253Z"
+        "updatedAt": "2026-04-20T17:59:39.604Z"
       },
       {
         "id": "2032",
@@ -42839,13 +42839,13 @@
         "description": "After task #2033 lands (tests moved out), extract the `MergeContext` struct and `collect_all_requirements` fn (L697-926, ~230 lines) from `crates/reify-compiler/src/conformance.rs` into a new sibling file `crates/reify-compiler/src/trait_requirements.rs`.\n\nThese functions are conceptually distinct from `check_trait_conformance`: they walk the trait refinement hierarchy (handling diamond patterns, depth guards, MAX_TRAIT_DEPTH) to collect all requirements and defaults — an independent responsibility from comparing structure members against a flattened requirement set.\n\nImplementation:\n- Create `crates/reify-compiler/src/trait_requirements.rs` with `MergeContext` struct + `impl MergeContext` + `collect_all_requirements` fn. Add `pub(crate) mod trait_requirements;` and `pub(crate) use trait_requirements::*;` to lib.rs.\n- Update `conformance.rs` — the remaining `check_trait_conformance` call site already uses `collect_all_requirements` as a free fn, so re-export makes the move transparent.\n- Keep `MAX_TRAIT_DEPTH` const with `collect_all_requirements` (it's only used there).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically.\n- `conformance.rs` drops to ~830 lines with only `check_trait_conformance` and `check_trait_arg_conformance`.\n\nWhy: separates the hierarchy-walk responsibility from the conformance-check responsibility, reducing the set of tasks that need to touch conformance.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2033"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T11:44:03.744Z",
+        "updatedAt": "2026-04-20T17:59:39.758Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -43413,7 +43413,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T17:59:39.400Z",
+      "lastModified": "2026-04-20T17:59:39.759Z",
       "taskCount": 2054,
       "completedCount": 1783,
       "tags": [
