@@ -413,3 +413,21 @@ export async function onSerializationError(
     callback(event.payload);
   });
 }
+
+/** Subscribe to focus-entity events emitted by the focus_entity Tauri command and the MCP focus_entity tool. */
+export async function onFocusEntity(
+  callback: (entityPath: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>('focus-entity', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to navigate-to-source events emitted by the MCP navigate_to_source tool. Payload carries editor-target coordinates. */
+export async function onNavigateToSource(
+  callback: (data: { file: string; line: number; column: number }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ file: string; line: number; column: number }>('navigate-to-source', (event) => {
+    callback(event.payload);
+  });
+}
