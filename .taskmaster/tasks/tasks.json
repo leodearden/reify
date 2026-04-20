@@ -42880,6 +42880,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2043",
+        "title": "Strengthen generic_constraint_def_with_type_param test with positive shape assertion",
+        "description": "Test in crates/reify-compiler/tests/constraint_def_compile_tests.rs (~line 977) only asserts absence of unknown-type errors. Add positive assertion: find Aligned in module.constraint_defs, assert params.len()==2, type_params.len()==1. Source: esc-1964-55 review suggestion.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -42892,7 +42903,7 @@
       ],
       "created": "2026-04-20T13:12:22.427Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-20T13:12:22.451Z"
+      "updated": "2026-04-20T13:16:24.003Z"
     }
   }
 }
