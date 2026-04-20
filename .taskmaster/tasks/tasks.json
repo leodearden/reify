@@ -36718,7 +36718,7 @@
         "description": "Decouple viewports from views so that multiple viewports can independently reference different views (or the same view with different cameras). Introduce a viewportStore that manages viewport instances, their view assignments, and camera states. This is the abstraction boundary that enables dual viewports and future split viewports.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 3.2 (New Stores — viewportStore) and 9 (Multi-Viewport Architecture).\n\n### Implementation\n\n1. **New store: `stores/viewportStore.ts`**\n   - `viewports: Map<string, ViewportState>`\n   - `ViewportState`:\n     - `id: string` — stable ID (e.g., \"design-main\", \"def-preview\")\n     - `type: \"design\" | \"def-preview\"`\n     - `viewId: string | null` — which view this viewport shows (design viewports only)\n     - `defPath: string | null` — which definition to preview (def-preview only)\n     - `camera: { position: [x,y,z], target: [x,y,z], up: [x,y,z], zoom: number }`\n     - `active: boolean` — is this the focused viewport?\n   - `setActiveViewport(id)`: focus a viewport\n   - `assignView(viewportId, viewId)`: assign a view to a viewport\n   - `updateCamera(viewportId, cameraState)`: persist camera state\n   - Initialize with two viewports: \"design-main\" and \"def-preview\"\n\n2. **Refactor `viewport/Viewport.tsx`**\n   - Accept a `viewportId: string` prop instead of being a singleton\n   - Read view assignment from `viewportStore` -> `viewStateStore`\n   - Read camera state from `viewportStore`\n   - Each viewport instance manages its own Three.js scene/camera/renderer\n   - Save camera state back to viewportStore on orbit/pan/zoom\n\n3. **Refactor `viewport/meshManager.ts`**\n   - Accept a viewport context (which view to consult for visibility)\n   - Multiple meshManager instances can coexist (one per viewport)\n   - Shared geometry buffers where possible (multiple viewports showing the same mesh data)\n\n4. **Refactor `viewport/selection.ts`**\n   - Selection is global (shared across viewports) — selecting in one viewport highlights in all\n   - Raycasting operates on the active viewport's scene\n\n5. **Design tree panel**\n   - View selector controls the active design viewport's view assignment\n   - Switching views in the tree panel updates `viewportStore.assignView(\"design-main\", newViewId)`\n\n### Requirements covered\nVP-4, VP-8, Section 9 (9.1, 9.2)\n\n### memory_hints\n- search: \"Viewport.tsx Three.js scene\"\n- search: \"meshManager sync scene\"\n- search: \"scene.ts camera renderer\"\n- search: \"OrbitControls camera state\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1746"
         ],
@@ -36756,7 +36756,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-20T20:29:45.553Z"
+        "updatedAt": "2026-04-20T20:41:40.689Z"
       },
       {
         "id": "1748",
@@ -43559,7 +43559,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T20:41:32.672Z",
+      "lastModified": "2026-04-20T20:41:40.689Z",
       "taskCount": 2057,
       "completedCount": 1788,
       "tags": [
