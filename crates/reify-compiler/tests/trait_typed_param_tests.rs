@@ -507,6 +507,51 @@ fn sub_component_arg_conforming_via_refinement_chain_accepted() {
     );
 }
 
+/// Regression guard: passing a Real literal to a trait-typed param emits a
+/// "does not conform to trait" error.
+///
+/// This locks in the existing behaviour of the suppression heuristic in
+/// `check_trait_arg_conformance` (conformance.rs:1019-1042). The exact path
+/// exercised:
+///
+/// 1. `1.0` compiles to `CompiledExprKind::Literal(Value::Real(...))` — NOT a
+///    `FunctionCall` — so `arg_call_name` is `None` (entity.rs:859-864).
+/// 2. The promotion branch (conformance.rs:964-970) finds `arg_call_name` is `None`,
+///    so `effective_arg_type = &Type::Real`.
+/// 3. The `_` arm (conformance.rs:1019) is reached.
+/// 4. The suppression guard (conformance.rs:1026-1028) requires BOTH
+///    `matches!(arg_type, Type::Real)` AND `arg_call_name.is_some()`. Because
+///    `arg_call_name` is `None`, the guard does NOT suppress — execution continues
+///    and the diagnostic is emitted.
+///
+/// Would fail if the suppression heuristic were broadened to cover
+/// `arg_call_name.is_none()` (i.e. suppressing even for bare Real literals).
+#[test]
+fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error() {
+    let source = r#"
+        structure def Host { param m : Material }
+        structure def Top {
+            sub x = Host(m: 1.0)
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("Material")),
+        "expected a 'does not conform to trait Material' error for Real literal arg, got: {:?}",
+        errors
+    );
+}
+
 /// Non-empty struct-instantiation call in a sub arg value position.
 ///
 /// `sub x = Host(m: Steel(density: 1000.0))` exercises the non-zero-arg
