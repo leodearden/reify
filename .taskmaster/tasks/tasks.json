@@ -42911,11 +42911,11 @@
         "description": "The key-shape assertion `expect(Object.keys(view).sort()).toEqual(['auto', 'id', 'name', 'visibility'])` is repeated verbatim at three locations in gui/src/__tests__/autoViewGenerator.test.ts (lines 112, 152, 184). If a legitimate new ViewDefinition field is ever added (e.g. a real `modified` flag, a `kind` discriminator, icon hint, etc.), the assertion must be updated in three places. Consolidate the shape contract into a single test or helper so the maintenance point is centralized.",
         "details": "## Scope\n- gui/src/__tests__/autoViewGenerator.test.ts (lines 112, 152, 184)\n- (optionally) gui/src/types.ts or gui/src/stores/autoViewGenerator.ts if adopting a type-level assertion\n\n## Options\n1. Extract a local helper `expectViewDefinitionShape(view)` in autoViewGenerator.test.ts and call it from the three existing `(e)`/`(c)`/`(b)` tests.\n2. Preferred: replace the three runtime assertions with a single compile-time contract test using `expectTypeOf<keyof ViewDefinition>().toEqualTypeOf<'id' | 'name' | 'auto' | 'visibility'>()`. That pins the shape once, needs no runtime work, and the per-generator tests can then just check the fields they care about.\n\nEither approach preserves the original intent (prevent accidental resurrection of `modified` or stealth addition of fields) while centralizing maintenance.\n\n## Acceptance\n- The three `Object.keys(view).sort()` assertions are removed or reduced to a single shared check.\n- A single failure point exists if ViewDefinition's keyset changes.\n- `bun test gui/src/__tests__/autoViewGenerator.test.ts` passes.\n\n## Origin\nEscalation esc-1959-53 (review suggestion on Task 1959 cleanup branch).\n\n### memory_hints\n- search: \"ViewDefinition shape assertion autoViewGenerator\"\n- search: \"ViewDefinition modified field\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:57:40.936Z"
+        "updatedAt": "2026-04-20T14:34:11.253Z"
       },
       {
         "id": "2041",
@@ -43248,9 +43248,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:08:29.987Z",
+      "lastModified": "2026-04-20T14:34:11.254Z",
       "taskCount": 2050,
-      "completedCount": 1759,
+      "completedCount": 1760,
       "tags": [
         "master"
       ]
