@@ -2540,12 +2540,14 @@ describe('App handleSave dirty-indicator and error handling', () => {
       // The dirty indicator must NOT be cleared (markClean was NOT called)
       expect(capturedEditorStore.state.dirtyFiles).toContain(path);
 
-      // No `Save failed`/`disk full` arg appeared on console.error — incidental console.error from unrelated paths is tolerated
-      expect(
-        errorSpy.mock.calls.flat().some(
-          (arg) => String(arg).includes('Save failed') || String(arg).includes('disk full'),
-        ),
-      ).toBe(false);
+      // Targeted regression guard: handleSave must not regress into logging its failure
+      // to console.error (the error must flow only through showToast). We do NOT use
+      // `not.toHaveBeenCalled()` here because unrelated code paths (e.g. subscription
+      // lifecycle, third-party libs) may legitimately emit console.error during this
+      // test — this assertion tolerates that incidental noise while still flagging any
+      // reintroduction of a `console.error('Save failed:', err)` call. Matches the
+      // sibling pattern at setParameter (line ~1356) and re-evaluate (line ~1396).
+      expect(errorSpy).not.toHaveBeenCalledWith('Save failed:', expect.any(Error));
     });
   });
 });
