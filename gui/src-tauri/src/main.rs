@@ -1,8 +1,9 @@
 // Tauri application entry point for Reify GUI.
 //
-// Wires the EngineSession with SimpleConstraintChecker + DispatchPlanner + OcctKernelHandle,
-// wraps it in AppState, and starts the Tauri application with all command handlers.
-// After state-mutating commands, diffs old vs new state and emits targeted events.
+// Wires the EngineSession with SimpleConstraintChecker + DispatchPlanner (+ OcctKernelHandle
+// when OCCT is available at build time), wraps it in AppState, and starts the Tauri application
+// with all command handlers. After state-mutating commands, diffs old vs new state and emits
+// targeted events.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -19,7 +20,6 @@ use reify_gui::engine::EngineSession;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::FileWatcher;
-use reify_kernel_occt::OcctKernelHandle;
 use reify_lsp::server::NotificationSink;
 use tower_lsp::lsp_types::{Diagnostic, Url};
 
@@ -420,11 +420,17 @@ async fn claude_clear_session(state: tauri::State<'_, AppState>) -> Result<(), S
     reify_gui::claude_bridge::claude_clear_session_impl(&state.sidecar).await
 }
 
+/// Return the current kernel availability status.
+#[tauri::command]
+fn get_kernel_status() -> reify_gui::kernel_status::KernelStatus {
+    reify_gui::kernel_status::current_kernel_status()
+}
+
 fn main() {
-    // Set up the geometry kernel with OCCT
+    // Set up the geometry kernel (registers OCCT only when available at build time).
     let checker = SimpleConstraintChecker;
     let mut planner = DispatchPlanner::new();
-    planner.register_kernel(Box::new(OcctKernelHandle::spawn()));
+    let kernel_status = reify_gui::kernel_status::configure_planner(&mut planner);
 
     let session = EngineSession::new(Box::new(checker), Some(Box::new(planner)));
 
@@ -496,6 +502,9 @@ fn main() {
                 eprintln!("REIFY_DEBUG=1: debug server starting on http://127.0.0.1:3939");
             }
 
+            // Notify the frontend of the kernel availability at startup.
+            app.handle().emit("kernel-status", &kernel_status).ok();
+
             // If an initial file was loaded, start watching its parent directory
             if let Some(ref file_path) = initial_file {
                 let watcher = create_watcher(app.handle(), file_path);
@@ -528,6 +537,7 @@ fn main() {
             claude_clear_session,
             is_debug_enabled,
             debug_response,
+            get_kernel_status,
         ])
         .on_window_event(|window, event| {
             // Gracefully shut down the sidecar when the window closes.
