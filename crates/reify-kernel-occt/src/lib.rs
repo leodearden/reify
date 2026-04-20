@@ -545,12 +545,23 @@ impl OcctKernel {
                 ffi::ffi::translate_shape(&prism, 0.0, 0.0, -dist / 2.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            // NOTE: SweepGuided / LoftGuided land in steps 20/22 of
-            // task-322. The catch-all below keeps the kernel lib compiling
-            // while e2e tests are authored (TDD).
-            GeometryOp::SweepGuided { .. } | GeometryOp::LoftGuided { .. } => {
+            GeometryOp::SweepGuided {
+                profile,
+                path,
+                guide,
+            } => {
+                let profile_shape = self.get_shape(*profile)?;
+                let path_shape = self.get_shape(*path)?;
+                let guide_shape = self.get_shape(*guide)?;
+                ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            // NOTE: LoftGuided lands in step 22 of task-322. The catch-all
+            // below keeps the kernel lib compiling while e2e tests are
+            // authored (TDD).
+            GeometryOp::LoftGuided { .. } => {
                 return Err(GeometryError::OperationFailed(
-                    "geometry op not yet implemented in kernel (task-322 steps 20/22)".into(),
+                    "geometry op not yet implemented in kernel (task-322 step 22)".into(),
                 ));
             }
             GeometryOp::LineSegment {

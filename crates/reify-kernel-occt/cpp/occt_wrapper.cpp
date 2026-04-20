@@ -39,6 +39,7 @@
 
 // OCCT pipe (sweep)
 #include <BRepOffsetAPI_MakePipe.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
 
 // OCCT edge/wire/face construction
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -1068,6 +1069,33 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
         throw std::runtime_error(std::string("OCCT make_pipe: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT make_pipe: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
+                                           const OcctShape& spine,
+                                           const OcctShape& guide) {
+    try {
+        // Spine and guide must both be wires; profile may be an edge,
+        // wire, or face.
+        BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(spine.shape));
+        maker.Add(profile.shape);
+        // SetMode(auxWire, KeepContact) — KeepContact=false keeps the
+        // section's centre free while using the guide to bias orientation.
+        maker.SetMode(TopoDS::Wire(guide.shape), Standard_False);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakePipeShell failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_pipe_shell: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_pipe_shell: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_pipe_shell: unknown C++ exception");
     }
 }
 

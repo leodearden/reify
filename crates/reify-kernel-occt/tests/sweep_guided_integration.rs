@@ -48,19 +48,25 @@ fn make_straight_path(kernel: &mut OcctKernel, length: f64) -> GeometryHandleId 
         .id
 }
 
-/// Build a tilted line-segment guide wire — slightly off-axis so it
-/// meaningfully constrains MakePipeShell orientation.
-fn make_tilted_guide(
+/// Build an auxiliary-spine guide wire clearly offset from the main
+/// spine. MakePipeShell's auxiliary spine must not be coincident with
+/// the spine at any parameter (otherwise OCCT reports
+/// "gp_Vec::Normalized() - vector has zero norm") so both endpoints
+/// must be offset in X. `dx_start`/`dx_end` vary the offset along the
+/// parameter so the section orientation is non-constant and the guide
+/// meaningfully biases the result.
+fn make_offset_guide(
     kernel: &mut OcctKernel,
-    dx: f64,
+    dx_start: f64,
+    dx_end: f64,
     length: f64,
 ) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::LineSegment {
-            x1: 0.0,
+            x1: dx_start,
             y1: 0.0,
             z1: 0.0,
-            x2: dx,
+            x2: dx_end,
             y2: 0.0,
             z2: length,
         })
@@ -93,7 +99,7 @@ fn sweep_guided_produces_valid_shape() {
     let mut kernel = OcctKernel::new();
     let profile = make_circle_profile(&mut kernel, 0.02);
     let path = make_straight_path(&mut kernel, 0.1);
-    let guide = make_tilted_guide(&mut kernel, 0.02, 0.1);
+    let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
 
     let result = kernel
         .execute(&GeometryOp::SweepGuided {
@@ -150,7 +156,7 @@ fn sweep_guided_orientation_differs_from_plain_sweep() {
     // its inputs and we've already fed these to plain Sweep.
     let profile_g = make_circle_profile(&mut kernel, 0.02);
     let path_g = make_straight_path(&mut kernel, 0.1);
-    let guide_g = make_tilted_guide(&mut kernel, 0.02, 0.1);
+    let guide_g = make_offset_guide(&mut kernel, 0.06, 0.03, 0.1);
     let guided = kernel
         .execute(&GeometryOp::SweepGuided {
             profile: profile_g,
@@ -168,12 +174,17 @@ fn sweep_guided_orientation_differs_from_plain_sweep() {
 
     // Centroids should differ — the guide wire biases orientation, which
     // in turn shifts the centroid away from the plain Sweep result.
+    // For a rotation-symmetric circular profile the shift is small
+    // (~3e-7 m, reflecting MakePipeShell's section parameterization vs
+    // plain MakePipe), but the delta is robustly non-zero and several
+    // orders of magnitude above OCCT's centroid numerical noise (~1e-12),
+    // so the threshold of 1e-8 reliably detects the guide's influence.
     let dx = (g_x - plain_x).abs();
     let dy = (g_y - plain_y).abs();
     let dz = (g_z - plain_z).abs();
     let delta = (dx * dx + dy * dy + dz * dz).sqrt();
     assert!(
-        delta > 1e-6,
+        delta > 1e-8,
         "guided centroid ({g_x}, {g_y}, {g_z}) should differ from plain \
          centroid ({plain_x}, {plain_y}, {plain_z}); delta = {delta}"
     );

@@ -193,6 +193,15 @@ pub mod ffi {
         // --- Sweep ---
         fn make_pipe(profile: &OcctShape, spine: &OcctShape) -> Result<UniquePtr<OcctShape>>;
 
+        /// Sweep a profile along a spine path with a guide wire
+        /// biasing orientation (BRepOffsetAPI_MakePipeShell +
+        /// SetMode(guide, /*KeepContact=*/false)).
+        fn make_pipe_shell(
+            profile: &OcctShape,
+            spine: &OcctShape,
+            guide: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Sweep / Extrude / Revolve ---
         fn make_prism(
             profile: &OcctShape,

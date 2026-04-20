@@ -141,6 +141,14 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles);
 /// Sweep a profile along a wire path (BRepOffsetAPI_MakePipe).
 std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine);
 
+/// Sweep a profile along a spine path, with an auxiliary guide wire
+/// constraining orientation (BRepOffsetAPI_MakePipeShell + SetMode).
+/// `spine` is the path the section follows; `guide` biases section
+/// orientation via SetMode(guide, /*KeepContact=*/Standard_False).
+std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
+                                           const OcctShape& spine,
+                                           const OcctShape& guide);
+
 // --- Sweep / Extrude / Revolve ---
 
 /// Extrude a profile shape by a direction vector (dx, dy, dz).
