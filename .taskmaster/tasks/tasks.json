@@ -36668,10 +36668,17 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "gui/src/stores/viewStore.ts",
-            "gui/src/components/ViewSelector.tsx",
-            "gui/src/__tests__/viewStore.test.ts",
-            "gui/src/__tests__/ViewSelector.test.tsx"
+            "gui/src/App.tsx",
+            "gui/src/hooks/useKeyboardShortcuts.ts",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/panels/ViewManageModal.tsx",
+            "gui/src/panels/ViewManageModal.module.css",
+            "gui/src/panels/ViewSelector.tsx",
+            "gui/src/panels/ViewSelector.module.css",
+            "gui/src/panels/index.ts",
+            "gui/src/shortcuts.ts",
+            "gui/src/stores/autoViewGenerator.ts",
+            "gui/src/stores/viewStateStore.ts"
           ],
           "modules": [
             "gui/src/App.tsx",
@@ -43471,7 +43478,9 @@
       "completedCount": 1787,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T20:03:24.585Z",
+      "description": "Tasks for master context"
     }
   }
 }
