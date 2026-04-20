@@ -42877,11 +42877,16 @@
         "description": "Test `generic_constraint_def_with_type_param_type_compiles_cleanly` in crates/reify-compiler/tests/constraint_def_compile_tests.rs (~line 977, added by task 1964) only asserts absence of 'unknown type' errors. Add positive assertion that module.constraint_defs contains `Aligned` with 2 params + 1 type_param, to guard against silent drops.",
         "details": "Source esc-1964-55. CompiledConstraintDef fields (types.rs line ~612): name, type_params, params. Suggested: find Aligned def, assert params.len()==2, type_params.len()==1.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:20:26.341Z"
+        "updatedAt": "2026-04-20T13:28:41.786Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ]
+        }
       },
       {
         "id": "2043",
@@ -42915,19 +42920,27 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2046",
+        "title": "Extract fresh_ctx() test helper in reify-cli mcp_context tests",
+        "description": "The `PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))` + `CliToolContext::new(project_dir)` pattern is duplicated across many tests in `crates/reify-cli/src/mcp_context.rs` (lines 807, 832, 865, 891, 931, 1115, 1136, etc.). Introduce a private test helper like `fn fresh_ctx() -> CliToolContext { CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))) }` in the test module and update existing tests to use it. Source: review_comprehensive on Task 2015 (code_reuse, \"Out of scope for this diff but worth a follow-up\"). Run `cargo test -p reify-cli` to verify.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:20:26.341Z",
-      "taskCount": 2036,
+      "lastModified": "2026-04-20T13:28:41.786Z",
+      "taskCount": 2038,
       "completedCount": 1741,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T13:24:29.248Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-20T13:24:29.424Z"
+      ]
     }
   }
 }
