@@ -37589,11 +37589,11 @@
         "description": "Two small follow-ups from task 1708 (ident-alias geometry lets) review:\n\n1. **Extract `classify_and_register_let` helper** — The pattern `if is_geometry_let(..., known_geometry_lets) { scope.register(..., Type::Geometry); known_geometry_lets.insert(...); } else { scope.register(..., Type::Real); }` is duplicated between entity.rs (pass 1, ~line 336) and guards.rs (`register_guarded_names`, ~line 147). Extract a small helper to DRY this.\n\n2. **Add forward ident-alias regression test** — Tests cover the positive ident-alias path and negative cases but don't test a forward reference (`let alias = body; let body = cylinder(r, h)`). Add `fn forward_ident_alias_is_not_geometry_let()` asserting that `alias` is treated as a value cell and only `body` becomes a realization. This verifies the incremental-set ordering guarantee.\n\n## memory_hints\n- search: \"is_geometry_let classify register\"\n- search: \"known_geometry_lets incremental order\"\n- entity: \"is_geometry_let\"\n- entity: \"register_guarded_names\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T14:01:32.988Z",
+        "updatedAt": "2026-04-20T14:01:40.275Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -43229,14 +43229,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:01:38.181Z",
+      "lastModified": "2026-04-20T14:01:40.275Z",
       "taskCount": 2050,
-      "completedCount": 1755,
+      "completedCount": 1756,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-20T14:01:38.608Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
