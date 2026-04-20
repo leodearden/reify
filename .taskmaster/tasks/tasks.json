@@ -43051,11 +43051,11 @@
         "description": "The PathBuf/CliToolContext::new pattern is duplicated across many tests in crates/reify-cli/src/mcp_context.rs (lines 807, 832, 865, 891, 931, 1115, 1136). Introduce a private `fn fresh_ctx() -> CliToolContext` helper in the test module and update sites to use it. Source: review_comprehensive on Task 2015 (code_reuse). Run `cargo test -p reify-cli`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:39:32.911Z"
+        "updatedAt": "2026-04-20T15:55:05.527Z"
       },
       {
         "id": "2048",
@@ -43284,7 +43284,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T15:55:05.004Z",
+      "lastModified": "2026-04-20T15:55:05.527Z",
       "taskCount": 2050,
       "completedCount": 1768,
       "tags": [
