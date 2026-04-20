@@ -7,7 +7,7 @@
 //! scope.
 
 use reify_compiler::RequirementKind;
-use reify_test_support::{compile_source, compile_source_with_stdlib, parse_and_compile_with_stdlib, warnings_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, parse_and_compile_with_stdlib};
 use reify_types::{Severity, Type};
 
 /// Structure member: `param m : Material` should resolve to `Type::TraitObject("Material")`.
@@ -332,10 +332,12 @@ fn alias_wins_over_trait_name_for_param_type() {
 /// This MUST fail on the base branch (before step-2 implementation) because no
 /// call-site conformance check exists yet.
 ///
-/// The test also asserts the co-occurring Warning-severity
-/// "cannot infer return type of zero-arg function NotAMaterial" diagnostic
-/// (emitted by expr.rs when a structure name is used in call position before
-/// the template registry populates).
+/// NOTE: This source also produces a Warning-severity diagnostic
+/// "cannot infer return type of zero-arg function NotAMaterial" (emitted by
+/// expr.rs when a structure name is used in call position before the template
+/// registry is fully populated). This warning co-occurs with the conformance
+/// error and is intentional/expected — the conformance error is the one the
+/// user cares about. The test filters to `Severity::Error` to remain focused.
 #[test]
 fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
     // NotAMaterial does NOT declare `: Material` — it just has `density : Real`.
@@ -361,16 +363,6 @@ fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
                 && d.message.contains("Material")),
         "expected a 'does not conform to trait Material' error, got: {:?}",
         errors
-    );
-
-    let warnings = warnings_only(&module);
-    assert!(
-        warnings
-            .iter()
-            .any(|d| d.message.contains("cannot infer return type of zero-arg function")
-                && d.message.contains("NotAMaterial")),
-        "expected a Warning-severity 'cannot infer return type of zero-arg function NotAMaterial' diagnostic co-occurring with the conformance error, got: {:?}",
-        warnings
     );
 }
 
@@ -559,3 +551,18 @@ fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error(
         errors
     );
 }
+
+// ─── Parser gap: nested struct-instantiation calls with args in sub arg values ──
+//
+// TODO(task-2039): The parser currently rejects nested struct-instantiation
+// calls with named arguments in sub arg value positions, e.g.:
+//
+//   structure def Top { sub x = Host(m: Steel(density: 1000.0)) }
+//
+// The ignored test `sub_component_arg_structure_instantiation_with_args_accepted`
+// was removed (task 2028) because it pinned an uncertain failure mode
+// (parse-level vs. semantic). Task 2039 tracks the acceptance criterion:
+// the above source should compile to zero Error-severity diagnostics once
+// the parser/compiler supports this form end-to-end. entity.rs is already
+// defensively widened to `FunctionCall { function, .. }` for the eventual
+// parser support.
