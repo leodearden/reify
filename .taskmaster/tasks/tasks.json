@@ -43004,10 +43004,11 @@
         "description": "Dedup repeated PathBuf+CliToolContext::new in test module of crates/reify-cli/src/mcp_context.rs (sites ~807,832,865,891,931,1115,1136). Introduce `fn fresh_ctx() -> CliToolContext` helper and update callers. Spawned from Task 2015 review (reviewer_comprehensive, code_reuse).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:38:54.563Z"
       },
       {
         "id": "2052",
@@ -43030,12 +43031,23 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2054",
+        "title": "Promote CompiledExpr hash tag bytes to named constants",
+        "description": "Follow-up from task 1999. Define pub(crate) TAG_* const bytes in reify-types/src/expr.rs and reference them from both reify-types constructors and reify-compiler inline paths (src/expr.rs:554, :1318) so allocation table (expr.rs:212-235) stays in sync with call sites.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:38:18.045Z",
-      "taskCount": 2045,
+      "lastModified": "2026-04-20T13:38:54.563Z",
+      "taskCount": 2046,
       "completedCount": 1743,
       "tags": [
         "master"
