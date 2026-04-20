@@ -356,6 +356,76 @@ export function createViewStateStore() {
     return true;
   }
 
+  // ---------------------------------------------------------------------------
+  // Private naming helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns a unique name derived from `base` that doesn't collide with any
+   * name already present in `existingNames` (case-insensitive).
+   *
+   * Strategy:
+   * - If `base` itself is free, return it.
+   * - If `base` ends with a `(word)` parenthetical suffix, inject the counter
+   *   inside the parens: `"Default (copy)"` → `"Default (copy 2)"`, etc.
+   * - Otherwise append a bare counter: `"Foo 2"`, `"Foo 3"`, …
+   *
+   * Used by `duplicateView` (`base = "{sourceName} (copy)"`) and `cowIfAuto`
+   * (`base = "{autoName} (modified)"`).
+   */
+  function uniqueName(base: string, existingNames: string[]): string {
+    const lowerNames = existingNames.map((n) => n.toLowerCase());
+    if (!lowerNames.includes(base.toLowerCase())) return base;
+
+    // Try to inject counter inside the last parenthetical suffix.
+    // Matches e.g. "Default (copy)" → prefix="Default ", inner="copy"
+    const parenMatch = base.match(/^(.*)\(([^)]+)\)$/);
+    let counter = 2;
+    while (true) {
+      const candidate = parenMatch
+        ? `${parenMatch[1]}(${parenMatch[2]} ${counter})`
+        : `${base} ${counter}`;
+      if (!lowerNames.includes(candidate.toLowerCase())) return candidate;
+      counter++;
+    }
+  }
+
+  /**
+   * Duplicate a view (auto or user) into a new user view.
+   *
+   * - `sourceId`: must exist in `state.views`; returns `null` otherwise.
+   * - `newName`: optional explicit name; defaults to `{sourceName} (copy)` with
+   *   counter-suffix collision handling via `uniqueName`.
+   * - The duplicate has `auto: false`, `modified: false`, and a snapshot of
+   *   the source's `visibility` map.
+   * - The new id is appended to `state.userViewOrder`.
+   *
+   * @returns The new view's id, or `null` if `sourceId` is unknown.
+   */
+  function duplicateView(sourceId: string, newName?: string): string | null {
+    const source = state.views[sourceId];
+    if (!source) return null;
+
+    const existingNames = Object.values(state.views).map((v) => v.name);
+    const base = newName ?? `${source.name} (copy)`;
+    const resolvedName = newName ?? uniqueName(base, existingNames);
+
+    const id = `user:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    setState(
+      produce((s) => {
+        s.views[id] = {
+          id,
+          name: resolvedName,
+          auto: false,
+          modified: false,
+          visibility: { ...source.visibility },
+        };
+        s.userViewOrder.push(id);
+      }),
+    );
+    return id;
+  }
+
   /**
    * Delete a user view.  Validation rules:
    * - id must exist in `state.views`
@@ -563,6 +633,7 @@ export function createViewStateStore() {
     switchView,
     renameView,
     deleteView,
+    duplicateView,
   };
 }
 

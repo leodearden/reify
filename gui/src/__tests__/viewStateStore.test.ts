@@ -1432,6 +1432,119 @@ describe('setActiveView — wholesale explicit replacement after resetToInherit'
 });
 
 // ---------------------------------------------------------------------------
+// duplicateView
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — duplicateView', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.A', kind: 'param' }),
+          makeNode({ entity_path: 'Root.B', kind: 'param' }),
+        ],
+      }),
+    ];
+  }
+
+  it('(a) auto→user duplication produces a user view with auto: false, modified: false, and visibility snapshot from source', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const autoView = store.state.views['auto:default'];
+
+      const newId = store.duplicateView('auto:default');
+      expect(newId).not.toBeNull();
+      expect(newId!).toMatch(/^user:/);
+
+      const dupView = store.state.views[newId!];
+      expect(dupView.auto).toBe(false);
+      expect(dupView.modified).toBe(false);
+      // Visibility snapshot equals source auto view's visibility
+      expect(dupView.visibility).toEqual(autoView.visibility);
+      dispose();
+    });
+  });
+
+  it('(b) user→user duplication copies visibility verbatim', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const sourceId = store.createView('Source');
+      // Seed some visibility on the source view directly
+      store.state.views[sourceId].visibility = { 'Root': 'hidden', 'Root.A': 'show' };
+
+      const newId = store.duplicateView(sourceId);
+      expect(newId).not.toBeNull();
+      const dupView = store.state.views[newId!];
+      expect(dupView.visibility).toEqual({ 'Root': 'hidden', 'Root.A': 'show' });
+      dispose();
+    });
+  });
+
+  it('(c) default name is {sourceName} (copy)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      const newId = store.duplicateView('auto:default');
+      expect(store.state.views[newId!].name).toBe('Default (copy)');
+      dispose();
+    });
+  });
+
+  it('(c) counter-suffix collision: if "{sourceName} (copy)" already exists, uses "{sourceName} (copy 2)"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      const id1 = store.duplicateView('auto:default');
+      expect(store.state.views[id1!].name).toBe('Default (copy)');
+
+      // Duplicate again — "Default (copy)" is taken, should get "Default (copy 2)"
+      const id2 = store.duplicateView('auto:default');
+      expect(store.state.views[id2!].name).toBe('Default (copy 2)');
+
+      // Duplicate a third time
+      const id3 = store.duplicateView('auto:default');
+      expect(store.state.views[id3!].name).toBe('Default (copy 3)');
+      dispose();
+    });
+  });
+
+  it('(c) explicit newName overrides the default copy name', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+
+      const newId = store.duplicateView('auto:default', 'My Snapshot');
+      expect(store.state.views[newId!].name).toBe('My Snapshot');
+      dispose();
+    });
+  });
+
+  it('(d) returns the new id; unknown source returns null', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const result = store.duplicateView('user:nonexistent');
+      expect(result).toBeNull();
+      dispose();
+    });
+  });
+
+  it('(d) new id is appended to state.userViewOrder', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews(makeTree());
+      const newId = store.duplicateView('auto:default');
+      expect(store.state.userViewOrder).toContain(newId!);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // deleteView
 // ---------------------------------------------------------------------------
 
