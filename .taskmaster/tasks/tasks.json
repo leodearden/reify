@@ -43360,6 +43360,19 @@
             "note": "Task 2060 subsumed by task 1883, commit 59399786f (refactor(gui-tests): extract makeNode/makeTree fixtures to shared test-utils). All three target describe blocks (showOnly, getAllEffective, full PRD integration scenario) already use shared fixtures makeTreeWithTwoSubtrees/makeTreeWithGeometryA; setVisibility-with-cascade closure remains local as specified. Commit is on main."
           }
         }
+      },
+      {
+        "id": "2061",
+        "title": "Migrate get_let_expr in constructor_hash_tests.rs to reify_test_support (esc-1973-143)",
+        "description": "Replace the local private `get_let_expr` function in crates/reify-compiler/tests/constructor_hash_tests.rs (line 23) with the canonical version now exported from `reify_test_support`. Straightforward import swap — same refactor pattern applied in step-8 of task 1973 to expr_error_sentinel_tests.rs and type_error_propagation_tests.rs.",
+        "details": "Edit crates/reify-compiler/tests/constructor_hash_tests.rs:\n1. Delete the local `get_let_expr` function (lines ~20-36).\n2. Update the existing `use reify_test_support::compile_source;` to `use reify_test_support::{compile_source, get_let_expr};`.\n3. Run `cargo test -p reify-compiler --test constructor_hash_tests` to verify.\n\nRisk: low; mechanical move + import update. No behavior change expected. The local copy is identical in shape to the canonical helper (inlines `templates.first()`).\n\nSource: esc-1973-143 (info-level cleanup_needed). Task 1973 was scoped to only expr_error_sentinel_tests.rs and type_error_propagation_tests.rs, leaving this third duplicate untouched.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1973"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -43369,7 +43382,10 @@
       "completedCount": 1783,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T17:13:43.961Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-20T17:13:43.988Z"
     }
   }
 }
