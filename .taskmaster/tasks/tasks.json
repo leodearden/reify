@@ -40953,7 +40953,7 @@
         "description": "Replace the substring `some(...)` check in gui/src/__tests__/App.test.tsx (around lines 2448-2453) with the sibling-test pattern used at lines 1283-1286 and 1323-1326:\n\n```\nexpect(errorSpy).not.toHaveBeenCalledWith('Save failed:', expect.any(Error));\n```\n\nThis is both stricter (asserts exact call shape rather than substring match on a stringified arg) and more intention-revealing (explicitly names the forbidden logging path). It matches the convention already established by the setParameter and re-evaluate sibling tests in the same file.\n\nContext: Task 1892 narrowed the original `expect(errorSpy).not.toHaveBeenCalled()` to tolerate incidental console.error noise, but chose a substring-match approach. Reviewer_comprehensive flagged two concerns:\n1. test_coverage_weakening: substring match tolerates other Save-path regressions whose log strings don't contain the exact tokens\n2. assertion_precision: relies on `String(err)` producing 'Error: disk full' — fragile if handleSave ever logs a different format\n\nAdditionally, leave a code comment at the incidental-noise source (or at the assertion) so future readers know why a targeted assertion is preferred over `not.toHaveBeenCalled()`.\n\nNote: handleSave in gui/src/App.tsx currently does not call console.error at all (only `showToast(\\`Save failed: ...\\`, 'error')`), so the targeted assertion would pass trivially today and serve purely as a regression guard — which matches the sibling-test intent.\n\nSource: Task 1793 review (reviewer_comprehensive), re-surfaced during Task 1892 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -40965,7 +40965,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-04-20T12:10:19.079Z"
+        "updatedAt": "2026-04-20T13:36:27.945Z"
       },
       {
         "id": "1956",
@@ -42372,7 +42372,7 @@
         "description": "`update_source_invalid_content_does_not_construct_new_engine` in `crates/reify-cli/src/mcp_context.rs:868-908` uses the literal string `\"enum { }\"` to trigger a parse failure. The guard under test specifically checks that `parsed.errors` is non-empty (line 436). If the Reify grammar ever accepts `enum { }` and defers the problem to compile time, this test would silently exercise the wrong branch — the pipeline would commit new state instead of taking the intended \"no-op on parse failure\" path.\n\nFix: replace `\"enum { }\"` with content known to be a hard parse error. Either:\n- read `tests/fixtures/bracket_parse_error.ri` (already exists per reviewer), or\n- use a syntactically nonsense input like `\"{{{{\"`, or\n- assert at the top of the test that `reify_syntax::parse(input, …)` actually emits a parse error before exercising `update_source`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42386,7 +42386,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-04-20T11:51:13.270Z"
+        "updatedAt": "2026-04-20T13:36:27.671Z"
       },
       {
         "id": "2016",
@@ -42939,10 +42939,11 @@
         "description": "The `PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))` + `CliToolContext::new(project_dir)` pattern is duplicated across many tests in `crates/reify-cli/src/mcp_context.rs` (lines 807, 832, 865, 891, 931, 1115, 1136, etc.). Introduce a private test helper like `fn fresh_ctx() -> CliToolContext { CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))) }` in the test module and update existing tests to use it. Source: review_comprehensive on Task 2015 (code_reuse, \"Out of scope for this diff but worth a follow-up\"). Run `cargo test -p reify-cli` to verify.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:36:28.680Z"
       },
       {
         "id": "2047",
@@ -42950,10 +42951,11 @@
         "description": "The PathBuf/CliToolContext::new pattern is duplicated across many tests in crates/reify-cli/src/mcp_context.rs (lines 807, 832, 865, 891, 931, 1115, 1136). Introduce a private `fn fresh_ctx() -> CliToolContext` helper in the test module and update sites to use it. Source: review_comprehensive on Task 2015 (code_reuse). Run `cargo test -p reify-cli`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-20T13:36:28.829Z"
       },
       {
         "id": "2048",
@@ -43002,9 +43004,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:36:27.363Z",
+      "lastModified": "2026-04-20T13:36:28.829Z",
       "taskCount": 2043,
-      "completedCount": 1741,
+      "completedCount": 1743,
       "tags": [
         "master"
       ]
