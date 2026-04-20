@@ -42904,6 +42904,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2045",
+        "title": "Extract fresh_ctx() test helper in reify-cli mcp_context tests",
+        "description": "The `PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))` + `CliToolContext::new(project_dir)` pattern is duplicated across many tests in `crates/reify-cli/src/mcp_context.rs` (lines 807, 832, 865, 891, 931, 1115, 1136, etc.). Introduce a private test helper such as `fn fresh_ctx() -> CliToolContext { CliToolContext::new(PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))) }` in the test module and update existing tests to use it. Keeps future fixture-path changes localized to a single helper.",
+        "details": "Source: review suggestion on Task 2015 (reviewer_comprehensive, code_reuse). Reviewer explicitly noted \"Out of scope for this diff but worth a follow-up.\"\n\nScope:\n- Add `fresh_ctx()` (or equivalent) helper in the `mod tests` block of `crates/reify-cli/src/mcp_context.rs`.\n- Replace the repeated `PathBuf::from(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures\"))` + `CliToolContext::new(...)` incantations at sites including lines 807, 832, 865, 891, 931, 1115, 1136.\n- If a test needs a non-default fixture dir, keep the direct constructor call.\n- Run `cargo test -p reify-cli` to verify.\n\nPriority: low (refactor, no behavior change).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -42913,7 +42924,10 @@
       "completedCount": 1741,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T13:24:29.248Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-20T13:24:29.424Z"
     }
   }
 }
