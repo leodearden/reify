@@ -42631,6 +42631,17 @@
             "crates/reify-compiler/src/geometry.rs"
           ]
         }
+      },
+      {
+        "id": "2031",
+        "title": "Move reify-compiler lib.rs `mod tests` to integration test file",
+        "description": "Move the `mod tests` block from `crates/reify-compiler/src/lib.rs` (L1067-2656, 58 `#[test]` fns, ~1600 lines) into a new integration test file at `crates/reify-compiler/tests/compile_api_tests.rs`.\n\nThe tests use only the public API (`compile`, `compile_with_stdlib`, `is_geometry_function`, `EntityKind`, etc.) — no internal-module access needed, so the relocation is mechanical.\n\nSuccess criteria:\n- `cargo test -p reify-compiler` runs the same test count (58 tests from lib.rs plus any others) and they all pass.\n- `crates/reify-compiler/src/lib.rs` drops from 2656 → ~1050 lines.\n\nWhy: lib.rs is currently the #1 contended file with 35 pending tasks serialized behind it. Shedding the test half unblocks wide-parallelism immediately and prepares the file for the structural split in the follow-up task.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -42640,7 +42651,10 @@
       "completedCount": 1729,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T11:37:12.878Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-20T11:37:12.921Z"
     }
   }
 }
