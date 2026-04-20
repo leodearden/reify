@@ -39446,11 +39446,11 @@
         "description": "`setTree` prunes stale paths via `delete s.explicit[path]` (→ undefined) while `setVisibility`/`resetToInherit` clear descendants via `s.explicit[desc] = null`. Consumers see a mix of undefined and null meaning the same thing. Tests encode both via `toBeUndefined()` vs `toBeNull()`, pinning the inconsistency. Any future code using `path in explicit` or `Object.keys(explicit)` will behave differently depending on path.\n\nAlso: DesignTree.tsx imports `createViewStateStore` solely to derive `ReturnType<typeof createViewStateStore>` for a prop type. Expose a named `ViewStateStore` type to decouple the consumer from the factory.",
         "details": "Scope:\n1. gui/src/stores/viewStateStore.ts:76-85 and 125-136 — pick one representation for \"no override\". Preferred: always `delete s.explicit[path]` (matches semantic \"no override\"). Update the `ViewState` type comment to document the invariant.\n2. gui/src/__tests__/viewStateStore.test.ts — update assertions to use only `toBeUndefined()` (or only `toBeNull()`) consistent with the chosen representation, and add a test that asserts `path in explicit` is false after reset.\n3. gui/src/stores/viewStateStore.ts — `export type ViewStateStore = ReturnType<typeof createViewStateStore>;`.\n4. gui/src/panels/DesignTree.tsx:6 — import only the type: `import type { ViewStateStore } from \"../stores/viewStateStore\";`.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:28:30.627Z",
+        "updatedAt": "2026-04-20T07:28:34.671Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -40234,11 +40234,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, the \"unknown member on self\" branch (~lines 731-737) now returns `CompiledExpr::literal(Value::Undef, Type::Error)` to activate the anti-cascade guard (task-448 / task-1912). However, other diagnostic-producing sites in `compile_expr_guarded` may still return `CompiledExpr::literal(Value::Undef, Type::Real)` alongside a `diagnostics.push(Diagnostic::error(...))`. Asymmetric producer coverage means cascades will still fire whenever those other producers run. Action: grep `crates/reify-compiler/src/expr.rs` for `Value::Undef, Type::Real` pairs adjacent to `Diagnostic::error` pushes, and either (a) convert each producer to emit `Type::Error`, or (b) document in the module header which producers intentionally keep `Type::Real` and why. Related: task 448 (parent anti-cascade work), task 936 (trait conformance sentinel). Review followup from task 1912; suggestion S5.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T07:28:30.716Z",
+        "updatedAt": "2026-04-20T07:28:35.078Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -42344,7 +42344,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T07:28:34.012Z",
+      "lastModified": "2026-04-20T07:28:35.078Z",
       "taskCount": 2009,
       "completedCount": 1714,
       "tags": [
