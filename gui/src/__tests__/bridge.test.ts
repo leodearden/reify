@@ -31,6 +31,7 @@ import {
   onTessellationDiagnostics,
   pickOpenPath,
   onFocusEntity,
+  onNavigateToSource,
 } from '../bridge';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -369,5 +370,31 @@ describe('bridge event listeners', () => {
     await onFocusEntity(callback);
 
     expect(callback).toHaveBeenCalledWith('Bracket');
+  });
+
+  it("onNavigateToSource calls listen with 'navigate-to-source' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onNavigateToSource(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('navigate-to-source', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onNavigateToSource passes {file, line, column} payload to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_name, handler) => {
+      (handler as (event: { payload: unknown }) => void)({
+        payload: { file: 'bracket.ri', line: 5, column: 3 },
+      });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onNavigateToSource(callback);
+
+    expect(callback).toHaveBeenCalledWith({ file: 'bracket.ri', line: 5, column: 3 });
   });
 });
