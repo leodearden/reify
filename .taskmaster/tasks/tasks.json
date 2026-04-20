@@ -42662,11 +42662,11 @@
         "description": "Follow-up from task 322 review. The loft_guided arm in crates/reify-compiler/src/geometry.rs:476-530 manually rebuilds the refs vec with the same `geom_refs.get(&i).cloned().unwrap_or(GeomRef::Step(step_offset + i))` pattern as the nearby loft arm, and constructs positional-key args inline. The diff already factored the sweep family via resolve_named_geom_arg but left loft/loft_guided un-factored. Additionally, the silent-fallback vs labelled-per-arg rationale is now repeated across three arms (sweep, sweep_guided, loft_guided).",
         "details": "Two changes in crates/reify-compiler/src/geometry.rs:\n\n1. **Extract shared helper** (mirrors resolve_named_geom_arg for the sweep family): a small helper such as `resolve_loft_like_args(name, args, compiled_args, geom_refs, step_offset, guide_suffix: bool) -> (Vec<GeomRef>, Vec<(String, CompiledExpr)>)` reused by both the `loft` arm (lines ~455-474) and the `loft_guided` arm (lines ~476-530). The `guide_suffix` flag selects whether the last keyed arg is labelled \"guide\" (loft_guided) or `profile_{last_idx}` (loft).\n\n2. **Consolidate rationale comments**: the \"silent fallback vs. labelled per-arg\" explanation currently appears in full in the loft_guided arm (lines 488-498) and in shorter form in the sweep / sweep_guided arms. Hoist the rationale to a single module-level doc comment (or onto `resolve_named_geom_arg`'s docstring) and reduce each per-arm comment to a one-line pointer referencing the canonical location.\n\nSource: reviewer_comprehensive suggestions (code_duplication + documentation_accuracy) from esc-322-22.\n\nmemory_hints: search \"resolve_named_geom_arg loft_guided sweep compiler helper\" entity \"SweepKind\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:33:39.540Z",
+        "updatedAt": "2026-04-20T13:40:45.557Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs"
@@ -43093,9 +43093,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T13:40:37.280Z",
+      "lastModified": "2026-04-20T13:40:45.557Z",
       "taskCount": 2048,
-      "completedCount": 1744,
+      "completedCount": 1745,
       "tags": [
         "master"
       ]
