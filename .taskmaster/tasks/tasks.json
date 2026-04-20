@@ -34234,13 +34234,14 @@
           ],
           "memory_hints": {
             "entities": [
-              "Value",
-              "reify-types"
+              "Value::Field",
+              "differential operators",
+              "reify-eval"
             ],
             "queries": [
-              "Value::Field lambda Box Arc clone performance differential operators",
-              "compute_gradient compute_divergence compute_curl compute_laplacian lambda field_val clone",
-              "task 412 Value::Field optimization Arc refcount"
+              "Value Field lambda Box Arc clone differential operators",
+              "differential streaming computation immutable data sharing",
+              "deep clone performance source field evaluation"
             ]
           },
           "files": [
@@ -43505,7 +43506,9 @@
       "completedCount": 1788,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T20:38:15.140Z",
+      "description": "Tasks for master context"
     }
   }
 }
