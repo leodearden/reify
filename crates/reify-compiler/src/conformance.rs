@@ -1398,6 +1398,7 @@ mod tests {
     /// resolves to `Type::Enum("Direction")` without panicking — so this test FAILS until step-6
     /// adds the debug_assert.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "enum types do not accept type args")]
     fn enum_with_type_args_triggers_debug_assert() {
         // Direction<Something> — non-empty type_args that should trigger the assert
