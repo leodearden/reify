@@ -20552,11 +20552,11 @@
         "description": "In crates/reify-compiler/src/lib.rs: (1) Extract resolve_enum_type(name, enum_defs) helper to replace 4+ inline occurrences. (2) Build HashSet of enum names before filter_map loop in check_trait_conformance. (3) Extract local closure for duplicated 22-line Param/Let blocks. (4) Add assertion when type_args is non-empty on enum match.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T13:20:26.256Z",
+        "updatedAt": "2026-04-20T14:01:14.585Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -42729,7 +42729,13 @@
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/src/engine_purposes.rs",
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Split reify-eval/src/lib.rs `impl Engine` block across sibling files"
+            ]
+          }
         }
       },
       {
@@ -43193,7 +43199,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T14:01:13.142Z",
+      "lastModified": "2026-04-20T14:01:14.586Z",
       "taskCount": 2050,
       "completedCount": 1753,
       "tags": [
