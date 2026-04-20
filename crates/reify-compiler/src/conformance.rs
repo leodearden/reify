@@ -901,6 +901,107 @@ pub(crate) fn collect_all_requirements(
     }
 }
 
+/// Verify that a compiled arg value's type conforms to the declared param type
+/// in the target structure when the declared type is `Type::TraitObject(trait_name)`.
+///
+/// Skips silently when:
+/// - The target template is not found (external/unknown structure).
+/// - The arg name is not found in the target's value cells (positional arg or error).
+/// - The declared param type is not `Type::TraitObject` (existing `type_compatible` handles it).
+/// - The arg_type is `Type::Error` (anti-cascade: treat as pass-through).
+///
+/// Emits at most one diagnostic per call.
+pub(crate) fn check_trait_arg_conformance(
+    target_name: &str,
+    arg_name: &str,
+    arg_type: &Type,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Anti-cascade: if the arg itself had a compilation error, skip.
+    if matches!(arg_type, Type::Error) {
+        return;
+    }
+
+    // Look up the target template — skip if not found (external/forward-ref miss).
+    let Some(target) = template_registry.get(target_name) else {
+        return;
+    };
+
+    // Find the declared param cell for this arg name.
+    let Some(cell) = target.value_cells.iter().find(|vc| vc.id.member == arg_name) else {
+        return; // Arg name not found — skip (positional arg or existing error).
+    };
+
+    // Only act when the param's declared type is a trait object.
+    let Type::TraitObject(required_trait) = &cell.cell_type else {
+        return; // Non-trait param — existing type_compatible path handles it.
+    };
+
+    // Check conformance based on arg_type.
+    match arg_type {
+        Type::StructureRef(struct_name) => {
+            // Look up the arg's structure template and walk its trait bounds.
+            let Some(arg_template) = template_registry.get(struct_name.as_str()) else {
+                return; // Arg structure not compiled yet — skip.
+            };
+            if !satisfies_trait_bound(
+                &arg_template.trait_bounds,
+                required_trait,
+                trait_registry,
+            ) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type '{}' does not conform to trait '{}' required by param '{}'",
+                        struct_name, required_trait, arg_name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!(
+                            "type '{}' does not conform to trait '{}'",
+                            struct_name, required_trait
+                        ),
+                    )),
+                );
+            }
+        }
+        Type::TraitObject(arg_trait_name) => {
+            // Trait-object arg: check that arg_trait refines (or equals) required_trait.
+            let mut visited = HashSet::new();
+            if !trait_satisfies(arg_trait_name, required_trait, trait_registry, &mut visited) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type '{}' does not conform to trait '{}' required by param '{}'",
+                        arg_trait_name, required_trait, arg_name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!(
+                            "trait '{}' does not refine trait '{}'",
+                            arg_trait_name, required_trait
+                        ),
+                    )),
+                );
+            }
+        }
+        _ => {
+            // Neither StructureRef nor TraitObject — cannot conform to a trait.
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type '{}' does not conform to trait '{}' required by param '{}'",
+                    arg_type, required_trait, arg_name
+                ))
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    format!("expected a type conforming to trait '{}'", required_trait),
+                )),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

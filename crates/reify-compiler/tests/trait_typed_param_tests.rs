@@ -326,6 +326,40 @@ fn alias_wins_over_trait_name_for_param_type() {
 
 // ─── Call-site conformance tests (task 1874) ─────────────────────────────────
 
+/// DEBUG: what type does NotAMaterial() produce as an arg?
+#[test]
+fn debug_what_type_does_not_a_material_get() {
+    let source = r#"
+        structure def Host { param m : Material }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Top {
+            sub x = Host(m = NotAMaterial())
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+    let diagnostics_dump: Vec<String> = module
+        .diagnostics
+        .iter()
+        .map(|d| format!("[{:?}] {}", d.severity, d.message))
+        .collect();
+    let host_cells: Vec<String> = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .map(|t| {
+            t.value_cells
+                .iter()
+                .map(|vc| format!("{:?}: {:?}", vc.id, vc.cell_type))
+                .collect()
+        })
+        .unwrap_or_default();
+    panic!(
+        "DEBUG INFO:\ndiagnostics: {:?}\nHost cells: {:?}",
+        diagnostics_dump,
+        host_cells
+    );
+}
+
 /// Negative test: passing a non-conforming struct to a trait-typed param must
 /// produce an error containing "does not conform to trait" and the trait name.
 ///

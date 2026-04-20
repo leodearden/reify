@@ -882,6 +882,23 @@ pub(crate) fn compile_with_prelude_refs(
                         span,
                     );
                 }
+                PendingBoundCheck::TraitArgConformance {
+                    target_name,
+                    arg_name,
+                    arg_type,
+                    sub_name: _,
+                    span,
+                } => {
+                    check_trait_arg_conformance(
+                        &target_name,
+                        &arg_name,
+                        &arg_type,
+                        span,
+                        &template_registry,
+                        &trait_registry,
+                        &mut diagnostics,
+                    );
+                }
             }
         }
     }

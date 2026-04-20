@@ -837,6 +837,19 @@ pub(crate) fn compile_entity(
                     });
                 }
 
+                // TraitArgConformance: defer one check per named arg so that
+                // forward-referenced target structures (and their param types)
+                // are available in the template registry during the post-pass.
+                for (arg_name, compiled_arg) in &compiled_args {
+                    pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
+                        target_name: sub.structure_name.clone(),
+                        arg_name: arg_name.clone(),
+                        arg_type: compiled_arg.result_type.clone(),
+                        sub_name: sub.name.clone(),
+                        span: sub.span,
+                    });
+                }
+
                 // Compile the sub's where_clause into guard_expr (used by termination check).
                 // If compilation emits any diagnostics (errors), store None rather than
                 // Some(broken_expr). This prevents the termination check from seeing a guard
@@ -1698,6 +1711,16 @@ pub(crate) enum PendingBoundCheck {
         type_params: Vec<reify_types::TypeParam>,
         type_args: Vec<Type>,
         target_name: String,
+        span: SourceSpan,
+    },
+    /// Deferred call-site conformance check for a trait-typed param slot.
+    /// Enqueued at the sub-compile site; dispatched in the post-compilation
+    /// pass where both the template registry and trait registry are available.
+    TraitArgConformance {
+        target_name: String,
+        arg_name: String,
+        arg_type: Type,
+        sub_name: String,
         span: SourceSpan,
     },
 }
