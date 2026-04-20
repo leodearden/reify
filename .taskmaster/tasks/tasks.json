@@ -43051,11 +43051,17 @@
         "description": "The PathBuf/CliToolContext::new pattern is duplicated across many tests in crates/reify-cli/src/mcp_context.rs (lines 807, 832, 865, 891, 931, 1115, 1136). Introduce a private `fn fresh_ctx() -> CliToolContext` helper in the test module and update sites to use it. Source: review_comprehensive on Task 2015 (code_reuse). Run `cargo test -p reify-cli`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T15:55:05.527Z"
+        "updatedAt": "2026-04-20T16:00:22.481Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "cb4146af77425c30004e81fc1cc62cc96adfe36e",
+            "note": "Already merged on main via commits 1d1ef1e5f, cb4146af7, 89835e8fa, 2f25b62ec. fresh_ctx() helper exists at lines 801-806 of crates/reify-cli/src/mcp_context.rs and is called at all 8 migrated sites. Smoke test fresh_ctx_provides_default_fixture_dir_context also present. Worktree diff vs main for this file is empty."
+          }
+        }
       },
       {
         "id": "2048",
@@ -43284,9 +43290,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T15:55:05.527Z",
+      "lastModified": "2026-04-20T16:00:22.481Z",
       "taskCount": 2050,
-      "completedCount": 1768,
+      "completedCount": 1769,
       "tags": [
         "master"
       ]
