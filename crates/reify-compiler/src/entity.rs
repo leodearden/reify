@@ -840,15 +840,17 @@ pub(crate) fn compile_entity(
                 // TraitArgConformance: defer one check per named arg so that
                 // forward-referenced target structures (and their param types)
                 // are available in the template registry during the post-pass.
-                for (arg_name, compiled_arg) in &compiled_args {
-                    // When the arg was compiled from a zero-arg FunctionCall
-                    // expression (e.g. `Steel()`), capture the callee name so
-                    // the post-pass can recognise structure-instantiation calls
-                    // whose result_type defaulted to Type::Real.
+                // Zip sub.args (carries the original Expr with its source span)
+                // with compiled_args so we can use per-arg spans in diagnostics.
+                for ((_, arg_expr), (arg_name, compiled_arg)) in
+                    sub.args.iter().zip(compiled_args.iter())
+                {
+                    // Capture the callee name from any FunctionCall expression
+                    // (e.g. `Steel()` or `Steel(density: 100.0)`).  The post-pass
+                    // promoter gates on `template_registry.contains_key(call_name)`
+                    // so non-structure calls are unaffected.
                     let arg_call_name = match &compiled_arg.kind {
-                        CompiledExprKind::FunctionCall { function, args }
-                            if args.is_empty() =>
-                        {
+                        CompiledExprKind::FunctionCall { function, .. } => {
                             Some(function.name.clone())
                         }
                         _ => None,
@@ -858,7 +860,7 @@ pub(crate) fn compile_entity(
                         arg_name: arg_name.clone(),
                         arg_type: compiled_arg.result_type.clone(),
                         arg_call_name,
-                        span: sub.span,
+                        span: arg_expr.span,
                     });
                 }
 
@@ -1730,15 +1732,16 @@ pub(crate) enum PendingBoundCheck {
     /// pass where both the template registry and trait registry are available.
     ///
     /// `arg_call_name` captures the function-call name when the arg was compiled
-    /// from a zero-arg `FunctionCall` expression (e.g. `Steel()` → Some("Steel")).
-    /// The post-pass uses this to recognise structure-instantiation calls whose
-    /// `arg_type` resolved to `Type::Real` (the expression compiler's fallback
-    /// for zero-arg unknown functions) and look them up in the template registry.
+    /// from any `FunctionCall` expression (e.g. `Steel()` or `Steel(density: 1.0)`
+    /// → Some("Steel")).  The post-pass uses this to recognise structure-
+    /// instantiation calls whose `arg_type` resolved to `Type::Real` (the
+    /// expression compiler's fallback for unknown calls) and promotes them to
+    /// `Type::StructureRef(name)` before walking the trait bounds.
     TraitArgConformance {
         target_name: String,
         arg_name: String,
         arg_type: Type,
-        /// When the compiled arg was a zero-arg FunctionCall (potential structure
+        /// When the compiled arg was a FunctionCall (potential structure
         /// instantiation), the callee name. `None` for non-call expressions.
         arg_call_name: Option<String>,
         span: SourceSpan,
