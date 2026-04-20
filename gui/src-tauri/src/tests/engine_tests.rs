@@ -1443,7 +1443,7 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
         );
     }
     // "Two convergent implementations agree" invariant must also hold at the
-    // prelude sentinel (u32::MAX).  Without the sentinel short-circuit, the
+    // prelude sentinel (SourceSpan::PRELUDE_SENTINEL_OFFSET).  Without the sentinel short-circuit, the
     // fast path computes line_offsets.len() + 1 (a past-last-line value) while
     // byte_offset_to_line_col returns (1, 1).
     let sentinel = reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET;
@@ -1451,7 +1451,7 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
     let orig_sentinel = byte_offset_to_line_col(source, sentinel);
     assert_eq!(
         fast_sentinel, orig_sentinel,
-        "sentinel: fast={:?} original={:?} — two convergent implementations must agree at u32::MAX",
+        "sentinel: fast={:?} original={:?} — two convergent implementations must agree at SourceSpan::PRELUDE_SENTINEL_OFFSET",
         fast_sentinel, orig_sentinel
     );
     assert_eq!(
