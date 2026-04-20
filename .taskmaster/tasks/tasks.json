@@ -41446,11 +41446,11 @@
         "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed Diagnostic and push internally, removing pre_push_len bookkeeping at ~25 call sites. Apply equivalently to make_poison_type. Source: review suggestion S1 in esc-1921-36 (api_ergonomics).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-19T17:40:46.988Z",
+        "updatedAt": "2026-04-20T07:47:45.807Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/expr.rs"
@@ -42351,7 +42351,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T07:47:44.727Z",
+      "lastModified": "2026-04-20T07:47:45.808Z",
       "taskCount": 2009,
       "completedCount": 1715,
       "tags": [
