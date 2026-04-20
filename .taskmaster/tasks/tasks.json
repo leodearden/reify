@@ -42801,9 +42801,13 @@
         "subtasks": [],
         "metadata": {
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "reify-compiler",
+              "integration tests"
+            ],
             "queries": [
-              "resolution for: Move reify-compiler lib.rs `mod tests` to integration test file"
+              "reify-compiler lib.rs mod tests integration test file relocation",
+              "test file organization reify-compiler conformance tests"
             ]
           },
           "files": [
