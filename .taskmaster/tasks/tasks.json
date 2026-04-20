@@ -20610,7 +20610,8 @@
         "updatedAt": "2026-04-20T11:33:35.506Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs"
@@ -42682,7 +42683,9 @@
       "completedCount": 1730,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-20T11:39:05.681Z",
+      "description": "Tasks for master context"
     }
   }
 }
