@@ -41741,7 +41741,7 @@
         "description": "Reviewer flagged that gui/dist/ bundle artifacts (content-hashed index-*.js/css/html) are committed to the repo. gui/dist/ is not in .gitignore; rebuilds produce new hashed filenames so stale cruft accumulates and diffs become unreviewable.",
         "details": "Confirmed: `git ls-files gui/dist/` lists 4 tracked files (index-B2FX6bgf.css, index-BzOqUXNy.js, index-EEPNKkzg.js, index.html). .gitignore already ignores gui/sidecar/dist/ but not gui/dist/.\n\nSteps:\n1. Add `gui/dist/` to .gitignore alongside the existing gui/sidecar/dist/ entry.\n2. `git rm -r --cached gui/dist/` to untrack the 4 files.\n3. Confirm Tauri packaging does not require committed builds; if it does, pin a single non-hashed output path or use git-lfs — do not track content-hashed bundles.\n\nSource: reviewer_comprehensive on task 1768 review.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41753,7 +41753,7 @@
             "gui/dist"
           ]
         },
-        "updatedAt": "2026-04-20T07:28:30.855Z"
+        "updatedAt": "2026-04-20T07:28:38.015Z"
       },
       {
         "id": "1992",
@@ -42345,7 +42345,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-20T07:28:37.338Z",
+      "lastModified": "2026-04-20T07:28:38.015Z",
       "taskCount": 2009,
       "completedCount": 1714,
       "tags": [
