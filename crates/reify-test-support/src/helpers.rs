@@ -835,6 +835,47 @@ mod tests {
         );
     }
 
+    /// error_diags should return only the `Severity::Error` entries from a
+    /// mixed-severity slice, preserving referential identity.
+    #[test]
+    fn error_diags_filters_errors_from_mixed_severities() {
+        let diags = vec![
+            Diagnostic::error("first error"),
+            Diagnostic::warning("a warning"),
+            Diagnostic::info("an info note"),
+        ];
+        let errors = super::error_diags(&diags);
+        assert_eq!(
+            errors.len(),
+            1,
+            "error_diags should return exactly one entry for this fixture"
+        );
+        assert_eq!(
+            errors[0].severity,
+            Severity::Error,
+            "the single returned diagnostic must have Severity::Error"
+        );
+        assert_eq!(
+            errors[0].message, "first error",
+            "returned diagnostic message should match the original Error entry"
+        );
+    }
+
+    /// error_diags should return an empty Vec for an empty input slice.
+    #[test]
+    fn error_diags_empty_slice_returns_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        assert!(super::error_diags(&diags).is_empty());
+    }
+
+    /// error_diags should return an empty Vec when the input contains only
+    /// non-Error diagnostics (warning-only input).
+    #[test]
+    fn error_diags_warning_only_returns_empty() {
+        let diags = vec![Diagnostic::warning("just a warning")];
+        assert!(super::error_diags(&diags).is_empty());
+    }
+
     #[test]
     fn test_warnings_only_filters_correctly() {
         // Use warn_source_with_unknown_port_type which produces warnings.
