@@ -744,6 +744,11 @@ pub(crate) fn compile_geometry_op(
                     // Reject sub-picoradian angles as degenerate: an angle at
                     // the f64 rounding floor cannot produce a meaningful
                     // revolve. Warn so model authors see a specific explanation.
+                    //
+                    // `.abs()` pins sign-symmetric semantics — small negative
+                    // angles are rejected identically to small positive ones.
+                    // See `build_revolve_angle_negative_just_below_threshold_rejected`
+                    // in `tests/geometry_error_handling.rs`.
                     if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
                         diagnostics.push(Diagnostic::warning(format!(
                             "revolve dropped: angle={} rad is degenerate \
