@@ -3783,4 +3783,62 @@ mod tests {
             diagnostics
         );
     }
+
+    /// Drives the `Result<GeometryOp, String>` API: a missing required arg must
+    /// cause `compile_geometry_op` to return `Err(msg)` where `msg` names both
+    /// the missing argument and the op kind, so callers can emit a specific
+    /// Error diagnostic instead of a generic one.
+    ///
+    /// Uses Revolve missing `ox` as the representative case because Revolve has
+    /// the most required f64 args (7) and `ox` is the last one resolved, making
+    /// it easy to isolate without triggering other validation guards.
+    #[test]
+    fn compile_geometry_op_missing_arg_returns_err_with_arg_name() {
+        let step_handles = vec![GeometryHandleId(1)];
+        let values = ValueMap::new();
+
+        // Revolve with all required args EXCEPT ox — drives the Result API.
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+                // "ox" deliberately omitted — drives Result<_, String> API
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // The Result-typed API must return Err containing the arg name and op kind.
+        // This assertion fails to compile with the current Option<_> return type.
+        assert!(
+            result.is_err(),
+            "missing 'ox' should return Err, got: {:?}",
+            result
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("ox"),
+            "error message should mention the missing arg 'ox', got: {:?}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("Revolve"),
+            "error message should mention the op kind 'Revolve', got: {:?}",
+            err_msg
+        );
+    }
 }
