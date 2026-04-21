@@ -1745,4 +1745,66 @@ mod tests {
             "Expected 'bound' in structure_constraint_labels"
         );
     }
+
+    /// Phase-contract test for `check_phase_collect_trait_bounds`.
+    ///
+    /// Verifies that the helper populates a MergeContext with the trait requirements
+    /// from the structure's trait bounds. This test fails to compile until the helper
+    /// exists (TDD compile-tripwire) and pins the helper's return type signature.
+    #[test]
+    fn check_phase_collect_trait_bounds_populates_ctx_requirements() {
+        let trait_a = CompiledTrait {
+            name: "TraitA".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "w".to_string(),
+                kind: RequirementKind::Param(Type::Real),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_syntax::TraitBoundRef {
+                name: "TraitA".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+        let trait_registry: HashMap<String, &CompiledTrait> =
+            [("TraitA".to_string(), &trait_a)].into_iter().collect();
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let ctx = check_phase_collect_trait_bounds(
+            &entity_ref,
+            &trait_registry,
+            &structure_members,
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(ctx.requirements.len(), 1, "Expected 1 requirement");
+        assert_eq!(ctx.requirements[0].name, "w", "Expected requirement name 'w'");
+    }
 }
