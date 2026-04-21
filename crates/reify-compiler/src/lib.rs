@@ -209,26 +209,10 @@ pub(crate) fn compile_with_prelude_refs(
     // are compiled and available in the template registry.
     compile_builder::entities_phase::phase_pending_bound_checks(&mut ctx, prelude);
 
-    // Post-compilation pass: detect recursive sub-component cycles.
-    // Build a directed reference graph from sub_components and run DFS to find cycles.
-    // Tag participating templates with is_recursive=true and emit a warning diagnostic.
-    let cyclic_sccs = scc::detect_recursive_structures(&mut ctx.templates, &mut ctx.diagnostics);
-
-    // Post-compilation pass: verify recursive structures have valid termination conditions.
-    // Emits errors for recursive subs without guards or with non-terminating guard heuristics.
-    check_recursive_termination(&ctx.templates, &cyclic_sccs, &mut ctx.diagnostics);
-
-    // Remix is_recursive into each recursive template's content_hash.
-    // detect_recursive_structures() sets is_recursive after each template's initial
-    // content_hash was computed, so without this step two templates with identical raw
-    // content but different recursion status would hash identically — causing incorrect
-    // incremental compilation cache hits. Non-recursive templates are untouched so
-    // existing cache entries remain valid for them.
-    for template in &mut ctx.templates {
-        if template.is_recursive {
-            template.content_hash = template.content_hash.combine(ContentHash::of(&[1u8]));
-        }
-    }
+    // Post-compilation pass: detect recursive sub-component cycles,
+    // validate termination conditions, and remix is_recursive into each
+    // recursive template's content_hash.
+    compile_builder::post_passes::phase_recursion_detection(&mut ctx);
 
     // Check for duplicate function signatures: same name + same param types
     {
