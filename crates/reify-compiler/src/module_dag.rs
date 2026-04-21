@@ -19,6 +19,13 @@ use crate::CompiledModule;
 /// - Other imports resolve relative to `<project_root>/...`
 /// - Dots become path separators
 /// - Tries `<path>.ri` first, then `<path>/mod.ri`
+///
+/// **Precedence for `std.*` paths:** `ModuleDag::compile_module` tries the
+/// filesystem resolver first. If the filesystem lookup fails (e.g., no
+/// stdlib_root directory on disk), the DAG falls back to the pre-compiled
+/// modules returned by `stdlib_loader::load_stdlib()`. This ensures that user
+/// projects without a local stdlib directory still get `import std.units` to
+/// resolve correctly via the embedded copy.
 pub struct ModuleResolver {
     /// Root of the project (for non-std imports).
     pub project_root: PathBuf,
@@ -137,10 +144,35 @@ impl ModuleDag {
             ))]);
         }
 
-        // Resolve to filesystem path
-        let fs_path = resolver
-            .resolve_import_path(module_path)
-            .map_err(|d| vec![d])?;
+        // Detect std.* / bare std paths for embedded-stdlib fallback.
+        // Filesystem lookup is always tried first; the embedded stdlib is only
+        // consulted when the filesystem cannot resolve the module (e.g., no
+        // stdlib_root directory on disk). This preserves the behaviour of
+        // compile_project_stdlib_unit_collision_mentions_stdlib, which places a
+        // real units.ri under stdlib_root and expects the filesystem version to win.
+        let is_std_path = module_path == "std" || module_path.starts_with("std.");
+
+        // Resolve to filesystem path, with embedded-stdlib fallback for std.* paths.
+        let fs_path = match resolver.resolve_import_path(module_path) {
+            Ok(path) => path,
+            Err(fs_err) if is_std_path => {
+                // Filesystem lookup failed for a std.* path — consult the embedded stdlib.
+                let target = reify_types::ModulePath::from_dotted(module_path);
+                if let Some(embedded) = crate::stdlib_loader::load_stdlib()
+                    .iter()
+                    .find(|m| m.path == target)
+                {
+                    // Found in embedded stdlib: clone, record, and return early.
+                    self.topo_order.push(module_path.to_string());
+                    self.modules.insert(module_path.to_string(), embedded.clone());
+                    return Ok(());
+                }
+                // Unknown std.* submodule — surface the original fs error so callers
+                // get a clear diagnostic rather than a silent no-op.
+                return Err(vec![fs_err]);
+            }
+            Err(fs_err) => return Err(vec![fs_err]),
+        };
 
         // Read and parse
         let source = std::fs::read_to_string(&fs_path).map_err(|e| {
