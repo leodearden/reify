@@ -29,6 +29,31 @@ use crate::types::{
 };
 use crate::units::UnitRegistry;
 
+/// Build a combined constraint-def registry: prelude pub defs first
+/// (first-imported wins on cross-prelude name collisions), then local defs
+/// override on name collision with prelude.
+///
+/// Borrows from `local` (module-local constraint defs in ctx) and every prelude
+/// module's `constraint_defs`. Non-pub prelude defs are excluded — only pub
+/// constraint defs are exported. Shadow warnings for cross-prelude name
+/// collisions are NOT emitted here — they were already emitted once in
+/// `defs_phase::emit_constraint_def_shadow_warnings`.
+pub(crate) fn build_constraint_def_registry<'a>(
+    local: &'a [CompiledConstraintDef],
+    prelude: &[&'a CompiledModule],
+) -> HashMap<String, &'a CompiledConstraintDef> {
+    let mut registry: HashMap<String, &'a CompiledConstraintDef> = HashMap::new();
+    for m in prelude {
+        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
+            registry.entry(cd.name.clone()).or_insert(cd);
+        }
+    }
+    for cd in local {
+        registry.insert(cd.name.clone(), cd);
+    }
+    registry
+}
+
 /// Run phase-11 (entity compile) over `parsed.declarations`.
 ///
 /// Constructs phase-local registries (`trait_registry`, `field_registry`,
@@ -51,19 +76,7 @@ pub(crate) fn phase_entities(
     let field_registry: HashMap<String, &CompiledField> =
         ctx.fields.iter().map(|f| (f.name.clone(), f)).collect();
 
-    // Constraint-def registry: prelude pub defs first (without re-warning;
-    // the shadow-warning pass ran in phase-10), then local overrides.
-    // `.entry().or_insert()` encodes the first-imported-wins policy without
-    // a separate sentinel set.
-    let mut constraint_def_registry: HashMap<String, &CompiledConstraintDef> = HashMap::new();
-    for m in prelude {
-        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
-            constraint_def_registry.entry(cd.name.clone()).or_insert(cd);
-        }
-    }
-    for cd in &ctx.constraint_defs {
-        constraint_def_registry.insert(cd.name.clone(), cd);
-    }
+    let constraint_def_registry = build_constraint_def_registry(&ctx.constraint_defs, prelude);
 
     for decl in &parsed.declarations {
         match decl {
