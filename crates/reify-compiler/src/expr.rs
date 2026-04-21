@@ -1163,7 +1163,11 @@ pub(crate) fn compile_expr_guarded(
                         Type::Map(_, v) => Type::List(v.clone()),
                         _ => Type::List(Box::new(Type::Real)),
                     },
-                    _ => Type::Real,
+                    // task-2066: COLLECTION_AGGREGATION_MEMBERS = &["count","sum","keys","values"]
+                    // is the exact whitelist that the outer `if` guard allows through, so this
+                    // arm is structurally unreachable. Replace the silent Type::Real fallback
+                    // with an assertion that fires immediately on contract violation.
+                    _ => unreachable!("COLLECTION_AGGREGATION_MEMBERS restricts member to count/sum/keys/values"),
                 };
                 CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
             } else {
