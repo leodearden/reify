@@ -656,3 +656,94 @@ fn match_no_arms_emits_diagnostic() {
         "expected a diagnostic for match with no arms, got none"
     );
 }
+
+// ── task-2066 step-1: index into non-collection emits diagnostic ─────────
+
+/// Index access on a non-collection type should emit a diagnostic.
+///
+/// `x` has type `Int` (whole-number literal `5`), so `x[0]` hits the
+/// currently-silent `_ => Type::Real` fallback at expr.rs:1323-1328.
+/// Before the fix (task-2066), no diagnostic is emitted — the fallback
+/// silently returns `Type::Real` for `y`.
+///
+/// Regression guard: guards expr.rs:1323-1328 against silent fallback (task-2066).
+#[test]
+fn index_into_non_collection_emits_diagnostic() {
+    let source = r#"
+        structure S {
+            let x = 5
+            let y = x[0]
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // Tighten to a single distinctive substring that appears only in the new diagnostic
+    // (reviewer suggestion: drop the "non-collection" alternative which also appears in the
+    // quantifier diagnostic, making the two tests non-distinct).
+    let has_index_error = errors.iter().any(|d| d.message.contains("cannot index"));
+    assert!(
+        has_index_error,
+        "expected diagnostic about indexing non-collection type, got: {:?}",
+        errors
+    );
+}
+
+// ── task-2066 step-3: quantifier over non-collection emits diagnostic ─────
+
+/// Quantifier over a non-collection type should emit a diagnostic.
+///
+/// `x` has type `Int` (whole-number literal `5`), so `forall i in x : i > 0`
+/// hits the currently-silent `_ => Type::Real` fallback at expr.rs:1635-1642
+/// and silently infers `elem_type = Type::Real` with no diagnostic.
+/// Before the fix (task-2066), no diagnostic is emitted.
+///
+/// Regression guard: guards expr.rs:1635-1642 against silent fallback (task-2066).
+#[test]
+fn quantifier_over_non_collection_emits_diagnostic() {
+    let source = r#"
+        structure S {
+            let x = 5
+            constraint forall i in x : i > 0
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // Tighten to a single distinctive substring (reviewer suggestion: "forall"/"exists"
+    // alternatives are too loose — any unrelated diagnostic mentioning those keywords
+    // would satisfy the assertion while the silent-fallback regression reappeared).
+    let has_iter_error = errors.iter().any(|d| d.message.contains("cannot iterate"));
+    assert!(
+        has_iter_error,
+        "expected diagnostic about iterating over non-collection type, got: {:?}",
+        errors
+    );
+}
+
+// ── task-2066 amend: exists over non-collection emits diagnostic ──────────
+
+/// `exists` quantifier over a non-collection type should emit a diagnostic.
+///
+/// Shares the same compiler arm as `forall` (expr.rs:1652-1671); this twin test
+/// ensures the `exists` code path is also covered as a regression guard.
+///
+/// Regression guard: guards expr.rs:1635-1642 against silent fallback (task-2066).
+#[test]
+fn exists_over_non_collection_emits_diagnostic() {
+    let source = r#"
+        structure S {
+            let x = 5
+            constraint exists i in x : i > 0
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let has_iter_error = errors.iter().any(|d| d.message.contains("cannot iterate"));
+    assert!(
+        has_iter_error,
+        "expected diagnostic about iterating over non-collection type (exists), got: {:?}",
+        errors
+    );
+}

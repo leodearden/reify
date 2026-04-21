@@ -1163,7 +1163,33 @@ pub(crate) fn compile_expr_guarded(
                         Type::Map(_, v) => Type::List(v.clone()),
                         _ => Type::List(Box::new(Type::Real)),
                     },
-                    _ => Type::Real,
+                    // task-2066 amend: this arm is structurally unreachable today — the outer
+                    // `if COLLECTION_AGGREGATION_MEMBERS.contains(...)` guard constrains `member`
+                    // to one of count/sum/keys/values, each of which has an explicit arm above.
+                    // `debug_assert!(false, ...)` panics in debug/test builds to detect drift
+                    // between the const and this match early; in release builds we fall back to an
+                    // error diagnostic + Type::Error (anti-cascade policy) rather than an ICE.
+                    // If you extend COLLECTION_AGGREGATION_MEMBERS, add a matching arm here.
+                    _ => {
+                        debug_assert!(
+                            false,
+                            "COLLECTION_AGGREGATION_MEMBERS restricts member to \
+                             count/sum/keys/values; extend the inner match when you extend the const"
+                        );
+                        let n = diagnostics.len();
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "internal: unknown aggregation member '{}'; \
+                                 expected one of count/sum/keys/values",
+                                member
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unknown aggregation member",
+                            )),
+                        );
+                        make_poison_type(diagnostics, n)
+                    }
                 };
                 CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
             } else {
@@ -1323,7 +1349,20 @@ pub(crate) fn compile_expr_guarded(
                 match &compiled_obj.result_type {
                     Type::List(inner) => (**inner).clone(),
                     Type::Map(_, val) => (**val).clone(),
-                    _ => Type::Real,
+                    // task-2066: emit a diagnostic instead of silently defaulting to Type::Real.
+                    // Anti-cascade policy: Type::Error propagates downstream via existing
+                    // is_error() guards so no cascade of type-mismatch errors follows.
+                    _ => {
+                        let n = diagnostics.len();
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "cannot index into non-collection type '{}': expected List<_> or Map<_,_>",
+                                compiled_obj.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "not indexable")),
+                        );
+                        make_poison_type(diagnostics, n)
+                    }
                 }
             };
             CompiledExpr::index_access(compiled_obj, compiled_idx, result_type)
@@ -1637,7 +1676,21 @@ pub(crate) fn compile_expr_guarded(
             } else {
                 match &compiled_collection.result_type {
                     Type::List(elem) | Type::Set(elem) => *elem.clone(),
-                    _ => Type::Real, // fallback for unresolved types
+                    // task-2066: emit a diagnostic instead of silently defaulting to Type::Real.
+                    // Type::Error propagates into quant_scope so the bound variable also
+                    // carries Type::Error; existing is_error() guards in the predicate suppress
+                    // cascade (anti-cascade policy).
+                    _ => {
+                        let n = diagnostics.len();
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "cannot iterate over non-collection type '{}' in forall/exists: expected List<_> or Set<_>",
+                                compiled_collection.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "not iterable")),
+                        );
+                        make_poison_type(diagnostics, n)
+                    }
                 }
             };
             quant_scope

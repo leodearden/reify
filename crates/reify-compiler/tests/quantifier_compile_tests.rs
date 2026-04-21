@@ -114,15 +114,20 @@ structure S {
     }
 }
 
-/// step-13: Compile a lambda wrapping a quantifier, e.g. `|items| forall x in items: x > 0`,
+/// step-13: Compile a lambda wrapping a quantifier, e.g. `|items| forall x in [items]: x > 0`,
 /// and assert the lambda's `captures` vec does NOT contain the quantifier's bound variable `x`.
 /// This exposes a bug in `collect_body_refs_inner` where the Quantifier arm blindly recurses
 /// into the predicate without filtering out `variable_id`.
+///
+/// Note: `[items]` wraps the untyped lambda param (which defaults to Real) in a List literal,
+/// producing a `List<Real>` collection that satisfies the quantifier type-check introduced in
+/// task-2066. The capture-analysis behavior under test is unchanged: `items` is still a lambda
+/// param (not a capture) and `x` is still a quantifier bound variable (not a capture).
 #[test]
 fn lambda_containing_forall_has_correct_captures() {
     let source = r#"
 structure S {
-    let checker = |items| forall x in items: x > 0
+    let checker = |items| forall x in [items]: x > 0
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_quant_cap"));
@@ -167,7 +172,9 @@ structure S {
                 );
             }
             // captures should be empty since `items` is a lambda param (not a capture)
-            // and `x` is a quantifier bound variable (should be excluded)
+            // and `x` is a quantifier bound variable (should be excluded).
+            // `[items]` references `items` as the list element — `items` is still a param,
+            // not an external capture.
             assert!(
                 captures.is_empty(),
                 "expected no captures (items is a lambda param, x is a quantifier var), got: {:?}",
