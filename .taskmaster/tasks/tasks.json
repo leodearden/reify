@@ -8546,7 +8546,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "pending",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -8571,7 +8571,7 @@
           "_causation_id": "887cc4b8-99d3-43d5-8c9c-a0b027cdaca9"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-21T19:43:26.116Z"
+        "updatedAt": "2026-04-21T23:09:07.861Z"
       },
       {
         "id": "398",
@@ -44153,14 +44153,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T22:38:05.565Z",
+      "lastModified": "2026-04-21T23:09:07.861Z",
       "taskCount": 2081,
       "completedCount": 1822,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T22:38:06.775Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
