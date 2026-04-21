@@ -44045,12 +44045,13 @@
         "description": "In engine_edit.rs edit_source Phase 1 (lines 1333-1341), `has_dirty_guards` fires on (a) structure_controlling in dirty cone, (b) structure_controlling in changed_set, or (c) an `added` cell that is a current member/else_member. It does NOT fire when a cell's ROLE within an existing guarded group flips — e.g., a source edit moves `let foo` from the `where` branch to the `else` branch — while the cell's `content_hash` is unchanged. In that case the cell is not in `changed` (hash equal), not in `added` (still present), and the guard_cell isn't dirty. Step 12 won't re-evaluate it (not in dirty_cone), and Phase 1 won't run to route it through the deactivate path. The preserved old snapshot value survives on the wrong branch, diverging from cold eval.\n\nFix options:\n1. Compute a per-cell `old_role_in_any_group` vs `new_role_in_any_group` diff using old/new `guarded_groups`, and include the affected member ids in `changed_set` or a trigger condition.\n2. Alternatively, make guarded-group membership contribute to ValueCellNode `content_hash` so a role swap surfaces as `changed` naturally.\n\nAdd a cross-check test in tests/edit_source.rs that performs exactly this edit (move a let between where/else branches without changing its expr) and compares incremental result to cold eval.\n\nmemory_hints:\n- search: \"guarded_groups structure_controlling Phase 1\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2016"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-21T22:22:02.853Z"
       },
       {
         "id": "2085",
@@ -44106,7 +44107,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T22:21:59.382Z",
+      "lastModified": "2026-04-21T22:22:02.853Z",
       "taskCount": 2080,
       "completedCount": 1820,
       "tags": [
