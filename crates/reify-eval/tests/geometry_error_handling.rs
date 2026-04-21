@@ -2243,3 +2243,173 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
         &["revolve dropped", "angle", "degenerate"],
     );
 }
+
+// ---------------------------------------------------------------------------
+// Circular / Mirror pattern missing-arg coverage
+// ---------------------------------------------------------------------------
+
+/// Circular pattern dispatch rejects a missing `count` argument at compile
+/// time. The Warning message identifies both the arg name and the kind name
+/// (lowercase `circular` via the Display impl).
+#[test]
+fn build_circular_pattern_missing_count_no_kernel_error() {
+    use reify_compiler::PatternKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    // Circular pattern with full ox/oy/oz/ax/ay/az/angle but no `count`.
+    let circular_op = CompiledGeometryOp::Pattern {
+        kind: PatternKind::Circular,
+        target: GeomRef::Step(0),
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("angle".into(), real_literal(90.0)),
+            // count deliberately omitted
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, circular_op])
+        .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_circular_missing_count",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "count", "circular"],
+    );
+}
+
+/// Circular pattern dispatch rejects a missing `ax` (first axis-direction
+/// component) at compile time. `ax` is read after ox/oy/oz; this exercises
+/// the Circular arm after the origin components already resolved.
+#[test]
+fn build_circular_pattern_missing_axis_no_kernel_error() {
+    use reify_compiler::PatternKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    // Circular pattern missing `ax` (axis X-component).
+    let circular_op = CompiledGeometryOp::Pattern {
+        kind: PatternKind::Circular,
+        target: GeomRef::Step(0),
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            // ax deliberately omitted
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("count".into(), real_literal(3.0)),
+            ("angle".into(), real_literal(90.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, circular_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_circular_missing_ax"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "ax", "circular"],
+    );
+}
+
+/// Mirror pattern dispatch rejects a missing `ox` (plane origin X) at
+/// compile time. First f64 arg in the Mirror arm; exercises the arm's
+/// entry.
+#[test]
+fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
+    use reify_compiler::PatternKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let mirror_op = CompiledGeometryOp::Pattern {
+        kind: PatternKind::Mirror,
+        target: GeomRef::Step(0),
+        args: vec![
+            // ox deliberately omitted
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("nx".into(), real_literal(0.0)),
+            ("ny".into(), real_literal(0.0)),
+            ("nz".into(), real_literal(1.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, mirror_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_mirror_missing_ox"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "ox", "mirror"],
+    );
+}
