@@ -1803,6 +1803,38 @@ describe('viewStateStore — reorderUserViews', () => {
       dispose();
     });
   });
+
+  it('(f) after reorderUserViews, every id returned by getOrderedViewIds resolves to a view in state.views (transactional invariant)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const id1 = store.createView('First');
+      const id2 = store.createView('Second');
+      const id3 = store.createView('Third');
+
+      const result = store.reorderUserViews([id3, id1, id2]);
+      expect(result).toBe(true);
+
+      const ordered = store.getOrderedViewIds();
+      // Every id must resolve to a view in state.views
+      for (const id of ordered) {
+        expect(store.state.views[id]).toBeDefined();
+      }
+      // User-view suffix should reflect the new order
+      const userSuffix = ordered.filter((id) => !id.startsWith('auto:'));
+      expect(userSuffix).toEqual([id3, id1, id2]);
+      // Auto views still precede user views — every auto id must come before every user id
+      const autoIndices = ordered
+        .map((id, i) => (id.startsWith('auto:') ? i : -1))
+        .filter((i) => i >= 0);
+      const userIndices = ordered
+        .map((id, i) => (!id.startsWith('auto:') ? i : -1))
+        .filter((i) => i >= 0);
+      expect(autoIndices.length).toBeGreaterThan(0);
+      expect(Math.max(...autoIndices)).toBeLessThan(Math.min(...userIndices));
+      dispose();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2002,6 +2034,30 @@ describe('viewStateStore — deleteView', () => {
       store.deleteView(id2);
       // activeViewId should not change
       expect(store.state.activeViewId).toBe(id1);
+      dispose();
+    });
+  });
+
+  it('(e) after deleteView, every id returned by getOrderedViewIds resolves to a view in state.views (transactional invariant)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const idA = store.createView('A');
+      const idB = store.createView('B');
+      const idC = store.createView('C');
+
+      store.deleteView(idB);
+
+      const ordered = store.getOrderedViewIds();
+      // Deleted id must not appear
+      expect(ordered).not.toContain(idB);
+      // Every remaining id must resolve to a view in state.views
+      for (const id of ordered) {
+        expect(store.state.views[id]).toBeDefined();
+      }
+      // The surviving user views are still present
+      expect(ordered).toContain(idA);
+      expect(ordered).toContain(idC);
       dispose();
     });
   });

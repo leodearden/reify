@@ -986,3 +986,68 @@ fn root_level_non_cyclic_lets_no_false_positive() {
         .expect("S.a should exist");
     assert_eq!(*a_val, Value::Int(4), "a should be b+1 = 4");
 }
+
+/// A Let-kind cell with `default_expr = None` must be silently skipped by
+/// `evaluate_let_bindings` — no panic, no spurious result.
+///
+/// Characterization test pinning the None-default_expr branch so that any
+/// future edit that silently drops the kind-check or filter_map None-handling
+/// will cause a test failure (or panic).
+///
+/// `TopologyTemplateBuilder::let_binding` always requires an expr, so we
+/// inject the rare Let/None shape by pushing directly onto `template.value_cells`
+/// after building (the field is public).
+#[test]
+fn evaluate_let_bindings_skips_let_cell_without_default_expr() {
+    use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
+    use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
+
+    // Build a template with one normal let-binding (the "good" cell).
+    let mut template = TopologyTemplateBuilder::new("S")
+        .let_binding("S", "good", Type::Int, literal(Value::Int(7)))
+        .build();
+
+    // Inject a Let cell with no default_expr — the rare Let/None shape.
+    // This must be filtered out by evaluate_let_bindings without panicking.
+    template.value_cells.push(ValueCellDecl {
+        id: ValueCellId::new("S", "bad"),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::Int,
+        default_expr: None,
+        solver_hints: vec![],
+        span: SourceSpan::new(0, 0),
+    });
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    // Must not panic.
+    let result = engine.eval(&module);
+
+    // The good let-binding should evaluate normally.
+    let good_val = result.values.get(&ValueCellId::new("S", "good"));
+    assert_eq!(
+        good_val,
+        Some(&Value::Int(7)),
+        "S.good should evaluate to Int(7), got {:?}",
+        good_val,
+    );
+
+    // The Let cell with no default_expr must be absent from result.values.
+    // The engine only writes to `values` for cells it evaluates; a Let cell
+    // with `default_expr = None` is filtered out by `evaluate_let_bindings`
+    // before the evaluation loop, so it is never inserted — the value is
+    // absent, not Undef.  Asserting exact absence (not an OR) locks this in
+    // as a characterization test: if a future change silently writes stale
+    // data for unevaluated Let cells, this assertion will catch it.
+    let bad_val = result.values.get(&ValueCellId::new("S", "bad"));
+    assert!(
+        bad_val.is_none(),
+        "S.bad (Let with no default_expr) must be absent from result.values, got {:?}",
+        bad_val,
+    );
+}

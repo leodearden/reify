@@ -54,25 +54,21 @@ export const ViewSelector: Component<ViewSelectorProps> = (props) => {
 
   /**
    * All views in canonical display order via the store's single source of truth.
-   * Warns in dev when userViewOrder references an id absent from state.views,
-   * which would indicate a transactional inconsistency in deleteView /
-   * reorderUserViews.
+   * Throws when an id returned by getOrderedViewIds is missing from state.views —
+   * invariant is enforced at the boundary rather than masked; maintained by
+   * viewStateStore's transactional deleteView/reorderUserViews.
    */
   const orderedViews = createMemo(() => {
     const ids = props.store.getOrderedViewIds();
-    const result = [];
-    for (const id of ids) {
+    return ids.map((id) => {
       const v = props.store.state.views[id];
-      if (v) {
-        result.push(v);
-      } else if (import.meta.env.DEV) {
-        console.warn(
-          `[ViewSelector] id "${id}" is in the ordered view list but missing from state.views — ` +
-            'this indicates a bug in deleteView or reorderUserViews.',
+      if (!v)
+        throw new Error(
+          `[ViewSelector] orderedViews: id "${id}" returned by getOrderedViewIds is missing from state.views` +
+            ' — indicates a transactional bug in viewStateStore.deleteView or reorderUserViews.',
         );
-      }
-    }
-    return result;
+      return v;
+    });
   });
 
   /** Auto views in display order (auto:default pinned first). */

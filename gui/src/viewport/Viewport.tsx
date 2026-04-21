@@ -5,8 +5,18 @@ import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
 import { createSelection } from './selection';
+import type { ViewportStore, CameraState } from '../stores';
 
 export interface ViewportProps {
+  /**
+   * Stable identifier for this viewport instance (e.g. "design-main"). Required.
+   *
+   * **Captured at mount** — this value (and `viewportStore` below) are read once
+   * inside `onMount` and must not change for the lifetime of the component. If the
+   * parent needs to repurpose the canvas for a different viewport, unmount and
+   * remount the `<Viewport>` with the new `viewportId`.
+   */
+  viewportId: string;
   meshes: Record<string, MeshData>;
   onHover?: (path: string | null) => void;
   onSelect?: (path: string | null, modifiers?: { ctrl: boolean; shift: boolean }) => void;
@@ -19,6 +29,18 @@ export interface ViewportProps {
   flyToEntityRef?: (fn: (entityPath: string) => void) => void;
   fitToViewRef?: (fn: () => void) => void;
   entityVisibility?: Record<string, VisibilityState>;
+  /**
+   * Optional viewport store. When provided, the saved camera state for
+   * `viewportId` is applied on mount and persisted once per interaction via
+   * the OrbitControls `'end'` event (fires once when the user releases
+   * pointer/touch — not on every damping frame). When absent, camera state
+   * is ephemeral (existing behaviour).
+   *
+   * **Captured at mount** — like `viewportId`, this reference is captured
+   * once inside `onMount` and must not change for the component lifetime.
+   * To swap the store, unmount and remount the `<Viewport>`.
+   */
+  viewportStore?: ViewportStore;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -72,8 +94,44 @@ export function Viewport(props: ViewportProps) {
       needsRender = true;
     }
 
+    // Restore saved camera from viewportStore before the first frame (if provided).
+    // This must happen after requestRender is in scope but before reactive effects
+    // and the animation loop start.
+    const savedVp = props.viewportStore?.getViewport(props.viewportId);
+    if (savedVp) {
+      const cam = savedVp.camera;
+      camera.position.set(...cam.position);
+      camera.up.set(...cam.up);
+      controls.controls.target.set(...cam.target);
+      camera.zoom = cam.zoom ?? 1;
+      camera.updateProjectionMatrix();
+      controls.update();
+      requestRender();
+    }
+
+    // Snapshot helper — reads current camera/controls state into a plain CameraState.
+    // Guard .zoom with ?? 1 to tolerate mocks that may omit it.
+    function snapshotCamera(): CameraState {
+      return {
+        position: [camera.position.x, camera.position.y, camera.position.z],
+        target: [controls.controls.target.x, controls.controls.target.y, controls.controls.target.z],
+        up: [camera.up.x, camera.up.y, camera.up.z],
+        zoom: camera.zoom ?? 1,
+      };
+    }
+
+    // Camera persistence handler — fires once when interaction ends ('end' event).
+    // Using 'end' rather than 'change' avoids ~60 store writes/second during
+    // OrbitControls damping; saves the last resting pose instead.
+    // No-op when viewportStore is absent (ephemeral camera mode).
+    function persistCamera() {
+      props.viewportStore?.updateCamera(props.viewportId, snapshotCamera());
+    }
+
     // OrbitControls 'change' event fires during camera movement (including damping)
     controls.controls.addEventListener('change', requestRender);
+    // 'end' fires once per interaction (pointerup/touchend) — correct granularity for persistence
+    controls.controls.addEventListener('end', persistCamera);
 
     // Sync grid/axes visibility
     createEffect(() => {
@@ -179,6 +237,7 @@ export function Viewport(props: ViewportProps) {
       disposed = true;
       cancelAnimationFrame(animationFrameId);
       controls.controls.removeEventListener('change', requestRender);
+      controls.controls.removeEventListener('end', persistCamera);
       resizeObserver.disconnect();
       selection.dispose();
       controls.dispose();

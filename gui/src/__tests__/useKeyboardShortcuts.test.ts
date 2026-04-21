@@ -433,6 +433,19 @@ describe('useKeyboardShortcuts — onSwitchViewByIndex number-key dispatch (VM-6
     expect(onSwitchViewByIndex).not.toHaveBeenCalled();
   });
 
+  it('Meta+1 does NOT call onSwitchViewByIndex (modifier guard)', () => {
+    const onSwitchViewByIndex = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSwitchViewByIndex });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '1', metaKey: true, bubbles: true }),
+    );
+    expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+  });
+
   it('number key in an <input> does NOT call onSwitchViewByIndex (isTypingContext guard)', () => {
     const onSwitchViewByIndex = vi.fn();
     dispose = createRoot((d) => {

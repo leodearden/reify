@@ -2973,3 +2973,45 @@ describe('App — view selector and COW integration', () => {
     );
   });
 });
+
+describe('Viewport wiring', () => {
+  it('passes viewportId="design-main" to Viewport', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedViewportProps.viewportId).toBe('design-main'));
+  });
+
+});
+
+describe('Viewport view sync', () => {
+  function makeNode(entity_path: string) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children: [] };
+  }
+
+  it('initial viewId tracks viewStateStore.activeViewId ("auto:default")', async () => {
+    await renderAndWaitForReady();
+    const store = capturedViewportProps.viewportStore;
+    // The createEffect should sync the initial activeViewId to the viewport immediately
+    await waitFor(() => expect(store.getViewport('design-main').viewId).toBe('auto:default'));
+  });
+
+  it('viewId updates when a COW switch changes the active view', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    const store = capturedViewportProps.viewportStore;
+
+    // Initial state: auto:default
+    await waitFor(() => expect(store.getViewport('design-main').viewId).toBe('auto:default'));
+
+    // Trigger a COW via eye-icon click — creates a new user view and switches to it
+    await waitFor(() => expect(screen.getByTestId('eye-icon-Root.A')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+
+    // The new user view should be the active view; viewId must reflect it
+    await waitFor(() => {
+      const viewId = store.getViewport('design-main').viewId;
+      expect(viewId).not.toBeNull();
+      expect(viewId).not.toBe('auto:default');
+      expect(viewId).toMatch(/^user:/);
+    });
+  });
+});

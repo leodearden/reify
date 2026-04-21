@@ -6773,7 +6773,16 @@
         "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.2",
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-compiler/tests/compile_api_tests.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/tube_pipe_e2e.rs",
+            "crates/reify-kernel-occt/src/lib.rs",
+            "crates/reify-types/src/geometry.rs"
+          ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": []
         },
@@ -8170,15 +8179,22 @@
         "description": "Follow-up from task 310 code review. All items are non-blocking suggestions that improve sweep/loft code quality.",
         "details": "## Issues (from task 310 reviewers)\n\n### S1: Redundant Build() in make_pipe\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_pipe()\n- BRepOffsetAPI_MakePipe constructor already calls Build() internally\n- Remove explicit maker.Build() call\n\n### S2: make_line_wire degenerate threshold too small\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_line_wire()\n- Threshold 1e-30 is far below OCCT's Precision::Confusion (~1e-7)\n- Change to 1e-10 (length < 1e-5 mm)\n\n### S3: GeomRef::Sub fallback in Sweep eval dispatch\n- `crates/reify-eval/src/lib.rs` SweepKind::Sweep arm\n- Sub fallback silently maps both profile and path to step_handles.last()\n- Replace with None return or debug_assert\n\n### S4: Test quality improvements\n- Compiler test uses same scalar for both sweep args (should use distinct geometry vars)\n- sweep_e2e.rs carries dummy args that eval ignores (should be vec![])\n- loft_four_circles test only asserts volume > 0 (should use meaningful bound)\n- Missing over-count arg test for sweep (3 args)\n\n### S5: shape_vec_len unused\n- `crates/reify-kernel-occt/src/ffi.rs`, `cpp/occt_wrapper.cpp`, `cpp/occt_wrapper.h`\n- Declared/bridged but never called from Rust\n- Remove or add #[allow(dead_code)] with comment\n\n### S6: CompiledGeometryOp::Sweep args field semantics\n- `crates/reify-compiler/src/lib.rs` CompiledGeometryOp::Sweep\n- args field is meaningful for Extrude/Revolve but ignored for Loft/Sweep\n- Add doc comment explaining per-SweepKind semantics",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:47.516Z",
+        "updatedAt": "2026-04-21T14:18:36.651Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/compile_api_tests.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/sweep_e2e.rs",
+            "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+            "crates/reify-kernel-occt/src/lib.rs"
+          ]
         }
       },
       {
@@ -8526,24 +8542,36 @@
         "id": "397",
         "title": "Review: Eval meta_map performance and refactoring (17 suggestions from task 212)",
         "description": "Triage and address 17 code review suggestions from the task-212 review. Key themes: hot-path clones, code duplication, eager cloning, async safety, test gaps.",
-        "details": "",
+        "details": "<info added on 2026-04-21T14:28:33.374Z>\nMemory hints have been updated to include entities: [\"evaluate_let_bindings\", \"meta_map\", \"TopologyTemplate\"] and queries: [\"evaluate_let_bindings extract_dependency_trace topological sort\", \"meta_map performance review suggestions task 212\", \"task 470 eliminate redundant computation let_bindings\"]. Note: Task 470 (Eliminate redundant computation in evaluate_let_bindings) was created directly from this review's findings and is currently in-progress. Task 397 was blocked on 2026-04-21T14:20:45Z without a formal dependency recorded; unblocking should be considered once task 470 and other derived implementation tasks complete.\n</info added on 2026-04-21T14:28:33.374Z>",
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
         "status": "in-progress",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/meta_eval_integration.rs",
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "evaluate_let_bindings",
+              "meta_map",
+              "TopologyTemplate"
+            ],
             "queries": [
-              "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
+              "evaluate_let_bindings extract_dependency_trace topological sort",
+              "meta_map performance review suggestions task 212",
+              "task 470 eliminate redundant computation let_bindings"
             ]
           },
-          "files": []
+          "files": [],
+          "_causation_id": "887cc4b8-99d3-43d5-8c9c-a0b027cdaca9"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:48.275Z"
+        "updatedAt": "2026-04-21T14:31:46.519Z"
       },
       {
         "id": "398",
@@ -9218,7 +9246,7 @@
         "description": "From task 205 performance + robustness reviews: (1) set_max_unfold_depth has no upper bound; depth=10000 risks stack overflow. Add upper bound (e.g., <= 512) or restructure to iterative worklist. (2) set_max_unfold_depth(0) panics via assert at a pub API boundary; consider returning Result or add # Panics doc. (3) Consider renaming is_recursive to has_recursive_structure or documenting dual use. Modules: crates/reify-eval, crates/reify-compiler",
         "details": "",
         "testStrategy": "Existing tests pass. Add test for upper bound rejection.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "205"
         ],
@@ -9227,10 +9255,14 @@
           "modules": [],
           "milestone": "M9",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": []
+          "files": [],
+          "done_provenance": {
+            "commit": "044b77b0ee66bf6e5fcc1898cd1580df315dd295",
+            "commit_input": "044b77b0e"
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:48.538Z"
+        "updatedAt": "2026-04-21T14:17:29.603Z"
       },
       {
         "id": "425",
@@ -9983,15 +10015,18 @@
         "description": "Two suggestions from task 396 review about compile_geometry_op in crates/reify-eval/src/lib.rs:\n\n1. **Doc comment** (architect_reviewer): Add doc comment to `compile_geometry_op` clarifying that returning `None` when evaluation is incomplete (missing args, unresolvable refs) is intentional propagation, not the forbidden silent-default pattern (per feedback_silent_defaults_pattern.md). Location: compile_geometry_op function definition.\n\n2. **Richer error propagation** (robustness): Consider returning `Result<GeometryOp, String>` with the missing arg name so callers can emit specific diagnostics like \"missing required argument 'ox'\" instead of the generic \"failed to compile geometry operation\". Location: compile_geometry_op and its callers.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:49.905Z",
+        "updatedAt": "2026-04-21T15:12:27.023Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [],
+          "done_provenance": {
+            "commit": "ec9d8903e50d360808125b9171897b955fcacb89"
+          }
         }
       },
       {
@@ -10065,15 +10100,23 @@
         "description": "From task 421 review — non-blocking quality improvements to unfold_recursive_sub (crates/reify-eval/src/lib.rs): (1) Rename child_recursive_subs/child_recursive_sub_names to next_recursive_subs/next_recursive_sub_names for clarity. (2) Add inline comment at recursive call site documenting child_template→current_template handoff. (3) Extract find_template() utility (same pattern at lib.rs:1137, lib.rs:3339, graph.rs:155, and test helper at recursive_detection_tests.rs:25). (4) Test: unknown structure_name failure mode — verify diagnostic emitted. (5) Test: n=3 variant for deeper alternation coverage. (6) Test: negative assertion that B is not instantiated as top-level entity. Modules: crates/reify-eval, crates/reify-compiler (find_template reuse). Reviewers: architect, test_analyst, reuse_auditor.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:16:28.019Z",
+        "updatedAt": "2026-04-21T09:16:57.021Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/recursive_detection_tests.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/graph.rs",
+            "crates/reify-eval/src/unfold.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
         }
       },
       {
@@ -10224,15 +10267,18 @@
         "description": "Replace is_some() guard + unwrap() patterns with if-let bindings in concurrent_eval.rs and filter_map in evaluate_let_bindings",
         "details": "1. In crates/reify-runtime/src/concurrent_eval.rs evaluate(): replace is_some() guard + unwrap() with `if let Some(expr) = cell_node.default_expr.as_ref()`\n2. In crates/reify-eval/src/lib.rs evaluate_let_bindings(): replace filter(is_some)+unwrap with filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))\n\nFrom review of task 397 (esc-397-121).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:50.626Z",
+        "updatedAt": "2026-04-21T14:52:26.831Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [],
+          "done_provenance": {
+            "commit": "f67d64c835b44ec25469cb89c7161226e69b692b"
+          }
         }
       },
       {
@@ -10276,7 +10322,10 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/boundary5_engine.rs"
+          ]
         },
         "updatedAt": "2026-04-21T09:13:51.946Z"
       },
@@ -10293,7 +10342,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/field_eval_tests.rs",
+            "crates/reify-runtime/src/concurrent_eval.rs"
+          ]
         },
         "updatedAt": "2026-04-21T09:13:52.649Z"
       },
@@ -10556,16 +10610,22 @@
         "description": "The `_distance_f64` binding at `crates/reify-eval/src/lib.rs:3232` computes a value solely for its `?`-operator side effect (finiteness validation), then discards it via underscore prefix. This has multiple issues: (1) it was added out-of-scope by task 481 (LSP-only task), (2) the pattern is fragile — a future cleanup could delete the \"unused\" binding and silently remove the validation guard, (3) no test verifies that non-finite distances are rejected.",
         "details": "## Changes needed\n\n1. Replace `let _distance_f64 = distance.as_f64().filter(|v| v.is_finite())?;` with an explicit validation:\n   ```rust\n   // Validate finiteness — reject NaN/Inf distances\n   if !distance.as_f64().map_or(false, |v| v.is_finite()) {\n       return None;\n   }\n   ```\n   Or use `let _ = distance.as_f64().filter(|v| v.is_finite())?;` with a comment.\n\n2. Add a test that `compile_geometry_op` (or the enclosing function) rejects non-finite distance values.\n\n## memory_hints\n- search: \"extrude distance validation reify-eval\"\n- entity: \"GeometryOp\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix `_distance_f64` validation pattern in reify-eval"
+            ]
+          }
         },
-        "updatedAt": "2026-04-21T09:13:53.968Z"
+        "updatedAt": "2026-04-21T09:19:08.656Z"
       },
       {
         "id": "484",
@@ -11268,9 +11328,13 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/stdlib_loader.rs",
+            "crates/reify-compiler/tests/prelude_context_tests.rs"
+          ]
         },
-        "updatedAt": "2026-04-21T09:16:28.700Z"
+        "updatedAt": "2026-04-21T14:23:25.392Z"
       },
       {
         "id": "514",
@@ -11312,7 +11376,7 @@
         "description": "Address robustness suggestions from task #326 review:\n1. Add debug_assert in load_stdlib() that no module has error-level diagnostics — silent cache of broken modules is dangerous (stdlib_loader.rs:23-38)\n2. Compile stdlib modules sequentially with compile_with_prelude so cross-module deps work when second .ri file is added (stdlib_loader.rs:33-36)\n3. Document function shadowing semantics in eval() — user functions shadow prelude by insertion order with iter().find() first-match (lib.rs:847-854)\n4. Investigate _distance_f64 rename — confirm whether is_finite() guard was intentional validation or dead code (lib.rs:3244)\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-eval/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11325,9 +11389,12 @@
             "queries": [
               "resolution for: Stdlib robustness: debug_assert on compile errors, sequential compilation, shadowing docs"
             ]
+          },
+          "done_provenance": {
+            "note": "All four items already implemented in merged code (branch is ancestor of main). Items #1 (assert!) and #2 (sequential compilation) landed in commits 4a15762cd and fbbb1e664 in stdlib_loader.rs; #3 (shadowing docs) extensively documented in engine_eval.rs lines 40-98 (SHADOWING INVARIANT / COEXISTENCE COROLLARY); #4 (_distance_f64 rename) replaced by explicit `match distance.as_f64()` validation at geometry_ops.rs:623-634 and :718-729."
           }
         },
-        "updatedAt": "2026-04-21T09:13:42.344Z"
+        "updatedAt": "2026-04-21T09:21:31.312Z"
       },
       {
         "id": "516",
@@ -12282,7 +12349,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/unfold.rs",
+            "crates/reify-eval/tests/boundary5_engine.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
         },
         "updatedAt": "2026-04-21T09:13:54.697Z"
       },
@@ -15825,15 +15897,18 @@
         "description": "The `is_auto` predicate `graph.value_cells.get(id).is_some_and(|n| n.kind == ValueCellKind::Auto)` is inlined 4 times across two guard handling phases in edit_param (lib.rs ~1693, ~1724, ~1956, ~1991). Extract an `is_auto_cell(&self, id)` method on the graph type and a `deactivate_if_not_auto` helper to consolidate the guard-skip + Undef-insert pattern into one place.\n\nMemory hints: search \"guard re-elaboration\", \"Auto param deactivation\", entity: edit_param",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [],
+          "done_provenance": {
+            "commit": "15e143d69d710b45edcabdaaaf86e01008238915"
+          }
         },
-        "updatedAt": "2026-04-21T09:13:55.475Z"
+        "updatedAt": "2026-04-21T14:46:20.611Z"
       },
       {
         "id": "714",
@@ -16595,12 +16670,12 @@
       {
         "id": "750",
         "title": "Guard eval test improvements and DRY cleanup for task 492 fix",
-        "description": "Review suggestions deferred from task 492 (edit_param guard re-elaboration fix). All in reify-eval module.\n\n**Code quality (S3):** Fix stale \"BUG:\" comment in guard_eval.rs:519-520 — should be past-tense regression documentation, not present-tense bug description.\n\n**Test coverage (S4-S6):**\n- Add test for Block-A-only path: structure_controlling cell fires Block A but guard value unchanged (Block B doesn't fire). Verifies Auto-skip in Block A works independently.\n- Add else_members regular Param regression test: symmetric to existing edit_param_guard_false_still_deactivates_regular_params but for else branch (guard false→true).\n- Add round-trip toggle test (true→false→true): verify Auto param values survive multiple edit_param guard transitions and solver re-resolves on re-activation.\n\n**Robustness (S7):** Add comment in guard_is_true/is_false activation branches documenting that Auto params (no default_expr) rely on solver dirty-tracking for re-activation. Consider test for deactivation→constraint change→re-activation path.\n\n**DRY (S8-S9):** Extract make_auto_decl() test helper (analogous to make_param_decl). Parameterize the two nearly-identical solver-auto-param tests to reduce ~80 lines of duplicated setup.\n\nNote: S1-S2 (extract is_auto_cell helper in lib.rs) already tracked as task #713.\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-eval/tests/guard_eval.rs",
-        "details": "",
-        "testStrategy": "",
+        "description": "Consolidates guard eval test quality improvements deferred from task 492 (edit_param guard re-elaboration fix), plus a follow-up from task 713: fix a stale BUG comment in guard_eval.rs, add missing Block-A and else_members test coverage (S3–S6), and replace the shallow `deactivate_if_not_auto_guard_group_mixed_members` unit test with a real integration-level test that drives `edit_param`. All changes are in the reify-eval module.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "**S3 (comment fix):** Fix stale \"BUG:\" comment in `crates/reify-eval/src/guard_eval.rs:519-520` — should be past-tense regression documentation, not a present-tense bug description.\n\n**S4 (Block-A-only path):** Add test for the Block-A-only path: a structure_controlling cell fires Block A but the guard value is unchanged (Block B does not fire). Verifies that Auto-skip in Block A works independently.\n\n**S5–S6 (else_members coverage):** Add else_members regular Param test coverage per the original task 750 S5–S6 specifications (see task 492 review notes for full detail).\n\n**Integration test replacement (from task 713 follow-up):** In `crates/reify-eval/src/engine_edit.rs ~872`, replace `deactivate_if_not_auto_guard_group_mixed_members` — which iterates the helper over a 2-element slice rather than driving a real guard group through `edit_param` — with an integration-style test that constructs a guarded group containing mixed Auto/Param members and drives `edit_param` (toggling the guard condition). This exercises the four `deactivate_if_not_auto` caller sites in `edit_param` rather than just the helper in isolation, locking in the contract that a dropped call site will be caught.",
+        "testStrategy": "",
         "subtasks": [],
         "metadata": {
           "files": [
@@ -16610,9 +16685,11 @@
           "modules": [
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
-          ]
-        },
-        "updatedAt": "2026-04-21T09:13:25.972Z"
+          ],
+          "curator_action": "combine",
+          "curator_justification": "The candidate is a small guard-eval test replacement (one file, one test) that shares the same module lock (crates/reify-eval/src, crates/reify-eval/tests) and the same concern domain (guard eval test quality) as Task 750, which already holds S3–S6 guard test improvements deferred from task 492. Both are low priority, neither is on a critical path, and serializing on the same module lock means combining loses zero parallelism. All four combine rules hold: coherent single concern (\"guard eval tes",
+          "combined_at": "2026-04-21T14:45:55.071744+00:00"
+        }
       },
       {
         "id": "751",
@@ -18522,13 +18599,33 @@
         "description": "Consolidates complex_phase helper extraction, Value::from_component rename to from_real_scalar with NaN-safety doc, test coverage gaps (redundant test, dimensioned edge cases, from_component unit tests, LSP positive assertion), label uniqueness for multiple constraint-def instantiations, labeled_diagnostics correctness + ordering safety, constraint-checking loop/diagnostic helper dedup, and constraint-def eval coverage.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 842 plus 6 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 842: Extract complex_phase helper to eliminate duplicated phase zero-guard\n\n\nThe guard `if *re == 0.0 && *im == 0.0 { return Value::Undef; }` is copy-pasted verbatim into `crates/reify-expr/src/lib.rs` (method-call path) and `crates/reify-stdlib/src/lib.rs` (builtin path). Add a `Value::complex_phase(re: f64, im: f64, dimension: DimensionVector) -> Value` (or free function) in `crates/reify-types/src/value.rs` and have both call sites delegate to it, mirroring the pattern established by `Value::from_component` in the same diff.\n\nMemory hints: search \"from_component complex extraction pattern\", search \"phase zero-guard duplication\", entities: Value::from_component, phase, eval_builtin\n\n### Absorbed from task 843: Rename Value::from_component to from_real_scalar and add NaN-safety doc note\nIn `crates/reify-types/src/value.rs:159`, rename `from_component` to `from_real_scalar` (or `dimensioned_real`) — the doc comment itself acknowledges the name is a semantic stretch for magnitude. Update all call sites in `reify-expr/src/lib.rs` and `reify-stdlib/src/lib.rs`.\n\nAlso add a doc note clarifying that the function does not sanitize NaN/Infinity and callers that may encounter domain errors must wrap the result in `sanitize_value`.\n\nMemory hints: search \"from_component naming\", search \"Value helper naming conventions\", entities: Value::from_component\n\n### Absorbed from task 844: Fill test coverage gaps: redundant test, dimensioned edge cases, from_component unit tests, LSP positive assertion\nFour distinct test gaps to address:\n\n1. Remove `complex_magnitude_zero_complex_returns_zero` in `crates/reify-stdlib/src/lib.rs` — it's redundant with `magnitude_zero_complex_returns_zero` as both route through `complex_abs` for a Complex input.\n2. Add `magnitude_zero_complex_dimensioned_returns_scalar_zero` testing `Complex{0.0, 0.0, LENGTH}` → `Scalar{0.0, LENGTH}` in both the stdlib test suite and the method-call test suite (`complex_eval_tests.rs`).\n3. Add `phase_zero_dimensioned_complex_returns_undef` testing `Complex{0.0, 0.0, LENGTH}` → Undef in `complex_tests.rs` and `complex_eval_tests.rs`.\n4. Add unit tests `from_component_dimensionless_returns_real` and `from_component_dimensioned_returns_scalar` in a `#[cfg(test)]` block in `crates/reify-types/src/value.rs`.\n5. Add a positive counterpart to `re_im_not_in_builtin_completions` in `crates/reify-lsp/src/completion.rs` that triggers method completion on a complex-typed receiver and asserts `re`, `im`, `magnitude`, `phase` appear as METHOD-kind items.\n\nMemory hints: search \"complex edge case tests\", search \"LSP completion method tests\", entities: complex_magnitude, phase, from_component\n\n### Absorbed from task 845: Fix label uniqueness for multiple constraint-def instantiations\nIn crates/reify-compiler/src/lib.rs:5200-5208, the label format `format!(\"{}[{}]\", ci.name, pred_idx)` produces identical labels when the same constraint def is instantiated more than once in a single structure. Add a per-def instantiation counter (inst_idx) so labels become `\"Name#inst[pred]\"`. Then add a test in crates/reify-eval/tests/constraint_def_eval.rs that instantiates the same constraint def twice with different arguments and asserts the two resulting ConstraintCheckEntry labels are distinct.\n\nMemory hints: search for \"constraint def label format\", get_entity \"CompiledConstraint\", search for \"ConstraintCheckEntry label\"\n\n### Absorbed from task 846: Harden labeled_diagnostics correctness and ordering safety\nThree correctness gaps in the labeled_diagnostics enrichment pipeline in crates/reify-eval/src/lib.rs:\n\n1. Extend the substitution loop (~line 2196) to also replace id_str in each `d.labels[i].message` field, not just `d.message`.\n2. Add a `debug_assert` or `tracing::warn` when a non-empty label is provided but the replacement produced no change in any message — catches Display format drift silently breaking enrichment.\n3. At each of the five `results.into_iter().zip(active_constraints.iter())` sites (lines 2249, 2639, 2735, 2799, 3113), add `debug_assert_eq!(result.id, compiled.id)` and a post-loop count assert to catch out-of-order or truncated checker results.\n\nMemory hints: search for \"labeled_diagnostics\", search for \"ConstraintNodeId Display format\", get_entity \"DiagnosticLabel\"\n\n### Absorbed from task 847: Deduplicate constraint-checking loop bodies and diagnostic helpers\nFour DRY violations introduced by the constraint-def path:\n\n1. Extract a private `push_constraint_result` method or helper closure from the identical three-line `labeled_diagnostics + push` block repeated at lines 2250-2254, 2640-2644, 2735-2740, 2799-2804, 3113-3118 in crates/reify-eval/src/lib.rs.\n2. In `labeled_diagnostics`, change the collect() to an in-place mutation loop and guard the replace with a `contains` check to avoid unnecessary allocations.\n3. Extract the `check_source` (and `eval_source`) helper shared across ≥5 test files into `crates/reify-eval/tests/common/mod.rs` and import it from each test file.\n4. Add an `error_diags` free function to `crates/reify-eval/tests/constraint_def_eval.rs` (or the common module) and replace the five inline filter-collect patterns.\n\nMemory hints: search for \"check_source helper eval tests\", search for \"labeled_diagnostics allocation\"\n\n### Absorbed from task 848: Fill test coverage gaps for constraint-def evaluation\nThree missing test scenarios:\n\n1. In crates/reify-eval/tests/incremental.rs, extend `edit_check_preserves_constraint_labels` (or add a new test) to assert that when a labeled constraint is violated through `edit_check`, the returned Diagnostic messages contain the human-readable label string rather than the raw ConstraintNodeId.\n2. In crates/reify-compiler/tests/constraint_inst_tests.rs:368-379, replace positional `tmpl.constraints[0]`/`[1]` access with label-based `.find(|c| c.label == Some(\"Bounded[0]\".to_string()))` to make the test order-independent.\n3. In crates/reify-eval/tests/constraint_def_eval.rs, add a test for the guard=true active case of a guarded constraint def where the constraint is violated, verifying that the entry appears with the expected label and Violated satisfaction.\n\nMemory hints: search for \"edit_check_preserves_constraint_labels\", search for \"constraint_inst_tests label\", search for \"guarded constraint def test\"\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:16:29.175Z",
+        "updatedAt": "2026-04-21T09:16:55.409Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/constraint_inst_tests.rs",
+            "crates/reify-eval/src/engine_constraints.rs",
+            "crates/reify-eval/tests/constraint_def_eval.rs",
+            "crates/reify-eval/tests/determinacy_predicates.rs",
+            "crates/reify-eval/tests/incremental.rs",
+            "crates/reify-eval/tests/integration_full_v01.rs",
+            "crates/reify-eval/tests/m9_combined.rs",
+            "crates/reify-eval/tests/m9_integration.rs",
+            "crates/reify-expr/src/calculus.rs",
+            "crates/reify-expr/src/complex.rs",
+            "crates/reify-expr/src/sanitize.rs",
+            "crates/reify-expr/tests/complex_eval_tests.rs",
+            "crates/reify-stdlib/src/analysis.rs",
+            "crates/reify-stdlib/src/complex.rs",
+            "crates/reify-stdlib/src/helpers.rs",
+            "crates/reify-stdlib/tests/complex_tests.rs",
+            "crates/reify-test-support/src/helpers.rs",
+            "crates/reify-types/src/value.rs"
+          ],
           "files": [],
           "bundled_from": [
             "843",
@@ -20511,11 +20608,11 @@
         "description": "In crates/reify-compiler/src/lib.rs, when check_trait_conformance encounters an unresolvable member type, use a sentinel (Type::Error or skip the member) instead of Type::Real fallback, so downstream conformance comparison doesn't emit a second misleading diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:40:11.656Z",
+        "updatedAt": "2026-04-21T15:15:16.572Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -20524,16 +20621,15 @@
           "files": [
             "crates/reify-compiler/src/lib.rs"
           ],
-          "memory_hints": [
-            {
-              "type": "search",
-              "value": "Type::Error sentinel unresolved types cascading diagnostics reify"
-            },
-            {
-              "type": "search",
-              "value": "type inference error propagation diagnostic suppression"
-            }
-          ]
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Use Type::Error sentinel for unresolved types to prevent cascading diagnostics"
+            ]
+          },
+          "done_provenance": {
+            "commit": "080422afc94498ee340a07ddb5179617dfe9acef"
+          }
         }
       },
       {
@@ -23218,12 +23314,10 @@
         "id": "1062",
         "title": "Enhance assert_orientation_approx! Test Coverage and Reduce Duplication",
         "description": "Improve test coverage and eliminate duplication in assert_orientation_approx! tests in crates/reify-stdlib/src/lib.rs.",
-        "details": "1. **Consolidate Diagnostic Tests:** Replace the duplicated tests `orient_identity_per_component_diagnostic`, `orient_per_component_diagnostic_x`, `_y`, `_z` with a single table-driven test or a helper closure. This should iterate over components `[('w:', factory_w), ('x:', factory_x), ...]` and use `catch_unwind` to handle each case. Aim for a concise implementation of about 20-30 lines.\n\n2. **Explicit-Tolerance Coverage:** Add tests for the explicit-tolerance arm of `assert_orientation_approx!`. Include a positive test case that fails at the default tolerance but passes with a looser tolerance (e.g., `tol = 1e-2`), and a negative test case that panics with a tighter tolerance (e.g., `tol = 1e-6`).\n\n3. **Robustness with Non-Trivial Quaternion:** Introduce a test using a fully-populated quaternion `(0.5, 0.5, 0.5, 0.5)` and its negation, ensuring they pass with `sign_insensitive = 1e-10`. This ensures comprehensive coverage of all comparison lines.",
+        "details": "1. **Consolidate Diagnostic Tests:** Replace the duplicated tests `orient_identity_per_component_diagnostic`, `orient_per_component_diagnostic_x`, `_y`, `_z` with a single table-driven test or a helper closure. This should iterate over components `[('w:', factory_w), ('x:', factory_x), ...]` and use `catch_unwind` to handle each case. Aim for a concise implementation of about 20-30 lines.\n\n2. **Explicit-Tolerance Coverage:** Add tests for the explicit-tolerance arm of `assert_orientation_approx!`. Include a positive test case that fails at the default tolerance but passes with a looser tolerance (e.g., `tol = 1e-2`), and a negative test case that panics with a tighter tolerance (e.g., `tol = 1e-6`).\n\n3. **Robustness with Non-Trivial Quaternion:** Introduce a test using a fully-populated quaternion `(0.5, 0.5, 0.5, 0.5)` and its negation, ensuring they pass with `sign_insensitive = 1e-10`. This ensures comprehensive coverage of all comparison lines.\n<info added on 2026-04-21T14:47:17.798Z>\nRevised deliverable 3: Add a single positive-path test for a fully-populated quaternion `(0.5, 0.5, 0.5, 0.5)` plus its negation `(-0.5, -0.5, -0.5, -0.5)`, asserting both match expected `(0.5, 0.5, 0.5, 0.5)` under `sign_insensitive = 1e-10`. This addresses the remaining gap by exercising all four component comparisons simultaneously on the pass path.\n\nAlso, remove prior dependency `955` as it was a stale copy-paste and unrelated to quaternion assertions.\n</info added on 2026-04-21T14:47:17.798Z>",
         "testStrategy": "Run `cargo test -p reify-stdlib --lib orient` to ensure all existing tests pass and new tests fail if the explicit-tolerance arm or any sign_insensitive comparisons are broken. Verify that the consolidated diagnostic tests execute correctly and cover all components.",
         "status": "pending",
-        "dependencies": [
-          "955"
-        ],
+        "dependencies": [],
         "priority": "medium",
         "subtasks": [],
         "metadata": {
@@ -23234,7 +23328,7 @@
             "crates/reify-stdlib/src"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-21T14:47:44.792Z"
       },
       {
         "id": "1063",
@@ -25598,7 +25692,12 @@
         "testStrategy": null,
         "subtasks": [],
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/extrude_symmetric_e2e.rs",
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ],
           "files": [],
           "bundled_from": [
             "1189",
@@ -36606,9 +36705,9 @@
         "id": "1747",
         "title": "Viewport-view decoupling and viewport store",
         "description": "Decouple viewports from views so that multiple viewports can independently reference different views (or the same view with different cameras). Introduce a viewportStore that manages viewport instances, their view assignments, and camera states. This is the abstraction boundary that enables dual viewports and future split viewports.",
-        "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 3.2 (New Stores — viewportStore) and 9 (Multi-Viewport Architecture).\n\n### Implementation\n\n1. **New store: `stores/viewportStore.ts`**\n   - `viewports: Map<string, ViewportState>`\n   - `ViewportState`:\n     - `id: string` — stable ID (e.g., \"design-main\", \"def-preview\")\n     - `type: \"design\" | \"def-preview\"`\n     - `viewId: string | null` — which view this viewport shows (design viewports only)\n     - `defPath: string | null` — which definition to preview (def-preview only)\n     - `camera: { position: [x,y,z], target: [x,y,z], up: [x,y,z], zoom: number }`\n     - `active: boolean` — is this the focused viewport?\n   - `setActiveViewport(id)`: focus a viewport\n   - `assignView(viewportId, viewId)`: assign a view to a viewport\n   - `updateCamera(viewportId, cameraState)`: persist camera state\n   - Initialize with two viewports: \"design-main\" and \"def-preview\"\n\n2. **Refactor `viewport/Viewport.tsx`**\n   - Accept a `viewportId: string` prop instead of being a singleton\n   - Read view assignment from `viewportStore` -> `viewStateStore`\n   - Read camera state from `viewportStore`\n   - Each viewport instance manages its own Three.js scene/camera/renderer\n   - Save camera state back to viewportStore on orbit/pan/zoom\n\n3. **Refactor `viewport/meshManager.ts`**\n   - Accept a viewport context (which view to consult for visibility)\n   - Multiple meshManager instances can coexist (one per viewport)\n   - Shared geometry buffers where possible (multiple viewports showing the same mesh data)\n\n4. **Refactor `viewport/selection.ts`**\n   - Selection is global (shared across viewports) — selecting in one viewport highlights in all\n   - Raycasting operates on the active viewport's scene\n\n5. **Design tree panel**\n   - View selector controls the active design viewport's view assignment\n   - Switching views in the tree panel updates `viewportStore.assignView(\"design-main\", newViewId)`\n\n### Requirements covered\nVP-4, VP-8, Section 9 (9.1, 9.2)\n\n### memory_hints\n- search: \"Viewport.tsx Three.js scene\"\n- search: \"meshManager sync scene\"\n- search: \"scene.ts camera renderer\"\n- search: \"OrbitControls camera state\"",
+        "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 3.2 (New Stores — viewportStore) and 9 (Multi-Viewport Architecture).\n\n### Implementation\n\n1. **New store: `stores/viewportStore.ts`**\n   - `viewports: Map<string, ViewportState>`\n   - `ViewportState`:\n     - `id: string` — stable ID (e.g., \"design-main\", \"def-preview\")\n     - `type: \"design\" | \"def-preview\"`\n     - `viewId: string | null` — which view this viewport shows (design viewports only)\n     - `defPath: string | null` — which definition to preview (def-preview only)\n     - `camera: { position: [x,y,z], target: [x,y,z], up: [x,y,z], zoom: number }`\n     - `active: boolean` — is this the focused viewport?\n   - `setActiveViewport(id)`: focus a viewport\n   - `assignView(viewportId, viewId)`: assign a view to a viewport\n   - `updateCamera(viewportId, cameraState)`: persist camera state\n   - Initialize with two viewports: \"design-main\" and \"def-preview\"\n\n2. **Refactor `viewport/Viewport.tsx`**\n   - Accept a `viewportId: string` prop instead of being a singleton\n   - Read view assignment from `viewportStore` -> `viewStateStore`\n   - Read camera state from `viewportStore`\n   - Each viewport instance manages its own Three.js scene/camera/renderer\n   - Save camera state back to viewportStore on orbit/pan/zoom\n\n3. **Refactor `viewport/meshManager.ts`**\n   - Accept a viewport context (which view to consult for visibility)\n   - Multiple meshManager instances can coexist (one per viewport)\n   - Shared geometry buffers where possible (multiple viewports showing the same mesh data)\n\n4. **Refactor `viewport/selection.ts`**\n   - Selection is global (shared across viewports) — selecting in one viewport highlights in all\n   - Raycasting operates on the active viewport's scene\n\n5. **Design tree panel**\n   - View selector controls the active design viewport's view assignment\n   - Switching views in the tree panel updates `viewportStore.assignView(\"design-main\", newViewId)`\n\n### Requirements covered\nVP-4, VP-8, Section 9 (9.1, 9.2)\n\n### memory_hints\n- search: \"Viewport.tsx Three.js scene\"\n- search: \"meshManager sync scene\"\n- search: \"scene.ts camera renderer\"\n- search: \"OrbitControls camera state\"\n<info added on 2026-04-21T11:24:47.212Z>\nRECONCILIATION NOTE (2026-04-21): This task was previously marked done by targeted reconciliation but was reset to in-progress by orchestrator bulk restart. Check git log for viewportStore.ts, Viewport.tsx on main branch before doing new implementation — the work may already be committed.\n</info added on 2026-04-21T11:24:47.212Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1746"
         ],
@@ -36635,15 +36734,20 @@
           "memory_hints": {
             "entities": [
               "Viewport.tsx",
-              "meshManager.ts"
+              "meshManager.ts",
+              "viewportStore.ts"
             ],
             "queries": [
               "viewport-view decoupling Named views COW invariant",
-              "Viewport.tsx visibility createEffect meshManager orphan-prune coupled invariant"
+              "Viewport.tsx visibility createEffect meshManager orphan-prune coupled invariant",
+              "task 1747 viewportStore completed done merged main"
             ]
+          },
+          "done_provenance": {
+            "commit": "a421e7e93188e65623975a659fb06c7b254f860d"
           }
         },
-        "updatedAt": "2026-04-21T08:44:02.574Z"
+        "updatedAt": "2026-04-21T15:25:49.762Z"
       },
       {
         "id": "1748",
@@ -36651,7 +36755,7 @@
         "description": "Implement the dual viewport layout: a def preview viewport (showing a prototype of the selected definition with defaults applied) and a design viewport (showing the instance tree with view controls). Adaptive layout: both/either/neither active. Inactive viewports greyed out and minimized to a strip. Def preview activates when editor cursor is inside a definition body.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 7 (Dual Viewport) and 3.3 (Backend — get_def_preview).\n\n### Frontend\n\n1. **Dual viewport layout** (`viewport/DualViewport.tsx` or refactor in `App.tsx`)\n   - Two viewport regions in the center panel area\n   - Layout states:\n     - Both active: horizontal split (adjustable divider)\n     - Only design active: design fills center, def-preview is a 40px strip at top with label\n     - Only def-preview active: def-preview fills center, design is a 40px strip at bottom\n     - Neither: placeholder message\n   - Each viewport renders as an independent `<Viewport>` component with its own viewportId\n\n2. **Def preview viewport behavior**\n   - Active when editor cursor is inside a `structure def` or `occurrence def` body\n   - Label in corner: \"Preview: {DefName}\"\n   - Shows prototype instance with all defaults\n   - Always uses auto \"Default\" view rules (show geometry, hide intermediates)\n   - Independent camera state (doesn't follow design viewport)\n   - No view selector — always auto default\n   - Updates live as definition is edited\n\n3. **Activation logic** (`stores/viewportStore.ts`)\n   - `defPreviewActive`: derived signal\n     - True when editor cursor is inside a definition body\n     - Requires: editor cursor position → resolve to containing definition (via LSP or AST query)\n   - `designViewportActive`: derived signal\n     - True when evaluation graph has instantiated entities (at least one mesh exists)\n   - Connect to editorStore cursor position changes\n\n4. **Cursor-to-definition resolution**\n   - New Tauri command or LSP request: `get_containing_definition(file: string, line: number, col: number) -> Option<DefInfo>`\n   - `DefInfo`: `{ name: string, kind: \"structure\" | \"occurrence\", span: SourceSpan }`\n   - Debounce: 200ms after cursor stops moving\n\n5. **Minimized viewport strip**\n   - 40px tall, full width, with:\n     - Viewport type label (\"Preview\" / \"Design\")\n     - \"Click to expand\" hint or auto-expand on relevant action\n   - Greyed out background (theme surface color)\n   - Click to force-expand (manual override of auto-activate)\n\n### Backend\n\n6. **New Tauri command: `get_def_preview`**\n   - Input: definition name/path\n   - Creates temporary evaluation scope with all defaults\n   - Evaluates geometry, tessellates\n   - Returns GuiState (meshes + values + constraints)\n   - Discards temporary scope\n   - Cache by definition content hash (avoid re-evaluating when cursor moves within same def)\n\n7. **New Tauri command: `get_containing_definition`**\n   - Input: file path, line, column\n   - Returns the definition containing that position, or null\n   - Can piggyback on existing AST/LSP infrastructure\n\n### Requirements covered\nVP-1, VP-2, VP-3, VP-4, VP-5, VP-6, VP-7\n\n### memory_hints\n- search: \"App.tsx panel layout viewport\"\n- search: \"editorStore cursor position\"\n- search: \"Engine evaluation tessellate\"\n- search: \"LSP source span definition\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1747",
           "1750"
@@ -36671,7 +36775,8 @@
             "gui/src/viewport",
             "gui/src/stores"
           ]
-        }
+        },
+        "updatedAt": "2026-04-21T15:25:52.762Z"
       },
       {
         "id": "1749",
@@ -36679,7 +36784,7 @@
         "description": "Implement two-layer view persistence. Layer 1: localStorage for ephemeral per-file view state. Layer 2: sidecar .ri.views.json for durable/shareable persistence. Entity path exact matching on re-evaluation, stale path preservation for undo/branch-switch restoration, and fuzzy path recovery with user confirmation for renames.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 8 (View Persistence).\n\n### Implementation\n\n1. **localStorage layer** (`stores/viewPersistence.ts`)\n   - Key: `reify:views:{absoluteFilePath}`\n   - Value: JSON-serialized `PersistentViewState`:\n     - `activeViewId: string`\n     - `userViews: ViewDefinition[]` (auto views are NOT persisted — they're regenerated)\n     - `viewportCameras: Map<string, CameraState>`\n     - `timestamp: string` (ISO 8601)\n   - Save: debounced (500ms) after any view state change\n   - Load: on file open, before auto view generation\n   - Priority: sidecar file > localStorage > fresh defaults\n\n2. **Sidecar file layer** (`stores/sidecarPersistence.ts`)\n   - File: `{filename}.ri.views.json` alongside the `.ri` file\n   - Same schema as localStorage value, plus:\n     - `version: string` (schema version for forward compat)\n   - Write: on explicit \"Save views\" action (button in view management UI) + on clean app exit\n   - Read: on file open (takes priority over localStorage)\n   - New Tauri commands:\n     - `read_view_sidecar(ri_path: string) -> Option<PersistentViewState>`\n     - `write_view_sidecar(ri_path: string, state: PersistentViewState) -> Result<()>`\n   - \"Save views\" button in view selector dropdown (next to \"Manage views...\")\n\n3. **Re-evaluation reconciliation** (extend `viewStateStore.ts`)\n   - On entity tree rebuild:\n     1. Exact match: stored paths that exist in new tree → keep visibility state\n     2. New paths: not in any stored view → apply active view's default rules\n     3. Missing paths: in stored view but not in new tree → mark as \"stale\"\n   - Stale entries: kept in view state, greyed out in tree panel (if shown at all)\n   - Auto-restoration: if a stale path reappears (undo, branch switch), its stored state is restored\n\n4. **Fuzzy path recovery** (`stores/fuzzyPathMatcher.ts`)\n   - On re-evaluation, for each stale path, attempt recovery:\n     - **Suffix match**: stale `\"Assembly.flange.geometry\"`, new `\"Assembly.bolt_flange.geometry\"` — match by shared suffix under renamed parent\n     - **Structural match**: same type name + same parent type + similar child structure\n   - Never auto-apply: if fuzzy match found, show a non-blocking notification:\n     - \"Entity 'flange' was renamed. Rebind view settings to 'bolt_flange'? [Yes] [No] [Ignore]\"\n   - \"Yes\" rebinds the stored visibility to the new path\n   - \"No\" keeps the stale entry\n   - \"Ignore\" dismisses without action\n\n5. **Camera state persistence**\n   - Per-viewport camera state saved in the same persistence layers\n   - Restored on file open\n\n### Requirements covered\nP-1, P-2, P-3, P-4, P-5, P-6\n\n### memory_hints\n- search: \"localStorage persist state\"\n- search: \"viewStateStore views active\"\n- search: \"Tauri read write file\"\n- search: \"notification toast UI\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1746",
           "1747",
@@ -36706,7 +36811,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-21T07:04:38.708Z"
+        "updatedAt": "2026-04-21T15:25:53.468Z"
       },
       {
         "id": "1750",
@@ -36852,13 +36957,16 @@
         "description": "Two small robustness improvements for the INVALID sentinel pattern introduced in task 612:\n\n1. **INVALID handle hash guard** (crates/reify-types/src/geometry.rs:17): The INVALID sentinel (u64::MAX) has no compile-time enforcement. If it accidentally reaches content_hash() or the caching layer, it produces a valid-looking hash causing subtle cache corruption. Add: `debug_assert_ne!(self.0, u64::MAX, \"INVALID handle must not be hashed\");` in content_hash().\n\n2. **Saturating subtraction in rollback** (crates/reify-eval/src/lib.rs ~line 3128): The rollback condition `step_handles.len() - handle_start < realization.operations.len()` performs unsigned subtraction. If a bug causes step_handles to be truncated below handle_start, this would underflow. Rewrite defensively: `if had_failure || (step_handles.len().saturating_sub(handle_start)) < realization.operations.len()`\n\nmemory_hints: search \"INVALID sentinel GeometryHandle content_hash\", search \"step_handles rollback saturating_sub\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:42.614Z",
+        "updatedAt": "2026-04-21T14:30:11.106Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-types/src/geometry.rs"
+          ],
           "memory_hints": {
             "entities": [],
             "queries": [
@@ -37998,16 +38106,19 @@
         "description": "Three improvements to the optimized registry fallback path from task 1657 review:\n\n1. Add a comment at crates/reify-eval/src/lib.rs:501 explaining why the internal ConstraintChecker assert_eq! is intentionally a panic (internal invariant) while the external OptimizedImpl count mismatch gets graceful fallback.\n2. Extract a helper function assert_has_fallback_diagnostic(diagnostics, expected_target) in crates/reify-eval/tests/optimized_registry_tests.rs to DRY up the identical 18-line diagnostic assertion blocks in tests 6, 8, and 9 (lines ~453-472, ~675-694, ~756-775).\n3. Add a new test for the multi-constraint batch fallback case: register a BrokenCountOptimizedImpl for a target, define a structure with 2 constraints both annotated with that target, have the impl return 1 result (wrong count for 2 constraints), and verify both constraints get correct fallback evaluation results in the correct result slots.\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-eval/tests/optimized_registry_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:43.959Z",
+        "updatedAt": "2026-04-21T14:33:10.642Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
             "crates/reify-eval/tests/optimized_registry_tests.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "ee0755c24d7e173a37bd97a089a8daca49403d79"
+          }
         }
       },
       {
@@ -39079,7 +39190,11 @@
         "subtasks": [],
         "updatedAt": "2026-04-21T09:13:44.484Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/value_cell_type_invariants.rs"
+          ],
           "memory_hints": {
             "entities": [
               "Engine",
@@ -39210,13 +39325,17 @@
         "description": "Follow-up from task 506 review (esc-506-23). Two small refinements to the prelude-shadowing regression tests and the accessor they use.",
         "details": "1. In crates/reify-eval/tests/stdlib_prelude_tests.rs:121-163 (`eval_is_idempotent_for_prelude_functions`), the user `symmetric_tolerance` body is `nominal + deviation`, identical to the prelude's definition. The value-level idempotency assertion (v1 == v2 == 0.007) therefore would still pass even if shadowing silently broke and eval() resolved to the prelude. Change the user impl to `nominal - deviation` (expected value 0.003) so `(v1 - 0.003).abs() < 1e-9` becomes an independent claim about per-eval resolution stability rather than a restatement of the adjacent shadowing test.\n\n2. In crates/reify-eval/src/lib.rs:585-589, `functions_count()` is `pub` (only `#[doc(hidden)]`) and was added solely for a test assertion, so it permanently exposes internal function-table size through the Engine API. Either (a) gate it with `#[cfg(any(test, feature = \"test-support\"))]`, or (b) move the accumulation-regression assertion into a `#[cfg(test)] mod tests` block inside lib.rs where `self.functions.len()` is reachable without a public accessor. Option (b) is preferred if feasible.\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs\n\nmemory_hints: search \"Engine eval prelude functions shadowing\" | entities: Engine, eval, functions_count",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:44.973Z",
+        "updatedAt": "2026-04-21T09:19:59.864Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/stdlib_prelude_tests.rs"
+          ],
           "files": []
         }
       },
@@ -39456,14 +39575,19 @@
         "description": "Two small doc-comment fixes on the four new unit tests in crates/reify-eval/src/lib.rs (tests module, ~lines 3436-3496, added by task 1868): (a) replace hard-coded `lib.rs:124` / `lib.rs:125` arm references with a textual reference to the `matches!` arm (e.g. \"the `Value::Matrix(_) => matches!(ty, Type::Tensor { .. } | Type::Matrix { .. })` arm in `value_type_kind_matches`\"), because line numbers silently drift; (b) clarify in the positive cross-variant test doc comments that they verify kind-match only — shape/rank validation is out of scope and handled by a later pass (cite the covering test if known, or note it as expected-unchecked here). Source: task 1868 reviewer_comprehensive suggestions S1 + S2.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:46.100Z",
+        "updatedAt": "2026-04-21T15:06:06.409Z",
         "metadata": {
-          "modules": [],
-          "files": []
+          "modules": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "files": [],
+          "done_provenance": {
+            "commit": "ef827a0cfd9eeb0660890b213415c2cc68c67ff1"
+          }
         }
       },
       {
@@ -39598,7 +39722,9 @@
         "subtasks": [],
         "updatedAt": "2026-04-21T09:13:46.878Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/lib.rs"
+          ],
           "files": []
         }
       },
@@ -41915,11 +42041,11 @@
         "description": "Every call to `Engine::eval()` and `Engine::edit_param()` clones the entire merged function table (`self.functions: Vec<CompiledFunction>`). `CompiledFunction` contains boxed expression trees, so cost is O(|user_fns + prelude_fns| * avg_tree_size) per call — a significant allocation for modules with a large prelude.",
         "details": "Change `Engine::functions` from `Vec<CompiledFunction>` to `Arc<Vec<CompiledFunction>>` so the borrow-checker workaround clone in `eval()` and `edit_param()` becomes O(1).\n\nKey sites:\n- `crates/reify-eval/src/lib.rs` near `let functions: Vec<CompiledFunction> = self.functions.clone();` inside `eval()` (the PERFORMANCE NOTE comment describes the fix)\n- `crates/reify-eval/src/lib.rs` near line ~1548: `let functions = self.functions.clone();` inside `edit_param()` — same pattern\n- `crates/reify-eval/src/concurrent.rs`: `ConcurrentEditSetup::functions` field is typed `Vec<CompiledFunction>` and assigned via `functions: self.functions.clone()` — needs the type change to `Arc<Vec<CompiledFunction>>`\n\nThe desired end state:\n```rust\nself.functions = Arc::new({ let mut v = module.functions.clone(); v.extend(prelude); v });\nlet functions = Arc::clone(&self.functions);   // O(1)\n```\n\nThe `concurrent.rs` change is the blocker that prevented this fix in task 515 (it lies outside that task's scope lock). This task should scope both files together.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:26.450Z",
+        "updatedAt": "2026-04-21T15:06:09.194Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/lib.rs",
@@ -42248,9 +42374,19 @@
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/geometry_boolean.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs",
+            "crates/reify-eval/src/engine_build.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/geometry_sub_ref_e2e.rs",
+            "crates/reify-test-support/src/builders"
+          ]
         },
-        "updatedAt": "2026-04-21T09:13:36.118Z"
+        "updatedAt": "2026-04-21T15:12:29.192Z"
       },
       {
         "id": "2012",
@@ -42278,7 +42414,7 @@
         "description": "Currently Engine::eval (crates/reify-eval/src/lib.rs:827) rebuilds the Snapshot from the CompiledModule from scratch and re-evaluates every Value node on every call. Engine::edit_param (crates/reify-eval/src/lib.rs:1544) already has the incremental machinery (dirty-cone ∩ demand cone, topological eval of affected nodes only) but scoped to param changes.\n\nTask 480 closed part of the LSP gap by adding eval_cached fast-path when the CompiledModule's content_hash is unchanged. The remaining gap, which this task targets, is structural source edits (different content_hash) where most of the module is still the same — the common LSP didChange case.\n\nedit_source would:\n1. Take a fresh CompiledModule (post-recompile of edited source).\n2. Diff against the prior snapshot via stable node identity (source-range or name-path keying, not positional cell IDs, since today cell IDs are assigned positionally within a fresh compile).\n3. Compute changed node set → dirty cone → demand cone intersection.\n4. Re-evaluate only affected Value nodes; preserve unchanged snapshot state for everything else.\n\nPrimary driver: LSP didChange (tasks 479/480) — keystroke-rate structural edits where ~99% of module is unchanged but content_hash differs, so 480's eval_cached path falls through to cold-start Engine::eval. MCP update_source (task 2008, now using ensure_engine() for prelude/function-table reuse) also benefits but less acutely.\n\nKnown complications:\n- Stable identity across recompiles: need a keying scheme that survives compiler internals (source-range + name-path is a candidate; needs a design pass).\n- Additive/deletive edits have no pre-image — need a correctness-preserving fallback (evaluate newly-added nodes; drop deleted ones and anything that depended on them).\n- Compiler changes that break the identity scheme would silently regress incrementality. Needs a test that cross-checks edit_source against a cold eval on the same final source.\n\nCoordinate with: 479/480 (LSP didChange hot path), 2008 (CLI MCP update_source). Caching strategy should stay uniform across entry points.\n\nmemory_hints:\n- search: \"Engine edit_param dirty cone demand cone incremental\"\n- search: \"CompiledModule content_hash stable node identity\"\n- search: \"LSP didChange eval_cached\"\n- entity: \"Engine\"\n- entity: \"EvalState\"\n- entity: \"CompiledModule\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [
           "479",
           "480"
@@ -42287,9 +42423,13 @@
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-eval/src/engine_edit_source.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/edit_source.rs"
+          ]
         },
-        "updatedAt": "2026-04-21T09:13:38.851Z"
+        "updatedAt": "2026-04-21T11:35:02.202Z"
       },
       {
         "id": "2014",
@@ -42350,7 +42490,13 @@
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/edit_source.rs"
+          ]
         },
         "updatedAt": "2026-04-21T09:13:41.579Z"
       },
@@ -42778,13 +42924,13 @@
         "description": "After task #2031 lands (tests moved out), decompose the 820-line `compile_with_prelude_refs` fn in `crates/reify-compiler/src/lib.rs` (L245-1066) into per-phase free functions.\n\nThe function is already sectioned by comment into 13 passes:\n1. parse-errors forwarding\n2. module-pragma validation\n3. pre-pass: collect decl references + entity-name tracker\n4. units compilation (prelude seeding + local units)\n5. type alias DFS resolution\n6. enum collection\n7. functions pass\n8. traits pass\n9. fields pass\n10. constraint-defs pass (with cross-prelude shadow warnings)\n11. post-pass: deferred bound checks\n12. post-pass: recursion detection + termination + hash remix\n13. post-pass: dup-sig check, field-composition, purpose compilation, final hash\n\nDesign:\n- Introduce `CompilationCtx` (probably `pub(crate) struct`) holding the shared mutable state: `diagnostics`, `scope`, registries (`alias_registry`, `trait_registry`, `constraint_def_registry`, `template_registry`, `field_registry`), `enum_defs`, `resolution_enums`, `functions`, `fields`, `templates`, `imports`, `seen_entity_names`, etc.\n- Factor each sectioned pass into a free fn `fn phase_<name>(ctx: &mut CompilationCtx, parsed: &ParsedModule, prelude: &[&CompiledModule])` or similar signature.\n- House them in a submodule tree: `crates/reify-compiler/src/compile_builder/{ctx.rs, pre_pass.rs, units.rs, aliases.rs, enums.rs, functions_pass.rs, traits_pass.rs, fields_pass.rs, defs_pass.rs, post_passes.rs, hash.rs}` (or a single `compile_builder.rs` if the phases feel small enough).\n- `compile_with_prelude_refs` becomes a thin orchestrator: construct `CompilationCtx`, call each phase in order, assemble `CompiledModule` from ctx fields.\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically (no behavioral change).\n- `compile_with_prelude_refs` body shrinks to < 80 lines (orchestrator only).\n- `lib.rs` drops below 300 lines (module decls + public entry points + reexports).\n\nWhy: biggest structural win — ~35 pending tasks target lib.rs but most actually edit one specific pass. After the split, they lock only the relevant phase file and dispatch concurrently.\n\nRisk: `CompilationCtx` field design takes thought (what moves, what stays as call args). Prefer keeping per-pass call args explicit where natural — don't force everything into ctx just for uniformity.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2031"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:40:11.857Z",
+        "updatedAt": "2026-04-21T15:15:18.365Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
@@ -42805,7 +42951,7 @@
         "description": "After tasks #934 (resolve_enum_type helper + check_trait_conformance optimization) and #2034 (MergeContext + collect_all_requirements extraction) both land, `check_trait_conformance` in `crates/reify-compiler/src/conformance.rs` will still be a large monolithic function (~400+ lines estimated). Decompose it into phase helpers.\n\nFirst read the current state of `check_trait_conformance` and identify natural phase boundaries. Expected candidates:\n- **resolve-structure-members** — build the `structure_members: HashMap<String, Type>` from the EntityDefRef (currently the ~80-line filter_map closure).\n- **walk-requirements** — invoke `collect_all_requirements` (already extracted by #2034) and collect the flattened requirement + default sets.\n- **check-members-vs-requirements** — compare each required member against the structure's members, emit mismatch diagnostics.\n- **emit-missing-member-diagnostics** — report requirements unsatisfied by the structure.\n- **merge-defaults** — inject default value cells + constraints for trait-provided defaults the structure did not override.\n\nExtract each phase into a `fn check_phase_<name>(...)` with a narrow signature. The top-level `check_trait_conformance` becomes a thin orchestrator (< 80 lines) calling each phase.\n\nIf the extracted helpers together grow conformance.rs past ~1000 lines again, move them to a sibling submodule `crates/reify-compiler/src/conformance/checker.rs` (converting conformance.rs into `conformance/mod.rs` or reorganizing as appropriate).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically — no behavioral change intended.\n- `check_trait_conformance` body shrinks to < 80 lines.\n- ~12 pending tasks that currently contend on `conformance.rs` can split their edits across phase helpers and dispatch concurrently.\n\nWhy: task #934 was scoped as an optimization, not a decomposition. Even after it lands, the 700-line function remains the lock bottleneck. Proper decomposition is the durable fix.\n\nNote to executor: if after reading the post-#934 state you conclude check_trait_conformance is already < 250 lines and naturally cohesive (i.e. #934 did more than expected), defer this task with a note explaining — don't manufacture phase boundaries that don't exist.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "934",
           "936",
@@ -42822,7 +42968,8 @@
           "modules": [
             "crates/reify-compiler/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-21T15:15:18.907Z"
       },
       {
         "id": "2037",
@@ -43121,11 +43268,11 @@
         "description": "Dedup repeated PathBuf+CliToolContext::new in test module of crates/reify-cli/src/mcp_context.rs (sites ~807,832,865,891,931,1115,1136). Introduce `fn fresh_ctx() -> CliToolContext` helper and update callers. Spawned from Task 2015 review (reviewer_comprehensive, code_reuse).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:14:30.399Z",
+        "updatedAt": "2026-04-21T11:23:30.480Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43138,8 +43285,7 @@
           },
           "done_provenance": {
             "commit": "89835e8faa01e64c0357a712a109a324c54f8c3c",
-            "commit_input": "89835e8fa",
-            "note": "fresh_ctx() helper introduced in cb4146af7 and all call sites migrated in 89835e8fa; both commits on main. Verified: fresh_ctx() defined at line 808 of crates/reify-cli/src/mcp_context.rs, only remaining CliToolContext::new(PathBuf::from(...)) is inside the helper itself."
+            "note": "fresh_ctx() helper added in cb4146af7; 8 call sites refactored in 89835e8fa; smoke test in 1d1ef1e5f — all on main. Task 2015 folded the refactor. Restored by Stage-2 reconciliation after orchestrator bulk-reset at 09:13:26Z on 2026-04-21."
           }
         }
       },
@@ -43381,7 +43527,7 @@
         "description": "Follow-up from task 1746 amend-1 review (non-blocking suggestions not folded during /unblock because source files weren't touched by the blocker fix).\n\n**S4 — metaKey modifier guard test** (`gui/src/__tests__/useKeyboardShortcuts.test.ts`)\nExisting tests cover ctrlKey/shiftKey/altKey but not metaKey. Implementation at useKeyboardShortcuts.ts:103 guards on all four. Add `Meta+1 does NOT call onSwitchViewByIndex` test mirroring existing ctrl/shift/alt cases.\n\n**S5 — weak autofocus assertion** (`gui/src/__tests__/ViewManageModal.test.tsx:55-63`)\nTest titled \"first focusable element receives autofocus\" only asserts `focusable` is truthy — not that it received focus. After the `queueMicrotask` await, assert `expect(document.activeElement).toBe(focusable)` (or `dialog.contains(document.activeElement)` if jsdom focus is flaky; document the softening in that case).\n\n**S6 — transactional userViewOrder invariant** (`gui/src/stores/viewStateStore.ts`, `gui/src/panels/ViewSelector.tsx`)\nCurrently ViewSelector's `orderedViews` memo dev-warns when `userViewOrder` references an id missing from `state.views`, but silently filters in prod. Stronger fix: make `deleteView` and `reorderUserViews` transactionally consistent (they already are), then remove the defensive filter so any future bug surfaces loudly instead of being masked. Alternatively, assert invariant in the store and panic (dev) / log (prod).\n\nReviewer references: `.task/reviews-amend-1/reviewer_comprehensive.json` suggestions 4, 5, 6 in task 1746's worktree (preserved in task 1746's merge history).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -43408,9 +43554,12 @@
               "autofocus assertion view management UI",
               "userViewOrder transactional invariant copy-on-write named views"
             ]
+          },
+          "done_provenance": {
+            "commit": "64128a364ba61d6388e649065092988fdef2dcba"
           }
         },
-        "updatedAt": "2026-04-21T08:44:05.938Z"
+        "updatedAt": "2026-04-21T09:47:30.170Z"
       },
       {
         "id": "2064",
@@ -43466,7 +43615,7 @@
         "description": "Task 1921 completed the Type::Error sentinel audit but missed three specific silent `_ => Type::Real` fallbacks in crates/reify-compiler/src/expr.rs. These are NOT error-producer branches — they are type-inference fallbacks that swallow logic errors without emitting diagnostics, violating the \"errors must be noisy\" rule (briefing convention, task-117 origin).\n\nThree sites to fix:\n\n1. **expr.rs:1323-1328** — `index_access` compiles `obj[idx]`; when `obj.result_type` is neither `Type::List(_)` nor `Type::Map(_,_)` nor `Type::Error`, the result silently defaults to `Type::Real` with no diagnostic. Reachable from user code e.g. `let x = 5; let y = x[0]`.\n\n2. **expr.rs:1635-1642** — quantifier (`forall`/`exists`) compiles `∀x ∈ collection. P(x)`; when `collection.result_type` is neither `Type::List(_)` nor `Type::Set(_)` nor `Type::Error`, `elem_type` silently defaults to `Type::Real` with no diagnostic. Reachable from user code e.g. `forall x in 5 { x > 0 }`.\n\n3. **expr.rs:1152-1167** — inside `if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str())` guard, the trailing `_ => Type::Real` catch-all is unreachable (the guard restricts to count/sum/keys/values) but is still coded as a silent default. Should be `unreachable!()`.\n\nFixes:\n- (1) and (2): push `Diagnostic::error(...)` with a span, then use `make_poison_type(diagnostics, n)` to return `Type::Error` (same pattern as range-no-bounds, match-no-arms).\n- (3): replace with `unreachable!(\"COLLECTION_AGGREGATION_MEMBERS restricts member to count/sum/keys/values\")`.\n\nAdd regression tests to crates/reify-compiler/tests/silent_defaults_tests.rs:\n- `index_into_non_collection_emits_diagnostic`\n- `quantifier_over_non_collection_emits_diagnostic`\n\nNo test needed for (3) since it's purely a defensive-coding style change (unreachable assertion).\n\nRelated: task 1921 (parent audit, done), task 117 (silent-defaults test infrastructure), task 448 (anti-cascade parent).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -43487,9 +43636,12 @@
               "Type::Real silent fallback expr.rs index quantifier method",
               "expr.rs collection_sub_member_types defensive fallback unreachable"
             ]
+          },
+          "done_provenance": {
+            "commit": "b918072fc67ae0b3caaa1db2a7c1a2675d251dc5"
           }
         },
-        "updatedAt": "2026-04-21T08:44:04.025Z"
+        "updatedAt": "2026-04-21T09:47:29.857Z"
       },
       {
         "id": "2067",
@@ -43497,18 +43649,21 @@
         "description": "Post-merge review follow-up on task 2038. Reviewer argues that two defensive patterns introduced in `crates/reify-cli/src/mcp_context.rs::reapply_user_overrides` guard states that are unreachable through public API and should be replaced with type-enforced invariants or `debug_assert!` that fails loudly when the assumption breaks.\n\nScope:\n\n1. **Early-return branch (lines ~204-211).** Currently calls `state.clear_overrides()` when `user_overrides` is empty to prune any stale `warned_overrides`. The reviewer observes that no public mutation path can leave `warned_overrides` non-empty while `user_overrides` is empty: `load_file`/`open_file` call `clear_overrides()`, `set_parameter` only pushes, the `Ok` arm removes the cell-specific warn entry, and mismatch arms keep entries in `user_overrides`. Consider one of:\n   - Revert to bare `return;` and rely on `clear_overrides()` as the single invariant-enforcing entry point.\n   - Keep `return;` but add `debug_assert!(state.warned_overrides.is_empty())` so violations fail loudly in tests.\n\n2. **Paired test (lines ~1096-1142).** `reapply_user_overrides_maintains_warned_subset_invariant` reaches into `ctx.lock_state()` and calls `state.user_overrides.clear()` directly to fabricate an otherwise-unreachable state. This ossifies the private `CliState` field layout. If the defensive branch is removed, delete this test. If kept as a `debug_assert!`, rewrite the test to trigger the assertion under pre-fix conditions rather than behaviorally verify the silent mutation.\n\n3. **NotInitialized docstring (lines ~193-203).** The docstring asserts `NotInitialized` is unreachable because `reapply_user_overrides` runs immediately after `ensure_engine(...).eval(...)`. This is an unenforced calling convention. Consider `debug_assert!(!matches!(err, EngineError::NotInitialized), \"reapply called before eval\")` when classifying the variant, or reword the docstring to mark this as an unenforced precondition rather than an invariant.\n\nKeep all three changes in one commit; they share a theme (\"prefer loud invariant failures over silent defensive cleanup\").\n\nmemory_hints:\n- search(\"task 2038 reapply_user_overrides clear_overrides\")\n- review comments on esc-2038-9 from reviewer_comprehensive",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:40:12.125Z",
+        "updatedAt": "2026-04-21T15:18:02.568Z",
         "metadata": {
           "files": [
             "crates/reify-cli/src/mcp_context.rs"
           ],
           "modules": [
             "crates/reify-cli/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "3ebf379264f00b9bd4b6a6511d602b87d6f3cbfe"
+          }
         }
       },
       {
@@ -43535,13 +43690,82 @@
             "commit": "c85e92ea8b869c5c697676ff0d6364392da7b52d"
           }
         }
+      },
+      {
+        "id": "2069",
+        "title": "Polish task 424 follow-ups: is_recursive doc count, depth-limit test name, engine_admin comment",
+        "description": "Three small post-merge polish items from task 424 review:\n\n1. **crates/reify-compiler/src/types.rs:259-279** — `is_recursive` docstring says \"the flag is used in three distinct places\" but then enumerates four bullets (termination.rs, unfold.rs, engine_eval.rs, gui/src-tauri/src/engine.rs). Fix: change \"three distinct places\" to \"four distinct places\", or drop the count and say \"in the following places\" so future additions don't require re-editing the prose.\n\n2. **crates/reify-eval/tests/recursive_unfold.rs:783-785** — `unfold_recursive_depth_limit_boundary_accepts_512` hard-codes \"512\" in the test name while the body uses `Engine::MAX_UNFOLD_DEPTH_LIMIT`. If the constant is ever raised (e.g., to 1024), the test still passes but the name lies. Fix: rename to `unfold_recursive_depth_limit_boundary_accepts_max`, OR add `assert_eq!(Engine::MAX_UNFOLD_DEPTH_LIMIT, 512);` so any change to the constant forces a deliberate update to the name and the canonical-value claim.\n\n3. **crates/reify-eval/src/engine_admin.rs:132-136** — Inline comment block rehashing the panic-vs-Result decision duplicates reasoning already captured in task 205 memory and the `# Panics` rustdoc immediately above. Fix: drop the inline comment block; keep the rustdoc and the two asserts as self-documenting. If rationale must be preserved, move it to the memory store rather than the source file.\n\nAll three are cosmetic / documentation polish; no behavioral change required. Grouped as one task because each is a few-minute edit in modules already touched by task 424.</description>\n<parameter name=\"dependencies\">424",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-21T14:16:35.107Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
+        }
+      },
+      {
+        "id": "2070",
+        "title": "Polish task 424 follow-ups: doc count, test name, comment noise",
+        "description": "Three small post-merge polish items from task 424 review. (1) crates/reify-compiler/src/types.rs:259-279 — is_recursive docstring says \"three distinct places\" but lists four (termination.rs, unfold.rs, engine_eval.rs, gui/src-tauri/src/engine.rs). Fix: change count to four, or drop it (\"in the following places\"). (2) crates/reify-eval/tests/recursive_unfold.rs:783-785 — unfold_recursive_depth_limit_boundary_accepts_512 hardcodes \"512\" in the name while using Engine::MAX_UNFOLD_DEPTH_LIMIT in the body. Fix: rename to ..._accepts_max OR add assert_eq!(Engine::MAX_UNFOLD_DEPTH_LIMIT, 512). (3) crates/reify-eval/src/engine_admin.rs:132-136 — inline comment rehashing panic-vs-Result decision duplicates rustdoc and memory. Fix: drop the inline comment block. All cosmetic; no behavior change.</description>\n<parameter name=\"dependencies\">424",
+        "details": "",
+        "testStrategy": "",
+        "status": "cancelled",
+        "dependencies": [
+          "2069"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-21T14:39:54.933Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
+        }
+      },
+      {
+        "id": "2071",
+        "title": "Narrow EvaluationGraph::is_auto_cell visibility to pub(crate)",
+        "description": "`EvaluationGraph::is_auto_cell` in crates/reify-eval/src/graph.rs:383-389 is currently `pub`, but its only consumer is the in-crate helper `deactivate_if_not_auto` (engine_edit.rs). Change visibility to `pub(crate) fn is_auto_cell` to stop leaking an internal predicate out of the crate's API surface. Trivial one-line change; ensure the test module (same crate) still compiles.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-21T14:44:41.362Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/graph.rs"
+          ]
+        }
+      },
+      {
+        "id": "2072",
+        "title": "Narrow EvaluationGraph::is_auto_cell visibility to pub(crate)",
+        "description": "`EvaluationGraph::is_auto_cell` in crates/reify-eval/src/graph.rs:383-389 is currently `pub`, but its only consumer is the in-crate helper `deactivate_if_not_auto` (engine_edit.rs). Change visibility to `pub(crate) fn is_auto_cell` to stop leaking an internal predicate out of the crate's API surface. Trivial one-line change; ensure the test module (same crate) still compiles.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-21T14:46:08.440Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:16:50.573Z",
-      "taskCount": 2060,
-      "completedCount": 1796,
+      "lastModified": "2026-04-21T15:25:53.468Z",
+      "taskCount": 2064,
+      "completedCount": 1809,
       "tags": [
         "master"
       ]

@@ -489,6 +489,10 @@ export function createViewStateStore() {
    * - Contains no auto-view ids (starting with `auto:`)
    * - Contains no duplicates
    *
+   * Transactional: only `userViewOrder` is replaced; `views` is preserved
+   * unchanged, so the `getOrderedViewIds` invariant is maintained by
+   * construction.
+   *
    * @returns `true` on success, `false` on any validation failure (no state change).
    */
   function reorderUserViews(ids: string[]): boolean {
@@ -531,6 +535,9 @@ export function createViewStateStore() {
    * If the deleted view is currently active, falls back to `auto:default`
    * and copies its `visibility` map into `state.explicit` so the viewport
    * immediately reflects the fallback.
+   *
+   * Transactional: `views[id]` and `userViewOrder[id]` are removed in a
+   * single `produce` block to preserve the `getOrderedViewIds` invariant.
    *
    * @returns `true` on success, `false` on any validation failure (no state change).
    */
@@ -719,6 +726,11 @@ export function createViewStateStore() {
    * (number-key dispatch) must derive their order from this function so that
    * "press N to activate the N-th visible entry" is structurally enforced and
    * the two call-sites cannot silently drift apart.
+   *
+   * Invariant: every id in the returned array is guaranteed to be present as a
+   * key in `state.views`; this is enforced by the transactional consistency of
+   * `deleteView` and `reorderUserViews` and relied on by
+   * `ViewSelector.orderedViews`.
    */
   function getOrderedViewIds(): string[] {
     const autoIds = Object.values(state.views)

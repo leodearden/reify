@@ -49,10 +49,22 @@ const mockMeshSetVisibility = vi.fn();
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
 
+// Camera stub with position/up set-spies and mutable zoom — shared across tests
+const mockCameraPositionSet = vi.fn();
+const mockCameraUpSet = vi.fn();
+const mockCameraUpdateProjectionMatrix = vi.fn();
+const mockCamera = {
+  type: 'PerspectiveCamera',
+  position: { set: mockCameraPositionSet, x: 0, y: 0, z: 0 },
+  up: { set: mockCameraUpSet, x: 0, y: 0, z: 0 },
+  zoom: 1,
+  updateProjectionMatrix: mockCameraUpdateProjectionMatrix,
+};
+
 vi.mock('../../viewport/scene', () => ({
   createScene: vi.fn(() => ({
     scene: { type: 'Scene' },
-    camera: { type: 'PerspectiveCamera' },
+    camera: mockCamera,
     renderer: {
       render: mockRendererRender,
       dispose: mockRendererDispose,
@@ -69,6 +81,10 @@ vi.mock('../../viewport/scene', () => ({
 // Captured event listeners from the controls mock (for render-on-demand tests)
 let controlsListeners: Record<string, Function[]> = {};
 
+// Controls stub with target.set spy — shared across tests
+const mockControlsTargetSet = vi.fn();
+const mockControlsTarget = { set: mockControlsTargetSet, x: 0, y: 0, z: 0 };
+
 vi.mock('../../viewport/controls', () => ({
   createControls: vi.fn(() => ({
     controls: {
@@ -77,6 +93,7 @@ vi.mock('../../viewport/controls', () => ({
         controlsListeners[event].push(cb);
       }),
       removeEventListener: vi.fn((_event: string, _cb: Function) => {}),
+      target: mockControlsTarget,
     },
     update: mockControlsUpdate,
     dispose: mockControlsDispose,
@@ -123,18 +140,23 @@ beforeEach(() => {
   controlsListeners = {};
   mockGrid.visible = true;
   mockAxes.visible = true;
+  // Reset camera mutable state
+  mockCamera.zoom = 1;
+  mockControlsTarget.x = 0;
+  mockControlsTarget.y = 0;
+  mockControlsTarget.z = 0;
 });
 
 describe('Viewport', () => {
   it('renders a canvas element with data-testid viewport-canvas', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     expect(screen.getByTestId('viewport-canvas')).toBeTruthy();
     const canvas = screen.getByTestId('viewport-canvas');
     expect(canvas.tagName.toLowerCase()).toBe('canvas');
   });
 
   it('canvas is wrapped in a container div with data-testid viewport-container', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     const container = screen.getByTestId('viewport-container');
     expect(container).toBeTruthy();
     expect(container.tagName.toLowerCase()).toBe('div');
@@ -144,42 +166,42 @@ describe('Viewport', () => {
   });
 
   it('shows tooltip with entity name when hoveredEntity is set', () => {
-    render(() => <Viewport meshes={{}} hoveredEntity="bracket/hole" />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" hoveredEntity="bracket/hole" />);
     const tooltip = screen.getByTestId('viewport-tooltip');
     expect(tooltip).toBeTruthy();
     expect(tooltip.textContent).toContain('bracket/hole');
   });
 
   it('hides tooltip when hoveredEntity is null', () => {
-    render(() => <Viewport meshes={{}} hoveredEntity={null} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" hoveredEntity={null} />);
     expect(screen.queryByTestId('viewport-tooltip')).toBeNull();
   });
 
   it('shows spinner overlay when evalStatus phase is evaluating', () => {
-    render(() => <Viewport meshes={{}} evalStatus={{ phase: 'evaluating' }} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" evalStatus={{ phase: 'evaluating' }} />);
     const spinner = screen.getByTestId('viewport-spinner');
     expect(spinner).toBeTruthy();
   });
 
   it('hides spinner when evalStatus phase is idle', () => {
-    render(() => <Viewport meshes={{}} evalStatus={{ phase: 'idle' }} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" evalStatus={{ phase: 'idle' }} />);
     expect(screen.queryByTestId('viewport-spinner')).toBeNull();
   });
 
   it('renders fit-to-view button with data-testid', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     const btn = screen.getByTestId('fit-to-view');
     expect(btn).toBeTruthy();
   });
 
   it('hides spinner when evalStatus is not provided', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     expect(screen.queryByTestId('viewport-spinner')).toBeNull();
   });
 
   it('clicking fit-to-view button calls selection.fitToView', async () => {
     const onFitToView = vi.fn();
-    render(() => <Viewport meshes={{}} onFitToView={onFitToView} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" onFitToView={onFitToView} />);
     const btn = screen.getByTestId('fit-to-view');
     fireEvent.click(btn);
 
@@ -199,7 +221,7 @@ describe('Viewport', () => {
 
     const [meshes, setMeshes] = createSignal<Record<string, MeshData>>(initialMeshes);
 
-    render(() => <Viewport meshes={meshes()} selectedEntity="bracket/plate" />);
+    render(() => <Viewport meshes={meshes()} viewportId="test-vp" selectedEntity="bracket/plate" />);
 
     // After initial render, setSelected should have been called with the entity
     expect(mockSelectionSetSelected).toHaveBeenCalledWith('bracket/plate');
@@ -216,7 +238,7 @@ describe('Viewport', () => {
   });
 
   it('animate loop does not call renderer.render after cleanup/dispose', () => {
-    const { unmount } = render(() => <Viewport meshes={{}} />);
+    const { unmount } = render(() => <Viewport meshes={{}} viewportId="test-vp" />);
 
     // The initial animate() call should have been scheduled
     expect(rafCallbacks.length).toBeGreaterThan(0);
@@ -239,7 +261,7 @@ describe('Viewport', () => {
 
   it('calls flyToEntityRef callback with a function on mount', () => {
     const flyToEntityRef = vi.fn();
-    render(() => <Viewport meshes={{}} flyToEntityRef={flyToEntityRef} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" flyToEntityRef={flyToEntityRef} />);
     expect(flyToEntityRef).toHaveBeenCalledTimes(1);
     expect(typeof flyToEntityRef.mock.calls[0][0]).toBe('function');
   });
@@ -249,7 +271,7 @@ describe('Viewport', () => {
     const flyToEntityRef = vi.fn((fn: (entityPath: string) => void) => {
       capturedFn = fn;
     });
-    render(() => <Viewport meshes={{}} flyToEntityRef={flyToEntityRef} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" flyToEntityRef={flyToEntityRef} />);
 
     expect(capturedFn).toBeDefined();
     capturedFn!('Bracket');
@@ -257,7 +279,7 @@ describe('Viewport', () => {
   });
 
   it('animate loop does NOT call renderer.render when idle after initial frame', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
 
     // First rAF callback fires the initial render (animate calls rAF, then renders)
     expect(rafCallbacks.length).toBeGreaterThan(0);
@@ -276,7 +298,7 @@ describe('Viewport', () => {
   });
 
   it('controls change event triggers re-render on next frame', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
 
     // Fire first rAF callback (initial render)
     const firstCb = rafCallbacks[0];
@@ -306,7 +328,7 @@ describe('Viewport', () => {
     } as any;
 
     try {
-      render(() => <Viewport meshes={{}} />);
+      render(() => <Viewport meshes={{}} viewportId="test-vp" />);
 
       // Fire first rAF callback (initial render)
       const firstCb = rafCallbacks[0];
@@ -328,7 +350,7 @@ describe('Viewport', () => {
   });
 
   it('passes controls to createSelection for orbit target updates', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
 
     // createSelection should have been called with controls from createControls
     const mockCreateSelection = createSelection as unknown as ReturnType<typeof vi.fn>;
@@ -343,7 +365,7 @@ describe('Viewport', () => {
 
   it('calls fitToViewRef callback with a function on mount', () => {
     const fitToViewRef = vi.fn();
-    render(() => <Viewport meshes={{}} fitToViewRef={fitToViewRef} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" fitToViewRef={fitToViewRef} />);
     expect(fitToViewRef).toHaveBeenCalledTimes(1);
     expect(typeof fitToViewRef.mock.calls[0][0]).toBe('function');
   });
@@ -353,7 +375,7 @@ describe('Viewport', () => {
     const fitToViewRef = vi.fn((fn: () => void) => {
       capturedFn = fn;
     });
-    render(() => <Viewport meshes={{}} fitToViewRef={fitToViewRef} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" fitToViewRef={fitToViewRef} />);
 
     expect(capturedFn).toBeDefined();
     mockSelectionFitToView.mockClear();
@@ -362,13 +384,13 @@ describe('Viewport', () => {
   });
 
   it('renders a grid toggle button with data-testid toggle-grid', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     const btn = screen.getByTestId('toggle-grid');
     expect(btn).toBeTruthy();
   });
 
   it('clicking toggle-grid button toggles grid and axes visible state', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     const btn = screen.getByTestId('toggle-grid');
 
     expect(mockGrid.visible).toBe(true);
@@ -386,7 +408,7 @@ describe('Viewport', () => {
   });
 
   it('tooltip style top/left update on mousemove within container', () => {
-    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" hoveredEntity="bracket/plate" />);
     const container = screen.getByTestId('viewport-container');
     const tooltip = screen.getByTestId('viewport-tooltip');
 
@@ -410,7 +432,7 @@ describe('Viewport', () => {
   });
 
   it('tooltip is not positioned at fixed 8px/8px after a mousemove event', () => {
-    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" hoveredEntity="bracket/plate" />);
     const container = screen.getByTestId('viewport-container');
     const tooltip = screen.getByTestId('viewport-tooltip');
 
@@ -427,7 +449,7 @@ describe('Viewport', () => {
   });
 
   it('tooltip still shows the hoveredEntity text content', () => {
-    render(() => <Viewport meshes={{}} hoveredEntity="bracket/plate" />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" hoveredEntity="bracket/plate" />);
     const tooltip = screen.getByTestId('viewport-tooltip');
     expect(tooltip.textContent).toContain('bracket/plate');
   });
@@ -435,13 +457,13 @@ describe('Viewport', () => {
 
 describe('Viewport accessibility', () => {
   it('canvas has tabindex="0" so it can receive keyboard focus', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     const canvas = screen.getByTestId('viewport-canvas');
     expect(canvas.getAttribute('tabindex')).toBe('0');
   });
 
   it('canvas has aria-label="3D viewport"', () => {
-    render(() => <Viewport meshes={{}} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     const canvas = screen.getByTestId('viewport-canvas');
     expect(canvas.getAttribute('aria-label')).toBe('3D viewport');
   });
@@ -457,7 +479,7 @@ describe('Viewport entityVisibility reset', () => {
       { 'bracket/plate': 'ghost', 'bracket/hole': 'hidden' }
     );
 
-    render(() => <Viewport meshes={{}} entityVisibility={entityVisibility()} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" entityVisibility={entityVisibility()} />);
 
     // After initial render, setVisibility should be called for both entities
     expect(mockMeshSetVisibility).toHaveBeenCalledWith('bracket/plate', 'ghost');
@@ -476,7 +498,7 @@ describe('Viewport entityVisibility reset', () => {
       { 'bracket/plate': 'ghost', 'bracket/hole': 'hidden' }
     );
 
-    render(() => <Viewport meshes={{}} entityVisibility={entityVisibility()} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" entityVisibility={entityVisibility()} />);
 
     // Clear mock, then clear entityVisibility entirely
     mockMeshSetVisibility.mockClear();
@@ -491,14 +513,14 @@ describe('Viewport entityVisibility reset', () => {
 describe('Viewport multi-selection props', () => {
   it('selectedEntities prop routes an array of paths to selection.setSelected', () => {
     // selectedEntities is not yet a known ViewportProps field — test fails until step-28 impl
-    render(() => <Viewport meshes={{}} selectedEntities={['A', 'B'] as any} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" selectedEntities={['A', 'B'] as any} />);
     // setSelected should be called with the list (not the scalar selectedEntity path)
     expect(mockSelectionSetSelected).toHaveBeenCalledWith(['A', 'B']);
   });
 
   it('onSelect prop receives (path, modifiers) when the selection module fires with modifiers', () => {
     const onSelectSpy = vi.fn();
-    render(() => <Viewport meshes={{}} onSelect={onSelectSpy as any} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" onSelect={onSelectSpy as any} />);
 
     // Retrieve the onSelect callback that Viewport passed to createSelection
     const mockCreateSelection = createSelection as unknown as ReturnType<typeof vi.fn>;
@@ -513,7 +535,7 @@ describe('Viewport multi-selection props', () => {
 
   it('plain click (no modifiers) forwards { ctrl: false, shift: false } to onSelect prop', () => {
     const onSelectSpy = vi.fn();
-    render(() => <Viewport meshes={{}} onSelect={onSelectSpy as any} />);
+    render(() => <Viewport meshes={{}} viewportId="test-vp" onSelect={onSelectSpy as any} />);
 
     const mockCreateSelection = createSelection as unknown as ReturnType<typeof vi.fn>;
     const selectionOpts = mockCreateSelection.mock.calls[mockCreateSelection.mock.calls.length - 1][0];
@@ -521,5 +543,97 @@ describe('Viewport multi-selection props', () => {
     selectionOpts.onSelect('B', { ctrl: false, shift: false });
 
     expect(onSelectSpy).toHaveBeenCalledWith('B', { ctrl: false, shift: false });
+  });
+});
+
+describe('Viewport viewportId and camera restore', () => {
+  it('renders without crash when viewportId is provided but no viewportStore — camera stubs untouched', () => {
+    render(() => <Viewport meshes={{}} viewportId="design-main" />);
+    // Camera position/up set-spies must NOT be called when there is no store to restore from
+    expect(mockCameraPositionSet).not.toHaveBeenCalled();
+    expect(mockCameraUpSet).not.toHaveBeenCalled();
+    expect(mockControlsTargetSet).not.toHaveBeenCalled();
+    // zoom should remain at its default value
+    expect(mockCamera.zoom).toBe(1);
+  });
+
+  it('applies saved camera from viewportStore on mount', () => {
+    const savedCamera = {
+      position: [7, 8, 9] as [number, number, number],
+      target: [1, 2, 3] as [number, number, number],
+      up: [0, 0, 1] as [number, number, number],
+      zoom: 4,
+    };
+    const fakeStore = {
+      state: {} as any,
+      getViewport: vi.fn((_id: string) => ({ camera: savedCamera })),
+      setActiveViewport: vi.fn(),
+      assignView: vi.fn(),
+      updateCamera: vi.fn(),
+    };
+
+    render(() => <Viewport meshes={{}} viewportId="design-main" viewportStore={fakeStore as any} />);
+
+    // camera.position.set should be called with the saved position
+    expect(mockCameraPositionSet).toHaveBeenCalledWith(7, 8, 9);
+    // camera.up.set should be called with the saved up vector
+    expect(mockCameraUpSet).toHaveBeenCalledWith(0, 0, 1);
+    // controls.target.set should be called with the saved target
+    expect(mockControlsTargetSet).toHaveBeenCalledWith(1, 2, 3);
+    // camera.zoom should be set to the saved zoom value
+    expect(mockCamera.zoom).toBe(4);
+  });
+});
+
+describe('Viewport camera persistence', () => {
+  it('calls viewportStore.updateCamera with current camera state when controls fire end', () => {
+    const mockUpdateCamera = vi.fn();
+    const fakeStore = {
+      state: {} as any,
+      getViewport: vi.fn((_id: string) => undefined),
+      setActiveViewport: vi.fn(),
+      assignView: vi.fn(),
+      updateCamera: mockUpdateCamera,
+    };
+
+    render(() => <Viewport meshes={{}} viewportId="design-main" viewportStore={fakeStore as any} />);
+
+    // Set the camera/controls stubs to a known state before firing end
+    mockCamera.position.x = 10;
+    mockCamera.position.y = 20;
+    mockCamera.position.z = 30;
+    mockCamera.up.x = 0;
+    mockCamera.up.y = 1;
+    mockCamera.up.z = 0;
+    mockCamera.zoom = 2;
+    mockControlsTarget.x = 5;
+    mockControlsTarget.y = 6;
+    mockControlsTarget.z = 7;
+
+    // Fire the captured 'end' listener synchronously (fires once when interaction ends)
+    expect(controlsListeners['end']).toBeDefined();
+    expect(controlsListeners['end'].length).toBeGreaterThan(0);
+    for (const cb of controlsListeners['end']) {
+      cb();
+    }
+
+    // viewportStore.updateCamera should have been called with the current camera state
+    expect(mockUpdateCamera).toHaveBeenCalledWith('design-main', {
+      position: [10, 20, 30],
+      target: [5, 6, 7],
+      up: [0, 1, 0],
+      zoom: 2,
+    });
+  });
+
+  it('does not throw and does not call updateCamera when viewportStore is absent', () => {
+    render(() => <Viewport meshes={{}} viewportId="design-main" />);
+
+    // Fire all captured 'end' listeners — must not throw (no store, no-op)
+    expect(() => {
+      for (const cb of controlsListeners['end'] ?? []) {
+        cb();
+      }
+    }).not.toThrow();
   });
 });

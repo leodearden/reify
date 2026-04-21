@@ -47,8 +47,8 @@ struct CliState {
 impl CliState {
     /// Clear both `user_overrides` and `warned_overrides` together, enforcing
     /// the invariant that the two collections are always pruned as a unit.
-    /// Called from `load_file`, `open_file`, and the early-return branch of
-    /// `reapply_user_overrides` (when there is nothing left to dedupe against).
+    /// Called from `load_file` and `open_file` which semantically start over
+    /// with a fresh file and must reset all override tracking state.
     fn clear_overrides(&mut self) {
         self.user_overrides.clear();
         self.warned_overrides.clear();
@@ -197,16 +197,30 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 ///   pair are downgraded to `tracing::debug!` to avoid log spam when a stale override
 ///   persists across repeated saves.  The override is kept in `user_overrides` so the
 ///   user's intent survives a transient mismatch and reapplies when the type becomes
-///   compatible again.  `NotInitialized` is matched only to satisfy exhaustiveness —
-///   it is unreachable here because `reapply_user_overrides` is only invoked from
-///   `update_source` immediately after `ensure_engine(...).eval(...)` populates the
-///   snapshot.
+///   compatible again.  `NotInitialized` is enforced by a `debug_assert!` in the `Err`
+///   arm: callers must invoke `reapply_user_overrides` after `ensure_engine(...).eval(...)`;
+///   in release builds the assertion elides and the variant is classified harmlessly as a
+///   mismatch for exhaustiveness.
 fn reapply_user_overrides(state: &mut CliState) {
     if state.user_overrides.is_empty() {
-        // Nothing left to dedupe against — prune both override collections so
-        // stale entries from earlier mismatches don't linger.  user_overrides
-        // is already empty here; clear_overrides() also prunes warned_overrides.
-        state.clear_overrides();
+        // Invariant: warned_overrides must also be empty whenever user_overrides
+        // is empty.  `CliState::clear_overrides()` is called at every public
+        // entry point that resets overrides (load_file, open_file), so this
+        // state is unreachable via the API.  The debug_assert! fires loudly in
+        // debug/test builds if future mutation paths ever drift from the invariant.
+        debug_assert!(
+            state.warned_overrides.is_empty(),
+            "reapply_user_overrides: warned_overrides must be empty when user_overrides is \
+             empty — public mutation paths (load_file, open_file, set_parameter, and the \
+             per-cell retain in the Ok arm) preserve this invariant together"
+        );
+        // Self-heal in release builds: if the invariant above is ever violated by
+        // a future mutation path, stale `warned_overrides` entries would otherwise
+        // persist silently and downgrade legitimate future warnings to debug.  The
+        // debug_assert! already fires loudly in debug/test builds; this clear()
+        // keeps release builds self-correcting with no behavior change in the
+        // invariant-holding fast path (the HashMap is already empty).
+        state.warned_overrides.clear();
         return;
     }
     let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
@@ -230,6 +244,11 @@ fn reapply_user_overrides(state: &mut CliState) {
                     // a subsequent edit.
                 }
                 Err(err) => {
+                    debug_assert!(
+                        !matches!(&err, reify_eval::EngineError::NotInitialized),
+                        "reapply_user_overrides: called before eval() populated the engine \
+                         snapshot — this path is only valid after ensure_engine(...).eval(...)"
+                    );
                     let variant_tag: &'static str = match &err {
                         reify_eval::EngineError::TypeKindMismatch { .. } => "TypeKindMismatch",
                         reify_eval::EngineError::DimensionMismatch { .. } => "DimensionMismatch",
@@ -1130,23 +1149,23 @@ structure Bracket {
         );
     }
 
-    /// Invariant-guard test: `warned_overrides` must remain a subset of the
-    /// cells currently in `user_overrides`.  Specifically, when `user_overrides`
-    /// is empty, `warned_overrides` must also be empty after the next
-    /// `reapply_user_overrides` call.
+    /// Invariant guard: `debug_assert!` fires when `user_overrides` is empty but
+    /// `warned_overrides` is non-empty.  This state is unreachable through the
+    /// public API (`load_file`/`open_file` clear both collections together;
+    /// `set_parameter` always re-pushes to `user_overrides`), so the `debug_assert!`
+    /// exists to catch future invariant drift loudly in debug builds.
     ///
-    /// The scenario: `warned_overrides` was populated by a prior `TypeKindMismatch`
-    /// reapply, then `user_overrides` was manually cleared (simulating a caller that
-    /// removes all overrides without going through `load_file`/`open_file`).  Calling
-    /// `update_source` with valid source drives `reapply_user_overrides` through its
-    /// early-return branch, which delegates to `state.clear_overrides()` to prune
-    /// the now-stale `warned_overrides`.
-    ///
-    /// Note: no public API can reach this state today — `load_file`/`open_file`
-    /// clear both collections together, and `set_parameter` always re-pushes to
-    /// `user_overrides`.  The test exercises a defensive invariant guard.
+    /// The scenario:
+    ///  1. Load bracket.ri and set an override that eventually mismatches.
+    ///  2. Manually clear `user_overrides` without going through a public entry point,
+    ///     leaving `warned_overrides` populated.
+    ///  3. Drive `update_source` so `reapply_user_overrides` enters the
+    ///     `user_overrides.is_empty()` early-return branch — the `debug_assert!`
+    ///     must panic.
+    #[cfg(debug_assertions)]
     #[test]
-    fn reapply_user_overrides_maintains_warned_subset_invariant() {
+    #[should_panic(expected = "warned_overrides must be empty")]
+    fn reapply_user_overrides_debug_asserts_on_warned_without_user_overrides() {
         let ctx = fresh_ctx();
         ctx.load_file(BRACKET_PATH)
             .expect("load_file should succeed");
@@ -1159,38 +1178,65 @@ structure Bracket {
         ctx.update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
             .expect("update_source should return Ok even on override mismatch");
 
-        // 2. Precondition: warned_overrides must be non-empty after the mismatch.
-        {
-            let state = ctx.lock_state();
-            assert!(
-                !state.warned_overrides.is_empty(),
-                "test setup precondition: warned_overrides must be populated after a \
-                 type-mismatch reapply"
-            );
-        }
-
-        // 3. Clear user_overrides directly to create the "empty user_overrides with
-        //    populated warned_overrides" state that the early-return branch guards.
+        // 2. Clear user_overrides directly to create the "empty user_overrides with
+        //    populated warned_overrides" state that violates the invariant.
         {
             let mut state = ctx.lock_state();
             state.user_overrides.clear();
         }
 
-        // 4. Drive reapply_user_overrides through the early-return branch by
+        // 3. Drive reapply_user_overrides through the early-return branch by
         //    calling update_source with the original valid bracket source.
+        //    The debug_assert! must panic with "warned_overrides must be empty".
         let source = std::fs::read_to_string(BRACKET_PATH)
             .expect("bracket.ri fixture must be readable");
         ctx.update_source(BRACKET_PATH, &source)
             .expect("update_source with valid source should succeed");
+    }
 
-        // 5. Assert warned_overrides is now empty — the early-return branch must
-        //    clear the stale dedupe set when there is nothing left to dedupe against.
-        let state = ctx.lock_state();
-        assert!(
-            state.warned_overrides.is_empty(),
-            "reapply_user_overrides must clear warned_overrides when user_overrides is empty \
-             (nothing left to dedupe against)"
-        );
+    /// Invariant guard: `debug_assert!` fires when `reapply_user_overrides` is
+    /// entered with an engine that has never had `.eval(...)` called on it.
+    /// `edit_param` returns `EngineError::NotInitialized` in that case, which
+    /// is classified by the existing exhaustiveness match but should never arise
+    /// in production — `reapply_user_overrides` is only called from `update_source`
+    /// after `ensure_engine(...).eval(...)`.
+    ///
+    /// The test injects a never-eval'd engine directly into `CliState`, pushes one
+    /// user override, then calls `reapply_user_overrides` directly (accessible from
+    /// the same-file test module via `use super::*`), expecting the future
+    /// `debug_assert!` to panic.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "called before eval")]
+    fn reapply_user_overrides_debug_asserts_on_not_initialized_variant() {
+        let ctx = fresh_ctx();
+
+        // Inject a never-eval'd engine: mirrors ensure_engine construction (see
+        // `ensure_engine`, line ~177: `Engine::new(Box::new(SimpleConstraintChecker), None)`)
+        // but skips the eval() call, so edit_param will return NotInitialized.
+        // NOTE: if ensure_engine ever changes its Engine::new arguments, update
+        // this test to stay in sync — otherwise the test will still catch the
+        // NotInitialized variant but may exercise a slightly different engine state.
+        {
+            let mut state = ctx.lock_state();
+            state.engine = Some(reify_eval::Engine::new(
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            ));
+            // Push one user override so user_overrides is non-empty and the
+            // early-return branch is not taken.
+            state.user_overrides.push((
+                ValueCellId::new("Bracket", "width"),
+                Value::Real(0.12_f64),
+            ));
+        }
+
+        // Call reapply_user_overrides directly — the debug_assert! (added in
+        // step-4) must panic with a message containing "called before eval".
+        {
+            let mut state = ctx.lock_state();
+            reapply_user_overrides(&mut state);
+        }
     }
 
     /// Verify that `load_file` clears prior parameter overrides.  Because

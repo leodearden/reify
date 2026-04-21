@@ -15,8 +15,36 @@ use reify_test_support::{
     BrokenCountOptimizedImpl, MockOptimizedImpl, make_simple_engine, parse_and_compile,
 };
 use reify_types::{
-    ConstraintDiagnostics, ConstraintNodeId, ConstraintResult, Satisfaction, Severity,
+    ConstraintDiagnostics, ConstraintNodeId, ConstraintResult, Diagnostic, Satisfaction, Severity,
 };
+
+/// Assert that `diagnostics` contains an `Error`-severity diagnostic describing
+/// the OptimizedImpl-count-mismatch fallback for `expected_target`. Used by tests
+/// 6, 8, 9, and 10 to DRY up the identical inline block that searches for a
+/// diagnostic whose message contains "OptimizedImpl", "falling back", and the
+/// registered target name.
+fn assert_has_fallback_diagnostic(diagnostics: &[Diagnostic], expected_target: &str) {
+    let error_diags: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic for the broken OptimizedImpl, got diagnostics: {:?}",
+        diagnostics
+    );
+    let violation_diag = error_diags.iter().find(|d| {
+        d.message.contains("OptimizedImpl")
+            && d.message.contains("falling back")
+            && d.message.contains(&format!("target {:?}", expected_target))
+    });
+    assert!(
+        violation_diag.is_some(),
+        "expected a diagnostic mentioning 'OptimizedImpl', 'falling back', and 'target {:?}', got error diagnostics: {:?}",
+        expected_target,
+        error_diags
+    );
+}
 
 // ── Test 1: register_optimized_impl stores & dispatches ─────────────────────
 
@@ -454,26 +482,7 @@ structure def S {
     );
 
     // (b) diagnostic error for the contract violation
-    let error_diags: Vec<_> = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !error_diags.is_empty(),
-        "expected at least one Error diagnostic for the broken OptimizedImpl, \
-         got diagnostics: {:?}",
-        check_result.diagnostics
-    );
-    let violation_diag = error_diags
-        .iter()
-        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
-    assert!(
-        violation_diag.is_some(),
-        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
-         got error diagnostics: {:?}",
-        error_diags
-    );
+    assert_has_fallback_diagnostic(&check_result.diagnostics, "geo::coincident");
 
     // Broken impl was still invoked (before fallback kicked in)
     assert!(
@@ -688,26 +697,7 @@ structure def S {
     );
 
     // (b) Error diagnostic for the contract violation
-    let error_diags: Vec<_> = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !error_diags.is_empty(),
-        "expected at least one Error diagnostic for the broken OptimizedImpl (too many results), \
-         got diagnostics: {:?}",
-        check_result.diagnostics
-    );
-    let violation_diag = error_diags
-        .iter()
-        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
-    assert!(
-        violation_diag.is_some(),
-        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
-         got error diagnostics: {:?}",
-        error_diags
-    );
+    assert_has_fallback_diagnostic(&check_result.diagnostics, "geo::coincident");
 
     // Broken impl was still invoked
     assert!(
@@ -769,28 +759,109 @@ structure def S {
     );
 
     // (b) Error diagnostic for the contract violation is still emitted
-    let error_diags: Vec<_> = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !error_diags.is_empty(),
-        "expected at least one Error diagnostic for the broken OptimizedImpl, \
-         got diagnostics: {:?}",
-        check_result.diagnostics
-    );
-    let violation_diag = error_diags
-        .iter()
-        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
-    assert!(
-        violation_diag.is_some(),
-        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
-         got error diagnostics: {:?}",
-        error_diags
-    );
+    assert_has_fallback_diagnostic(&check_result.diagnostics, "geo::coincident");
 
     // Broken impl was still invoked (before fallback kicked in)
+    assert!(
+        !calls.lock().unwrap().is_empty(),
+        "the broken impl must have been called before the fallback"
+    );
+}
+
+// ── Test 10: batch fallback — multiple constraints same target ───────────────
+
+#[test]
+fn optimized_impl_batch_fallback_two_constraints_both_get_fallback_results() {
+    // A structure with TWO @optimized("geo::coincident") constraints routed to
+    // a single BrokenCountOptimizedImpl that returns exactly ONE result for the
+    // 2-constraint input.
+    //
+    // Code trace:
+    //   Both constraints bucket under optimized_groups["geo::coincident"] with
+    //   indices [0, 1]. imp.check() returns 1 result → count mismatch →
+    //   Diagnostic::error emitted → fallback calls constraint_checker.check()
+    //   with both constraints → zip with indices → results[0] and results[1].
+    //
+    // This is a regression-lock test: the dispatcher already handles this case.
+    // Assertions verify:
+    //   (c) constraint_results.len() == 2 (entire batch fell back)
+    //   (d) slot 0 = Satisfied (x==x, 1.0==1.0), slot 1 = Violated (x==y, 1.0!=2.0)
+    //       — distinct values so a swapped orig_idx cannot hide behind uniform results
+    //   (f) Error diagnostic mentioning "OptimizedImpl" and "falling back"
+    //   (g) broken impl was invoked before fallback ran
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    param y: Real = 2.0
+    constraint Coincident(a: x, b: x)
+    constraint Coincident(a: x, b: y)
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    // 1 result for 2 constraints — triggers the count-mismatch fallback
+    let dummy_id = ConstraintNodeId::new("dummy", 0);
+    let fixed_results = vec![ConstraintResult {
+        id: dummy_id.clone(),
+        satisfaction: Satisfaction::Violated,
+        diagnostics: ConstraintDiagnostics::default(),
+    }];
+    let mock = BrokenCountOptimizedImpl::new(fixed_results);
+    let calls = mock.calls_handle();
+    let mut engine = make_simple_engine();
+    engine.register_optimized_impl("geo::coincident", Box::new(mock));
+
+    let check_result = engine.check(&compiled);
+
+    // (c) both constraints fell back → 2 results in total
+    assert_eq!(
+        check_result.constraint_results.len(),
+        2,
+        "expected two constraint results from batch fallback, got {:?}",
+        check_result.constraint_results
+    );
+
+    // (d) per-slot fallback correctness AND orig_idx ordering end-to-end
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "first constraint (Coincident(a: x, b: x), 1.0 == 1.0) must be Satisfied via fallback"
+    );
+    assert_eq!(
+        check_result.constraint_results[1].satisfaction,
+        Satisfaction::Violated,
+        "second constraint (Coincident(a: x, b: y), 1.0 == 2.0) must be Violated via fallback"
+    );
+
+    // (d-extended) id-based ordering lock: catches any orig_idx swap even if satisfaction
+    // values happen to match in a future refactor — verifies declaration order is preserved
+    // end-to-end through dispatch_constraints.
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S must exist in the compiled module");
+    assert_eq!(
+        check_result.constraint_results[0].id,
+        s_template.constraints[0].id,
+        "result[0].id must match the first declared constraint (declaration order preserved)"
+    );
+    assert_eq!(
+        check_result.constraint_results[1].id,
+        s_template.constraints[1].id,
+        "result[1].id must match the second declared constraint (declaration order preserved)"
+    );
+
+    // (f) fallback diagnostic via the new helper
+    assert_has_fallback_diagnostic(&check_result.diagnostics, "geo::coincident");
+
+    // (g) broken impl ran before fallback kicked in
     assert!(
         !calls.lock().unwrap().is_empty(),
         "the broken impl must have been called before the fallback"

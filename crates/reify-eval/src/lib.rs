@@ -472,7 +472,10 @@ mod tests {
 
     /// Value::Matrix supplied to Type::Tensor must return true.
     /// Regression-locks the `Value::Matrix(_) => matches!(ty, Type::Tensor { .. } | Type::Matrix { .. })`
-    /// arm (lib.rs:125): a Matrix value is accepted by both Tensor and Matrix typed cells.
+    /// arm in `value_type_kind_matches`: a Matrix value is accepted by both Tensor and Matrix typed cells.
+    /// This test verifies the kind-match only — `value_type_kind_matches` is a shallow check, so the
+    /// Tensor's `rank`/`n` are NOT validated against the Matrix value's actual element count here
+    /// (expected-unchecked at this layer).
     #[test]
     fn value_type_kind_matches_matrix_value_into_tensor_type_returns_true() {
         use reify_types::{Type, Value};
@@ -493,7 +496,10 @@ mod tests {
 
     /// Value::Tensor supplied to Type::Matrix must return true.
     /// Regression-locks the `Value::Tensor(_) => matches!(ty, Type::Tensor { .. } | Type::Matrix { .. })`
-    /// arm (lib.rs:124): a Tensor value is accepted by both Tensor and Matrix typed cells.
+    /// arm in `value_type_kind_matches`: a Tensor value is accepted by both Tensor and Matrix typed cells.
+    /// This test verifies the kind-match only — `value_type_kind_matches` is a shallow check, so the
+    /// Matrix's `m`/`n` are NOT validated against the Tensor value's actual element count here
+    /// (expected-unchecked at this layer).
     #[test]
     fn value_type_kind_matches_tensor_value_into_matrix_type_returns_true() {
         use reify_types::{Type, Value};

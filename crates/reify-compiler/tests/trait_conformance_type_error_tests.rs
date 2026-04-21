@@ -142,6 +142,88 @@ structure def S : HasX {}
     assert_poisoned_conformance_invariant(&module);
 }
 
+// ── Shared helper for Scenarios C and D ──────────────────────────────────────
+
+/// Asserts the two-part unresolved-annotation cascade-suppression invariant on
+/// a freshly compiled `source` string.
+///
+/// (a) Root-cause pin: ≥1 `Severity::Error` diagnostic contains both
+///     `"unresolved type in conformance check"` and `"UnknownType"` — the
+///     specific message from the Named arm of `resolve_member_annotation_type`.
+/// (b) Anti-cascade pin: NO diagnostic at **any** severity contains
+///     `"type mismatch for trait member"` — so a future Warning-severity
+///     downgrade of the cascade is also caught.
+fn assert_unresolved_annotation_suppresses_cascade(source: &str) {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        errors.iter().any(|d| {
+            d.message.contains("unresolved type in conformance check")
+                && d.message.contains("UnknownType")
+        }),
+        "expected an error containing 'unresolved type in conformance check' and \
+         'UnknownType' (root-cause pin for resolve_member_annotation_type); \
+         got: {:?}",
+        errors,
+    );
+
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "unexpected 'type mismatch for trait member' cascade diagnostic (regardless of \
+         severity) — Type::Error returned from resolve_member_annotation_type should \
+         suppress this via the producer-side wildcard in type_compat.rs:3–26; \
+         all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
+
+// ── Scenario C: unresolved annotation on param (Named path) ──────────────────
+
+/// Pins the `Type::Error` fallback for the `Named`-path branch of
+/// `resolve_member_annotation_type` when the member is a `param`.
+///
+/// **Before the fix** the closure returned `Type::Real`; because the trait
+/// requires `Length ≠ Real`, a second misleading
+/// `"type mismatch for trait member 'x': expected Length, got Real"` cascade
+/// diagnostic appeared on top of the root-cause error.  **After the fix** the
+/// producer-side wildcard in `type_compat.rs:3–26` suppresses the cascade.
+#[test]
+fn param_unresolved_annotation_suppresses_conformance_cascade() {
+    assert_unresolved_annotation_suppresses_cascade(r#"
+trait T {
+    param x : Length
+}
+structure def S : T {
+    param x : UnknownType
+}
+"#);
+}
+
+// ── Scenario D: unresolved annotation on let (Named path, Let arm) ────────────
+
+/// Regression pin for the `Let` call-site of `resolve_member_annotation_type`
+/// (the `Let` arm of the `structure_members` filter_map).
+///
+/// The closure is shared between the `Param` arm (Scenario C) and the `Let`
+/// arm, so both paths exercise the same `Type::Error` return.  This test
+/// guards against a future refactor that splits the two call-sites and
+/// accidentally re-introduces `Type::Real` on only one of them.
+#[test]
+fn let_unresolved_annotation_suppresses_conformance_cascade() {
+    assert_unresolved_annotation_suppresses_cascade(r#"
+trait T {
+    let x : Length
+}
+structure def S : T {
+    let x : UnknownType = 5mm
+}
+"#);
+}
+
 // ── Severity-robustness regression test ──────────────────────────────────────
 
 /// Robustness test: check (b) must catch a "type mismatch for trait" cascade

@@ -4,17 +4,35 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use reify_types::{
-    AutoParam, ContentHash, DeterminacyState, Diagnostic, ResolutionProblem, SnapshotId,
-    SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
+    AutoParam, ContentHash, DeterminacyState, Diagnostic, PersistentMap, ResolutionProblem,
+    SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
+use crate::graph::EvaluationGraph;
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
     value_type_kind_matches,
 };
+
+/// Deactivate a guarded-group member by writing `Undef` into both the working
+/// `values` map and the snapshot's `values` map — UNLESS the member is an
+/// `Auto` cell, whose lifecycle is owned by the constraint solver rather than
+/// guard activation/deactivation. Missing cells are treated as non-Auto
+/// (i.e. they get deactivated), preserving the prior `is_some_and` semantics.
+pub(crate) fn deactivate_if_not_auto(
+    graph: &EvaluationGraph,
+    id: &ValueCellId,
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+) {
+    if !graph.is_auto_cell(id) {
+        values.insert(id.clone(), Value::Undef);
+        snapshot_values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
+    }
+}
 
 impl Engine {
     /// Set a parameter override and invalidate cache entries that depend on it.
@@ -295,17 +313,8 @@ impl Engine {
                                     .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Skip Auto params — their lifecycle is managed by the
-                            // solver, not guard activation/deactivation.
-                            let is_auto =
-                                graph.value_cells.get(mid).is_some_and(|n| n.kind.is_auto());
-                            if !is_auto {
-                                values.insert(mid.clone(), Value::Undef);
-                                new_snapshot.values.insert(
-                                    mid.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
+                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
                     }
                     for mid in &group.else_members {
@@ -324,17 +333,8 @@ impl Engine {
                                     .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Skip Auto params — their lifecycle is managed by the
-                            // solver, not guard activation/deactivation.
-                            let is_auto =
-                                graph.value_cells.get(mid).is_some_and(|n| n.kind.is_auto());
-                            if !is_auto {
-                                values.insert(mid.clone(), Value::Undef);
-                                new_snapshot.values.insert(
-                                    mid.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
+                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
                     }
                 }
@@ -564,20 +564,8 @@ impl Engine {
                                     .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Deactivate: set to Undef — but skip Auto params whose
-                            // lifecycle is managed by the solver, not guard activation.
-                            let is_auto = new_snapshot
-                                .graph
-                                .value_cells
-                                .get(member_id)
-                                .is_some_and(|n| n.kind.is_auto());
-                            if !is_auto {
-                                values.insert(member_id.clone(), Value::Undef);
-                                new_snapshot.values.insert(
-                                    member_id.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
+                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                            deactivate_if_not_auto(&new_snapshot.graph, member_id, &mut values, &mut new_snapshot.values);
                         }
                     }
 
@@ -599,20 +587,8 @@ impl Engine {
                                     .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Deactivate: set to Undef — but skip Auto params whose
-                            // lifecycle is managed by the solver, not guard activation.
-                            let is_auto = new_snapshot
-                                .graph
-                                .value_cells
-                                .get(member_id)
-                                .is_some_and(|n| n.kind.is_auto());
-                            if !is_auto {
-                                values.insert(member_id.clone(), Value::Undef);
-                                new_snapshot.values.insert(
-                                    member_id.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
+                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                            deactivate_if_not_auto(&new_snapshot.graph, member_id, &mut values, &mut new_snapshot.values);
                         }
                     }
                 }
@@ -798,5 +774,150 @@ impl Engine {
             diagnostics,
             resolved_params: eval_result.resolved_params,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_compiler::ValueCellKind;
+    use reify_types::{ContentHash, DeterminacyState, PersistentMap, Type, Value, ValueCellId, ValueMap};
+
+    use crate::graph::{EvaluationGraph, ValueCellNode};
+
+    use super::deactivate_if_not_auto;
+
+    #[test]
+    fn deactivate_if_not_auto_skips_auto_cell() {
+        let id = ValueCellId::new("E", "auto_param");
+        let mut graph = EvaluationGraph::default();
+        graph.value_cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Auto { free: false },
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("auto_param"),
+            },
+        );
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        deactivate_if_not_auto(&graph, &id, &mut values, &mut snapshot_values);
+
+        // Auto cell: helper must NOT insert anything.
+        assert!(values.get(&id).is_none(), "Auto cell must not be deactivated in values");
+        assert!(
+            snapshot_values.get(&id).is_none(),
+            "Auto cell must not be deactivated in snapshot_values"
+        );
+    }
+
+    #[test]
+    fn deactivate_if_not_auto_writes_undef_for_param() {
+        let id = ValueCellId::new("E", "param");
+        let mut graph = EvaluationGraph::default();
+        graph.value_cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("param"),
+            },
+        );
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        deactivate_if_not_auto(&graph, &id, &mut values, &mut snapshot_values);
+
+        assert_eq!(values.get(&id), Some(&Value::Undef));
+        assert_eq!(
+            snapshot_values.get(&id),
+            Some(&(Value::Undef, DeterminacyState::Undetermined))
+        );
+    }
+
+    #[test]
+    fn deactivate_if_not_auto_writes_undef_for_missing_cell() {
+        let id = ValueCellId::new("X", "missing");
+        let graph = EvaluationGraph::default(); // empty — cell not present
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        deactivate_if_not_auto(&graph, &id, &mut values, &mut snapshot_values);
+
+        // Missing cell → treated as non-Auto → must be deactivated.
+        assert_eq!(values.get(&id), Some(&Value::Undef));
+        assert_eq!(
+            snapshot_values.get(&id),
+            Some(&(Value::Undef, DeterminacyState::Undetermined))
+        );
+    }
+
+    /// Scenario: a guarded group contains one Auto member and one Param member.
+    /// When the guard flips to false, `edit_param` loops over `group.members`
+    /// and calls `deactivate_if_not_auto` for each. This test reproduces that
+    /// loop directly, asserting that the Auto cell is untouched while the Param
+    /// cell becomes Undef — locking in the caller-side wiring so a future
+    /// refactor that accidentally drops one of the call sites is caught.
+    #[test]
+    fn deactivate_if_not_auto_guard_group_mixed_members() {
+        let auto_id = ValueCellId::new("E", "auto_solver_param");
+        let param_id = ValueCellId::new("E", "regular_param");
+
+        let mut graph = EvaluationGraph::default();
+        graph.value_cells.insert(
+            auto_id.clone(),
+            ValueCellNode {
+                id: auto_id.clone(),
+                kind: ValueCellKind::Auto { free: false },
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("auto"),
+            },
+        );
+        graph.value_cells.insert(
+            param_id.clone(),
+            ValueCellNode {
+                id: param_id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("param"),
+            },
+        );
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        // Simulate guard = false: iterate over all group members and deactivate
+        // (mirrors the `for mid in &group.members { deactivate_if_not_auto(...) }` loop).
+        for member_id in &[&auto_id, &param_id] {
+            deactivate_if_not_auto(&graph, member_id, &mut values, &mut snapshot_values);
+        }
+
+        // Auto cell: lifecycle managed by solver — must NOT be deactivated.
+        assert!(values.get(&auto_id).is_none(), "Auto cell must remain untouched in values");
+        assert!(
+            snapshot_values.get(&auto_id).is_none(),
+            "Auto cell must remain untouched in snapshot_values"
+        );
+
+        // Param cell: must be written to Undef.
+        assert_eq!(values.get(&param_id), Some(&Value::Undef), "Param cell must be deactivated");
+        assert_eq!(
+            snapshot_values.get(&param_id),
+            Some(&(Value::Undef, DeterminacyState::Undetermined)),
+            "Param cell must be deactivated in snapshot_values"
+        );
     }
 }

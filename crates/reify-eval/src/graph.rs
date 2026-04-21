@@ -380,6 +380,15 @@ impl EvaluationGraph {
         graph
     }
 
+    /// Returns `true` iff `id` refers to a value cell present in this graph
+    /// whose `kind` is `Auto` (strict or free). Returns `false` for missing
+    /// cells — callers relying on that "missing → false" branch (e.g. the
+    /// guard-deactivation helper) get the same semantics as the prior
+    /// `value_cells.get(id).is_some_and(|n| n.kind.is_auto())` form.
+    pub fn is_auto_cell(&self, id: &ValueCellId) -> bool {
+        self.value_cells.get(id).is_some_and(|n| n.kind.is_auto())
+    }
+
     /// Determine which constraint IDs are active given the current values.
     ///
     /// For each guarded group, inspects the guard cell's value:
@@ -1463,6 +1472,66 @@ mod tests {
             graph_a.topology_fingerprint(),
             graph_b.topology_fingerprint(),
             "fingerprints must differ when guard groups bind different members"
+        );
+    }
+
+    #[test]
+    fn is_auto_cell_predicate() {
+        let auto_strict_id = ValueCellId::new("E", "auto_strict");
+        let auto_free_id = ValueCellId::new("E", "auto_free");
+        let param_id = ValueCellId::new("E", "param");
+        let let_id = ValueCellId::new("E", "let_cell");
+
+        let mut graph = EvaluationGraph::default();
+
+        graph.value_cells.insert(
+            auto_strict_id.clone(),
+            ValueCellNode {
+                id: auto_strict_id.clone(),
+                kind: ValueCellKind::Auto { free: false },
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("auto_strict"),
+            },
+        );
+        graph.value_cells.insert(
+            auto_free_id.clone(),
+            ValueCellNode {
+                id: auto_free_id.clone(),
+                kind: ValueCellKind::Auto { free: true },
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("auto_free"),
+            },
+        );
+        graph.value_cells.insert(
+            param_id.clone(),
+            ValueCellNode {
+                id: param_id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("param"),
+            },
+        );
+        graph.value_cells.insert(
+            let_id.clone(),
+            ValueCellNode {
+                id: let_id.clone(),
+                kind: ValueCellKind::Let,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("let_cell"),
+            },
+        );
+
+        assert!(graph.is_auto_cell(&auto_strict_id), "Auto {{ free: false }} should be auto");
+        assert!(graph.is_auto_cell(&auto_free_id), "Auto {{ free: true }} should be auto");
+        assert!(!graph.is_auto_cell(&param_id), "Param should not be auto");
+        assert!(!graph.is_auto_cell(&let_id), "Let should not be auto");
+        assert!(
+            !graph.is_auto_cell(&ValueCellId::new("X", "missing")),
+            "Missing cell should return false"
         );
     }
 }

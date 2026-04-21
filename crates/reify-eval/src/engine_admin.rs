@@ -12,6 +12,19 @@ use reify_types::{
 use std::collections::HashMap;
 
 impl Engine {
+    /// Maximum allowed value for [`set_max_unfold_depth`][Engine::set_max_unfold_depth].
+    ///
+    /// Caps the recursion depth in `unfold_recursive_sub` (which uses real, non-iterative
+    /// recursion) to prevent stack overflow on pathological inputs. The default depth is 64;
+    /// a cap of 512 leaves 8× headroom over typical real-world use while staying well below
+    /// depths that would exhaust the stack in release builds.
+    ///
+    /// Exposed as a `pub const` so callers can query the limit programmatically
+    /// (`Engine::MAX_UNFOLD_DEPTH_LIMIT`) rather than hard-coding the magic number.
+    ///
+    /// See task 205 (review) / task 424.
+    pub const MAX_UNFOLD_DEPTH_LIMIT: usize = 512;
+
     /// Construct an Engine with a caller-supplied prelude slice.
     ///
     /// Use this when you need to:
@@ -133,8 +146,24 @@ impl Engine {
     /// Panics if `depth == 0`. At depth 0 the guard check fires before any child entity
     /// is created, so parent let-bindings referencing `child.*` would silently resolve to
     /// Undef. Only values >= 1 are safe.
+    ///
+    /// Panics if `depth > Engine::MAX_UNFOLD_DEPTH_LIMIT` (currently 512). The recursive
+    /// `unfold_recursive_sub` implementation uses real stack recursion; unbounded depths
+    /// (e.g., 10 000) would risk stack overflow on deeply nested structures. The cap is
+    /// enforced at the API boundary rather than inside the implementation so that the
+    /// failure is immediate and explicit rather than a silent stack exhaust.
     pub fn set_max_unfold_depth(&mut self, depth: usize) {
+        // Panic-on-misuse rather than `Result`: `set_max_unfold_depth` is a
+        // rarely-called tuning knob; callers cannot usefully recover from an
+        // invalid depth, and the panic model matches the sibling
+        // `set_max_unfold_nodes` setter. Task 205 considered `Result`; the
+        // existing `# Panics` doc satisfies that review item.
         assert!(depth >= 1, "max_unfold_depth must be >= 1");
+        assert!(
+            depth <= Self::MAX_UNFOLD_DEPTH_LIMIT,
+            "max_unfold_depth must be <= {}",
+            Self::MAX_UNFOLD_DEPTH_LIMIT,
+        );
         self.max_unfold_depth = depth;
     }
 

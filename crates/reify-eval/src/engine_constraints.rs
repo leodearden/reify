@@ -124,6 +124,14 @@ impl Engine {
                     determinacy,
                 };
                 let fallback_results = self.constraint_checker.check(&fallback_input);
+                // INVARIANT ASSERT — intentional panic: `self.constraint_checker` is
+                // code we own (the language-level evaluator). A count mismatch from it
+                // is a *logic bug in our own code* and must fail loudly so it is caught
+                // immediately. This is distinct from the `OptimizedImpl` count mismatch
+                // from the `output.results.len() != indices.len()` guard above, which gets
+                // graceful fallback (Diagnostic::error + re-run through the language-level
+                // checker) because third-party impls are untrusted and must never be able
+                // to crash the engine.
                 assert_eq!(
                     fallback_results.len(),
                     indices.len(),
@@ -154,6 +162,10 @@ impl Engine {
                 determinacy,
             };
             let fallback_results = self.constraint_checker.check(&input);
+            // Same invariant assert as in the OptimizedImpl-fallback branch above —
+            // see the comment there for the full rationale. Short form: this is our
+            // own code; a wrong count is a logic bug that must panic, not be handled
+            // gracefully.
             assert_eq!(
                 fallback_results.len(),
                 indices.len(),
