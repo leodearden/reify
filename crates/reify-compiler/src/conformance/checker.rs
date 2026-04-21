@@ -170,6 +170,41 @@ pub(super) fn check_phase_resolve_structure_members(
     (structure_members, structure_constraint_labels)
 }
 
+/// Phase 2 of trait conformance checking: collect all requirements and defaults from
+/// all trait bounds in the structure's trait bound list.
+///
+/// Creates a fresh `MergeContext` and calls `collect_all_requirements` for each trait bound,
+/// which recursively walks refinement chains and deduplicates requirements/defaults across
+/// the full bound set. The returned `MergeContext` carries both `requirements` and `defaults`
+/// for use by later phases.
+///
+/// `MergeContext` bundles the output accumulators (`requirements`, `defaults`) and the 5 mutable
+/// tracking maps (`visited`, `seen_names`, `seen_defaults`, `seen_let_hashes`,
+/// `seen_let_conflict_names`) so the recursive `collect_all_requirements` signature stays
+/// within Clippy's argument-count limit.
+pub(super) fn check_phase_collect_trait_bounds(
+    structure: &EntityDefRef<'_>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_members: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> MergeContext {
+    let mut ctx = MergeContext::new();
+
+    for trait_bound in structure.trait_bounds {
+        collect_all_requirements(
+            &trait_bound.name,
+            trait_registry,
+            &mut ctx,
+            structure_members,
+            structure.span,
+            0,
+            diagnostics,
+        );
+    }
+
+    ctx
+}
+
 /// Phase 3 of trait conformance checking: pre-register default types into the compilation scope.
 ///
 /// Implements a two-pass pre-registration strategy:
@@ -305,41 +340,6 @@ pub(super) fn check_phase_pre_register_default_types(
     (inferred_let_exprs, pass2_skipped)
 }
 
-/// Phase 2 of trait conformance checking: collect all requirements and defaults from
-/// all trait bounds in the structure's trait bound list.
-///
-/// Creates a fresh `MergeContext` and calls `collect_all_requirements` for each trait bound,
-/// which recursively walks refinement chains and deduplicates requirements/defaults across
-/// the full bound set. The returned `MergeContext` carries both `requirements` and `defaults`
-/// for use by later phases.
-///
-/// `MergeContext` bundles the output accumulators (`requirements`, `defaults`) and the 5 mutable
-/// tracking maps (`visited`, `seen_names`, `seen_defaults`, `seen_let_hashes`,
-/// `seen_let_conflict_names`) so the recursive `collect_all_requirements` signature stays
-/// within Clippy's argument-count limit.
-pub(super) fn check_phase_collect_trait_bounds(
-    structure: &EntityDefRef<'_>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
-    structure_members: &HashMap<String, Type>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> MergeContext {
-    let mut ctx = MergeContext::new();
-
-    for trait_bound in structure.trait_bounds {
-        collect_all_requirements(
-            &trait_bound.name,
-            trait_registry,
-            &mut ctx,
-            structure_members,
-            structure.span,
-            0,
-            diagnostics,
-        );
-    }
-
-    ctx
-}
-
 /// Phase 4 of trait conformance checking: build the `available_defaults` advertisement map.
 ///
 /// Produces a `HashMap<(String, AvailableDefaultKind), Type>` keyed by `(name, kind)` so that
@@ -445,74 +445,14 @@ pub(super) fn check_phase_check_members_against_requirements(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for req in &ctx.requirements {
-        match &req.kind {
-            RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
-                // Determine which default kind can satisfy this requirement.
-                let required_default_kind = match &req.kind {
-                    RequirementKind::Param(_) => AvailableDefaultKind::Param,
-                    RequirementKind::Let(_) => AvailableDefaultKind::Let,
-                    _ => unreachable!(),
-                };
-                match structure_members.get(&req.name) {
-                    Some(actual_type) => {
-                        if !implicitly_converts_to(actual_type, expected_type) {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "type mismatch for trait member '{}': expected {}, got {}",
-                                    req.name, expected_type, actual_type
-                                ))
-                                .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
-                            );
-                        }
-                    }
-                    None => {
-                        // Check if a matching default from another trait satisfies this requirement.
-                        // Only a same-kind default can satisfy: a `let` default does NOT satisfy
-                        // a `param` requirement (param slots must be externally settable).
-                        // The (name, kind) composite key means the lookup is already kind-filtered —
-                        // no additional kind-guard is needed on the match arms.
-                        //
-                        // Note: `.get(&(req.name.clone(), ...))` allocates a String on every lookup
-                        // because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`.
-                        // Requirement counts are small in practice so this is not a hot path; if it
-                        // ever becomes one, switch to a two-level map `HashMap<String, HashMap<K, V>>`.
-                        match available_defaults.get(&(req.name.clone(), required_default_kind)) {
-                            Some(default_type)
-                                if implicitly_converts_to(default_type, expected_type) =>
-                            {
-                                // Same-kind default with matching type satisfies the requirement.
-                            }
-                            Some(default_type) => {
-                                // Same-kind default but wrong type → type mismatch.
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "type mismatch for trait member '{}': \
-                                         requirement expects {}, available default has {}",
-                                        req.name, expected_type, default_type
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(structure.span, "type mismatch"),
-                                    ),
-                                );
-                            }
-                            None => {
-                                // No default of the required kind — treat as missing.
-                                // A param requirement with only a let default in scope means the
-                                // structure must provide a settable param slot itself.
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "missing required member '{}' (expected type: {})",
-                                        req.name, expected_type
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(structure.span, "required by trait"),
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+        // A `param` requirement can only be satisfied by a `param` default and a `let`
+        // requirement by a `let` default; `sub` is handled separately below. Binding the
+        // kind tag and expected type in a single match arm keeps the pairing exhaustive:
+        // adding a new `RequirementKind` variant forces a decision here rather than
+        // falling through a stale `unreachable!()`.
+        let (required_default_kind, expected_type) = match &req.kind {
+            RequirementKind::Param(expected) => (AvailableDefaultKind::Param, expected),
+            RequirementKind::Let(expected) => (AvailableDefaultKind::Let, expected),
             RequirementKind::Sub(structure_name) => {
                 let has_sub = structure.members.iter().any(|m| {
                     if let reify_syntax::MemberDecl::Sub(s) = m {
@@ -529,6 +469,64 @@ pub(super) fn check_phase_check_members_against_requirements(
                         ))
                         .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                     );
+                }
+                continue;
+            }
+        };
+        match structure_members.get(&req.name) {
+            Some(actual_type) => {
+                if !implicitly_converts_to(actual_type, expected_type) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type mismatch for trait member '{}': expected {}, got {}",
+                            req.name, expected_type, actual_type
+                        ))
+                        .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
+                    );
+                }
+            }
+            None => {
+                // Check if a matching default from another trait satisfies this requirement.
+                // Only a same-kind default can satisfy: a `let` default does NOT satisfy
+                // a `param` requirement (param slots must be externally settable).
+                // The (name, kind) composite key means the lookup is already kind-filtered —
+                // no additional kind-guard is needed on the match arms.
+                //
+                // Note: `.get(&(req.name.clone(), ...))` allocates a String on every lookup
+                // because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`.
+                // Requirement counts are small in practice so this is not a hot path; if it
+                // ever becomes one, switch to a two-level map `HashMap<String, HashMap<K, V>>`.
+                match available_defaults.get(&(req.name.clone(), required_default_kind)) {
+                    Some(default_type)
+                        if implicitly_converts_to(default_type, expected_type) =>
+                    {
+                        // Same-kind default with matching type satisfies the requirement.
+                    }
+                    Some(default_type) => {
+                        // Same-kind default but wrong type → type mismatch.
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "type mismatch for trait member '{}': \
+                                 requirement expects {}, available default has {}",
+                                req.name, expected_type, default_type
+                            ))
+                            .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
+                        );
+                    }
+                    None => {
+                        // No default of the required kind — treat as missing.
+                        // A param requirement with only a let default in scope means the
+                        // structure must provide a settable param slot itself.
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "missing required member '{}' (expected type: {})",
+                                req.name, expected_type
+                            ))
+                            .with_label(
+                                DiagnosticLabel::new(structure.span, "required by trait"),
+                            ),
+                        );
+                    }
                 }
             }
         }
