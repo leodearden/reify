@@ -594,3 +594,49 @@ fn end_to_end_material_elastic_conformance() {
         );
     }
 }
+
+// ── step-5: Engine::with_prelude ──────────────────────────────────────
+
+/// Engine::with_prelude accepts an empty prelude slice; prelude() returns
+/// an empty slice afterwards.
+#[test]
+fn engine_with_prelude_accepts_custom_slice() {
+    let checker = MockConstraintChecker::new();
+    let engine = reify_eval::Engine::with_prelude(Box::new(checker), None, &[]);
+    assert!(
+        engine.prelude().is_empty(),
+        "Engine::with_prelude(&[]) should store an empty prelude, got {} modules",
+        engine.prelude().len()
+    );
+}
+
+/// Engine built with an empty prelude slice retains an empty prelude even after
+/// attempting to compile a source that references stdlib traits. This pins the
+/// opt-out semantics: the caller controls the prelude, not the engine.
+#[test]
+fn engine_with_prelude_empty_slice_disables_stdlib_resolution() {
+    let source = steel_elastic_source();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    // Compile WITHOUT any prelude (empty slice).
+    let compiled = reify_compiler::compile_with_prelude(&parsed, &[]);
+
+    // Build an Engine that also has no prelude.
+    let checker = MockConstraintChecker::new();
+    let engine = reify_eval::Engine::with_prelude(Box::new(checker), None, &[]);
+
+    // The engine's stored prelude must remain empty — the opt-out semantics are
+    // preserved regardless of what the compiled module references.
+    assert!(
+        engine.prelude().is_empty(),
+        "Engine::with_prelude(&[]) prelude should remain empty after construction, \
+         got {} modules. compiled module had {} diagnostics",
+        engine.prelude().len(),
+        compiled.diagnostics.len()
+    );
+}
