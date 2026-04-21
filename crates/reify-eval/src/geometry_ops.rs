@@ -1124,16 +1124,17 @@ mod tests {
         )
     }
 
-    #[test]
-    fn degenerate_constants_have_expected_values() {
-        // Pins the documented floor values for degenerate-guard constants.
-        // Each is 1e-12 (sub-picometer / sub-picoradian). These constants
-        // name what were previously magic `1e-12` literals sprinkled across
-        // the Extrude / Revolve / ExtrudeSymmetric arms.
-        assert_eq!(DEGENERATE_LENGTH_M, 1e-12);
-        assert_eq!(DEGENERATE_ANGLE_RAD, 1e-12);
-        assert_eq!(GEOMETRY_EPSILON, 1e-12);
-    }
+    // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
+    // `GEOMETRY_EPSILON` (top of file) are not pinned by a standalone unit
+    // test — that would just restate the `const` definitions. Their behavior
+    // is pinned by the boundary tests that drive the guards they feed:
+    //   - `build_extrude_distance_{just_below,at}_threshold_*` (geometry_error_handling.rs)
+    //     → DEGENERATE_LENGTH_M (inclusive floor)
+    //   - `build_revolve_angle_{just_below,negative_just_below}_threshold_rejected`
+    //     → DEGENERATE_ANGLE_RAD (sign-symmetric floor)
+    //   - `extrude_symmetric_{per_side,negative_per_side}_{just_below,at}_threshold_*`
+    //     (extrude_symmetric_e2e.rs) → 2 * DEGENERATE_LENGTH_M (per-side floor)
+    // Any numeric change to the constants will fail those boundary tests.
 
     #[test]
     fn compile_geometry_op_scale_produces_scale_variant() {
