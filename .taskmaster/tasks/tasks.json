@@ -36777,7 +36777,7 @@
         "description": "Implement the dual viewport layout: a def preview viewport (showing a prototype of the selected definition with defaults applied) and a design viewport (showing the instance tree with view controls). Adaptive layout: both/either/neither active. Inactive viewports greyed out and minimized to a strip. Def preview activates when editor cursor is inside a definition body.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 7 (Dual Viewport) and 3.3 (Backend — get_def_preview).\n\n### Frontend\n\n1. **Dual viewport layout** (`viewport/DualViewport.tsx` or refactor in `App.tsx`)\n   - Two viewport regions in the center panel area\n   - Layout states:\n     - Both active: horizontal split (adjustable divider)\n     - Only design active: design fills center, def-preview is a 40px strip at top with label\n     - Only def-preview active: def-preview fills center, design is a 40px strip at bottom\n     - Neither: placeholder message\n   - Each viewport renders as an independent `<Viewport>` component with its own viewportId\n\n2. **Def preview viewport behavior**\n   - Active when editor cursor is inside a `structure def` or `occurrence def` body\n   - Label in corner: \"Preview: {DefName}\"\n   - Shows prototype instance with all defaults\n   - Always uses auto \"Default\" view rules (show geometry, hide intermediates)\n   - Independent camera state (doesn't follow design viewport)\n   - No view selector — always auto default\n   - Updates live as definition is edited\n\n3. **Activation logic** (`stores/viewportStore.ts`)\n   - `defPreviewActive`: derived signal\n     - True when editor cursor is inside a definition body\n     - Requires: editor cursor position → resolve to containing definition (via LSP or AST query)\n   - `designViewportActive`: derived signal\n     - True when evaluation graph has instantiated entities (at least one mesh exists)\n   - Connect to editorStore cursor position changes\n\n4. **Cursor-to-definition resolution**\n   - New Tauri command or LSP request: `get_containing_definition(file: string, line: number, col: number) -> Option<DefInfo>`\n   - `DefInfo`: `{ name: string, kind: \"structure\" | \"occurrence\", span: SourceSpan }`\n   - Debounce: 200ms after cursor stops moving\n\n5. **Minimized viewport strip**\n   - 40px tall, full width, with:\n     - Viewport type label (\"Preview\" / \"Design\")\n     - \"Click to expand\" hint or auto-expand on relevant action\n   - Greyed out background (theme surface color)\n   - Click to force-expand (manual override of auto-activate)\n\n### Backend\n\n6. **New Tauri command: `get_def_preview`**\n   - Input: definition name/path\n   - Creates temporary evaluation scope with all defaults\n   - Evaluates geometry, tessellates\n   - Returns GuiState (meshes + values + constraints)\n   - Discards temporary scope\n   - Cache by definition content hash (avoid re-evaluating when cursor moves within same def)\n\n7. **New Tauri command: `get_containing_definition`**\n   - Input: file path, line, column\n   - Returns the definition containing that position, or null\n   - Can piggyback on existing AST/LSP infrastructure\n\n### Requirements covered\nVP-1, VP-2, VP-3, VP-4, VP-5, VP-6, VP-7\n\n### memory_hints\n- search: \"App.tsx panel layout viewport\"\n- search: \"editorStore cursor position\"\n- search: \"Engine evaluation tessellate\"\n- search: \"LSP source span definition\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1747",
           "1750"
@@ -36798,7 +36798,7 @@
             "gui/src/stores"
           ]
         },
-        "updatedAt": "2026-04-21T19:43:31.175Z"
+        "updatedAt": "2026-04-21T22:17:49.549Z"
       },
       {
         "id": "1749",
@@ -44061,15 +44061,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T22:06:37.477Z",
-      "taskCount": 2075,
-      "completedCount": 1818,
+      "lastModified": "2026-04-21T22:17:49.549Z",
+      "taskCount": 2077,
+      "completedCount": 1819,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T22:15:46.182Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-21T22:17:49.144Z"
+      ]
     }
   }
 }
