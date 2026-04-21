@@ -106,4 +106,48 @@ describe('viewportStore', () => {
       });
     });
   });
+
+  describe('assignView', () => {
+    it('assignView sets viewId and returns true', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.assignView('design-main', 'auto:default');
+        expect(result).toBe(true);
+        expect(store.state.viewports['design-main'].viewId).toBe('auto:default');
+        dispose();
+      });
+    });
+
+    it('assignView with null clears the assignment', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.assignView('design-main', 'auto:default');
+        store.assignView('design-main', null);
+        expect(store.state.viewports['design-main'].viewId).toBeNull();
+        dispose();
+      });
+    });
+
+    it('assignView on unknown id returns false and does not mutate state', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.assignView('unknown-id', 'auto:default');
+        expect(result).toBe(false);
+        // Other viewports should be untouched
+        expect(store.state.viewports['design-main'].viewId).toBeNull();
+        expect(store.state.viewports['def-preview'].viewId).toBeNull();
+        dispose();
+      });
+    });
+
+    it('assignView does not touch defPath', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.assignView('design-main', 'auto:default');
+        // defPath should remain null — it is not modified by assignView
+        expect(store.state.viewports['design-main'].defPath).toBeNull();
+        dispose();
+      });
+    });
+  });
 });
