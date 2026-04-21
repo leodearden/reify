@@ -1825,4 +1825,69 @@ mod tests {
         assert_eq!(ctx.requirements.len(), 1, "Expected 1 requirement");
         assert_eq!(ctx.requirements[0].name, "w", "Expected requirement name 'w'");
     }
+
+    /// Phase-contract test for `check_phase_pre_register_default_types`.
+    ///
+    /// Verifies that the helper registers an annotated Param default into the scope
+    /// (Pass 1) and returns empty caches (no unannotated Let defaults to process).
+    /// This test fails to compile until the helper exists (TDD compile-tripwire) and
+    /// pins the helper's return type signature.
+    #[test]
+    fn check_phase_pre_register_default_types_registers_annotated_param_into_scope() {
+        let param_decl = reify_syntax::ParamDecl {
+            name: "x".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Param {
+                cell_type: Type::Real,
+                default_decl: param_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let (inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            inferred_let_exprs.is_empty(),
+            "Expected no inferred_let_exprs for a param-only context"
+        );
+        assert!(
+            pass2_skipped.is_empty(),
+            "Expected no pass2_skipped for a param-only context"
+        );
+        // Verify "x" was registered in scope: a second register_if_absent call for "x"
+        // should find it occupied (Some(..)) — no direct lookup API needed.
+        let conflict = scope.register_if_absent("x", Type::Int);
+        assert!(
+            conflict.is_some(),
+            "Expected 'x' to be registered in scope (register_if_absent should find it occupied)"
+        );
+    }
 }
