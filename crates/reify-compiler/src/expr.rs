@@ -1323,7 +1323,20 @@ pub(crate) fn compile_expr_guarded(
                 match &compiled_obj.result_type {
                     Type::List(inner) => (**inner).clone(),
                     Type::Map(_, val) => (**val).clone(),
-                    _ => Type::Real,
+                    // task-2066: emit a diagnostic instead of silently defaulting to Type::Real.
+                    // Anti-cascade policy: Type::Error propagates downstream via existing
+                    // is_error() guards so no cascade of type-mismatch errors follows.
+                    _ => {
+                        let n = diagnostics.len();
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "cannot index into non-collection type '{}': expected List<_> or Map<_,_>",
+                                compiled_obj.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "not indexable")),
+                        );
+                        make_poison_type(diagnostics, n)
+                    }
                 }
             };
             CompiledExpr::index_access(compiled_obj, compiled_idx, result_type)
