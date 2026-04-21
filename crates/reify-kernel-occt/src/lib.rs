@@ -560,6 +560,23 @@ impl OcctKernel {
                 ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Pipe { path, radius } => {
+                let r = extract_f64(radius)?;
+                if !(r.is_finite() && r > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "pipe radius must be a finite positive value".into(),
+                    ));
+                }
+                // Compose: a circle face in the XY plane at z=0 swept along
+                // the stored path wire via make_pipe. The circle face is a
+                // private kernel-internal detail — user code never sees a
+                // `circle()` primitive.
+                let path_shape = self.get_shape(*path)?;
+                let circle_shape = ffi::ffi::make_circle_face(r, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ffi::ffi::make_pipe(&circle_shape, path_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::ExtrudeSymmetric { profile, distance } => {
                 let dist = extract_f64(distance)?;
                 if !dist.is_finite() {
