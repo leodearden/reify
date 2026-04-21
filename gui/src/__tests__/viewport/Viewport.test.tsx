@@ -585,8 +585,8 @@ describe('Viewport viewportId and camera restore', () => {
   });
 });
 
-describe('Viewport camera persistence on change', () => {
-  it('calls viewportStore.updateCamera with current camera state when controls fire change', () => {
+describe('Viewport camera persistence', () => {
+  it('calls viewportStore.updateCamera with current camera state when controls fire end', () => {
     const mockUpdateCamera = vi.fn();
     const fakeStore = {
       state: {} as any,
@@ -598,7 +598,7 @@ describe('Viewport camera persistence on change', () => {
 
     render(() => <Viewport meshes={{}} viewportId="design-main" viewportStore={fakeStore as any} />);
 
-    // Set the camera/controls stubs to a known state before firing change
+    // Set the camera/controls stubs to a known state before firing end
     mockCamera.position.x = 10;
     mockCamera.position.y = 20;
     mockCamera.position.z = 30;
@@ -610,12 +610,10 @@ describe('Viewport camera persistence on change', () => {
     mockControlsTarget.y = 6;
     mockControlsTarget.z = 7;
 
-    // Fire the captured 'change' listener synchronously
-    expect(controlsListeners['change']).toBeDefined();
-    expect(controlsListeners['change'].length).toBeGreaterThan(0);
-    // The change listener list may include requestRender AND the camera snapshot handler;
-    // fire all of them (as OrbitControls would).
-    for (const cb of controlsListeners['change']) {
+    // Fire the captured 'end' listener synchronously (fires once when interaction ends)
+    expect(controlsListeners['end']).toBeDefined();
+    expect(controlsListeners['end'].length).toBeGreaterThan(0);
+    for (const cb of controlsListeners['end']) {
       cb();
     }
 
@@ -631,9 +629,9 @@ describe('Viewport camera persistence on change', () => {
   it('does not throw and does not call updateCamera when viewportStore is absent', () => {
     render(() => <Viewport meshes={{}} viewportId="design-main" />);
 
-    // Fire all captured 'change' listeners — must not throw
+    // Fire all captured 'end' listeners — must not throw (no store, no-op)
     expect(() => {
-      for (const cb of controlsListeners['change'] ?? []) {
+      for (const cb of controlsListeners['end'] ?? []) {
         cb();
       }
     }).not.toThrow();

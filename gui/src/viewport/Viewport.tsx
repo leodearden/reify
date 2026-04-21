@@ -8,7 +8,14 @@ import { createSelection } from './selection';
 import type { ViewportStore, CameraState } from '../stores';
 
 export interface ViewportProps {
-  /** Stable identifier for this viewport instance (e.g. "design-main"). Required. */
+  /**
+   * Stable identifier for this viewport instance (e.g. "design-main"). Required.
+   *
+   * **Captured at mount** — this value (and `viewportStore` below) are read once
+   * inside `onMount` and must not change for the lifetime of the component. If the
+   * parent needs to repurpose the canvas for a different viewport, unmount and
+   * remount the `<Viewport>` with the new `viewportId`.
+   */
   viewportId: string;
   meshes: Record<string, MeshData>;
   onHover?: (path: string | null) => void;
@@ -24,8 +31,14 @@ export interface ViewportProps {
   entityVisibility?: Record<string, VisibilityState>;
   /**
    * Optional viewport store. When provided, the saved camera state for
-   * `viewportId` is applied on mount and updated on every OrbitControls
-   * 'change' event. When absent, camera state is ephemeral (existing behaviour).
+   * `viewportId` is applied on mount and persisted once per interaction via
+   * the OrbitControls `'end'` event (fires once when the user releases
+   * pointer/touch — not on every damping frame). When absent, camera state
+   * is ephemeral (existing behaviour).
+   *
+   * **Captured at mount** — like `viewportId`, this reference is captured
+   * once inside `onMount` and must not change for the component lifetime.
+   * To swap the store, unmount and remount the `<Viewport>`.
    */
   viewportStore?: ViewportStore;
 }
@@ -107,7 +120,9 @@ export function Viewport(props: ViewportProps) {
       };
     }
 
-    // Camera persistence handler — fires on every OrbitControls 'change' event.
+    // Camera persistence handler — fires once when interaction ends ('end' event).
+    // Using 'end' rather than 'change' avoids ~60 store writes/second during
+    // OrbitControls damping; saves the last resting pose instead.
     // No-op when viewportStore is absent (ephemeral camera mode).
     function persistCamera() {
       props.viewportStore?.updateCamera(props.viewportId, snapshotCamera());
@@ -115,7 +130,8 @@ export function Viewport(props: ViewportProps) {
 
     // OrbitControls 'change' event fires during camera movement (including damping)
     controls.controls.addEventListener('change', requestRender);
-    controls.controls.addEventListener('change', persistCamera);
+    // 'end' fires once per interaction (pointerup/touchend) — correct granularity for persistence
+    controls.controls.addEventListener('end', persistCamera);
 
     // Sync grid/axes visibility
     createEffect(() => {
@@ -221,7 +237,7 @@ export function Viewport(props: ViewportProps) {
       disposed = true;
       cancelAnimationFrame(animationFrameId);
       controls.controls.removeEventListener('change', requestRender);
-      controls.controls.removeEventListener('change', persistCamera);
+      controls.controls.removeEventListener('end', persistCamera);
       resizeObserver.disconnect();
       selection.dispose();
       controls.dispose();
