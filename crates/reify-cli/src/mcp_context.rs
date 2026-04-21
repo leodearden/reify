@@ -1130,23 +1130,23 @@ structure Bracket {
         );
     }
 
-    /// Invariant-guard test: `warned_overrides` must remain a subset of the
-    /// cells currently in `user_overrides`.  Specifically, when `user_overrides`
-    /// is empty, `warned_overrides` must also be empty after the next
-    /// `reapply_user_overrides` call.
+    /// Invariant guard: `debug_assert!` fires when `user_overrides` is empty but
+    /// `warned_overrides` is non-empty.  This state is unreachable through the
+    /// public API (`load_file`/`open_file` clear both collections together;
+    /// `set_parameter` always re-pushes to `user_overrides`), so the `debug_assert!`
+    /// exists to catch future invariant drift loudly in debug builds.
     ///
-    /// The scenario: `warned_overrides` was populated by a prior `TypeKindMismatch`
-    /// reapply, then `user_overrides` was manually cleared (simulating a caller that
-    /// removes all overrides without going through `load_file`/`open_file`).  Calling
-    /// `update_source` with valid source drives `reapply_user_overrides` through its
-    /// early-return branch, which delegates to `state.clear_overrides()` to prune
-    /// the now-stale `warned_overrides`.
-    ///
-    /// Note: no public API can reach this state today — `load_file`/`open_file`
-    /// clear both collections together, and `set_parameter` always re-pushes to
-    /// `user_overrides`.  The test exercises a defensive invariant guard.
+    /// The scenario:
+    ///  1. Load bracket.ri and set an override that eventually mismatches.
+    ///  2. Manually clear `user_overrides` without going through a public entry point,
+    ///     leaving `warned_overrides` populated.
+    ///  3. Drive `update_source` so `reapply_user_overrides` enters the
+    ///     `user_overrides.is_empty()` early-return branch — the `debug_assert!`
+    ///     must panic.
+    #[cfg(debug_assertions)]
     #[test]
-    fn reapply_user_overrides_maintains_warned_subset_invariant() {
+    #[should_panic(expected = "warned_overrides must be empty")]
+    fn reapply_user_overrides_debug_asserts_on_warned_without_user_overrides() {
         let ctx = fresh_ctx();
         ctx.load_file(BRACKET_PATH)
             .expect("load_file should succeed");
@@ -1159,38 +1159,20 @@ structure Bracket {
         ctx.update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
             .expect("update_source should return Ok even on override mismatch");
 
-        // 2. Precondition: warned_overrides must be non-empty after the mismatch.
-        {
-            let state = ctx.lock_state();
-            assert!(
-                !state.warned_overrides.is_empty(),
-                "test setup precondition: warned_overrides must be populated after a \
-                 type-mismatch reapply"
-            );
-        }
-
-        // 3. Clear user_overrides directly to create the "empty user_overrides with
-        //    populated warned_overrides" state that the early-return branch guards.
+        // 2. Clear user_overrides directly to create the "empty user_overrides with
+        //    populated warned_overrides" state that violates the invariant.
         {
             let mut state = ctx.lock_state();
             state.user_overrides.clear();
         }
 
-        // 4. Drive reapply_user_overrides through the early-return branch by
+        // 3. Drive reapply_user_overrides through the early-return branch by
         //    calling update_source with the original valid bracket source.
+        //    The debug_assert! must panic with "warned_overrides must be empty".
         let source = std::fs::read_to_string(BRACKET_PATH)
             .expect("bracket.ri fixture must be readable");
         ctx.update_source(BRACKET_PATH, &source)
             .expect("update_source with valid source should succeed");
-
-        // 5. Assert warned_overrides is now empty — the early-return branch must
-        //    clear the stale dedupe set when there is nothing left to dedupe against.
-        let state = ctx.lock_state();
-        assert!(
-            state.warned_overrides.is_empty(),
-            "reapply_user_overrides must clear warned_overrides when user_overrides is empty \
-             (nothing left to dedupe against)"
-        );
     }
 
     /// Verify that `load_file` clears prior parameter overrides.  Because
