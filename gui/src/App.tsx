@@ -92,6 +92,15 @@ const App: Component = () => {
 
   const viewStateStore = createViewStateStore();
   const viewportStore = createViewportStore();
+
+  // One-way sync: keep viewportStore["design-main"].viewId in step with the
+  // active view chosen by the user (via ViewSelector / DesignTree / keyboard shortcuts).
+  // This satisfies PRD §3.2 — viewportStore is the authoritative per-viewport view
+  // assignment, while viewStateStore remains the authoritative view-tree/visibility store.
+  createEffect(() => {
+    viewportStore.assignView('design-main', viewStateStore.state.activeViewId);
+  });
+
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
 
   // Reactive counter incremented each time viewStateStore.setTree is called.
