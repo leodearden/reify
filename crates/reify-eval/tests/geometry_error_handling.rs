@@ -1157,12 +1157,36 @@ fn build_primitive_missing_arg_no_kernel_error() {
 /// `compile_geometry_op_modify_missing_arg_returns_none` in lib.rs:4955-5007.
 #[test]
 fn build_modify_missing_arg_no_kernel_error() {
-    use reify_compiler::ModifyKind;
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Fillet, "radius", "fillet");
+}
+
+/// Drive an engine.build() through a Modify op whose required arg is omitted,
+/// then assert compile-time rejection via `assert_rejected_at_compile`.
+///
+/// The realization is a two-op sequence [Box, Modify(kind, empty args)] because
+/// `compile_geometry_op` resolves `Modify { target, .. }` via
+/// `step_handles.get(idx).copied()?` *before* reaching arg-validation — so a
+/// lone Modify with an empty step_handles would short-circuit at target lookup
+/// without ever emitting the missing-arg warning. The Box is the minimum setup
+/// needed to populate step_handles[0] so the Modify's target resolves and the
+/// arg-validation path is exercised.
+///
+/// Callers pass:
+/// - `kind` — the ModifyKind variant under test (Fillet/Chamfer/Shell/Draft/Thicken).
+/// - `missing_arg_for_warning` — the arg name expected in the Warning message
+///   (e.g. `"radius"` for Fillet, `"thickness"` for Shell).
+/// - `kind_name_for_warning` — the lowercase Display name of the kind
+///   (e.g. `"fillet"`, `"shell"`, `"thicken"`, `"draft"`, `"chamfer"`).
+fn build_modify_missing_arg_case(
+    kind: reify_compiler::ModifyKind,
+    missing_arg_for_warning: &str,
+    kind_name_for_warning: &str,
+) {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
-    // as the Fillet's target
+    // as the Modify op's target.
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
@@ -1172,25 +1196,25 @@ fn build_modify_missing_arg_no_kernel_error() {
         ],
     };
 
-    // Op 1: Fillet modify op with 'radius' deliberately omitted
-    let fillet_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Fillet,
+    // Op 1: Modify op with its required arg deliberately omitted.
+    let modify_op = CompiledGeometryOp::Modify {
+        kind,
         target: GeomRef::Step(0),
-        args: vec![], // radius deliberately omitted
+        args: vec![],
     };
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
-        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
-        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
-        .realization(e, 0, vec![box_op, fillet_op])
+        .realization(e, 0, vec![box_op, modify_op])
         .build();
-
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_radius"))
+    let module_path = format!(
+        "test_modify_{}_missing_{}",
+        kind_name_for_warning, missing_arg_for_warning
+    );
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(&module_path))
         .template(template)
         .build();
 
-    // Standard MockGeometryKernel — if execute() were called for the Fillet it
+    // Standard MockGeometryKernel — if execute() were called for the Modify it
     // would succeed, but it should never be reached for that op.
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -1202,7 +1226,11 @@ fn build_modify_missing_arg_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "radius", "fillet"],
+        &[
+            "missing required geometry argument",
+            missing_arg_for_warning,
+            kind_name_for_warning,
+        ],
     );
 }
 
@@ -2421,172 +2449,23 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
 /// Shell modify op rejects a missing `thickness` arg at compile time.
 #[test]
 fn build_modify_shell_missing_thickness_no_kernel_error() {
-    use reify_compiler::ModifyKind;
-    let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-
-    let box_op = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Box,
-        args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
-        ],
-    };
-    let shell_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Shell,
-        target: GeomRef::Step(0),
-        args: vec![], // thickness deliberately omitted
-    };
-
-    let template = TopologyTemplateBuilder::new(e)
-        .realization(e, 0, vec![box_op, shell_op])
-        .build();
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_shell_missing_thickness"))
-            .template(template)
-            .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, ExportFormat::Step);
-
-    assert_rejected_at_compile(
-        &result,
-        &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "thickness", "shell"],
-    );
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Shell, "thickness", "shell");
 }
 
 /// Thicken modify op rejects a missing `offset` arg at compile time.
 #[test]
 fn build_modify_thicken_missing_offset_no_kernel_error() {
-    use reify_compiler::ModifyKind;
-    let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-
-    let box_op = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Box,
-        args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
-        ],
-    };
-    let thicken_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Thicken,
-        target: GeomRef::Step(0),
-        args: vec![], // offset deliberately omitted
-    };
-
-    let template = TopologyTemplateBuilder::new(e)
-        .realization(e, 0, vec![box_op, thicken_op])
-        .build();
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_thicken_missing_offset"))
-            .template(template)
-            .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, ExportFormat::Step);
-
-    assert_rejected_at_compile(
-        &result,
-        &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "offset", "thicken"],
-    );
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Thicken, "offset", "thicken");
 }
 
 /// Draft modify op rejects a missing `angle` arg at compile time.
 #[test]
 fn build_modify_draft_missing_angle_no_kernel_error() {
-    use reify_compiler::ModifyKind;
-    let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-
-    let box_op = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Box,
-        args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
-        ],
-    };
-    let draft_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Draft,
-        target: GeomRef::Step(0),
-        args: vec![], // angle deliberately omitted
-    };
-
-    let template = TopologyTemplateBuilder::new(e)
-        .realization(e, 0, vec![box_op, draft_op])
-        .build();
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_draft_missing_angle"))
-            .template(template)
-            .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, ExportFormat::Step);
-
-    assert_rejected_at_compile(
-        &result,
-        &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "angle", "draft"],
-    );
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Draft, "angle", "draft");
 }
 
 /// Chamfer modify op rejects a missing `distance` arg at compile time.
 #[test]
 fn build_modify_chamfer_missing_distance_no_kernel_error() {
-    use reify_compiler::ModifyKind;
-    let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-
-    let box_op = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Box,
-        args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
-        ],
-    };
-    let chamfer_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Chamfer,
-        target: GeomRef::Step(0),
-        args: vec![], // distance deliberately omitted
-    };
-
-    let template = TopologyTemplateBuilder::new(e)
-        .realization(e, 0, vec![box_op, chamfer_op])
-        .build();
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
-        "test_chamfer_missing_distance",
-    ))
-    .template(template)
-    .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, ExportFormat::Step);
-
-    assert_rejected_at_compile(
-        &result,
-        &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "distance", "chamfer"],
-    );
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Chamfer, "distance", "chamfer");
 }
