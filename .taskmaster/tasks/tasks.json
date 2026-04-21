@@ -36912,16 +36912,14 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:05.952Z",
         "metadata": {
-          "modules": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-types/src/geometry.rs"
-          ],
+          "modules": [],
           "memory_hints": {
             "entities": [],
             "queries": [
               "resolution for: Sentinel robustness: debug_assert for INVALID handle hash + saturating_sub rollback"
             ]
-          }
+          },
+          "files": []
         }
       },
       {
