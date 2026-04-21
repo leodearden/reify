@@ -1,7 +1,6 @@
 // Split from lib.rs (task 2032) — constraints methods.
 
 use std::collections::{BTreeMap, HashMap};
-use tracing;
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
 use reify_types::{
@@ -245,7 +244,7 @@ impl Engine {
         // both cases (domain text reaches users unchanged); the warn! lets
         // first-party developers notice Display drift without crashing
         // third-party checkers.
-        if !(replaced_any || !has_error) {
+        if !replaced_any && has_error {
             tracing::warn!(
                 label = ?label,
                 id = %id_str,
