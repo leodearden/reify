@@ -1330,15 +1330,55 @@ impl Engine {
         // the added member through the correct activation path. This also
         // covers symmetric cases (added members on the active branch) —
         // Phase 1 just re-evaluates them, matching cold eval's behavior.
+        //
+        // We ALSO trigger Phase 1 when an existing cell's *role* within a
+        // guarded group changes — i.e. it moves from the `members` branch
+        // to the `else_members` branch (or vice versa) while its id and
+        // expression text are unchanged. `diff_value_cells` compares per-cell
+        // `content_hash` (id_hash.combine(expr_hash)), which has no notion of
+        // containing group or branch, so a role-flipped cell is classified
+        // neither `changed` nor `added`. Without this trigger, Phase 1 never
+        // fires and the old-branch value survives on the wrong branch.
+        // We detect this by building a per-cell role map (ValueCellId →
+        // (guard_cell_id, branch_tag)) for both the old and new graphs and
+        // firing when the maps differ. Phase 1's existing activation/deactivation
+        // loop then routes every member through the correct path. Lock:
+        // `edit_source_role_flipped_guard_member_matches_cold_eval` (task 2084).
         {
             let graph = &new_snapshot.graph;
             let has_added_guard_member = graph.guarded_groups.iter().any(|group| {
                 group.members.iter().any(|m| added.contains(m))
                     || group.else_members.iter().any(|m| added.contains(m))
             });
+            // Build a map from ValueCellId to (guard_cell_id, branch_tag) for
+            // a slice of guarded groups. branch_tag 0 = members, 1 = else_members.
+            let role_map = |groups: &[crate::graph::GuardedGroupInfo]| {
+                let mut map: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::new();
+                for group in groups {
+                    for mid in &group.members {
+                        map.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
+                    }
+                    for mid in &group.else_members {
+                        map.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
+                    }
+                }
+                map
+            };
+            let old_roles = role_map(
+                &self
+                    .eval_state
+                    .as_ref()
+                    .unwrap()
+                    .snapshot
+                    .graph
+                    .guarded_groups,
+            );
+            let new_roles = role_map(&graph.guarded_groups);
+            let has_role_flipped_guard_member = old_roles != new_roles;
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
-            }) || has_added_guard_member;
+            }) || has_added_guard_member
+                || has_role_flipped_guard_member;
 
             if has_dirty_guards {
                 for group in &graph.guarded_groups {
