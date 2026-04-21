@@ -233,6 +233,31 @@ impl Engine {
         );
     }
 
+    /// Consume a `ConstraintResult`, run the label-rewrite over its diagnostic
+    /// messages, extend them into `diagnostics`, and push a matching
+    /// `ConstraintCheckEntry` onto `constraint_results`.
+    ///
+    /// Extracted from the two zip-loops in `check_constraints_with_values` and
+    /// `check_constraints_against_templates` (task 847.1). Both sites ran the
+    /// same three-step "take-messages / rewrite / extend / push entry" pattern;
+    /// centralising it keeps the rewrite invariants (see `labeled_diagnostics`)
+    /// in one place.
+    fn push_constraint_result(
+        diagnostics: &mut Vec<Diagnostic>,
+        constraint_results: &mut Vec<ConstraintCheckEntry>,
+        result: ConstraintResult,
+        label: Option<&str>,
+    ) {
+        let mut msgs = result.diagnostics.messages;
+        Self::labeled_diagnostics(&mut msgs, &result.id, label);
+        diagnostics.extend(msgs);
+        constraint_results.push(ConstraintCheckEntry {
+            id: result.id,
+            label: label.map(|s| s.to_string()),
+            satisfaction: result.satisfaction,
+        });
+    }
+
     /// Incrementally re-evaluate and check constraints after changing a parameter.
     ///
     /// Combines edit_param() (incremental value evaluation + re-resolution)
@@ -301,14 +326,12 @@ impl Engine {
                     "check_constraints_with_values: result.id must match cnode.id \
                      — dispatch_constraints reordered results or constraint_nodes changed",
                 );
-                let mut msgs = result.diagnostics.messages;
-                Self::labeled_diagnostics(&mut msgs, &result.id, cnode.label.as_deref());
-                diagnostics.extend(msgs);
-                constraint_results.push(ConstraintCheckEntry {
-                    id: result.id,
-                    label: cnode.label.clone(),
-                    satisfaction: result.satisfaction,
-                });
+                Self::push_constraint_result(
+                    &mut diagnostics,
+                    &mut constraint_results,
+                    result,
+                    cnode.label.as_deref(),
+                );
             }
         }
 
@@ -432,14 +455,12 @@ impl Engine {
                     "check_constraints_against_templates: result.id must match compiled.id \
                      — dispatch_constraints reordered results or active_constraints changed",
                 );
-                let mut msgs = result.diagnostics.messages;
-                Self::labeled_diagnostics(&mut msgs, &result.id, compiled.label.as_deref());
-                diagnostics.extend(msgs);
-                constraint_results.push(ConstraintCheckEntry {
-                    id: result.id,
-                    label: compiled.label.clone(),
-                    satisfaction: result.satisfaction,
-                });
+                Self::push_constraint_result(
+                    &mut diagnostics,
+                    &mut constraint_results,
+                    result,
+                    compiled.label.as_deref(),
+                );
             }
         }
 
