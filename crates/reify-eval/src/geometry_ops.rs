@@ -7,6 +7,27 @@ use std::collections::HashMap;
 
 use reify_types::{CompiledFunction, Diagnostic, GeometryHandleId, ValueMap};
 
+/// Minimum meaningful distance in meters (1 picometer).
+///
+/// Distances with `|v| < DEGENERATE_LENGTH_M` cannot produce a well-defined
+/// solid — any kernel attempting to extrude / sweep at sub-picometer lengths
+/// is likely to return an opaque error. Named constants (not bare literals)
+/// also let future refactors relocate the tolerance without a regex sweep.
+/// Boundary semantics are pinned by
+/// `build_extrude_distance_{just_below,at}_threshold_*` tests.
+pub(crate) const DEGENERATE_LENGTH_M: f64 = 1e-12;
+
+/// Minimum meaningful angle in radians (sub-picoradian).
+///
+/// Revolve angles with `|a| < DEGENERATE_ANGLE_RAD` cannot produce a
+/// well-defined revolved solid. Boundary semantics are pinned by
+/// `build_revolve_angle_*_threshold_*` tests.
+pub(crate) const DEGENERATE_ANGLE_RAD: f64 = 1e-12;
+
+/// Generic geometry epsilon for axis-magnitude / direction-vector checks
+/// (e.g. rejecting near-zero revolve axes).
+pub(crate) const GEOMETRY_EPSILON: f64 = 1e-12;
+
 /// Look up a named argument in `args`, evaluate it, and return the resulting
 /// `Value`.  If the argument is absent, push a `Warning` diagnostic and return
 /// `None`.  Callers that need a finite `f64` should use [`eval_named_arg_f64`],
