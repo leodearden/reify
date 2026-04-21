@@ -10332,12 +10332,12 @@
       {
         "id": "471",
         "title": "Code clarity: comments, naming fixes, and guard loop consolidation",
-        "description": "Add explanatory comment on merged Analytical|Composed match arm, document values/snapshot_values invariant, rename/strengthen no_quadratic_clone test, consolidate guard loops",
-        "details": "1. crates/reify-eval/src/lib.rs: Add comment on merged Analytical|Composed match arm explaining why they share evaluation path\n2. crates/reify-runtime/src/concurrent_eval.rs: Document values/snapshot_values invariant in edit_check_concurrent\n3. crates/reify-runtime/tests/concurrent_eval.rs: Rename concurrent_eval_large_graph_no_quadratic_clone to concurrent_eval_100_node_chain_correctness (or add allocation/timing guard)\n4. crates/reify-eval/src/lib.rs lines 1561-1594: Consolidate guard member/else_member loops in edit_param re-elaboration to use the same `for (cells, is_active) in [...]` pattern\n\nFrom review of task 397 (esc-397-121).",
-        "testStrategy": "",
+        "description": "Apply five code-clarity and hardening improvements across engine_edit.rs and adjacent eval/runtime files.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "1. **crates/reify-eval/src/engine_edit.rs — bind eval_state borrow in edit_source**: `self.eval_state.as_ref().unwrap()` appears 7+ times in `edit_source` (around lines 915, 945, 961, 965, 1002, 1064, 1602-1607, 1700-1703), each guarded only by the early `if self.eval_state.is_none()` return. A future refactor that takes a `&mut self` path clearing `eval_state` mid-function would turn every unwrap into a panic vector. The single `old_state` binding in the step-8 seeding scope (line 1064) is the right pattern — bind `let eval_state = self.eval_state.as_ref().unwrap();` once at the top of the guarded section and replace all subsequent `.as_ref().unwrap()` calls with the bound variable.\n\n2. **crates/reify-eval/src/engine_edit.rs — consolidate guard loops in edit_param re-elaboration** (originally crates/reify-eval/src/lib.rs lines 1561-1594, now in engine_edit.rs): Consolidate the guard member/else_member loops in the edit_param re-elaboration path to use the same `for (cells, is_active) in [...]` pattern.\n\n3. **crates/reify-eval/src/engine_eval.rs — comment on merged Analytical|Composed match arm**: Add a comment explaining why the Analytical and Composed evaluation paths share the same match arm.\n\n4. **crates/reify-runtime/src/concurrent_eval.rs — document values/snapshot_values invariant**: Add inline documentation for the `values`/`snapshot_values` invariant in `edit_check_concurrent`.\n\n5. **crates/reify-runtime/tests/concurrent_eval.rs — rename test**: Rename `concurrent_eval_large_graph_no_quadratic_clone` to `concurrent_eval_100_node_chain_correctness` (or add an allocation/timing guard to make the assertion meaningful).\n\nFrom review of task 397 (esc-397-121) and steward-triage from task 2016.",
+        "testStrategy": "",
         "subtasks": [],
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
@@ -10347,9 +10347,11 @@
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/field_eval_tests.rs",
             "crates/reify-runtime/src/concurrent_eval.rs"
-          ]
-        },
-        "updatedAt": "2026-04-21T19:43:26.443Z"
+          ],
+          "curator_action": "combine",
+          "curator_justification": "Candidate is a tiny single-file code-clarity fix to engine_edit.rs — the same file and the same low-priority clarity theme as Task 471 item 4 (guard loop consolidation). Both tasks will serialize on the same module lock (reify-eval/src), there is zero lost parallelism, and the combined task stays under 5 concerns and 5 files well within the planning budget. The candidate alone is under 300 chars of real detail, making standalone orchestrator overhead disproportionate.",
+          "combined_at": "2026-04-21T22:20:09.932389+00:00"
+        }
       },
       {
         "id": "472",
@@ -44084,6 +44086,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2088",
+        "title": "edit_source Phases 1 & 3: skip guarded groups whose guard value did not change",
+        "description": "In crates/reify-eval/src/engine_edit.rs, Phase 1 (lines 1333-1420, inside `if has_dirty_guards`) and Phase 3 (lines 1611-1676, inside `if guard_changed`) both iterate EVERY guarded group and re-evaluate every member once the outer trigger fires. On a module with N unrelated guarded groups where a single guard resolved differently, each phase does O(N · avg_members) redundant expression evaluations. This matches edit_param so it's not a new regression, but the duplicated work compounds because edit_source may run both Phase 1 AND Phase 3 on the same edit.\n\nFix: inside the `for group in ...` loop in each phase, compare the freshly-computed (or current-in-`values`) guard value to the pre-edit snapshot value for that SPECIFIC group and `continue` if unchanged. Keep the outer trigger as an early-exit but let the inner loop skip unaffected groups.\n\nAlso consider applying the same per-group filtering in edit_param for symmetry.\n\nNo new tests strictly required (cross-check tests already guard correctness), but add a perf-oriented assertion: for a module with 10 guarded groups and an edit to 1 guard, count evaluated expressions and assert only the affected group's members were re-evaluated.\n\nmemory_hints:\n- search: \"guarded_groups Phase 1 Phase 3 redundant eval\"\n- entity: \"EvalState\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2016"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44096,7 +44111,7 @@
       ],
       "created": "2026-04-21T22:18:21.544Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-21T22:18:51.504Z"
+      "updated": "2026-04-21T22:20:58.000Z"
     }
   }
 }
