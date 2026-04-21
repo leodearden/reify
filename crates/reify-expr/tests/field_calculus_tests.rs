@@ -4329,84 +4329,65 @@ fn eval_unary_field_op(op: &str, source: Value, source_type: Type) -> Value {
     eval_expr(&op_expr, &EvalContext::simple(&ValueMap::new()))
 }
 
-/// `compute_gradient` stores the source field's lambda via `Arc::clone` —
-/// no deep copy of the compiled expression tree occurs.
+/// Encapsulates the arc-sharing O(1)-clone invariant used by all four unary
+/// field operators (gradient / divergence / curl / laplacian).
 ///
-/// Structural invariant: `result.lambda` is `Arc<Value::Field>` (the cloned
-/// source); its inner `lambda` field is `Arc::ptr_eq` with the original source
-/// field's lambda, proving the clone was O(1).
-#[test]
-fn gradient_result_arc_shares_source_lambda() {
-    // Source: Point{3, Real} → Real field.
-    let lambda_val = make_trivial_3d_scalar_lambda();
-    let source_lambda: Arc<Value> = Arc::new(lambda_val);
+/// Constructs a `FieldSourceKind::Analytical` source field with domain
+/// `Type::point3(Type::Real)`, the given `codomain`, and a freshly wrapped
+/// `Arc<Value>` around `lambda`.  Runs `op_name` via `eval_unary_field_op`,
+/// then asserts that the result's nested source-field lambda `Arc::ptr_eq`s
+/// with the original — proving no deep clone of the compiled expression tree
+/// occurred.
+///
+/// Adding coverage for a fifth unary field operator is a one-liner:
+/// `assert_unary_op_shares_source_lambda("new_op", codomain, make_lambda())`.
+fn assert_unary_op_shares_source_lambda(op_name: &str, codomain: Type, lambda: Value) {
+    let source_lambda: Arc<Value> = Arc::new(lambda);
     let domain = Type::point3(Type::Real);
     let source = Value::Field {
         domain_type: domain.clone(),
-        codomain_type: Type::Real,
+        codomain_type: codomain.clone(),
         source: FieldSourceKind::Analytical,
         lambda: source_lambda.clone(),
     };
     let source_type = Type::Field {
         domain: Box::new(domain),
-        codomain: Box::new(Type::Real),
+        codomain: Box::new(codomain),
     };
 
-    let result = eval_unary_field_op("gradient", source, source_type);
+    let result = eval_unary_field_op(op_name, source, source_type);
 
-    // The result must be a Field; its lambda points to the stored source clone.
     let outer = match result {
         Value::Field { lambda, .. } => lambda,
-        other => panic!("gradient should return Field, got {:?}", other),
+        other => panic!("{op_name} should return Field, got {:?}", other),
     };
 
-    // The stored source clone is itself a Field; its lambda Arc must ptr_eq
-    // with the original source_lambda.
     let inner_lambda = match outer.as_ref() {
         Value::Field { lambda, .. } => lambda.clone(),
-        other => panic!("gradient result lambda should be Field, got {:?}", other),
+        other => panic!("{op_name} result lambda should be Field, got {:?}", other),
     };
 
     assert!(
         Arc::ptr_eq(&source_lambda, &inner_lambda),
-        "gradient: result's nested source-field lambda should Arc::ptr_eq with original (no deep clone)"
+        "{op_name}: result's nested source-field lambda should Arc::ptr_eq with original (no deep clone)"
     );
+}
+
+/// `compute_gradient` stores the source field's lambda via `Arc::clone` —
+/// no deep copy of the compiled expression tree occurs.
+#[test]
+fn gradient_result_arc_shares_source_lambda() {
+    assert_unary_op_shares_source_lambda("gradient", Type::Real, make_trivial_3d_scalar_lambda());
 }
 
 /// `compute_divergence` stores the source field's lambda via `Arc::clone` —
 /// no deep copy of the compiled expression tree occurs.
 #[test]
 fn divergence_result_arc_shares_source_lambda() {
-    // Source: Point{3, Real} → Vec{3, Real} field.
-    let lambda_val = make_trivial_3d_vector_lambda();
-    let source_lambda: Arc<Value> = Arc::new(lambda_val);
-    let domain = Type::point3(Type::Real);
-    let source = Value::Field {
-        domain_type: domain.clone(),
-        codomain_type: Type::vec3(Type::Real),
-        source: FieldSourceKind::Analytical,
-        lambda: source_lambda.clone(),
-    };
-    let source_type = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(Type::vec3(Type::Real)),
-    };
-
-    let result = eval_unary_field_op("divergence", source, source_type);
-
-    let outer = match result {
-        Value::Field { lambda, .. } => lambda,
-        other => panic!("divergence should return Field, got {:?}", other),
-    };
-
-    let inner_lambda = match outer.as_ref() {
-        Value::Field { lambda, .. } => lambda.clone(),
-        other => panic!("divergence result lambda should be Field, got {:?}", other),
-    };
-
-    assert!(
-        Arc::ptr_eq(&source_lambda, &inner_lambda),
-        "divergence: result's nested source-field lambda should Arc::ptr_eq with original (no deep clone)"
+    assert_unary_op_shares_source_lambda(
+        "divergence",
+        Type::vec3(Type::Real),
+        make_trivial_3d_vector_lambda(),
     );
 }
 
@@ -4414,36 +4395,10 @@ fn divergence_result_arc_shares_source_lambda() {
 /// no deep copy of the compiled expression tree occurs.
 #[test]
 fn curl_result_arc_shares_source_lambda() {
-    // Source: Point{3, Real} → Vec{3, Real} field.
-    let lambda_val = make_trivial_3d_vector_lambda();
-    let source_lambda: Arc<Value> = Arc::new(lambda_val);
-    let domain = Type::point3(Type::Real);
-    let source = Value::Field {
-        domain_type: domain.clone(),
-        codomain_type: Type::vec3(Type::Real),
-        source: FieldSourceKind::Analytical,
-        lambda: source_lambda.clone(),
-    };
-    let source_type = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(Type::vec3(Type::Real)),
-    };
-
-    let result = eval_unary_field_op("curl", source, source_type);
-
-    let outer = match result {
-        Value::Field { lambda, .. } => lambda,
-        other => panic!("curl should return Field, got {:?}", other),
-    };
-
-    let inner_lambda = match outer.as_ref() {
-        Value::Field { lambda, .. } => lambda.clone(),
-        other => panic!("curl result lambda should be Field, got {:?}", other),
-    };
-
-    assert!(
-        Arc::ptr_eq(&source_lambda, &inner_lambda),
-        "curl: result's nested source-field lambda should Arc::ptr_eq with original (no deep clone)"
+    assert_unary_op_shares_source_lambda(
+        "curl",
+        Type::vec3(Type::Real),
+        make_trivial_3d_vector_lambda(),
     );
 }
 
@@ -4451,36 +4406,10 @@ fn curl_result_arc_shares_source_lambda() {
 /// no deep copy of the compiled expression tree occurs.
 #[test]
 fn laplacian_result_arc_shares_source_lambda() {
-    // Source: Point{3, Real} → Real field.
-    let lambda_val = make_trivial_3d_scalar_lambda();
-    let source_lambda: Arc<Value> = Arc::new(lambda_val);
-    let domain = Type::point3(Type::Real);
-    let source = Value::Field {
-        domain_type: domain.clone(),
-        codomain_type: Type::Real,
-        source: FieldSourceKind::Analytical,
-        lambda: source_lambda.clone(),
-    };
-    let source_type = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(Type::Real),
-    };
-
-    let result = eval_unary_field_op("laplacian", source, source_type);
-
-    let outer = match result {
-        Value::Field { lambda, .. } => lambda,
-        other => panic!("laplacian should return Field, got {:?}", other),
-    };
-
-    let inner_lambda = match outer.as_ref() {
-        Value::Field { lambda, .. } => lambda.clone(),
-        other => panic!("laplacian result lambda should be Field, got {:?}", other),
-    };
-
-    assert!(
-        Arc::ptr_eq(&source_lambda, &inner_lambda),
-        "laplacian: result's nested source-field lambda should Arc::ptr_eq with original (no deep clone)"
+    assert_unary_op_shares_source_lambda(
+        "laplacian",
+        Type::Real,
+        make_trivial_3d_scalar_lambda(),
     );
 }
 
