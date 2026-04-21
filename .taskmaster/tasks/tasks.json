@@ -8541,9 +8541,7 @@
         "dependencies": [],
         "status": "deferred",
         "metadata": {
-          "modules": [
-            "crates/reify-eval/src"
-          ],
+          "modules": [],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
             "entities": [],
@@ -8551,9 +8549,7 @@
               "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
             ]
           },
-          "files": [
-            "crates/reify-eval/src/lib.rs"
-          ]
+          "files": []
         },
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:03.557Z"
@@ -9237,14 +9233,10 @@
         ],
         "priority": "low",
         "metadata": {
-          "modules": [
-            "crates/reify-eval/src"
-          ],
+          "modules": [],
           "milestone": "M9",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-eval/src/lib.rs"
-          ]
+          "files": []
         },
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:03.631Z"
@@ -10007,12 +9999,8 @@
         "updatedAt": "2026-04-20T12:20:03.765Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-eval/src/lib.rs"
-          ],
-          "modules": [
-            "crates/reify-eval/src"
-          ]
+          "files": [],
+          "modules": []
         }
       },
       {
