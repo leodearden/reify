@@ -8548,7 +8548,12 @@
         "dependencies": [],
         "status": "in-progress",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/meta_eval_integration.rs",
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
             "entities": [
@@ -43711,7 +43716,9 @@
       "completedCount": 1802,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:35:18.245Z",
+      "description": "Tasks for master context"
     }
   }
 }
