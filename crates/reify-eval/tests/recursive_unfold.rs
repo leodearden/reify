@@ -786,18 +786,23 @@ fn unfold_recursive_depth_limit_boundary_accepts_512() {
 
 // ─── step-28: depth above upper bound is rejected at the API boundary ─────────
 
-/// `set_max_unfold_depth(513)` must panic because unbounded high values risk
-/// stack overflow in the recursive `unfold_recursive_sub` implementation
-/// (`reify-eval/src/unfold.rs`), which uses real recursion rather than an
-/// iterative worklist. The upper bound (`Engine::MAX_UNFOLD_DEPTH_LIMIT = 512`)
+/// `set_max_unfold_depth(MAX_UNFOLD_DEPTH_LIMIT + 1)` must panic because unbounded
+/// high values risk stack overflow in the recursive `unfold_recursive_sub`
+/// implementation (`reify-eval/src/unfold.rs`), which uses real recursion rather
+/// than an iterative worklist. The upper bound (`Engine::MAX_UNFOLD_DEPTH_LIMIT`)
 /// caps the stack depth at a safe level well above any real-world use case
 /// (default is 64). Task 205 review, task 424.
+///
+/// The `should_panic` expected string is a stable prefix — it does not embed the
+/// numeric limit — so this test remains correct if `MAX_UNFOLD_DEPTH_LIMIT` is
+/// ever raised (the sibling `boundary_accepts_512` test is the canonical reference
+/// for the exact numeric value).
 #[test]
-#[should_panic(expected = "max_unfold_depth must be <= 512")]
+#[should_panic(expected = "max_unfold_depth must be <=")]
 fn unfold_recursive_depth_limit_too_large_rejected() {
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None);
-    engine.set_max_unfold_depth(513); // must panic
+    engine.set_max_unfold_depth(Engine::MAX_UNFOLD_DEPTH_LIMIT + 1); // must panic
 }
 
 // ─── step-25: cross-level dependency at depth 3 ───────────────────────────────

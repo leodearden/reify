@@ -129,6 +129,11 @@ impl Engine {
     /// enforced at the API boundary rather than inside the implementation so that the
     /// failure is immediate and explicit rather than a silent stack exhaust.
     pub fn set_max_unfold_depth(&mut self, depth: usize) {
+        // Panic-on-misuse rather than `Result`: `set_max_unfold_depth` is a
+        // rarely-called tuning knob; callers cannot usefully recover from an
+        // invalid depth, and the panic model matches the sibling
+        // `set_max_unfold_nodes` setter. Task 205 considered `Result`; the
+        // existing `# Panics` doc satisfies that review item.
         assert!(depth >= 1, "max_unfold_depth must be >= 1");
         assert!(
             depth <= Self::MAX_UNFOLD_DEPTH_LIMIT,
