@@ -43573,11 +43573,11 @@
         "description": "The reify orchestrator scheduler is logging 'ERROR Failed to fetch tasks: [Errno 2] No such file or directory' on a ~15-second loop. This is unrelated to the fd-9 flock leak fix shipped in Task 2064. The error fires continuously and may be causing the double-restart pattern observed on 2026-04-20.",
         "details": "## Investigation\n\n1. Identify where in the orchestrator scheduler the tasks fetch occurs — likely `scheduler.py` or `task_fetcher.py` in dark-factory. The error is \"[Errno 2] No such file or directory\", which means a file path is being opened that doesn't exist.\n\n2. Check whether the error is in the reify-specific path (`/home/leo/src/reify/.taskmaster/tasks/tasks.json`) or a dark-factory path.\n\n3. Common causes:\n   - Stale `project_root` config pointing at wrong path\n   - Missing `.taskmaster/tasks/tasks.json` (verify it exists)\n   - Scheduler reading a config path (e.g., `orchestrator.yaml`) that doesn't exist in the reify project root\n\n4. Verify tasks.json exists: `ls -la /home/leo/src/reify/.taskmaster/tasks/tasks.json`\n\n5. Check orchestrator config in reify for correct `project_root` / `tasks_path` settings.\n\n## memory_hints\n- search: \"orchestrator scheduler task fetch path config\"\n- search: \"tasks.json path project_root configuration\"\n- entity: \"reify orchestrator config\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:40:11.587Z",
+        "updatedAt": "2026-04-21T08:44:03.496Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -43676,7 +43676,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T08:44:03.039Z",
+      "lastModified": "2026-04-21T08:44:03.496Z",
       "taskCount": 2060,
       "completedCount": 1788,
       "tags": [
