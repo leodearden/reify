@@ -262,125 +262,8 @@ pub(crate) fn compile_with_prelude_refs(
     let prelude: &[&CompiledModule] = compile_builder::pre_pass::effective_prelude(parsed, prelude);
 
     // Consolidated pre-pass: iterate declarations once, collecting references
-    // for deferred compilation. This replaces 4 separate loops (enum, function,
-    // trait, field) with a single match dispatch.
-    let mut fn_refs: Vec<&reify_syntax::FnDef> = Vec::new();
-    let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
-    let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
-    let mut unit_refs: Vec<&reify_syntax::UnitDecl> = Vec::new();
-    let mut alias_refs: Vec<&reify_syntax::TypeAliasDecl> = Vec::new();
-
-    for decl in &parsed.declarations {
-        match decl {
-            reify_syntax::Declaration::Enum(e) => {
-                ctx.enum_defs.push(reify_types::EnumDef {
-                    name: e.name.clone(),
-                    variants: e.variants.clone(),
-                });
-            }
-            reify_syntax::Declaration::Function(fn_def) => {
-                fn_refs.push(fn_def);
-            }
-            reify_syntax::Declaration::Trait(trait_decl) => {
-                trait_refs.push(trait_decl);
-            }
-            reify_syntax::Declaration::Field(field_def) => {
-                if let Some((first_span, first_kind)) = ctx.seen_entity_names.get(&field_def.name) {
-                    // Duplicate entity name — emit error and skip
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate entity definition '{}'",
-                            field_def.name
-                        ))
-                        .with_label(DiagnosticLabel::new(field_def.span, "field defined here"))
-                        .with_label(DiagnosticLabel::new(
-                            *first_span,
-                            format!("first defined as {} here", first_kind),
-                        )),
-                    );
-                } else {
-                    ctx.seen_entity_names
-                        .insert(field_def.name.clone(), (field_def.span, "field"));
-                    field_refs.push(field_def);
-                }
-            }
-            reify_syntax::Declaration::Structure(structure) => {
-                if let Some((first_span, first_kind)) = ctx.seen_entity_names.get(&structure.name) {
-                    // Duplicate entity name — emit error; pass 2 will skip compilation.
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate entity definition '{}'",
-                            structure.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            structure.span,
-                            "structure defined here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            *first_span,
-                            format!("first defined as {} here", first_kind),
-                        )),
-                    );
-                } else {
-                    ctx.seen_entity_names
-                        .insert(structure.name.clone(), (structure.span, "structure"));
-                }
-            }
-            reify_syntax::Declaration::Occurrence(occurrence) => {
-                if let Some((first_span, first_kind)) = ctx.seen_entity_names.get(&occurrence.name) {
-                    // Duplicate entity name — emit error; pass 2 will skip compilation.
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate entity definition '{}'",
-                            occurrence.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            occurrence.span,
-                            "occurrence defined here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            *first_span,
-                            format!("first defined as {} here", first_kind),
-                        )),
-                    );
-                } else {
-                    ctx.seen_entity_names
-                        .insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
-                }
-            }
-            reify_syntax::Declaration::Constraint(constraint) => {
-                // Constraints reserve names in the entity namespace (spec §4.2.1)
-                // even though constraint compilation is not yet implemented.
-                if let Some((first_span, first_kind)) = ctx.seen_entity_names.get(&constraint.name) {
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate entity definition '{}'",
-                            constraint.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            constraint.span,
-                            "constraint defined here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            *first_span,
-                            format!("first defined as {} here", first_kind),
-                        )),
-                    );
-                } else {
-                    ctx.seen_entity_names
-                        .insert(constraint.name.clone(), (constraint.span, "constraint"));
-                }
-            }
-            reify_syntax::Declaration::Unit(unit_decl) => {
-                unit_refs.push(unit_decl);
-            }
-            reify_syntax::Declaration::TypeAlias(alias_decl) => {
-                alias_refs.push(alias_decl);
-            }
-            // Import, Purpose handled in pass 2 / purpose pass
-            _ => {}
-        }
-    }
+    // for deferred compilation and seeding the entity-namespace tracker.
+    let decl_refs = compile_builder::pre_pass::collect_decl_refs(&mut ctx, parsed);
 
     // Compile unit declarations in source order (so later units can reference earlier ones).
     // Unit hashes are included in the module content hash.
@@ -423,7 +306,7 @@ pub(crate) fn compile_with_prelude_refs(
         }
     }
 
-    for unit_decl in &unit_refs {
+    for unit_decl in &decl_refs.unit_refs {
         if let Some(entry) = compile_unit(unit_decl, &ctx.unit_registry, &mut ctx.diagnostics) {
             match ctx.unit_registry.register(entry) {
                 Ok(()) => {
@@ -508,7 +391,7 @@ pub(crate) fn compile_with_prelude_refs(
     // Compile type alias declarations via DFS resolution with cycle detection.
     // Build a lookup map of all alias declarations, detecting duplicates.
     let mut alias_decl_map: HashMap<String, &reify_syntax::TypeAliasDecl> = HashMap::new();
-    for alias_decl in &alias_refs {
+    for alias_decl in &decl_refs.alias_refs {
         if let Some(first) = alias_decl_map.get(&alias_decl.name) {
             ctx.diagnostics.push(
                 Diagnostic::error(format!(
@@ -528,7 +411,7 @@ pub(crate) fn compile_with_prelude_refs(
 
     // DFS-resolve each alias with cycle detection via resolving-set.
     let mut resolving = HashSet::new();
-    for alias_decl in &alias_refs {
+    for alias_decl in &decl_refs.alias_refs {
         resolve_alias_dfs(
             &alias_decl.name,
             &alias_decl_map,
@@ -549,7 +432,7 @@ pub(crate) fn compile_with_prelude_refs(
 
     // Compile in dependency order after collecting all references:
     // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
-    for fn_def in &fn_refs {
+    for fn_def in &decl_refs.fn_refs {
         if let Some(compiled_fn) = compile_function(
             fn_def,
             &ctx.resolution_enums,
@@ -582,7 +465,8 @@ pub(crate) fn compile_with_prelude_refs(
     // types reference other traits can resolve their siblings. Trait-name
     // resolution is last in precedence (builtins → type params → alias → trait)
     // so existing name-reuse stays backward compatible.
-    let trait_names: HashSet<String> = trait_refs
+    let trait_names: HashSet<String> = decl_refs
+        .trait_refs
         .iter()
         .map(|t| t.name.clone())
         .chain(
@@ -593,7 +477,7 @@ pub(crate) fn compile_with_prelude_refs(
         .collect();
 
     // 2. Traits (depend on resolution_enums for enum type resolution in params)
-    for trait_decl in &trait_refs {
+    for trait_decl in &decl_refs.trait_refs {
         let compiled_trait = compile_trait(
             trait_decl,
             &ctx.resolution_enums,
@@ -621,7 +505,7 @@ pub(crate) fn compile_with_prelude_refs(
 
     // Deprecation check: warn when a trait refinement references a @deprecated parent trait.
     // TraitDecl.refinements is Vec<String> without individual spans; use the child trait's span.
-    for trait_decl in &trait_refs {
+    for trait_decl in &decl_refs.trait_refs {
         for refinement_name in &trait_decl.refinements {
             if let Some(parent_trait) = trait_registry.get(refinement_name.as_str())
                 && let Some(msg) = deprecation_message(&parent_trait.annotations)
@@ -638,7 +522,7 @@ pub(crate) fn compile_with_prelude_refs(
     }
 
     // 3. Fields (need all resolution_enums + all compiled functions)
-    for field_def in &field_refs {
+    for field_def in &decl_refs.field_refs {
         let compiled = compile_field(
             field_def,
             &ctx.resolution_enums,

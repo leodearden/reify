@@ -5,7 +5,7 @@
 //! otherwise performing no compilation work — that happens in the later
 //! phase modules.
 
-use reify_syntax::ParsedModule;
+use reify_syntax::{Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl};
 use reify_types::{Diagnostic, DiagnosticLabel};
 
 use crate::CompiledModule;
@@ -56,4 +56,166 @@ pub(crate) fn effective_prelude<'a>(
 ) -> &'a [&'a CompiledModule] {
     let has_no_prelude = parsed.pragmas.iter().any(|p| p.name == "no_prelude");
     if has_no_prelude { &[] } else { prelude }
+}
+
+/// References into `parsed.declarations` collected by [`collect_decl_refs`],
+/// partitioned by the phase that consumes them.
+///
+/// Borrows from `parsed`, so cannot be stored on `CompilationCtx` without
+/// infecting ctx with a lifetime parameter (see task 2035 design decision #3).
+/// Flows as an explicit value from the orchestrator into the downstream phase
+/// functions that consume each field.
+pub(crate) struct DeclRefs<'a> {
+    pub(crate) fn_refs: Vec<&'a FnDef>,
+    pub(crate) trait_refs: Vec<&'a TraitDecl>,
+    pub(crate) field_refs: Vec<&'a FieldDef>,
+    pub(crate) unit_refs: Vec<&'a UnitDecl>,
+    pub(crate) alias_refs: Vec<&'a TypeAliasDecl>,
+}
+
+/// Single-pass scan over `parsed.declarations` that:
+///
+/// * pushes each `Enum` into `ctx.enum_defs`,
+/// * reserves entity-namespace names for `Field` / `Structure` / `Occurrence`
+///   / `Constraint` via `ctx.seen_entity_names` (emitting a duplicate-entity
+///   error via `ctx.diagnostics` on collision — spec §4.2.1 unified entity
+///   namespace),
+/// * and accumulates borrow-slices of `Fn`, `Trait`, `Field`, `Unit`,
+///   `TypeAlias` decls for later phases into the returned [`DeclRefs`].
+///
+/// `Import` and `Purpose` are deliberately untouched — they are handled in
+/// the entities phase and the dedicated purpose pass, respectively.
+pub(crate) fn collect_decl_refs<'a>(
+    ctx: &mut CompilationCtx,
+    parsed: &'a ParsedModule,
+) -> DeclRefs<'a> {
+    let mut refs = DeclRefs {
+        fn_refs: Vec::new(),
+        trait_refs: Vec::new(),
+        field_refs: Vec::new(),
+        unit_refs: Vec::new(),
+        alias_refs: Vec::new(),
+    };
+
+    for decl in &parsed.declarations {
+        match decl {
+            Declaration::Enum(e) => {
+                ctx.enum_defs.push(reify_types::EnumDef {
+                    name: e.name.clone(),
+                    variants: e.variants.clone(),
+                });
+            }
+            Declaration::Function(fn_def) => {
+                refs.fn_refs.push(fn_def);
+            }
+            Declaration::Trait(trait_decl) => {
+                refs.trait_refs.push(trait_decl);
+            }
+            Declaration::Field(field_def) => {
+                if let Some((first_span, first_kind)) =
+                    ctx.seen_entity_names.get(&field_def.name)
+                {
+                    // Duplicate entity name — emit error and skip
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            field_def.name
+                        ))
+                        .with_label(DiagnosticLabel::new(field_def.span, "field defined here"))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    ctx.seen_entity_names
+                        .insert(field_def.name.clone(), (field_def.span, "field"));
+                    refs.field_refs.push(field_def);
+                }
+            }
+            Declaration::Structure(structure) => {
+                if let Some((first_span, first_kind)) =
+                    ctx.seen_entity_names.get(&structure.name)
+                {
+                    // Duplicate entity name — emit error; pass 2 will skip compilation.
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            structure.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            structure.span,
+                            "structure defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    ctx.seen_entity_names
+                        .insert(structure.name.clone(), (structure.span, "structure"));
+                }
+            }
+            Declaration::Occurrence(occurrence) => {
+                if let Some((first_span, first_kind)) =
+                    ctx.seen_entity_names.get(&occurrence.name)
+                {
+                    // Duplicate entity name — emit error; pass 2 will skip compilation.
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            occurrence.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            occurrence.span,
+                            "occurrence defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    ctx.seen_entity_names
+                        .insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
+                }
+            }
+            Declaration::Constraint(constraint) => {
+                // Constraints reserve names in the entity namespace (spec §4.2.1)
+                // even though constraint compilation is not yet implemented.
+                if let Some((first_span, first_kind)) =
+                    ctx.seen_entity_names.get(&constraint.name)
+                {
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            constraint.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            constraint.span,
+                            "constraint defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    ctx.seen_entity_names
+                        .insert(constraint.name.clone(), (constraint.span, "constraint"));
+                }
+            }
+            Declaration::Unit(unit_decl) => {
+                refs.unit_refs.push(unit_decl);
+            }
+            Declaration::TypeAlias(alias_decl) => {
+                refs.alias_refs.push(alias_decl);
+            }
+            // Import, Purpose handled in pass 2 / purpose pass
+            _ => {}
+        }
+    }
+
+    refs
 }
