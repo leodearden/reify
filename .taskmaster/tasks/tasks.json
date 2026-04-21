@@ -6770,7 +6770,7 @@
           "307",
           "310"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [],
@@ -6778,7 +6778,7 @@
           "files": []
         },
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:16:27.910Z"
+        "updatedAt": "2026-04-21T09:16:44.560Z"
       },
       {
         "id": "325",
@@ -11244,7 +11244,7 @@
         "description": "Address architectural and API ergonomics suggestions from task #326 review:\n1. Document or unify ModuleResolver (module_dag.rs) vs stdlib_loader.rs dual dispatch — wire ModuleResolver's std.* to delegate to load_stdlib() or deprecate stdlib_root\n2. Add Engine::with_prelude() or EngineBuilder for opt-out of stdlib loading (Engine::new() keeps default behavior)\n3. Inline include_str!() directly in sources array — remove redundant MATERIALS_MECHANICAL_SRC const\n4. Add compile_with_stdlib() convenience wrapper at reify-compiler crate root\n5. Add ModulePath::from_dotted() to reify-types\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-compiler/src/module_dag.rs, crates/reify-compiler/src/lib.rs, crates/reify-eval/src/lib.rs, crates/reify-types/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11253,7 +11253,7 @@
           "files": [],
           "modules": []
         },
-        "updatedAt": "2026-04-21T09:16:28.366Z"
+        "updatedAt": "2026-04-21T09:16:50.569Z"
       },
       {
         "id": "513",
@@ -43539,7 +43539,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:16:40.414Z",
+      "lastModified": "2026-04-21T09:16:50.573Z",
       "taskCount": 2060,
       "completedCount": 1796,
       "tags": [
