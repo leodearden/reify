@@ -2145,10 +2145,11 @@ mod tests {
     #[test]
     fn from_real_scalar_dimensionless_returns_real() {
         // from_real_scalar(v, DIMENSIONLESS) should return Value::Real(v).
-        let v = Value::from_real_scalar(3.14, DimensionVector::DIMENSIONLESS);
+        // (Avoid 3.14-style literals — clippy::approx_constant flags them as PI.)
+        let v = Value::from_real_scalar(2.5, DimensionVector::DIMENSIONLESS);
         assert_eq!(
             v,
-            Value::Real(3.14),
+            Value::Real(2.5),
             "from_real_scalar with DIMENSIONLESS must return Value::Real"
         );
     }

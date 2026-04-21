@@ -195,15 +195,16 @@ impl Engine {
     /// inside `Diagnostic::labels` — downstream presenters may render either
     /// field, so either carrying the raw id would leak the opaque form.
     ///
-    /// In-place mutation (`&mut Vec<Diagnostic>`) avoids the `.collect()`
+    /// In-place mutation (`&mut [Diagnostic]`) avoids the `.collect()`
     /// round-trip used before task 847.2 and enables a `contains`-guarded
     /// debug-assert: when a label is supplied but no message references the
     /// ConstraintNodeId, the id format has drifted from what the engine
     /// emits and future callers should investigate. When `label` is `None`
     /// (inline constraints without a label), the messages are returned
-    /// unchanged.
+    /// unchanged. A slice (not `&mut Vec`) is taken because the rewrite
+    /// never adds or removes entries — only mutates existing ones.
     pub(crate) fn labeled_diagnostics(
-        messages: &mut Vec<Diagnostic>,
+        messages: &mut [Diagnostic],
         id: &reify_types::ConstraintNodeId,
         label: Option<&str>,
     ) {
