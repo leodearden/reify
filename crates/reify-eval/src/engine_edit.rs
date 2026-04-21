@@ -5,8 +5,9 @@ use std::time::Instant;
 
 use reify_compiler::CompiledModule;
 use reify_types::{
-    AutoParam, ContentHash, DeterminacyState, Diagnostic, PersistentMap, ResolutionProblem,
-    SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
+    AutoParam, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic, PersistentMap,
+    RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
+    ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -68,6 +69,82 @@ pub(crate) fn diff_value_cells(
     let mut removed = HashSet::new();
     for (id, _) in old_graph.value_cells.iter() {
         if !new_graph.value_cells.contains_key(id) {
+            removed.insert(id.clone());
+        }
+    }
+    (changed, added, removed)
+}
+
+/// Constraint-node analogue of [`diff_value_cells`]: classify every
+/// `ConstraintNodeId` across a pair of graphs into `(changed, added, removed)`
+/// by comparing per-node `ConstraintNodeData::content_hash`.
+///
+/// `ConstraintNodeId` is positional (`entity, index`) within its template, so a
+/// re-ordering of constraint declarations in source surfaces here as a
+/// `changed` diff at the shifted indexes — not as add+remove. This matches
+/// `EvaluationGraph::from_templates`, which assigns indexes from the
+/// constraint's declaration order.
+pub(crate) fn diff_constraints(
+    old_graph: &EvaluationGraph,
+    new_graph: &EvaluationGraph,
+) -> (
+    HashSet<ConstraintNodeId>,
+    HashSet<ConstraintNodeId>,
+    HashSet<ConstraintNodeId>,
+) {
+    let mut changed = HashSet::new();
+    let mut added = HashSet::new();
+    for (id, new_node) in new_graph.constraints.iter() {
+        match old_graph.constraints.get(id) {
+            Some(old_node) => {
+                if old_node.content_hash != new_node.content_hash {
+                    changed.insert(id.clone());
+                }
+            }
+            None => {
+                added.insert(id.clone());
+            }
+        }
+    }
+    let mut removed = HashSet::new();
+    for (id, _) in old_graph.constraints.iter() {
+        if !new_graph.constraints.contains_key(id) {
+            removed.insert(id.clone());
+        }
+    }
+    (changed, added, removed)
+}
+
+/// Realization-node analogue of [`diff_value_cells`]: classify every
+/// `RealizationNodeId` across a pair of graphs into `(changed, added, removed)`
+/// by comparing per-node `RealizationNodeData::content_hash`.
+///
+/// Uses the same positional-identity convention as constraints.
+pub(crate) fn diff_realizations(
+    old_graph: &EvaluationGraph,
+    new_graph: &EvaluationGraph,
+) -> (
+    HashSet<RealizationNodeId>,
+    HashSet<RealizationNodeId>,
+    HashSet<RealizationNodeId>,
+) {
+    let mut changed = HashSet::new();
+    let mut added = HashSet::new();
+    for (id, new_node) in new_graph.realizations.iter() {
+        match old_graph.realizations.get(id) {
+            Some(old_node) => {
+                if old_node.content_hash != new_node.content_hash {
+                    changed.insert(id.clone());
+                }
+            }
+            None => {
+                added.insert(id.clone());
+            }
+        }
+    }
+    let mut removed = HashSet::new();
+    for (id, _) in old_graph.realizations.iter() {
+        if !new_graph.realizations.contains_key(id) {
             removed.insert(id.clone());
         }
     }
@@ -888,6 +965,24 @@ impl Engine {
             changed_set.insert(id.clone());
         }
 
+        // (4b) Diff constraints and realizations (step-10). These nodes are
+        //      positional (`entity, index`) and have their own content_hash on
+        //      `ConstraintNodeData` / `RealizationNodeData`. A re-ordered
+        //      declaration surfaces as `changed` at the shifted index, not
+        //      add+remove. We don't evaluate constraint/realization expressions
+        //      at edit_source time — they are deferred to check() / build() —
+        //      but we DO want them to appear in `last_eval_set()` when changed
+        //      or added, so callers can observe the diff, and we want their
+        //      stale cache entries invalidated when removed.
+        let (changed_constraints, added_constraints, removed_constraints) = diff_constraints(
+            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &new_snapshot.graph,
+        );
+        let (changed_realizations, added_realizations, removed_realizations) = diff_realizations(
+            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &new_snapshot.graph,
+        );
+
         // (5) Compute the dirty cone over changed ∪ added using the NEW
         //     reverse index (which reflects post-edit dependencies). The
         //     compute_dirty_cone helper excludes the roots themselves, so
@@ -924,6 +1019,30 @@ impl Engine {
                     }
                 }
             }
+        }
+
+        // (6b) Insert Constraint / Realization nodes for changed + added
+        //      entries into dirty_cone so they appear in last_eval_set. Every
+        //      constraint and realization is demanded by eval() / edit_source()
+        //      (see the `new_demand` rebuild above), so any entry we splice in
+        //      here survives the demand ∩ dirty intersection in compute_eval_set.
+        //
+        //      Constraint/realization nodes are tracked but NOT evaluated
+        //      eagerly here — the expressions are deferred to check() / build()
+        //      via `check_constraints_with_values`, which reads the installed
+        //      snapshot and the up-to-date graph. This preserves edit_param's
+        //      contract (its eval loop also skips Constraint/Realization nodes).
+        for cid in &changed_constraints {
+            dirty_cone.insert(NodeId::Constraint(cid.clone()));
+        }
+        for cid in &added_constraints {
+            dirty_cone.insert(NodeId::Constraint(cid.clone()));
+        }
+        for rid in &changed_realizations {
+            dirty_cone.insert(NodeId::Realization(rid.clone()));
+        }
+        for rid in &added_realizations {
+            dirty_cone.insert(NodeId::Realization(rid.clone()));
         }
 
         // (7) Compute eval_set (topo-sorted) from dirty ∩ demand.
@@ -966,14 +1085,30 @@ impl Engine {
             }
         }
 
-        // (9) Invalidate cache entries for changed and removed cells.
-        //     Dependents' cache entries will be refreshed (or transitioned
+        // (9) Invalidate cache entries for changed and removed cells, plus
+        //     changed/removed constraints and realizations (step-10). Added
+        //     entries have no prior cache entry, so we skip them — the per-cell
+        //     eval loop (for value cells) and the downstream check()/build()
+        //     path (for constraints/realizations) will populate fresh entries.
+        //     Dependents of value-cell changes are refreshed (or transitioned
         //     through Pending) by the per-cell eval loop below.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
         for id in &removed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
+        }
+        for cid in &changed_constraints {
+            self.cache.invalidate(&NodeId::Constraint(cid.clone()));
+        }
+        for cid in &removed_constraints {
+            self.cache.invalidate(&NodeId::Constraint(cid.clone()));
+        }
+        for rid in &changed_realizations {
+            self.cache.invalidate(&NodeId::Realization(rid.clone()));
+        }
+        for rid in &removed_realizations {
+            self.cache.invalidate(&NodeId::Realization(rid.clone()));
         }
 
         // (10) Attach provenance: Edit with the value-cell-level changed set
