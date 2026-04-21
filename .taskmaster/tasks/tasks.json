@@ -42332,7 +42332,17 @@
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/geometry_boolean.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs",
+            "crates/reify-eval/src/engine_build.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/geometry_sub_ref_e2e.rs",
+            "crates/reify-test-support/src/builders"
+          ]
         },
         "updatedAt": "2026-04-21T09:13:36.118Z"
       },
