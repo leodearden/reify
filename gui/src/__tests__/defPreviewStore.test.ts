@@ -290,5 +290,38 @@ describe('defPreviewStore', () => {
         });
       });
     });
+
+    it('(d) clearPreview() invalidates an in-flight loadPreview so stale results do not reappear', async () => {
+      const { createDefPreviewStore } = await importStore();
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const store = createDefPreviewStore();
+
+          let resolveSlowFetch!: (gs: GuiState) => void;
+          const slowFetchPromise = new Promise<GuiState>(r => { resolveSlowFetch = r; });
+
+          const gsA = makeGuiState('A.body');
+
+          // Start slow fetch for 'A' — do NOT await it yet
+          const slowLoad = store.loadPreview('A', () => slowFetchPromise);
+
+          // User navigates away: clear the preview
+          store.clearPreview();
+
+          // Now the slow fetch resolves with a valid GuiState for 'A'
+          resolveSlowFetch(gsA);
+          await slowLoad;
+
+          // clearPreview() should have invalidated the in-flight fetch;
+          // the stale applyPreview must NOT have re-set defName to 'A'
+          expect(store.state.defName).toBeNull();
+          expect(store.state.meshes).toEqual({});
+          expect(store.state.isLoading).toBe(false);
+
+          dispose();
+          done();
+        });
+      });
+    });
   });
 });
