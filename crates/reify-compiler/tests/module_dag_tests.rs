@@ -5,6 +5,7 @@ mod common;
 use std::fs;
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
+use reify_compiler::stdlib_loader;
 
 // ── Step 19: Circular import detection ────────────────────────────
 
@@ -1393,23 +1394,34 @@ fn partial_stdlib_overlay_errors_when_embedded_first_then_fs() {
 // ── step-3 (task-2073): sequential embedded fallbacks don't duplicate in topo_order ──
 
 /// Regression guard for the backward-walk short-circuit in the embedded stdlib
-/// fallback. Calls `compile_module` twice with overlapping prefix requirements:
+/// fallback. Calls `compile_module` twice with overlapping prefix requirements,
+/// using a nonexistent `stdlib_root` so ALL `std.*` compilation goes through the
+/// embedded fallback path:
 ///
-/// 1. `std.materials.mechanical` (stdlib index 2) → inserts indices 0..=2
-///    (std.units, std.si_units, std.materials.mechanical).
-/// 2. `std.tolerancing` (stdlib index 5) → inserts indices 3..=5
-///    (std.structural.physical, std.analysis, std.tolerancing).
+/// 1. First target is `stdlib[2]` — inserts the contiguous head `stdlib[0..=2]`.
+/// 2. Second target is `stdlib[len-1]` — inserts the remaining suffix
+///    `stdlib[3..=len-1]`.
 ///
-/// After both calls the DAG must contain exactly 6 entries (the full stdlib
-/// prefix up to std.tolerancing) with no duplicates and no gaps.
+/// Together the two calls cover `stdlib[0..len]` with disjoint but contiguous
+/// prefix requests. After both calls `dag.topo_order` must equal the dotted
+/// paths of `load_stdlib()` in order, with no duplicates and no gaps.
 ///
 /// This test passes under the OLD forward-walk-with-contains_key guard too;
 /// it is a pinning test that will fail if the backward-walk short-circuit
-/// introduced in step-4 has an off-by-one bug (e.g., skips the boundary
-/// module or inserts already-present modules a second time).
+/// in module_dag.rs has an off-by-one bug (e.g., skips the boundary module
+/// or inserts already-present modules a second time).
 #[test]
 fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
     use std::collections::HashSet;
+
+    let stdlib = stdlib_loader::load_stdlib();
+    assert!(
+        stdlib.len() >= 4,
+        "this test needs at least 4 stdlib modules so the second compile_module call \
+         actually inserts a non-empty suffix (stdlib[3..=len-1]); got {}",
+        stdlib.len()
+    );
+    let expected_paths: Vec<String> = stdlib.iter().map(|m| m.path.0.join(".")).collect();
 
     let _tmp = tempfile::tempdir().unwrap();
     let dir = _tmp.path().to_path_buf();
@@ -1424,32 +1436,37 @@ fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
     let resolver = ModuleResolver::new(&dir, &stdlib_root);
     let mut dag = ModuleDag::new();
 
-    // First call: inserts stdlib[0..=2] (std.units, std.si_units, std.materials.mechanical).
-    let result_mech = dag.compile_module("std.materials.mechanical", &resolver);
+    // Two disjoint-prefix calls: first covers stdlib[0..=2], second covers the rest.
+    let first_target = &expected_paths[2];
+    let second_target = &expected_paths[stdlib.len() - 1];
+
+    let result_first = dag.compile_module(first_target, &resolver);
     assert!(
-        result_mech.is_ok(),
-        "first compile_module should succeed, got: {:?}",
-        result_mech.err()
+        result_first.is_ok(),
+        "first compile_module('{}') should succeed, got: {:?}",
+        first_target,
+        result_first.err()
     );
 
-    // Second call: inserts stdlib[3..=5] (std.structural.physical, std.analysis, std.tolerancing).
-    let result_tol = dag.compile_module("std.tolerancing", &resolver);
+    let result_second = dag.compile_module(second_target, &resolver);
     assert!(
-        result_tol.is_ok(),
-        "second compile_module should succeed, got: {:?}",
-        result_tol.err()
+        result_second.is_ok(),
+        "second compile_module('{}') should succeed, got: {:?}",
+        second_target,
+        result_second.err()
     );
 
-    // (a) topo_order must have exactly 6 entries.
+    // (a) topo_order must match the full stdlib prefix in order (no duplicates, no gaps).
     assert_eq!(
-        dag.topo_order.len(),
-        6,
-        "expected 6 entries in topo_order, got {}: {:?}",
-        dag.topo_order.len(),
-        dag.topo_order
+        dag.topo_order,
+        expected_paths,
+        "topo_order must match stdlib prefix in order (no duplicates, no gaps); \
+         got: {:?}, expected: {:?}",
+        dag.topo_order,
+        expected_paths
     );
 
-    // (b) No duplicates in topo_order.
+    // (b) Defense-in-depth: no duplicates in topo_order.
     let unique: HashSet<&String> = dag.topo_order.iter().collect();
     assert_eq!(
         unique.len(),
@@ -1458,29 +1475,12 @@ fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
         dag.topo_order
     );
 
-    // (c) All six expected paths are present.
-    let expected = [
-        "std.units",
-        "std.si_units",
-        "std.materials.mechanical",
-        "std.structural.physical",
-        "std.analysis",
-        "std.tolerancing",
-    ];
-    for path in &expected {
-        assert!(
-            dag.topo_order.contains(&path.to_string()),
-            "topo_order must contain '{}', got: {:?}",
-            path,
-            dag.topo_order
-        );
-    }
-
-    // (d) modules map has exactly 6 entries.
+    // (c) modules map must have the same number of entries as the stdlib prefix.
     assert_eq!(
         dag.modules.len(),
-        6,
-        "dag.modules must have 6 entries, got {}",
+        expected_paths.len(),
+        "dag.modules must have {} entries, got {}",
+        expected_paths.len(),
         dag.modules.len()
     );
 }
