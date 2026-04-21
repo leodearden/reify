@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_syntax::ParsedModule;
-use reify_types::{CompiledFunction, Diagnostic, DiagnosticLabel, EnumDef, SourceSpan};
+use reify_types::{CompiledFunction, Diagnostic, DiagnosticLabel, EnumDef};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
@@ -28,6 +28,31 @@ use crate::types::{
     TopologyTemplate,
 };
 use crate::units::UnitRegistry;
+
+/// Build a combined constraint-def registry: prelude pub defs first
+/// (first-imported wins on cross-prelude name collisions), then local defs
+/// override on name collision with prelude.
+///
+/// Borrows from `local` (module-local constraint defs in ctx) and every prelude
+/// module's `constraint_defs`. Non-pub prelude defs are excluded — only pub
+/// constraint defs are exported. Shadow warnings for cross-prelude name
+/// collisions are NOT emitted here — they were already emitted once in
+/// `defs_phase::emit_constraint_def_shadow_warnings`.
+pub(crate) fn build_constraint_def_registry<'a>(
+    local: &'a [CompiledConstraintDef],
+    prelude: &[&'a CompiledModule],
+) -> HashMap<String, &'a CompiledConstraintDef> {
+    let mut registry: HashMap<String, &'a CompiledConstraintDef> = HashMap::new();
+    for m in prelude {
+        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
+            registry.entry(cd.name.clone()).or_insert(cd);
+        }
+    }
+    for cd in local {
+        registry.insert(cd.name.clone(), cd);
+    }
+    registry
+}
 
 /// Run phase-11 (entity compile) over `parsed.declarations`.
 ///
@@ -51,42 +76,31 @@ pub(crate) fn phase_entities(
     let field_registry: HashMap<String, &CompiledField> =
         ctx.fields.iter().map(|f| (f.name.clone(), f)).collect();
 
-    // Constraint-def registry: prelude pub defs first (without re-warning;
-    // the shadow-warning pass ran in phase-10), then local overrides.
-    // `.entry().or_insert()` encodes the first-imported-wins policy without
-    // a separate sentinel set.
-    let mut constraint_def_registry: HashMap<String, &CompiledConstraintDef> = HashMap::new();
-    for m in prelude {
-        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
-            constraint_def_registry.entry(cd.name.clone()).or_insert(cd);
-        }
-    }
-    for cd in &ctx.constraint_defs {
-        constraint_def_registry.insert(cd.name.clone(), cd);
-    }
+    let constraint_def_registry = build_constraint_def_registry(&ctx.constraint_defs, prelude);
 
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                compile_entity_decl(
-                    EntityDefRef::from(structure),
-                    EntityKind::Structure,
-                    &ctx.seen_entity_names,
-                    &ctx.resolution_enums,
-                    &ctx.resolution_functions,
-                    &trait_registry,
-                    trait_names,
-                    &field_registry,
-                    &constraint_def_registry,
-                    &ctx.unit_registry,
-                    &ctx.alias_registry,
-                    &mut ctx.pending_bound_checks,
-                    &mut ctx.diagnostics,
-                    &mut ctx.templates,
-                );
+                if ctx.is_first_entity_def(&structure.name, structure.span) {
+                    compile_entity_decl(
+                        EntityDefRef::from(structure),
+                        EntityKind::Structure,
+                        &ctx.resolution_enums,
+                        &ctx.resolution_functions,
+                        &trait_registry,
+                        trait_names,
+                        &field_registry,
+                        &constraint_def_registry,
+                        &ctx.unit_registry,
+                        &ctx.alias_registry,
+                        &mut ctx.pending_bound_checks,
+                        &mut ctx.diagnostics,
+                        &mut ctx.templates,
+                    );
+                }
             }
             reify_syntax::Declaration::Enum(_) => {
-                // Already collected in pre-pass above.
+                // Already collected by pre_pass::collect_decl_refs.
             }
             reify_syntax::Declaration::Import(import) => {
                 ctx.imports.push(CompiledImport {
@@ -104,44 +118,44 @@ pub(crate) fn phase_entities(
                 );
             }
             reify_syntax::Declaration::Function(_) => {
-                // Already compiled in pre-pass above.
+                // Already compiled by functions_phase::phase_functions.
             }
             reify_syntax::Declaration::Trait(_) => {
-                // Already compiled in trait pre-pass above.
+                // Already compiled by traits_phase::phase_traits.
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
-                compile_entity_decl(
-                    EntityDefRef::from(occurrence),
-                    EntityKind::Occurrence,
-                    &ctx.seen_entity_names,
-                    &ctx.resolution_enums,
-                    &ctx.resolution_functions,
-                    &trait_registry,
-                    trait_names,
-                    &field_registry,
-                    &constraint_def_registry,
-                    &ctx.unit_registry,
-                    &ctx.alias_registry,
-                    &mut ctx.pending_bound_checks,
-                    &mut ctx.diagnostics,
-                    &mut ctx.templates,
-                );
+                if ctx.is_first_entity_def(&occurrence.name, occurrence.span) {
+                    compile_entity_decl(
+                        EntityDefRef::from(occurrence),
+                        EntityKind::Occurrence,
+                        &ctx.resolution_enums,
+                        &ctx.resolution_functions,
+                        &trait_registry,
+                        trait_names,
+                        &field_registry,
+                        &constraint_def_registry,
+                        &ctx.unit_registry,
+                        &ctx.alias_registry,
+                        &mut ctx.pending_bound_checks,
+                        &mut ctx.diagnostics,
+                        &mut ctx.templates,
+                    );
+                }
             }
             reify_syntax::Declaration::Field(_) => {
-                // Already compiled in field pre-pass above.
+                // Already compiled by fields_phase::phase_fields.
             }
             reify_syntax::Declaration::Purpose(_) => {
-                // Compiled in dedicated purpose pass below.
+                // Handled later by post_passes::phase_purposes.
             }
             reify_syntax::Declaration::Constraint(_) => {
-                // Already compiled by the constraint_defs pre-pass above;
-                // annotation/pragma validation ran there too.
+                // Already compiled by defs_phase::phase_constraint_defs; annotation/pragma validation ran there too.
             }
             reify_syntax::Declaration::Unit(_) => {
-                // Already compiled in unit pre-pass above.
+                // Already compiled by units_phase::phase_units.
             }
             reify_syntax::Declaration::TypeAlias(_) => {
-                // Already compiled in type alias pre-pass above.
+                // Already compiled by aliases_phase::phase_aliases.
             }
         }
     }
@@ -157,12 +171,13 @@ pub(crate) fn phase_entities(
 /// `&mut CompilationCtx` because the caller holds shared borrows of
 /// `ctx.trait_defs`, `ctx.fields`, and `ctx.constraint_defs` (via the
 /// phase-local registries) that would conflict with an exclusive borrow of
-/// the whole ctx.
+/// the whole ctx. The first-def guard (`ctx.is_first_entity_def`) is
+/// evaluated at the call site in `phase_entities` before invoking this
+/// function.
 #[allow(clippy::too_many_arguments)]
 fn compile_entity_decl(
     entity_ref: EntityDefRef<'_>,
     kind: EntityKind,
-    seen_entity_names: &HashMap<String, (SourceSpan, &'static str)>,
     resolution_enums: &[EnumDef],
     resolution_functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
@@ -175,12 +190,6 @@ fn compile_entity_decl(
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
 ) {
-    let is_first_def = seen_entity_names
-        .get(entity_ref.name)
-        .is_none_or(|(first_span, _)| *first_span == entity_ref.span);
-    if !is_first_def {
-        return;
-    }
     let template = compile_entity(
         &entity_ref,
         kind,
@@ -284,5 +293,88 @@ pub(crate) fn phase_pending_bound_checks(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_constraint_def_registry;
+    use crate::CompiledModule;
+    use crate::types::CompiledConstraintDef;
+    use reify_types::{ContentHash, ModulePath, SourceSpan};
+
+    fn mk_cd(name: &str, is_pub: bool) -> CompiledConstraintDef {
+        CompiledConstraintDef {
+            name: name.to_string(),
+            is_pub,
+            type_params: vec![],
+            params: vec![],
+            predicates: vec![],
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash::of_str(""),
+            pragmas: vec![],
+            annotations: vec![],
+            annotations_optimized_target: None,
+        }
+    }
+
+    fn mk_module(path: &str, cds: Vec<CompiledConstraintDef>) -> CompiledModule {
+        CompiledModule {
+            path: ModulePath::single(path),
+            imports: vec![],
+            enum_defs: vec![],
+            functions: vec![],
+            trait_defs: vec![],
+            fields: vec![],
+            compiled_purposes: vec![],
+            templates: vec![],
+            units: vec![],
+            type_aliases: vec![],
+            constraint_defs: cds,
+            pragmas: vec![],
+            diagnostics: vec![],
+            content_hash: ContentHash::of_str(""),
+        }
+    }
+
+    /// Covers four behaviours of `build_constraint_def_registry`:
+    ///
+    /// 1. Local-only: empty prelude → local def appears in registry.
+    /// 2. Prelude pub inclusion: pub defs included, non-pub filtered.
+    /// 3. Local overrides prelude: local def wins on name collision.
+    /// 4. First prelude wins: first-imported module wins on cross-prelude collision.
+    #[test]
+    fn build_constraint_def_registry_prelude_first_local_override() {
+        // Case 1: local-only baseline.
+        let local_a = vec![mk_cd("A", false)];
+        let reg = build_constraint_def_registry(&local_a, &[]);
+        assert!(
+            std::ptr::eq(reg["A"], &local_a[0]),
+            "local def should appear in registry"
+        );
+
+        // Case 2: prelude pub inclusion — pub included, non-pub filtered.
+        let prelude_bc = mk_module("prelude_bc", vec![mk_cd("B", true), mk_cd("C", false)]);
+        let reg = build_constraint_def_registry(&[], &[&prelude_bc]);
+        assert!(reg.contains_key("B"), "pub prelude def 'B' should be included");
+        assert!(!reg.contains_key("C"), "non-pub prelude def 'C' should be excluded");
+
+        // Case 3: local overrides prelude.
+        let local_d = vec![mk_cd("D", false)];
+        let prelude_d = mk_module("prelude_d", vec![mk_cd("D", true)]);
+        let reg = build_constraint_def_registry(&local_d, &[&prelude_d]);
+        assert!(
+            std::ptr::eq(reg["D"], &local_d[0]),
+            "local def should override prelude def for 'D'"
+        );
+
+        // Case 4: first prelude wins on cross-prelude collision.
+        let prelude_e1 = mk_module("prelude_e1", vec![mk_cd("E", true)]);
+        let prelude_e2 = mk_module("prelude_e2", vec![mk_cd("E", true)]);
+        let reg = build_constraint_def_registry(&[], &[&prelude_e1, &prelude_e2]);
+        assert!(
+            std::ptr::eq(reg["E"], &prelude_e1.constraint_defs[0]),
+            "first prelude's def should win on cross-prelude collision"
+        );
     }
 }

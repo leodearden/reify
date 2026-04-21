@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use reify_syntax::ParsedModule;
-use reify_types::{ContentHash, Diagnostic, SourceSpan};
+use reify_types::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
 use crate::entity::PendingBoundCheck;
 use crate::type_resolution::TypeAliasRegistry;
@@ -86,6 +86,53 @@ impl CompilationCtx {
         }
     }
 
+    /// Returns `true` when `name` is either absent from `seen_entity_names` or
+    /// its stored first-seen span equals `span` (i.e. this is the first-seen
+    /// definition for this name). Returns `false` when a prior entry exists with
+    /// a *different* span — a genuine duplicate definition in the entity namespace.
+    ///
+    /// Centralises the `(name, span) → "first def?"` contract so a future
+    /// change to the tracker's value shape only needs to update this predicate.
+    pub(crate) fn is_first_entity_def(&self, name: &str, span: SourceSpan) -> bool {
+        self.seen_entity_names
+            .get(name)
+            .is_none_or(|(first_span, _)| *first_span == span)
+    }
+
+    /// Attempt to record `name` (kind `kind`) at `span` in the unified entity
+    /// namespace.  Returns `true` if this is the first definition (entry
+    /// inserted); returns `false` if a prior entry with a *different* span
+    /// already exists, in which case a `duplicate entity definition` diagnostic
+    /// is pushed to `self.diagnostics`.
+    ///
+    /// Callers that receive `true` should proceed with compilation of the
+    /// declaration.  Callers that receive `false` should skip it.
+    pub(crate) fn record_or_report_duplicate(
+        &mut self,
+        name: &str,
+        span: SourceSpan,
+        kind: &'static str,
+    ) -> bool {
+        if self.is_first_entity_def(name, span) {
+            self.seen_entity_names.insert(name.to_string(), (span, kind));
+            true
+        } else {
+            let (first_span, first_kind) = *self
+                .seen_entity_names
+                .get(name)
+                .expect("duplicate path implies prior entry");
+            self.diagnostics.push(
+                Diagnostic::error(format!("duplicate entity definition '{}'", name))
+                    .with_label(DiagnosticLabel::new(span, format!("{} defined here", kind)))
+                    .with_label(DiagnosticLabel::new(
+                        first_span,
+                        format!("first defined as {} here", first_kind),
+                    )),
+            );
+            false
+        }
+    }
+
     /// Consume this ctx and assemble the final [`CompiledModule`].
     ///
     /// Combines the owned state accumulated across all phases with the external
@@ -121,6 +168,77 @@ impl CompilationCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is_first_entity_def` returns true when the name is absent from the
+    /// tracker, true when the name is present with a matching span (same
+    /// definition site, e.g. re-visiting the same decl), and false when the
+    /// name is present with a different span (genuine duplicate).
+    ///
+    /// Anchors the `(name, span) → "first def?"` contract so a future
+    /// tracker-shape change only needs to update `is_first_entity_def`.
+    #[test]
+    fn is_first_entity_def_absent_same_span_different_span() {
+        let mut ctx = CompilationCtx::new();
+        let span_a = SourceSpan::new(0, 10);
+        let span_b = SourceSpan::new(20, 30);
+
+        // (a) name absent → first def
+        assert!(
+            ctx.is_first_entity_def("Widget", span_a),
+            "absent name should be treated as first def"
+        );
+
+        // Seed the tracker as pre_pass would.
+        ctx.seen_entity_names
+            .insert("Widget".to_string(), (span_a, "structure"));
+
+        // (b) same span → still the first def (same definition revisited)
+        assert!(
+            ctx.is_first_entity_def("Widget", span_a),
+            "matching span should be treated as first def"
+        );
+
+        // (c) different span → duplicate
+        assert!(
+            !ctx.is_first_entity_def("Widget", span_b),
+            "different span should not be treated as first def"
+        );
+    }
+
+    /// `record_or_report_duplicate` inserts on first call, is idempotent for
+    /// same-span revisits, and emits a duplicate diagnostic on a different span.
+    #[test]
+    fn record_or_report_duplicate_inserts_and_deduplicates() {
+        let mut ctx = CompilationCtx::new();
+        let span_a = SourceSpan::new(0, 10);
+        let span_b = SourceSpan::new(20, 30);
+
+        // First insertion: new name → true, entry stored, no diagnostic.
+        assert!(
+            ctx.record_or_report_duplicate("Widget", span_a, "structure"),
+            "first insertion should succeed"
+        );
+        assert_eq!(
+            ctx.seen_entity_names.get("Widget"),
+            Some(&(span_a, "structure")),
+            "entry should be present after insertion"
+        );
+        assert!(ctx.diagnostics.is_empty(), "no diagnostic on first insertion");
+
+        // Same name + same span is idempotent → true, still no diagnostic.
+        assert!(
+            ctx.record_or_report_duplicate("Widget", span_a, "structure"),
+            "re-inserting with same span should return true"
+        );
+        assert!(ctx.diagnostics.is_empty(), "no diagnostic on same-span revisit");
+
+        // Same name + different span → false, duplicate diagnostic emitted.
+        assert!(
+            !ctx.record_or_report_duplicate("Widget", span_b, "structure"),
+            "duplicate span should return false"
+        );
+        assert_eq!(ctx.diagnostics.len(), 1, "exactly one diagnostic on duplicate");
+    }
 
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec
     /// is empty, the entity-name tracker is empty, and both registries have no
