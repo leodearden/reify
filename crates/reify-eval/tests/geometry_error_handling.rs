@@ -2126,3 +2126,120 @@ fn build_extrude_distance_at_threshold_accepted() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression guards: Revolve angle threshold boundary (DEGENERATE_ANGLE_RAD)
+// ---------------------------------------------------------------------------
+
+/// Boundary test: angle=1e-13 rad with a valid z-axis is strictly below
+/// DEGENERATE_ANGLE_RAD=1e-12 and must be rejected at compile time.
+/// Augments `build_revolve_zero_angle_emits_diagnostic` (which only covers
+/// exactly 0.0) by pinning the `|angle| < 1e-12` near-zero boundary.
+#[test]
+fn build_revolve_angle_just_below_threshold_rejected() {
+    use reify_compiler::SweepKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Revolve with valid z-axis (az=1.0) but angle=1e-13 rad —
+    // strictly below DEGENERATE_ANGLE_RAD=1e-12
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("angle".into(), real_literal(1e-13)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_revolve_angle_below_threshold",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["revolve dropped", "angle", "degenerate"],
+    );
+}
+
+/// Boundary test: angle=-1e-13 rad must be rejected for the same reason as
+/// the positive near-zero case, proving the guard is sign-symmetric via
+/// `angle_rad.abs() < DEGENERATE_ANGLE_RAD`. A future refactor dropping the
+/// `.abs()` would silently accept small negative angles — this test catches
+/// that regression.
+#[test]
+fn build_revolve_angle_negative_just_below_threshold_rejected() {
+    use reify_compiler::SweepKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("angle".into(), real_literal(-1e-13)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_revolve_angle_negative_below_threshold",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["revolve dropped", "angle", "degenerate"],
+    );
+}
