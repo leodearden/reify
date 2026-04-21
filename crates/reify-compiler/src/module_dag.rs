@@ -19,13 +19,6 @@ use crate::CompiledModule;
 /// - Other imports resolve relative to `<project_root>/...`
 /// - Dots become path separators
 /// - Tries `<path>.ri` first, then `<path>/mod.ri`
-///
-/// **Precedence for `std.*` paths:** `ModuleDag::compile_module` tries the
-/// filesystem resolver first. If the filesystem lookup fails (e.g., no
-/// stdlib_root directory on disk), the DAG falls back to the pre-compiled
-/// modules returned by `stdlib_loader::load_stdlib()`. This ensures that user
-/// projects without a local stdlib directory still get `import std.units` to
-/// resolve correctly via the embedded copy.
 pub struct ModuleResolver {
     /// Root of the project (for non-std imports).
     pub project_root: PathBuf,
@@ -84,6 +77,20 @@ impl ModuleResolver {
     }
 }
 
+/// Tracks which stdlib source was committed on the first `std.*` resolution.
+///
+/// All `std.*` modules within a single `ModuleDag` instance must come from the
+/// same source. Mixing filesystem-resolved and embedded modules is unsafe because
+/// the embedded stdlib was compiled as a unit; using an embedded `std.materials.mechanical`
+/// alongside a filesystem-resolved `std.units` can produce downstream type/trait mismatches.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum StdlibMode {
+    /// All `std.*` modules resolved from the filesystem stdlib_root.
+    FileSystem,
+    /// All `std.*` modules resolved from the embedded compiled stdlib.
+    Embedded,
+}
+
 /// The module dependency DAG.
 ///
 /// Tracks compiled modules, detects cycles, and provides topological ordering.
@@ -96,6 +103,8 @@ pub struct ModuleDag {
     /// IndexSet preserves insertion order (= DFS traversal order), enabling
     /// the cycle error to show the actual import chain.
     in_progress: IndexSet<String>,
+    /// Source committed on the first `std.*` resolution (all-or-nothing invariant).
+    stdlib_mode: Option<StdlibMode>,
 }
 
 impl Default for ModuleDag {
@@ -110,6 +119,7 @@ impl ModuleDag {
             modules: HashMap::new(),
             topo_order: Vec::new(),
             in_progress: IndexSet::new(),
+            stdlib_mode: None,
         }
     }
 
@@ -154,9 +164,46 @@ impl ModuleDag {
 
         // Resolve to filesystem path, with embedded-stdlib fallback for std.* paths.
         let fs_path = match resolver.resolve_import_path(module_path) {
+            Ok(path) if is_std_path => {
+                // Filesystem resolved a std.* path.
+                // All-or-nothing invariant: if a prior std.* was served from the
+                // embedded stdlib, mixing in a filesystem-resolved module is unsafe.
+                if self.stdlib_mode == Some(StdlibMode::Embedded) {
+                    return Err(vec![Diagnostic::error(format!(
+                        "partial stdlib overlay: '{}' resolved on the filesystem but earlier \
+                         std.* imports were served from the embedded stdlib; either populate \
+                         all stdlib modules under '{}' or remove that directory to use the \
+                         embedded stdlib exclusively",
+                        module_path,
+                        resolver.stdlib_root.display(),
+                    ))]);
+                }
+                // Commit to filesystem mode on first std.* filesystem success.
+                if self.stdlib_mode.is_none() {
+                    self.stdlib_mode = Some(StdlibMode::FileSystem);
+                }
+                path
+            }
             Ok(path) => path,
             Err(fs_err) if is_std_path => {
-                // Filesystem lookup failed for a std.* path — consult the embedded stdlib.
+                // Filesystem lookup failed for a std.* path.
+                // All-or-nothing invariant: if a prior std.* was served from the
+                // filesystem, falling back to embedded now would mix sources.
+                if self.stdlib_mode == Some(StdlibMode::FileSystem) {
+                    return Err(vec![Diagnostic::error(format!(
+                        "partial stdlib overlay: '{}' not found on the filesystem under '{}' \
+                         but earlier std.* imports were resolved from the filesystem; either \
+                         add the missing module to '{}' or remove that directory to use the \
+                         embedded stdlib exclusively",
+                        module_path,
+                        resolver.stdlib_root.display(),
+                        resolver.stdlib_root.display(),
+                    ))]);
+                }
+                // Commit to embedded mode and consult the embedded stdlib.
+                if self.stdlib_mode.is_none() {
+                    self.stdlib_mode = Some(StdlibMode::Embedded);
+                }
                 let target = reify_types::ModulePath::from_dotted(module_path);
                 let stdlib = crate::stdlib_loader::load_stdlib();
                 if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
