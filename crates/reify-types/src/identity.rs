@@ -20,10 +20,20 @@ impl ModulePath {
     /// - `"a.b.c"` → `["a", "b", "c"]`
     /// - `"foo"` → `["foo"]`
     ///
-    /// **Edge case:** an empty string produces `[""]` (one empty segment),
-    /// matching Rust's `str::split` semantics. Callers that need to reject
-    /// empty input should validate `dotted` before calling this function.
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if `dotted` is empty or contains empty segments (e.g. `"a..b"`).
+    /// In release builds these inputs are silently accepted per `str::split`
+    /// semantics, but the resulting paths (`[""]` or `["a", "", "b"]`) are
+    /// semantically meaningless. Add a `debug_assert` at call sites that accept
+    /// user-provided strings to surface misuse during development.
     pub fn from_dotted(dotted: &str) -> Self {
+        debug_assert!(!dotted.is_empty(), "from_dotted: dotted path must not be empty");
+        debug_assert!(
+            !dotted.split('.').any(str::is_empty),
+            "from_dotted: path must not contain empty segments (e.g. 'a..b'), got: '{}'",
+            dotted
+        );
         Self::new(dotted.split('.').map(String::from).collect())
     }
 }

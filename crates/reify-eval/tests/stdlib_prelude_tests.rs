@@ -610,9 +610,14 @@ fn engine_with_prelude_accepts_custom_slice() {
     );
 }
 
-/// Engine built with an empty prelude slice retains an empty prelude even after
-/// attempting to compile a source that references stdlib traits. This pins the
-/// opt-out semantics: the caller controls the prelude, not the engine.
+/// Compiling a source that references a stdlib trait (`Elastic`) with an empty
+/// prelude produces at least one diagnostic, confirming that the empty-prelude
+/// opt-out actually suppresses stdlib trait resolution.
+///
+/// The preceding test (`engine_with_prelude_accepts_custom_slice`) already pins
+/// the empty-prelude invariant; this test verifies the concrete consequence:
+/// without stdlib in the prelude, trait references cannot be resolved and the
+/// compiler reports an error.
 #[test]
 fn engine_with_prelude_empty_slice_disables_stdlib_resolution() {
     let source = steel_elastic_source();
@@ -623,20 +628,16 @@ fn engine_with_prelude_empty_slice_disables_stdlib_resolution() {
         parsed.errors
     );
 
-    // Compile WITHOUT any prelude (empty slice).
+    // Compile WITHOUT any prelude (empty slice). The source declares conformance
+    // to the stdlib trait `Elastic`, which is unavailable without the prelude.
     let compiled = reify_compiler::compile_with_prelude(&parsed, &[]);
 
-    // Build an Engine that also has no prelude.
-    let checker = MockConstraintChecker::new();
-    let engine = reify_eval::Engine::with_prelude(Box::new(checker), None, &[]);
-
-    // The engine's stored prelude must remain empty — the opt-out semantics are
-    // preserved regardless of what the compiled module references.
+    // Without stdlib in the prelude, trait conformance cannot be verified:
+    // the compiler must emit at least one diagnostic about the unresolved trait.
     assert!(
-        engine.prelude().is_empty(),
-        "Engine::with_prelude(&[]) prelude should remain empty after construction, \
-         got {} modules. compiled module had {} diagnostics",
-        engine.prelude().len(),
-        compiled.diagnostics.len()
+        !compiled.diagnostics.is_empty(),
+        "compiling 'Steel : Elastic' with an empty prelude should produce at least \
+         one diagnostic (unresolved trait 'Elastic'), but got zero diagnostics. \
+         This would indicate stdlib resolution is NOT disabled by the empty prelude."
     );
 }
