@@ -12,6 +12,20 @@ impl ModulePath {
     pub fn single(name: impl Into<String>) -> Self {
         Self(vec![name.into()])
     }
+
+    /// Parse a dot-separated module path string into a `ModulePath`.
+    ///
+    /// Each segment between dots becomes one element of the path vector:
+    /// - `"std.units"` → `["std", "units"]`
+    /// - `"a.b.c"` → `["a", "b", "c"]`
+    /// - `"foo"` → `["foo"]`
+    ///
+    /// **Edge case:** an empty string produces `[""]` (one empty segment),
+    /// matching Rust's `str::split` semantics. Callers that need to reject
+    /// empty input should validate `dotted` before calling this function.
+    pub fn from_dotted(dotted: &str) -> Self {
+        Self::new(dotted.split('.').map(String::from).collect())
+    }
 }
 
 impl fmt::Display for ModulePath {
