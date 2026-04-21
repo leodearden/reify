@@ -744,70 +744,95 @@ impl CompiledConstraintDef {
 
 #[cfg(test)]
 mod kind_display_tests {
+    //! Display-impl round-trip tests for op-kind enums.
+    //!
+    //! These strings are a user-facing contract — they appear in
+    //! compiler diagnostics and are asserted on by `geometry_ops` /
+    //! `geometry_error_handling` tests (`diagnostics[0].message.contains("box")`
+    //! etc). Each test is table-driven so adding a variant is a one-line
+    //! row addition; the repetition of per-variant `assert_eq!` lines was
+    //! flagged as low-ROI in review.
     use super::*;
+
+    fn check<T: std::fmt::Display>(cases: &[(T, &str)]) {
+        for (variant, expected) in cases {
+            assert_eq!(format!("{}", variant), *expected);
+        }
+    }
 
     #[test]
     fn primitive_kind_display() {
-        assert_eq!(format!("{}", PrimitiveKind::Box), "box");
-        assert_eq!(format!("{}", PrimitiveKind::Cylinder), "cylinder");
-        assert_eq!(format!("{}", PrimitiveKind::Sphere), "sphere");
+        check(&[
+            (PrimitiveKind::Box, "box"),
+            (PrimitiveKind::Cylinder, "cylinder"),
+            (PrimitiveKind::Sphere, "sphere"),
+        ]);
     }
 
     #[test]
     fn modify_kind_display() {
-        assert_eq!(format!("{}", ModifyKind::Fillet), "fillet");
-        assert_eq!(format!("{}", ModifyKind::Chamfer), "chamfer");
-        assert_eq!(format!("{}", ModifyKind::Shell), "shell");
-        assert_eq!(format!("{}", ModifyKind::Draft), "draft");
-        assert_eq!(format!("{}", ModifyKind::Thicken), "thicken");
+        check(&[
+            (ModifyKind::Fillet, "fillet"),
+            (ModifyKind::Chamfer, "chamfer"),
+            (ModifyKind::Shell, "shell"),
+            (ModifyKind::Draft, "draft"),
+            (ModifyKind::Thicken, "thicken"),
+        ]);
     }
 
     #[test]
     fn boolean_op_display() {
-        assert_eq!(format!("{}", BooleanOp::Union), "union");
-        assert_eq!(format!("{}", BooleanOp::Difference), "difference");
-        assert_eq!(format!("{}", BooleanOp::Intersection), "intersection");
+        check(&[
+            (BooleanOp::Union, "union"),
+            (BooleanOp::Difference, "difference"),
+            (BooleanOp::Intersection, "intersection"),
+        ]);
     }
 
     #[test]
     fn transform_kind_display() {
-        assert_eq!(format!("{}", TransformKind::Translate), "translate");
-        assert_eq!(format!("{}", TransformKind::Rotate), "rotate");
-        assert_eq!(format!("{}", TransformKind::Scale), "scale");
-        assert_eq!(format!("{}", TransformKind::RotateAround), "rotate_around");
+        check(&[
+            (TransformKind::Translate, "translate"),
+            (TransformKind::Rotate, "rotate"),
+            (TransformKind::Scale, "scale"),
+            (TransformKind::RotateAround, "rotate_around"),
+        ]);
     }
 
     #[test]
     fn pattern_kind_display() {
-        assert_eq!(format!("{}", PatternKind::Linear), "linear");
-        assert_eq!(format!("{}", PatternKind::Circular), "circular");
-        assert_eq!(format!("{}", PatternKind::Mirror), "mirror");
-        assert_eq!(format!("{}", PatternKind::Linear2D), "linear_2d");
-        assert_eq!(format!("{}", PatternKind::Arbitrary), "arbitrary");
+        check(&[
+            (PatternKind::Linear, "linear"),
+            (PatternKind::Circular, "circular"),
+            (PatternKind::Mirror, "mirror"),
+            (PatternKind::Linear2D, "linear_2d"),
+            (PatternKind::Arbitrary, "arbitrary"),
+        ]);
     }
 
     #[test]
     fn sweep_kind_display() {
-        assert_eq!(format!("{}", SweepKind::Loft), "loft");
-        assert_eq!(format!("{}", SweepKind::Extrude), "extrude");
-        assert_eq!(format!("{}", SweepKind::Revolve), "revolve");
-        assert_eq!(format!("{}", SweepKind::Sweep), "sweep");
-        assert_eq!(
-            format!("{}", SweepKind::ExtrudeSymmetric),
-            "extrude_symmetric"
-        );
-        assert_eq!(format!("{}", SweepKind::SweepGuided), "sweep_guided");
-        assert_eq!(format!("{}", SweepKind::LoftGuided), "loft_guided");
+        check(&[
+            (SweepKind::Loft, "loft"),
+            (SweepKind::Extrude, "extrude"),
+            (SweepKind::Revolve, "revolve"),
+            (SweepKind::Sweep, "sweep"),
+            (SweepKind::ExtrudeSymmetric, "extrude_symmetric"),
+            (SweepKind::SweepGuided, "sweep_guided"),
+            (SweepKind::LoftGuided, "loft_guided"),
+        ]);
     }
 
     #[test]
     fn curve_kind_display() {
-        assert_eq!(format!("{}", CurveKind::LineSegment), "line_segment");
-        assert_eq!(format!("{}", CurveKind::Arc), "arc");
-        assert_eq!(format!("{}", CurveKind::Helix), "helix");
-        assert_eq!(format!("{}", CurveKind::InterpCurve), "interp_curve");
-        assert_eq!(format!("{}", CurveKind::BezierCurve), "bezier_curve");
-        assert_eq!(format!("{}", CurveKind::NurbsCurve), "nurbs_curve");
+        check(&[
+            (CurveKind::LineSegment, "line_segment"),
+            (CurveKind::Arc, "arc"),
+            (CurveKind::Helix, "helix"),
+            (CurveKind::InterpCurve, "interp_curve"),
+            (CurveKind::BezierCurve, "bezier_curve"),
+            (CurveKind::NurbsCurve, "nurbs_curve"),
+        ]);
     }
 }
 
