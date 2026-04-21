@@ -279,68 +279,22 @@ pub(crate) fn compile_with_prelude_refs(
     // 1. Functions (phase-7): compile user fns, then build ctx.resolution_functions.
     compile_builder::functions_phase::phase_functions(&mut ctx, prelude, &decl_refs.fn_refs);
 
-    // Build the set of trait names known at compile time so the type resolver
-    // can resolve `param m : Material` (trait name) to Type::TraitObject(...).
-    //
-    // Collected from local trait declarations (syntax) and prelude trait defs
-    // (already compiled) BEFORE `compile_trait` runs, so trait members whose
-    // types reference other traits can resolve their siblings. Trait-name
-    // resolution is last in precedence (builtins → type params → alias → trait)
-    // so existing name-reuse stays backward compatible.
-    let trait_names: HashSet<String> = decl_refs
-        .trait_refs
-        .iter()
-        .map(|t| t.name.clone())
-        .chain(
-            prelude
-                .iter()
-                .flat_map(|m| m.trait_defs.iter().map(|t| t.name.clone())),
-        )
-        .collect();
+    // 2. Traits (phase-8): compile traits + populate trait_names + emit
+    //    deprecation warnings. Returns trait_names for downstream phases.
+    let trait_names =
+        compile_builder::traits_phase::phase_traits(&mut ctx, prelude, &decl_refs.trait_refs);
 
-    // 2. Traits (depend on resolution_enums for enum type resolution in params)
-    for trait_decl in &decl_refs.trait_refs {
-        let compiled_trait = compile_trait(
-            trait_decl,
-            &ctx.resolution_enums,
-            &ctx.alias_registry,
-            &trait_names,
-            &mut ctx.diagnostics,
-        );
-        ctx.trait_defs.push(compiled_trait);
-    }
-
-    // Build trait registry for conformance checking.
-    // Start with prelude traits, then add module-local traits (module overrides prelude on collision).
-    let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-    // Collect prelude trait references. We need to hold the prelude trait_defs
-    // in scope so trait_registry can borrow from them.
+    // Rebuild a trait registry for the still-inline phase-11 entity compile
+    // and the deferred bound checks. Step-14 will sink this construction into
+    // `entities_phase` as phase-local state.
     let prelude_trait_defs: Vec<&CompiledTrait> =
         prelude.iter().flat_map(|m| m.trait_defs.iter()).collect();
+    let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
     for t in &prelude_trait_defs {
         trait_registry.insert(t.name.clone(), t);
     }
-    // Module-local traits override prelude on name collision
     for t in &ctx.trait_defs {
         trait_registry.insert(t.name.clone(), t);
-    }
-
-    // Deprecation check: warn when a trait refinement references a @deprecated parent trait.
-    // TraitDecl.refinements is Vec<String> without individual spans; use the child trait's span.
-    for trait_decl in &decl_refs.trait_refs {
-        for refinement_name in &trait_decl.refinements {
-            if let Some(parent_trait) = trait_registry.get(refinement_name.as_str())
-                && let Some(msg) = deprecation_message(&parent_trait.annotations)
-            {
-                emit_deprecation_warning(
-                    "trait",
-                    refinement_name,
-                    &msg,
-                    trait_decl.span,
-                    &mut ctx.diagnostics,
-                );
-            }
-        }
     }
 
     // 3. Fields (need all resolution_enums + all compiled functions)
