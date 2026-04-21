@@ -43754,18 +43754,23 @@
         "description": "`EvaluationGraph::is_auto_cell` in crates/reify-eval/src/graph.rs:383-389 is currently `pub`, but its only consumer is the in-crate helper `deactivate_if_not_auto` (engine_edit.rs). Change visibility to `pub(crate) fn is_auto_cell` to stop leaking an internal predicate out of the crate's API surface. Trivial one-line change; ensure the test module (same crate) still compiles.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T14:46:08.440Z"
+        "updatedAt": "2026-04-21T17:48:58.946Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "0e9a55a8032a5d93c502d896e31fa6a12e387151"
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T15:25:53.468Z",
+      "lastModified": "2026-04-21T17:48:58.946Z",
       "taskCount": 2064,
-      "completedCount": 1809,
+      "completedCount": 1810,
       "tags": [
         "master"
       ]
