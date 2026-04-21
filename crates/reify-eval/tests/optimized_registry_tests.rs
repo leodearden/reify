@@ -36,11 +36,11 @@ fn assert_has_fallback_diagnostic(diagnostics: &[Diagnostic], expected_target: &
     let violation_diag = error_diags.iter().find(|d| {
         d.message.contains("OptimizedImpl")
             && d.message.contains("falling back")
-            && d.message.contains(expected_target)
+            && d.message.contains(&format!("target {:?}", expected_target))
     });
     assert!(
         violation_diag.is_some(),
-        "expected a diagnostic mentioning 'OptimizedImpl', 'falling back', and target {:?}, got error diagnostics: {:?}",
+        "expected a diagnostic mentioning 'OptimizedImpl', 'falling back', and 'target {:?}', got error diagnostics: {:?}",
         expected_target,
         error_diags
     );
@@ -837,6 +837,25 @@ structure def S {
         check_result.constraint_results[1].satisfaction,
         Satisfaction::Violated,
         "second constraint (Coincident(a: x, b: y), 1.0 == 2.0) must be Violated via fallback"
+    );
+
+    // (d-extended) id-based ordering lock: catches any orig_idx swap even if satisfaction
+    // values happen to match in a future refactor — verifies declaration order is preserved
+    // end-to-end through dispatch_constraints.
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S must exist in the compiled module");
+    assert_eq!(
+        check_result.constraint_results[0].id,
+        s_template.constraints[0].id,
+        "result[0].id must match the first declared constraint (declaration order preserved)"
+    );
+    assert_eq!(
+        check_result.constraint_results[1].id,
+        s_template.constraints[1].id,
+        "result[1].id must match the second declared constraint (declaration order preserved)"
     );
 
     // (f) fallback diagnostic via the new helper

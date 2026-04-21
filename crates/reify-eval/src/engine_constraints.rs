@@ -128,9 +128,10 @@ impl Engine {
                 // code we own (the language-level evaluator). A count mismatch from it
                 // is a *logic bug in our own code* and must fail loudly so it is caught
                 // immediately. This is distinct from the `OptimizedImpl` count mismatch
-                // checked above (line 109), which gets graceful fallback (Diagnostic::error
-                // + re-run through the language-level checker) because third-party impls
-                // are untrusted and must never be able to crash the engine.
+                // from the `output.results.len() != indices.len()` guard above, which gets
+                // graceful fallback (Diagnostic::error + re-run through the language-level
+                // checker) because third-party impls are untrusted and must never be able
+                // to crash the engine.
                 assert_eq!(
                     fallback_results.len(),
                     indices.len(),
