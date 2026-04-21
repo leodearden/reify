@@ -1289,7 +1289,511 @@ impl Engine {
             self.cache.restore_final(node_id);
         }
 
-        // (14) Install the new snapshot, dep structures, and demand; record
+        // ── Post-eval phases — parity with edit_param's tail (step-14) ──
+        //
+        // The following four phases mirror the logic at the tail of
+        // `edit_param` (guard re-elaboration, solver resolution + second
+        // wave, post-resolution guard re-elaboration, collection-count
+        // re-elaboration). Without them, a source edit that touches a
+        // guard expression, a constraint governing an auto param, or a
+        // collection count cell would leave downstream cells stale or
+        // Undef. The cross-check test
+        // `edit_source_matches_cold_eval_on_mixed_bracket_edit` and the
+        // dedicated `edit_source_guard_expr_change_flips_active_branch`
+        // test pin these phases.
+        //
+        // Differences from edit_param: phase 2's second-wave dirty cone
+        // / eval-set use the NEW graph's `new_reverse_index` and
+        // `new_trace_map` (rather than `self.eval_state.as_ref()`'s
+        // pre-edit structures) because a source edit can change edges,
+        // so dependents in the new graph may differ from the old. Phases
+        // 3 and 4 still read `self.eval_state.as_ref()` for pre-edit
+        // guard/count values; self.eval_state has NOT yet been replaced
+        // (that happens in step 15 below).
+
+        // ── Phase 1: Guard re-elaboration (dirty-cone trigger) ───────────
+        // If any structure_controlling cell is in the dirty cone or
+        // changed_set — e.g., because its expression or an input
+        // changed — re-evaluate each guarded group's guard cell and
+        // activate/deactivate branch members accordingly. This runs
+        // BEFORE the resolution phase so guards gated on auto params
+        // have the best-available (possibly Undef) inputs.
+        {
+            let graph = &new_snapshot.graph;
+            let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
+                dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
+            });
+
+            if has_dirty_guards {
+                for group in &graph.guarded_groups {
+                    // Re-evaluate the guard cell's expression
+                    let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
+                        if let Some(ref expr) = node.default_expr {
+                            reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(&values, &functions)
+                                    .with_determinacy(&new_snapshot.values)
+                                    .with_meta(&self.meta_map),
+                            )
+                        } else {
+                            Value::Undef
+                        }
+                    } else {
+                        Value::Undef
+                    };
+                    values.insert(group.guard_cell.clone(), guard_val.clone());
+                    let guard_det = if matches!(&guard_val, Value::Bool(_)) {
+                        DeterminacyState::Determined
+                    } else {
+                        DeterminacyState::Undetermined
+                    };
+                    new_snapshot
+                        .values
+                        .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
+
+                    let is_true = matches!(&guard_val, Value::Bool(true));
+                    let is_false = matches!(&guard_val, Value::Bool(false));
+
+                    for mid in &group.members {
+                        if is_true {
+                            if let Some(node) = graph.value_cells.get(mid)
+                                && let Some(ref expr) = node.default_expr
+                            {
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, &functions)
+                                        .with_meta(&self.meta_map),
+                                );
+                                values.insert(mid.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
+                            }
+                        } else {
+                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                        }
+                    }
+                    for mid in &group.else_members {
+                        if is_false {
+                            if let Some(node) = graph.value_cells.get(mid)
+                                && let Some(ref expr) = node.default_expr
+                            {
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, &functions)
+                                        .with_meta(&self.meta_map),
+                                );
+                                values.insert(mid.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
+                            }
+                        } else {
+                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
+                        }
+                    }
+                }
+
+                // Recompute topology fingerprint including guard states.
+                let guard_state_hash =
+                    guard_state_fingerprint(&graph.guarded_groups, &values, GuardLookup::Lenient);
+                new_snapshot.topology_fingerprint =
+                    graph.topology_fingerprint().combine(guard_state_hash);
+            }
+        }
+
+        // ── Phase 2: Solver resolution + second-wave propagation ─────────
+        // Reuses the same structure as edit_param's resolution phase, but
+        // with two key substitutions: (a) the second-wave dirty cone and
+        // eval set use `new_reverse_index`, `new_trace_map`, and
+        // `new_demand` (rather than the pre-edit `self.eval_state` /
+        // `self.demand`) because edit_source can reshape dependency edges;
+        // (b) we draw `scope_name` from `self.objectives` just as before.
+        let mut resolved_params: HashMap<ValueCellId, Value> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        if let Some(ref solver) = self.solver {
+            // Group auto params by entity (template) name
+            let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
+                HashMap::new();
+
+            for (_, node) in new_snapshot.graph.value_cells.iter() {
+                if node.kind.is_auto() {
+                    let entry = entity_groups
+                        .entry(node.id.entity.clone())
+                        .or_insert_with(|| (Vec::new(), HashSet::new()));
+                    entry.0.push(AutoParam {
+                        id: node.id.clone(),
+                        param_type: node.cell_type.clone(),
+                        bounds: None,
+                        free: node.kind.is_auto_free(),
+                    });
+                    entry.1.insert(node.id.clone());
+                }
+            }
+
+            // Union of all resolved auto param IDs across groups for second wave
+            let mut all_resolved_ids: HashSet<ValueCellId> = HashSet::new();
+
+            // Snapshot current values BEFORE the loop so each group's solver
+            // receives the same baseline — preventing cross-group contamination
+            // where one group's resolved values leak into another group's input.
+            let snapshot_values = values.clone();
+
+            // Solve each entity group independently
+            for (scope_name, (auto_param_list, auto_ids)) in &entity_groups {
+                // Find constraints referencing this group's auto params
+                let filtered_constraints: Vec<_> = new_snapshot
+                    .graph
+                    .constraints
+                    .iter()
+                    .filter(|(_, cnode)| {
+                        let trace = extract_dependency_trace(&cnode.expr);
+                        trace.reads.iter().any(|r| auto_ids.contains(r))
+                    })
+                    .map(|(_, cnode)| (cnode.id.clone(), cnode.expr.clone()))
+                    .collect();
+
+                // Check if any of those constraints are in the dirty cone
+                let constraints_dirty = filtered_constraints
+                    .iter()
+                    .any(|(cid, _)| dirty_cone.contains(&NodeId::Constraint(cid.clone())));
+
+                if !constraints_dirty {
+                    continue;
+                }
+
+                // Look up the template-native objective by entity name.
+                let objective = self.objectives.get(scope_name).cloned();
+
+                // Build ResolutionProblem and solve
+                let problem = ResolutionProblem {
+                    auto_params: auto_param_list.clone(),
+                    constraints: filtered_constraints,
+                    current_values: snapshot_values.clone(),
+                    objective,
+                    functions: functions.clone(),
+                };
+
+                match solver.solve(&problem) {
+                    SolveResult::Solved {
+                        values: solver_values,
+                        unique,
+                    } => {
+                        for (id, val) in &solver_values {
+                            values.insert(id.clone(), val.clone());
+                            resolved_params.insert(id.clone(), val.clone());
+                            all_resolved_ids.insert(id.clone());
+
+                            // Update snapshot values
+                            new_snapshot
+                                .values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
+
+                            // Update param_overrides so subsequent edits
+                            // use the resolved value
+                            self.param_overrides.insert(id.clone(), val.clone());
+
+                            // Update cache
+                            let node_id = NodeId::Value(id.clone());
+                            let trace = DependencyTrace::default();
+                            let cached_result =
+                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                            self.cache.record_evaluation(
+                                node_id,
+                                cached_result,
+                                VersionId(version_id),
+                                trace,
+                            );
+                        }
+                        if !unique {
+                            for ap in auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    SolveResult::Infeasible {
+                        diagnostics: solver_diags,
+                    } => {
+                        diagnostics.extend(solver_diags);
+                    }
+                    SolveResult::NoProgress { reason } => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Constraint solver made no progress: {}",
+                            reason
+                        )));
+                    }
+                }
+            }
+
+            // ── Second propagation wave ─────────────────────────────────
+            // Re-resolved auto params may have changed value. Let bindings
+            // depending on them may not be in the original dirty cone.
+            // For edit_source we MUST use the NEW reverse_index / trace_map
+            // / demand (rather than self.eval_state's stale pre-edit
+            // structures) because dependency edges may have shifted.
+            if !all_resolved_ids.is_empty() {
+                let wave2_dirty =
+                    crate::dirty::compute_dirty_cone(&all_resolved_ids, &new_reverse_index);
+                let wave2_eval =
+                    crate::dirty::compute_eval_set(&wave2_dirty, &new_demand, &new_trace_map);
+
+                for node_id in &wave2_eval {
+                    if let NodeId::Value(vcid) = node_id
+                        && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
+                        && let Some(ref expr) = node.default_expr
+                    {
+                        let val = reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(&values, &functions)
+                                .with_meta(&self.meta_map),
+                        );
+                        values.insert(vcid.clone(), val.clone());
+                        new_snapshot
+                            .values
+                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
+
+                        // Update cache for re-evaluated node
+                        let trace = extract_dependency_trace(expr);
+                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
+                        self.cache.record_evaluation(
+                            node_id.clone(),
+                            cached_result,
+                            VersionId(version_id),
+                            trace,
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Phase 3: Guard re-elaboration (value-changed trigger) ────────
+        // Catches guards whose computed boolean value differs from the
+        // pre-edit snapshot — e.g., resolver resolved an auto param that
+        // feeds the guard, or the dirty-cone path missed an edge (defensive).
+        // Uses GuardLookup::Strict because eval() has populated every guard
+        // cell by this point; a missing cell would be a logic error.
+        {
+            let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
+                let new_val = values.get(&group.guard_cell);
+                let old_val = self
+                    .eval_state
+                    .as_ref()
+                    .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                    .map(|(v, _)| v);
+                new_val != old_val
+            });
+
+            if guard_changed {
+                for group in new_snapshot.graph.guarded_groups.clone() {
+                    let guard_val = values
+                        .get(&group.guard_cell)
+                        .cloned()
+                        .expect("guard cell must have a value after initial evaluation");
+                    let guard_is_true = matches!(&guard_val, Value::Bool(true));
+                    let guard_is_false = matches!(&guard_val, Value::Bool(false));
+
+                    for member_id in &group.members {
+                        if guard_is_true {
+                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                                && let Some(ref expr) = node.default_expr
+                            {
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, &functions)
+                                        .with_meta(&self.meta_map),
+                                );
+                                values.insert(member_id.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(member_id.clone(), (val, DeterminacyState::Determined));
+                            }
+                        } else {
+                            deactivate_if_not_auto(
+                                &new_snapshot.graph,
+                                member_id,
+                                &mut values,
+                                &mut new_snapshot.values,
+                            );
+                        }
+                    }
+
+                    for member_id in &group.else_members {
+                        if guard_is_false {
+                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                                && let Some(ref expr) = node.default_expr
+                            {
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, &functions)
+                                        .with_meta(&self.meta_map),
+                                );
+                                values.insert(member_id.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(member_id.clone(), (val, DeterminacyState::Determined));
+                            }
+                        } else {
+                            deactivate_if_not_auto(
+                                &new_snapshot.graph,
+                                member_id,
+                                &mut values,
+                                &mut new_snapshot.values,
+                            );
+                        }
+                    }
+                }
+
+                let guard_state_hash = guard_state_fingerprint(
+                    &new_snapshot.graph.guarded_groups,
+                    &values,
+                    GuardLookup::Strict,
+                );
+                new_snapshot.topology_fingerprint = new_snapshot
+                    .graph
+                    .topology_fingerprint()
+                    .combine(guard_state_hash);
+            }
+        }
+
+        // ── Phase 4: Collection count re-elaboration ─────────────────────
+        // If any structure_controlling count cell's value changed vs. the
+        // pre-edit snapshot, add/remove instances to match the new count.
+        {
+            let collection_subs = new_snapshot.graph.collection_subs.clone();
+            for col_sub in &collection_subs {
+                let new_count_val = values
+                    .get(&col_sub.count_cell)
+                    .cloned()
+                    .unwrap_or(Value::Undef);
+                let old_count_val = self
+                    .eval_state
+                    .as_ref()
+                    .and_then(|s| s.snapshot.values.get(&col_sub.count_cell))
+                    .map(|(v, _)| v.clone())
+                    .unwrap_or(Value::Undef);
+
+                if new_count_val == old_count_val {
+                    continue;
+                }
+
+                // Helper closure: resolve a collection count value to an integer.
+                let resolve_count = |val: &Value, label: &str| -> (i64, Option<Diagnostic>) {
+                    match val {
+                        Value::Int(n) => (*n, None),
+                        Value::Undef => (0, None),
+                        other => (
+                            0,
+                            Some(Diagnostic::warning(format!(
+                                "Collection count cell {} has non-integer {} value {:?}; treating as 0",
+                                col_sub.count_cell, label, other
+                            ))),
+                        ),
+                    }
+                };
+
+                // Remove old instances from graph and snapshot
+                let (old_count, old_warn) = resolve_count(&old_count_val, "old");
+                if let Some(w) = old_warn {
+                    diagnostics.push(w);
+                }
+                for i in 0..old_count {
+                    let scoped_entity =
+                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    for (member, _, _, _) in &col_sub.child_value_cells {
+                        let scoped_id = ValueCellId::new(&scoped_entity, member);
+                        new_snapshot.graph.value_cells.remove(&scoped_id);
+                        new_snapshot.values.remove(&scoped_id);
+                        values.remove(&scoped_id);
+                    }
+                }
+
+                // Create new instances based on new count
+                let (new_count, new_warn) = resolve_count(&new_count_val, "new");
+                if let Some(w) = new_warn {
+                    diagnostics.push(w);
+                }
+                for i in 0..new_count {
+                    let scoped_entity =
+                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
+                        let scoped_id = ValueCellId::new(&scoped_entity, member);
+                        let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
+                        let expr_hash = default_expr
+                            .as_ref()
+                            .map(|e| e.content_hash)
+                            .unwrap_or(ContentHash(0));
+                        let node = crate::graph::ValueCellNode {
+                            id: scoped_id.clone(),
+                            kind: *kind,
+                            cell_type: cell_type.clone(),
+                            default_expr: default_expr.clone(),
+                            content_hash: id_hash.combine(expr_hash),
+                        };
+                        new_snapshot
+                            .graph
+                            .value_cells
+                            .insert(scoped_id.clone(), node);
+
+                        let val = if let Some(expr) = default_expr {
+                            reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(&values, &functions)
+                                    .with_meta(&self.meta_map),
+                            )
+                        } else {
+                            Value::Undef
+                        };
+                        values.insert(scoped_id.clone(), val.clone());
+                        new_snapshot
+                            .values
+                            .insert(scoped_id, (val, DeterminacyState::Determined));
+                    }
+                }
+
+                // Update per-member synthetic lists: __list_{name}__{member}
+                for (member, _, _, _) in &col_sub.child_value_cells {
+                    let member_items: Vec<Value> = (0..new_count)
+                        .map(|idx| {
+                            let scoped_id = ValueCellId::new(
+                                format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, idx),
+                                member,
+                            );
+                            values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
+                        })
+                        .collect();
+                    let member_list_id = ValueCellId::new(
+                        &col_sub.parent_entity,
+                        format!("__list_{}__{}", col_sub.sub_name, member),
+                    );
+                    let member_list_val = Value::List(member_items);
+                    values.insert(member_list_id.clone(), member_list_val.clone());
+                    new_snapshot.values.insert(
+                        member_list_id,
+                        (member_list_val, DeterminacyState::Determined),
+                    );
+                }
+
+                let count_state_hash = ContentHash::of_str(&format!(
+                    "collection:{}={}",
+                    col_sub.count_cell, new_count
+                ));
+                new_snapshot.topology_fingerprint = new_snapshot
+                    .graph
+                    .topology_fingerprint()
+                    .combine(count_state_hash);
+            }
+        }
+
+        // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).
         self.eval_state = Some(crate::EvaluationState {
             snapshot: new_snapshot,
@@ -1301,8 +1805,8 @@ impl Engine {
 
         Ok(EvalResult {
             values,
-            diagnostics: Vec::new(),
-            resolved_params: HashMap::new(),
+            diagnostics,
+            resolved_params,
         })
     }
 
