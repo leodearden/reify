@@ -284,30 +284,8 @@ pub(crate) fn compile_with_prelude_refs(
     let trait_names =
         compile_builder::traits_phase::phase_traits(&mut ctx, prelude, &decl_refs.trait_refs);
 
-    // Rebuild a trait registry for the still-inline phase-11 entity compile
-    // and the deferred bound checks. Step-14 will sink this construction into
-    // `entities_phase` as phase-local state.
-    let prelude_trait_defs: Vec<&CompiledTrait> =
-        prelude.iter().flat_map(|m| m.trait_defs.iter()).collect();
-    let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-    for t in &prelude_trait_defs {
-        trait_registry.insert(t.name.clone(), t);
-    }
-    for t in &ctx.trait_defs {
-        trait_registry.insert(t.name.clone(), t);
-    }
-
     // 3. Fields (need all resolution_enums + all compiled functions)
-    for field_def in &decl_refs.field_refs {
-        let compiled = compile_field(
-            field_def,
-            &ctx.resolution_enums,
-            &ctx.resolution_functions,
-            &ctx.alias_registry,
-            &mut ctx.diagnostics,
-        );
-        ctx.fields.push(compiled);
-    }
+    compile_builder::fields_phase::phase_fields(&mut ctx, &decl_refs.field_refs);
 
     // Build a field registry so entity scopes can resolve field names.
     let field_registry: HashMap<String, &CompiledField> =
@@ -359,6 +337,19 @@ pub(crate) fn compile_with_prelude_refs(
     // Local defs override prelude defs silently (by design: local always wins).
     for cd in &ctx.constraint_defs {
         constraint_def_registry.insert(cd.name.clone(), cd);
+    }
+
+    // Rebuild a trait registry for the still-inline phase-11 entity compile
+    // and the deferred bound checks. Step-14 will sink this construction into
+    // `entities_phase` as phase-local state.
+    let prelude_trait_defs: Vec<&CompiledTrait> =
+        prelude.iter().flat_map(|m| m.trait_defs.iter()).collect();
+    let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+    for t in &prelude_trait_defs {
+        trait_registry.insert(t.name.clone(), t);
+    }
+    for t in &ctx.trait_defs {
+        trait_registry.insert(t.name.clone(), t);
     }
 
     for decl in &parsed.declarations {
