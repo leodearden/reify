@@ -808,6 +808,8 @@ pub(crate) fn compile_geometry_op(
                     // See: extrude_symmetric_per_side_just_below_threshold_rejected
                     //      / extrude_symmetric_per_side_at_threshold_accepted.
                     match distance.as_f64() {
+                        // `.abs()` preserves sign-symmetric semantics — see
+                        // extrude_symmetric_negative_per_side_just_below_threshold_rejected.
                         Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
                         Some(v) => {
                             diagnostics.push(Diagnostic::warning(format!(
