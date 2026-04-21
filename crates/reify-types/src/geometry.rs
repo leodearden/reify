@@ -616,6 +616,48 @@ mod tests {
     }
 
     #[test]
+    fn geometry_op_tube_variant_exists() {
+        let op = GeometryOp::Tube {
+            outer_r: Value::Real(0.010),
+            inner_r: Value::Real(0.005),
+            height: Value::Real(0.020),
+        };
+        let cloned = op.clone();
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("Tube"));
+        match &cloned {
+            GeometryOp::Tube {
+                outer_r,
+                inner_r,
+                height,
+            } => {
+                assert!((outer_r.as_f64().unwrap() - 0.010).abs() < 1e-15);
+                assert!((inner_r.as_f64().unwrap() - 0.005).abs() < 1e-15);
+                assert!((height.as_f64().unwrap() - 0.020).abs() < 1e-15);
+            }
+            _ => panic!("expected Tube variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_pipe_variant_exists() {
+        let op = GeometryOp::Pipe {
+            path: GeometryHandleId(1),
+            radius: Value::Real(0.002),
+        };
+        let cloned = op.clone();
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("Pipe"));
+        match &cloned {
+            GeometryOp::Pipe { path, radius } => {
+                assert_eq!(*path, GeometryHandleId(1));
+                assert!((radius.as_f64().unwrap() - 0.002).abs() < 1e-15);
+            }
+            _ => panic!("expected Pipe variant"),
+        }
+    }
+
+    #[test]
     fn geometry_op_nurbs_curve_variant_exists() {
         let op = GeometryOp::NurbsCurve {
             control_points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0], [3.0, 1.0, 0.0]],
