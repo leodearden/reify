@@ -13,6 +13,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // Capture Viewport props for navigation tests
 let capturedViewportProps: any = {};
+let capturedDualViewportProps: any = {};
 const mockViewportFitToView = vi.fn();
 const mockFlyToEntity = vi.fn();
 vi.mock('../viewport', () => ({
@@ -29,6 +30,13 @@ vi.mock('../viewport', () => ({
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'viewport-container');
     el.textContent = 'Viewport Mock';
+    return el;
+  },
+  DualViewport: (props: any) => {
+    capturedDualViewportProps = props;
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'dual-viewport');
+    el.textContent = 'DualViewport Mock';
     return el;
   },
 }));
@@ -93,6 +101,8 @@ vi.mock('../bridge', () => ({
   isDebugEnabled: vi.fn().mockResolvedValue(false),
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
+  getContainingDefinition: vi.fn().mockResolvedValue(null),
+  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
 }));
 
 import App from '../App';
@@ -102,6 +112,7 @@ import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
+  capturedDualViewportProps = {};
   mockViewportFitToView.mockClear();
   localStorage.clear();
   capturedEditorStore = null;
@@ -3013,5 +3024,43 @@ describe('Viewport view sync', () => {
       expect(viewId).not.toBe('auto:default');
       expect(viewId).toMatch(/^user:/);
     });
+  });
+});
+
+describe('DualViewport wiring', () => {
+  it('App renders a DualViewport container', async () => {
+    await renderAndWaitForReady();
+    expect(screen.getByTestId('dual-viewport')).toBeTruthy();
+  });
+
+  it('App passes engineStore, defPreviewStore, and viewportStore props to DualViewport', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => {
+      expect(capturedDualViewportProps.engineStore).toBeDefined();
+      expect(capturedDualViewportProps.defPreviewStore).toBeDefined();
+      expect(capturedDualViewportProps.viewportStore).toBeDefined();
+    });
+  });
+
+  it('on cursor change, getContainingDefinition is called after 200ms debounce', async () => {
+    // Render with real timers first so App init completes
+    await renderAndWaitForReady();
+
+    // Switch to fake timers AFTER App is mounted — the hook's createEffect will
+    // schedule its setTimeout using the fake timer from this point on.
+    vi.useFakeTimers();
+    try {
+      capturedEditorStore.setCursorPosition({ line: 5, column: 3 });
+
+      // Before debounce fires: bridge function should not be called yet
+      expect(vi.mocked(bridge.getContainingDefinition)).not.toHaveBeenCalled();
+
+      // Advance past the 200ms debounce window
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(vi.mocked(bridge.getContainingDefinition)).toHaveBeenCalledWith(5, 3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
