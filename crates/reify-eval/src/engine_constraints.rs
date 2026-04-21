@@ -285,7 +285,22 @@ impl Engine {
                 Some(&state.snapshot.values),
             );
             diagnostics.extend(dispatch_diags);
+            // Task 846.3: `zip` silently truncates to the shorter iterator, so
+            // a length mismatch must be caught BEFORE the loop runs. These are
+            // debug-only checks — the invariants already hold today, but future
+            // refactors of `dispatch_constraints` could desync the two sequences.
+            debug_assert_eq!(
+                results.len(),
+                constraint_nodes.len(),
+                "check_constraints_with_values: results/constraint_nodes length mismatch",
+            );
             for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
+                debug_assert_eq!(
+                    result.id,
+                    cnode.id,
+                    "check_constraints_with_values: result.id must match cnode.id \
+                     — dispatch_constraints reordered results or constraint_nodes changed",
+                );
                 let mut msgs = result.diagnostics.messages;
                 Self::labeled_diagnostics(&mut msgs, &result.id, cnode.label.as_deref());
                 diagnostics.extend(msgs);
@@ -401,8 +416,22 @@ impl Engine {
             let (results, dispatch_diags) =
                 self.dispatch_constraints(entries, values, &self.functions, determinacy);
             diagnostics.extend(dispatch_diags);
+            // Task 846.3: see rationale in `check_constraints_with_values` —
+            // `zip` truncates silently, so guard the length invariant BEFORE
+            // the loop, and the per-result id-match invariant INSIDE it.
+            debug_assert_eq!(
+                results.len(),
+                active_constraints.len(),
+                "check_constraints_against_templates: results/active_constraints length mismatch",
+            );
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
+                debug_assert_eq!(
+                    result.id,
+                    compiled.id,
+                    "check_constraints_against_templates: result.id must match compiled.id \
+                     — dispatch_constraints reordered results or active_constraints changed",
+                );
                 let mut msgs = result.diagnostics.messages;
                 Self::labeled_diagnostics(&mut msgs, &result.id, compiled.label.as_deref());
                 diagnostics.extend(msgs);
