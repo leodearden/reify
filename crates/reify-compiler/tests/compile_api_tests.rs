@@ -876,6 +876,79 @@ fn compile_sweep_wrong_arg_count() {
     );
 }
 
+// --- Tube and pipe compound-shape compiler tests (task-324) ---
+
+#[test]
+fn compile_tube_produces_primitive_tube_kind() {
+    // tube(outer_r, inner_r, height) = 3 scalar args, no geometry refs
+    let source = r#"structure S {
+    let r = tube(10mm, 5mm, 20mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_tube"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization for tube call"
+    );
+    let ops = &template.realizations[0].operations;
+    assert_eq!(ops.len(), 1, "expected exactly 1 op (Tube primitive), got {}", ops.len());
+    match &ops[0] {
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Tube,
+            args,
+        } => {
+            assert_eq!(args.len(), 3, "tube should have 3 named args");
+            assert_eq!(args[0].0, "outer_r", "arg[0] should be outer_r");
+            assert_eq!(args[1].0, "inner_r", "arg[1] should be inner_r");
+            assert_eq!(args[2].0, "height", "arg[2] should be height");
+        }
+        other => panic!("expected Primitive{{Tube}}, got {:?}", other),
+    }
+}
+
+#[test]
+fn compile_tube_wrong_arg_count() {
+    // tube with 2 args (should need 3)
+    let source = r#"structure S {
+    param p: Scalar = 5mm
+    let r = tube(p, p)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_tube_bad"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "expected diagnostics for wrong arg count"
+    );
+    let msg = compiled
+        .diagnostics
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        msg.contains("tube()"),
+        "expected diagnostic to mention tube(), got: {}",
+        msg
+    );
+}
+
 // --- Transform compiler tests (task-377) ---
 
 #[test]
