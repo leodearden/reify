@@ -42947,7 +42947,7 @@
         "description": "After tasks #934 (resolve_enum_type helper + check_trait_conformance optimization) and #2034 (MergeContext + collect_all_requirements extraction) both land, `check_trait_conformance` in `crates/reify-compiler/src/conformance.rs` will still be a large monolithic function (~400+ lines estimated). Decompose it into phase helpers.\n\nFirst read the current state of `check_trait_conformance` and identify natural phase boundaries. Expected candidates:\n- **resolve-structure-members** — build the `structure_members: HashMap<String, Type>` from the EntityDefRef (currently the ~80-line filter_map closure).\n- **walk-requirements** — invoke `collect_all_requirements` (already extracted by #2034) and collect the flattened requirement + default sets.\n- **check-members-vs-requirements** — compare each required member against the structure's members, emit mismatch diagnostics.\n- **emit-missing-member-diagnostics** — report requirements unsatisfied by the structure.\n- **merge-defaults** — inject default value cells + constraints for trait-provided defaults the structure did not override.\n\nExtract each phase into a `fn check_phase_<name>(...)` with a narrow signature. The top-level `check_trait_conformance` becomes a thin orchestrator (< 80 lines) calling each phase.\n\nIf the extracted helpers together grow conformance.rs past ~1000 lines again, move them to a sibling submodule `crates/reify-compiler/src/conformance/checker.rs` (converting conformance.rs into `conformance/mod.rs` or reorganizing as appropriate).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically — no behavioral change intended.\n- `check_trait_conformance` body shrinks to < 80 lines.\n- ~12 pending tasks that currently contend on `conformance.rs` can split their edits across phase helpers and dispatch concurrently.\n\nWhy: task #934 was scoped as an optimization, not a decomposition. Even after it lands, the 700-line function remains the lock bottleneck. Proper decomposition is the durable fix.\n\nNote to executor: if after reading the post-#934 state you conclude check_trait_conformance is already < 250 lines and naturally cohesive (i.e. #934 did more than expected), defer this task with a note explaining — don't manufacture phase boundaries that don't exist.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "934",
           "936",
@@ -42964,7 +42964,8 @@
           "modules": [
             "crates/reify-compiler/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-21T15:15:18.907Z"
       },
       {
         "id": "2037",
@@ -43755,7 +43756,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T15:15:18.365Z",
+      "lastModified": "2026-04-21T15:15:18.907Z",
       "taskCount": 2064,
       "completedCount": 1807,
       "tags": [
