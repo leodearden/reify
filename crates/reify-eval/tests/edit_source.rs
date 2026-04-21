@@ -517,3 +517,137 @@ fn edit_source_added_constraint_is_demanded_and_checked() {
         eval_set
     );
 }
+
+// ── Param-override interaction ─────────────────────────────────────────────
+
+/// After establishing a param override via `set_param_and_invalidate` +
+/// `edit_param`, a subsequent `edit_source` that only mutates a let binding
+/// (leaving the param's source unchanged) must preserve the override rather
+/// than reverting the param to its source-declared default.
+///
+/// This locks the precedence rule — "overrides win for unchanged Param cells
+/// across a structural source edit" — symmetric with `eval_cached`. Volume
+/// (the dependent let) must also re-evaluate against the overridden width,
+/// not against module_B's source default.
+#[test]
+fn edit_source_preserves_param_overrides_for_unchanged_params() {
+    let mut engine = fresh_engine();
+
+    // Module A: canonical bracket with width=80mm default and a volume let.
+    let module_a = parse_and_compile(&bracket_with_volume_expr("width * height * thickness"));
+    engine.eval(&module_a);
+
+    let e = "Bracket";
+    let width_id = ValueCellId::new(e, "width");
+    let volume_id = ValueCellId::new(e, "volume");
+
+    // Establish an override-driven baseline: width → 0.12 m.
+    engine.set_param_and_invalidate(&width_id, Value::length(0.12));
+    engine
+        .edit_param(width_id.clone(), Value::length(0.12))
+        .expect("edit_param(width, 0.12) must succeed after eval");
+
+    // Sanity: the override is installed in the snapshot pre-edit_source.
+    let snapshot_pre = engine.snapshot().expect("snapshot must exist");
+    let width_pre = si(
+        snapshot_pre
+            .values
+            .get(&width_id)
+            .map(|(v, _)| v)
+            .expect("snapshot must carry width after edit_param"),
+        "width_pre",
+    );
+    assert!(
+        (width_pre - 0.12).abs() < 1e-12,
+        "pre-edit snapshot must reflect the override (0.12), got {width_pre}"
+    );
+
+    // Module B: keep the width param identical in source; mutate only the
+    // volume let expression. Width's content_hash is therefore unchanged,
+    // so the seeding path must preserve its prior value.
+    let module_b =
+        parse_and_compile(&bracket_with_volume_expr("width * height * thickness * 2.0"));
+    let result_b = engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    // (a) width must retain the override value — not revert to module_B's
+    //     source default of 80mm.
+    let width_b = si(
+        result_b
+            .values
+            .get(&width_id)
+            .expect("width must be present in edit_source result"),
+        "width_b",
+    );
+    assert!(
+        (width_b - 0.12).abs() < 1e-12,
+        "width must reflect the override (0.12) after edit_source, \
+         not the source default; got {width_b}"
+    );
+
+    // (b) volume must be evaluated against the overridden width, not the
+    //     module_B source default. Expected: 0.12 * 0.10 * 0.005 * 2.0.
+    let volume_b = si(
+        result_b
+            .values
+            .get(&volume_id)
+            .expect("volume must be present in edit_source result"),
+        "volume_b",
+    );
+    let expected = 0.12 * 0.10 * 0.005 * 2.0;
+    assert!(
+        (volume_b - expected).abs() < 1e-12,
+        "volume must use the overridden width; got {volume_b}, expected {expected}"
+    );
+}
+
+/// When the new module REMOVES a param that carried an override, the removed
+/// cell must be absent from the post-edit values map and from the installed
+/// snapshot's graph. Any dormant override in `param_overrides` has no cell to
+/// apply to, so it must not surface the removed param in the result.
+#[test]
+fn edit_source_discards_override_when_param_removed_in_source() {
+    let mut engine = fresh_engine();
+
+    // Module A: canonical bracket (has width, height, thickness, volume).
+    let module_a = parse_and_compile(&bracket_with_volume_expr("width * height * thickness"));
+    engine.eval(&module_a);
+
+    let e = "Bracket";
+    let width_id = ValueCellId::new(e, "width");
+
+    // Stash an override on width before the removal edit.
+    engine.set_param_and_invalidate(&width_id, Value::length(0.12));
+    engine
+        .edit_param(width_id.clone(), Value::length(0.12))
+        .expect("edit_param(width, 0.12) must succeed after eval");
+
+    // Module B removes width entirely and adjusts volume to not reference it.
+    let module_b_src = r#"structure Bracket {
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+
+    let volume = height * thickness
+
+    constraint thickness > 2mm
+}"#;
+    let module_b = parse_and_compile(module_b_src);
+    let result_b = engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    // (a) The removed param must not surface in the values map.
+    assert!(
+        result_b.values.get(&width_id).is_none(),
+        "removed width must not appear in values map after edit_source; got: {:?}",
+        result_b.values.get(&width_id)
+    );
+
+    // (b) And must be absent from the installed snapshot's graph.
+    let snapshot = engine.snapshot().expect("snapshot must exist");
+    assert!(
+        !snapshot.graph.value_cells.contains_key(&width_id),
+        "removed width must be absent from snapshot.graph.value_cells"
+    );
+}
