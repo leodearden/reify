@@ -881,6 +881,33 @@ mod tests {
     }
 
     #[test]
+    fn complex_methods_appear_as_method_kind_on_dot_access() {
+        // When the cursor is in a DotAccess context (immediately after `.`),
+        // the complex-number methods re, im, magnitude, phase, conjugate must
+        // be offered as METHOD-kind completions. This is the positive counterpart
+        // to `re_im_not_in_builtin_completions` (which asserts they are NOT
+        // offered as FUNCTION completions at non-dot positions).
+        let source = "structure S {\n    let z = complex(1.0, 2.0)\n    constraint z.\n}";
+        // Line 2, col 17: just after the "." in "    constraint z."
+        let items = compute_completions(source, &test_uri(), Position::new(2, 17));
+
+        let method_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+            .map(|m| m.label.as_str())
+            .collect();
+
+        for expected in &["re", "im", "magnitude", "phase", "conjugate"] {
+            assert!(
+                method_labels.contains(expected),
+                "expected '{}' as METHOD-kind completion in DotAccess context, got {:?}",
+                expected,
+                method_labels
+            );
+        }
+    }
+
+    #[test]
     fn completions_include_type_names() {
         let source = reify_test_support::bracket_source();
         let items = compute_completions(source, &test_uri(), Position::new(1, 0));
