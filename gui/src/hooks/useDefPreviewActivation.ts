@@ -63,12 +63,17 @@ export function createDefPreviewActivation(opts: DefPreviewActivationOptions): D
   /**
    * Monotonically-increasing request token.
    *
-   * Invariant: each debounce callback captures `const token = ++latestRequestToken`
-   * before awaiting `getContainingDefinition`. After the await, if
-   * `token !== latestRequestToken` the result is stale and is silently discarded.
-   * The debounce timer handles pre-await staleness (cursor moved again within the
-   * debounce window); this token handles post-await staleness (two async calls
-   * resolve out of order).
+   * Bumped synchronously in the createEffect body on every cursor change
+   * (after `clearTimeout`, before `setTimeout`). The debounce callback captures
+   * (but does not increment) the current value before awaiting
+   * `getContainingDefinition`: `const token = latestRequestToken`. After the
+   * await, if `token !== latestRequestToken` the result is stale and is silently
+   * discarded.
+   *
+   * Moving the bump to the effect body closes a race window: if the cursor moves
+   * after a debounce timer fires (T1) but before the next timer fires (T2), T1's
+   * in-flight request is immediately invalidated even though T2 has not yet
+   * captured its token.
    */
   let latestRequestToken = 0;
 
@@ -82,6 +87,11 @@ export function createDefPreviewActivation(opts: DefPreviewActivationOptions): D
       timerId = null;
     }
 
+    // Bump the request token synchronously on every cursor change so any
+    // in-flight getContainingDefinition call whose captured token is older
+    // is immediately invalidated — even if the next debounce timer hasn't fired yet.
+    ++latestRequestToken;
+
     // Skip scheduling if there is no cursor position
     if (pos === null) return;
 
@@ -89,8 +99,8 @@ export function createDefPreviewActivation(opts: DefPreviewActivationOptions): D
 
     timerId = setTimeout(async () => {
       timerId = null;
-      // Capture token before the await so we can detect stale results
-      const token = ++latestRequestToken;
+      // Capture (do not increment) the current token before the await
+      const token = latestRequestToken;
       const result = await getContainingDefinition(line, column);
 
       // Discard stale results: a newer request fired while this one was in flight
