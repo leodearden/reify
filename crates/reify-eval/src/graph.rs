@@ -385,7 +385,7 @@ impl EvaluationGraph {
     /// cells — callers relying on that "missing → false" branch (e.g. the
     /// guard-deactivation helper) get the same semantics as the prior
     /// `value_cells.get(id).is_some_and(|n| n.kind.is_auto())` form.
-    pub fn is_auto_cell(&self, id: &ValueCellId) -> bool {
+    pub(crate) fn is_auto_cell(&self, id: &ValueCellId) -> bool {
         self.value_cells.get(id).is_some_and(|n| n.kind.is_auto())
     }
 
