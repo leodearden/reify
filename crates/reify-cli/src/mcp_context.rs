@@ -1182,6 +1182,47 @@ structure Bracket {
             .expect("update_source with valid source should succeed");
     }
 
+    /// Invariant guard: `debug_assert!` fires when `reapply_user_overrides` is
+    /// entered with an engine that has never had `.eval(...)` called on it.
+    /// `edit_param` returns `EngineError::NotInitialized` in that case, which
+    /// is classified by the existing exhaustiveness match but should never arise
+    /// in production — `reapply_user_overrides` is only called from `update_source`
+    /// after `ensure_engine(...).eval(...)`.
+    ///
+    /// The test injects a never-eval'd engine directly into `CliState`, pushes one
+    /// user override, then calls `reapply_user_overrides` directly (accessible from
+    /// the same-file test module via `use super::*`), expecting the future
+    /// `debug_assert!` to panic.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "called before eval")]
+    fn reapply_user_overrides_debug_asserts_on_not_initialized_variant() {
+        let ctx = fresh_ctx();
+
+        // Inject a never-eval'd engine: mirrors ensure_engine construction but
+        // skips the eval() call, so edit_param will return NotInitialized.
+        {
+            let mut state = ctx.lock_state();
+            state.engine = Some(reify_eval::Engine::new(
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            ));
+            // Push one user override so user_overrides is non-empty and the
+            // early-return branch is not taken.
+            state.user_overrides.push((
+                ValueCellId::new("Bracket", "width"),
+                Value::Real(0.12_f64),
+            ));
+        }
+
+        // Call reapply_user_overrides directly — the debug_assert! (added in
+        // step-4) must panic with a message containing "called before eval".
+        {
+            let mut state = ctx.lock_state();
+            reapply_user_overrides(&mut state);
+        }
+    }
+
     /// Verify that `load_file` clears prior parameter overrides.  Because
     /// `load_file` semantically starts over with a fresh file, overrides
     /// set before it must not leak into the re-evaluated snapshot.
