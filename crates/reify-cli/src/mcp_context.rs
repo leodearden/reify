@@ -829,15 +829,18 @@ structure Bracket {
     }
 
     /// Set up a fresh `CliToolContext` with `Bracket.width` overridden to
-    /// `0.12` (a `Scalar[LENGTH]` value), then call `update_source` with the
-    /// given `replacement` source string.  Returns the number of `WARN` events
-    /// emitted by `reify::mcp_context` during `update_source`.
+    /// `0.12` (a `Scalar[LENGTH]` value), then call `update_source` with each
+    /// string in `replacements` in order.  Returns the total number of `WARN`
+    /// events emitted by `reify::mcp_context` across all `update_source` calls.
     ///
     /// Uses `CountingSubscriberBuilder::target_prefix("reify::mcp_context")`
     /// (`reify` is the binary crate name from `[[bin]] name = "reify"`) so
     /// only warns from `reapply_user_overrides` are counted — unrelated warns
     /// from the compiler, engine, or constraint solver do not affect the result.
-    fn run_reapply_with_source(replacement: &str) -> usize {
+    ///
+    /// The subscriber guard is held for the entire slice iteration so the same
+    /// target-filtered counter accumulates all events before being read.
+    fn run_reapply_with_sources(replacements: &[&str]) -> usize {
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -857,15 +860,24 @@ structure Bracket {
 
         let before = counter.load(Ordering::Acquire);
 
-        let result = ctx
-            .update_source(BRACKET_PATH, replacement)
-            .expect("update_source should return Ok even on override mismatch");
-        assert!(
-            result.success,
-            "update_source should succeed (parse/compile passed)"
-        );
+        for replacement in replacements {
+            let result = ctx
+                .update_source(BRACKET_PATH, replacement)
+                .expect("update_source should return Ok even on override mismatch");
+            assert!(
+                result.success,
+                "update_source should succeed (parse/compile passed)"
+            );
+        }
 
         counter.load(Ordering::Acquire) - before
+    }
+
+    /// Convenience wrapper around [`run_reapply_with_sources`] for the common
+    /// single-update case.  Returns the number of `WARN` events emitted by
+    /// `reify::mcp_context` during the single `update_source` call.
+    fn run_reapply_with_source(replacement: &str) -> usize {
+        run_reapply_with_sources(&[replacement])
     }
 
     /// Verify that `update_source` reuses the Engine instance rather than constructing
