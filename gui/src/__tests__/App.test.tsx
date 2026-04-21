@@ -2973,3 +2973,22 @@ describe('App — view selector and COW integration', () => {
     );
   });
 });
+
+describe('Viewport wiring', () => {
+  it('passes viewportId="design-main" to Viewport', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedViewportProps.viewportId).toBe('design-main'));
+  });
+
+  it('passes viewportStore with the expected API shape to Viewport', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedViewportProps.viewportStore).toBeTruthy());
+    const store = capturedViewportProps.viewportStore;
+    // Spot-check the shape — each of these should be a function or object
+    expect(typeof store.getViewport).toBe('function');
+    expect(typeof store.setActiveViewport).toBe('function');
+    expect(typeof store.assignView).toBe('function');
+    expect(typeof store.updateCamera).toBe('function');
+    expect(store.state).toBeDefined();
+  });
+});
