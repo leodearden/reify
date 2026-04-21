@@ -511,12 +511,32 @@ pub enum PrimitiveKind {
     Sphere,
 }
 
+impl std::fmt::Display for PrimitiveKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrimitiveKind::Box => f.write_str("box"),
+            PrimitiveKind::Cylinder => f.write_str("cylinder"),
+            PrimitiveKind::Sphere => f.write_str("sphere"),
+        }
+    }
+}
+
 /// Boolean geometry operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BooleanOp {
     Union,
     Difference,
     Intersection,
+}
+
+impl std::fmt::Display for BooleanOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BooleanOp::Union => f.write_str("union"),
+            BooleanOp::Difference => f.write_str("difference"),
+            BooleanOp::Intersection => f.write_str("intersection"),
+        }
+    }
 }
 
 /// Modification operations.
@@ -529,6 +549,18 @@ pub enum ModifyKind {
     Thicken,
 }
 
+impl std::fmt::Display for ModifyKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModifyKind::Fillet => f.write_str("fillet"),
+            ModifyKind::Chamfer => f.write_str("chamfer"),
+            ModifyKind::Shell => f.write_str("shell"),
+            ModifyKind::Draft => f.write_str("draft"),
+            ModifyKind::Thicken => f.write_str("thicken"),
+        }
+    }
+}
+
 /// Transform operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransformKind {
@@ -536,6 +568,17 @@ pub enum TransformKind {
     Rotate,
     Scale,
     RotateAround,
+}
+
+impl std::fmt::Display for TransformKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransformKind::Translate => f.write_str("translate"),
+            TransformKind::Rotate => f.write_str("rotate"),
+            TransformKind::Scale => f.write_str("scale"),
+            TransformKind::RotateAround => f.write_str("rotate_around"),
+        }
+    }
 }
 
 /// Pattern operations.
@@ -546,6 +589,18 @@ pub enum PatternKind {
     Mirror,
     Linear2D,
     Arbitrary,
+}
+
+impl std::fmt::Display for PatternKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PatternKind::Linear => f.write_str("linear"),
+            PatternKind::Circular => f.write_str("circular"),
+            PatternKind::Mirror => f.write_str("mirror"),
+            PatternKind::Linear2D => f.write_str("linear_2d"),
+            PatternKind::Arbitrary => f.write_str("arbitrary"),
+        }
+    }
 }
 
 /// Sweep operations.
@@ -563,6 +618,20 @@ pub enum SweepKind {
     LoftGuided,
 }
 
+impl std::fmt::Display for SweepKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SweepKind::Loft => f.write_str("loft"),
+            SweepKind::Extrude => f.write_str("extrude"),
+            SweepKind::Revolve => f.write_str("revolve"),
+            SweepKind::Sweep => f.write_str("sweep"),
+            SweepKind::ExtrudeSymmetric => f.write_str("extrude_symmetric"),
+            SweepKind::SweepGuided => f.write_str("sweep_guided"),
+            SweepKind::LoftGuided => f.write_str("loft_guided"),
+        }
+    }
+}
+
 /// Curve construction operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CurveKind {
@@ -572,6 +641,19 @@ pub enum CurveKind {
     InterpCurve,
     BezierCurve,
     NurbsCurve,
+}
+
+impl std::fmt::Display for CurveKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CurveKind::LineSegment => f.write_str("line_segment"),
+            CurveKind::Arc => f.write_str("arc"),
+            CurveKind::Helix => f.write_str("helix"),
+            CurveKind::InterpCurve => f.write_str("interp_curve"),
+            CurveKind::BezierCurve => f.write_str("bezier_curve"),
+            CurveKind::NurbsCurve => f.write_str("nurbs_curve"),
+        }
+    }
 }
 
 /// Reference to a geometry result within a realization.
