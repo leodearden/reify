@@ -43810,11 +43810,11 @@
         "description": "Address three review suggestions on the stdlib fs/embedded fallback in crates/reify-compiler/src/module_dag.rs:\n\n1. (robustness, lines 156-185) Per-module fs-vs-embedded fallback can silently mix sources. Example: if stdlib_root has units.ri but not materials_mechanical.ri, `import std.units` compiles from fs, but `import std.materials.mechanical` falls back to embedded stdlib whose own std.units was compiled against the embedded copy. Downstream consumers then see two CompiledModules under `std.units` semantics with potentially differing types, producing hard-to-diagnose trait/type mismatches.\n\n   Fix: either (a) make the fallback all-or-nothing per import session — if ANY std.* came from fs, require all to come from fs and fail with a clear diagnostic, OR (b) document the partial-overlay semantics explicitly and add a pinning test. At minimum add an assertion/diagnostic when fallback is about to insert a stdlib prefix module that would shadow an already-present fs version with differing content.\n\n2. (architecture, lines 22-28) The precedence-fallback doc block is attached to `ModuleResolver`, but `ModuleResolver` itself has no fallback behaviour — the fallback lives in `ModuleDag::compile_module`. Move the precedence block onto `ModuleDag::compile_module` (or `ModuleDag`); keep the resolver doc focused on filesystem resolution only.\n\n3. (performance, lines 171-177) The fallback clones every CompiledModule in the stdlib[..=idx] prefix into self.modules. For sequential compile_module calls over multiple std paths, each call re-walks the prefix (the contains_key guard skips inserts but not iteration). Either short-circuit once an already-present module is observed at the end of the prefix (the insert-prefix invariant means earlier indices must also be present), or add a one-line comment documenting the O(idx) cost as intentional.\n\nMemory hints: search \"stdlib embedded fallback module_dag\"; review `crates/reify-compiler/src/stdlib_loader.rs` and the test `compile_project_stdlib_unit_collision_mentions_stdlib` which pins filesystem-precedence behavior.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T19:43:28.168Z",
+        "updatedAt": "2026-04-21T19:43:33.835Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/module_dag.rs",
@@ -43853,7 +43853,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T19:43:33.249Z",
+      "lastModified": "2026-04-21T19:43:33.836Z",
       "taskCount": 2066,
       "completedCount": 1811,
       "tags": [
