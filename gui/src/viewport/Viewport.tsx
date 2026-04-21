@@ -5,8 +5,11 @@ import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
 import { createSelection } from './selection';
+import type { ViewportStore } from '../stores';
 
 export interface ViewportProps {
+  /** Stable identifier for this viewport instance (e.g. "design-main"). Required. */
+  viewportId: string;
   meshes: Record<string, MeshData>;
   onHover?: (path: string | null) => void;
   onSelect?: (path: string | null, modifiers?: { ctrl: boolean; shift: boolean }) => void;
@@ -19,6 +22,12 @@ export interface ViewportProps {
   flyToEntityRef?: (fn: (entityPath: string) => void) => void;
   fitToViewRef?: (fn: () => void) => void;
   entityVisibility?: Record<string, VisibilityState>;
+  /**
+   * Optional viewport store. When provided, the saved camera state for
+   * `viewportId` is applied on mount and updated on every OrbitControls
+   * 'change' event. When absent, camera state is ephemeral (existing behaviour).
+   */
+  viewportStore?: ViewportStore;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -70,6 +79,21 @@ export function Viewport(props: ViewportProps) {
     let needsRender = true;
     function requestRender() {
       needsRender = true;
+    }
+
+    // Restore saved camera from viewportStore before the first frame (if provided).
+    // This must happen after requestRender is in scope but before reactive effects
+    // and the animation loop start.
+    const savedVp = props.viewportStore?.getViewport(props.viewportId);
+    if (savedVp) {
+      const cam = savedVp.camera;
+      camera.position.set(...cam.position);
+      camera.up.set(...cam.up);
+      controls.controls.target.set(...cam.target);
+      camera.zoom = cam.zoom ?? 1;
+      camera.updateProjectionMatrix();
+      controls.update();
+      requestRender();
     }
 
     // OrbitControls 'change' event fires during camera movement (including damping)
