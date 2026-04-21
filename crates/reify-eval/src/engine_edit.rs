@@ -1,6 +1,7 @@
 // Split from lib.rs (task 2032) — edit methods.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::time::Instant;
 
 use reify_compiler::CompiledModule;
@@ -36,6 +37,55 @@ pub(crate) fn deactivate_if_not_auto(
     }
 }
 
+/// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
+/// collections.
+///
+/// Classifies every `Id` across the two maps into three disjoint sets by
+/// comparing per-node content hashes (extracted via `content_hash_fn`):
+///
+/// - `changed`: present in both maps, content hash differs.
+/// - `added`: present only in the new map.
+/// - `removed`: present only in the old map.
+///
+/// A match signals "equivalent node; cached value is still valid"; a
+/// mismatch signals "re-evaluate". This is the shared kernel of the three
+/// graph-level diffs (`diff_value_cells`, `diff_constraints`,
+/// `diff_realizations`) — every one of them wants the same three-set
+/// classification, so any future tweak (e.g. returning counts, emitting a
+/// Modified variant, handling content_hash collisions) lives in one place.
+fn diff_nodes<Id, Node, F>(
+    old_map: &PersistentMap<Id, Node>,
+    new_map: &PersistentMap<Id, Node>,
+    content_hash_fn: F,
+) -> (HashSet<Id>, HashSet<Id>, HashSet<Id>)
+where
+    Id: Clone + Eq + Hash,
+    Node: Clone,
+    F: Fn(&Node) -> ContentHash,
+{
+    let mut changed = HashSet::new();
+    let mut added = HashSet::new();
+    for (id, new_node) in new_map.iter() {
+        match old_map.get(id) {
+            Some(old_node) => {
+                if content_hash_fn(old_node) != content_hash_fn(new_node) {
+                    changed.insert(id.clone());
+                }
+            }
+            None => {
+                added.insert(id.clone());
+            }
+        }
+    }
+    let mut removed = HashSet::new();
+    for (id, _) in old_map.iter() {
+        if !new_map.contains_key(id) {
+            removed.insert(id.clone());
+        }
+    }
+    (changed, added, removed)
+}
+
 /// Classify every `ValueCellId` across a pair of graphs into three disjoint
 /// sets by comparing per-node `ValueCellNode::content_hash`:
 ///
@@ -52,27 +102,9 @@ pub(crate) fn diff_value_cells(
     old_graph: &EvaluationGraph,
     new_graph: &EvaluationGraph,
 ) -> (HashSet<ValueCellId>, HashSet<ValueCellId>, HashSet<ValueCellId>) {
-    let mut changed = HashSet::new();
-    let mut added = HashSet::new();
-    for (id, new_node) in new_graph.value_cells.iter() {
-        match old_graph.value_cells.get(id) {
-            Some(old_node) => {
-                if old_node.content_hash != new_node.content_hash {
-                    changed.insert(id.clone());
-                }
-            }
-            None => {
-                added.insert(id.clone());
-            }
-        }
-    }
-    let mut removed = HashSet::new();
-    for (id, _) in old_graph.value_cells.iter() {
-        if !new_graph.value_cells.contains_key(id) {
-            removed.insert(id.clone());
-        }
-    }
-    (changed, added, removed)
+    diff_nodes(&old_graph.value_cells, &new_graph.value_cells, |n| {
+        n.content_hash
+    })
 }
 
 /// Constraint-node analogue of [`diff_value_cells`]: classify every
@@ -92,27 +124,9 @@ pub(crate) fn diff_constraints(
     HashSet<ConstraintNodeId>,
     HashSet<ConstraintNodeId>,
 ) {
-    let mut changed = HashSet::new();
-    let mut added = HashSet::new();
-    for (id, new_node) in new_graph.constraints.iter() {
-        match old_graph.constraints.get(id) {
-            Some(old_node) => {
-                if old_node.content_hash != new_node.content_hash {
-                    changed.insert(id.clone());
-                }
-            }
-            None => {
-                added.insert(id.clone());
-            }
-        }
-    }
-    let mut removed = HashSet::new();
-    for (id, _) in old_graph.constraints.iter() {
-        if !new_graph.constraints.contains_key(id) {
-            removed.insert(id.clone());
-        }
-    }
-    (changed, added, removed)
+    diff_nodes(&old_graph.constraints, &new_graph.constraints, |n| {
+        n.content_hash
+    })
 }
 
 /// Realization-node analogue of [`diff_value_cells`]: classify every
@@ -128,27 +142,9 @@ pub(crate) fn diff_realizations(
     HashSet<RealizationNodeId>,
     HashSet<RealizationNodeId>,
 ) {
-    let mut changed = HashSet::new();
-    let mut added = HashSet::new();
-    for (id, new_node) in new_graph.realizations.iter() {
-        match old_graph.realizations.get(id) {
-            Some(old_node) => {
-                if old_node.content_hash != new_node.content_hash {
-                    changed.insert(id.clone());
-                }
-            }
-            None => {
-                added.insert(id.clone());
-            }
-        }
-    }
-    let mut removed = HashSet::new();
-    for (id, _) in old_graph.realizations.iter() {
-        if !new_graph.realizations.contains_key(id) {
-            removed.insert(id.clone());
-        }
-    }
-    (changed, added, removed)
+    diff_nodes(&old_graph.realizations, &new_graph.realizations, |n| {
+        n.content_hash
+    })
 }
 
 impl Engine {
