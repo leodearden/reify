@@ -286,6 +286,9 @@ mod tests {
                 );
             }),
         ];
+        // Collect all label mismatches rather than short-circuiting, so a regression
+        // that breaks multiple components surfaces every broken label in one run.
+        let mut failures: Vec<String> = Vec::new();
         for (label, case) in cases {
             let err = std::panic::catch_unwind(case)
                 .expect_err("expected assert_orientation_approx to panic");
@@ -294,8 +297,15 @@ mod tests {
                 .map(|s| s.as_str())
                 .or_else(|| err.downcast_ref::<&str>().copied())
                 .unwrap_or("");
-            assert!(msg.contains(label), "expected panic message to contain {label:?}, got: {msg:?}");
+            if !msg.contains(label) {
+                failures.push(format!("label {label:?}: panic message was {msg:?}"));
+            }
         }
+        assert!(
+            failures.is_empty(),
+            "per-component diagnostic failures:\n{}",
+            failures.join("\n")
+        );
     }
 
     // ── assert_orientation_approx tol = tests ───────────────────────────────
@@ -425,23 +435,10 @@ mod tests {
 
     #[test]
     fn sign_insensitive_macro_fully_populated_quaternion() {
-        // (0.5, 0.5, 0.5, 0.5): all four components non-zero, unlike non_trivial which has y=z=0.
-        // The non-zero y and z force the neg_ok y+$ey and z+$ez branches to actually flip sign.
-        // Positive form: actual (0.5, 0.5, 0.5, 0.5) must match expected (0.5, 0.5, 0.5, 0.5).
-        assert_orientation_approx!(
-            Value::Orientation {
-                w: 0.5,
-                x: 0.5,
-                y: 0.5,
-                z: 0.5
-            },
-            0.5,
-            0.5,
-            0.5,
-            0.5,
-            sign_insensitive = 1e-10
-        );
-        // Negated form: actual (-0.5, -0.5, -0.5, -0.5) must also match expected (0.5, 0.5, 0.5, 0.5).
+        // Exercises the neg_ok branch with all four components non-zero.
+        // Unlike sign_insensitive_macro_non_trivial_quaternion (y=z=0), the non-zero y/z here
+        // force the neg_ok y+$ey and z+$ez branches to evaluate a non-trivial sign flip.
+        // The positive-form assertion is omitted — it is dominated by sign_insensitive_macro_positive.
         assert_orientation_approx!(
             Value::Orientation {
                 w: -0.5,
