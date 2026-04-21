@@ -290,8 +290,11 @@ impl Engine {
                         break;
                     }
                 },
-                Err(_err) => {
-                    diagnostics.push(Diagnostic::error("failed to compile geometry operation"));
+                Err(err) => {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "failed to compile geometry operation: {}",
+                        err
+                    )));
                     step_handles.push(GeometryHandleId::INVALID);
                     had_failure = true;
                 }
