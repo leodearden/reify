@@ -61,100 +61,6 @@ use reify_types::{
     UnOp, Value, ValueCellId,
 };
 
-/// Format a constraint-def shadow-warning message for a name collision between two prelude modules.
-///
-/// `winner` is the first-imported module path string (whose definition is retained),
-/// `loser` is the later-imported module path string (whose definition is silently discarded).
-fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> String {
-    format!(
-        "constraint def '{}' from '{}' shadows '{}' from '{}' \
-         (first-imported definition wins)",
-        name, winner, name, loser
-    )
-}
-
-/// Compile a single `constraint def` declaration into a [`CompiledConstraintDef`].
-///
-/// Runs annotation/pragma lowering and validation exactly once per declaration,
-/// resolves param types where possible, and caches the `@optimized` target so
-/// instantiation sites can read it without re-scanning annotations.
-fn compile_constraint_def(
-    c: &reify_syntax::ConstraintDef,
-    alias_registry: &TypeAliasRegistry,
-    enum_defs: &[reify_types::EnumDef],
-    trait_names: &HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> CompiledConstraintDef {
-    // Extract @optimized target from raw syntax annotations BEFORE lowering so the
-    // raw-annotation extractor sees the original parse tree.
-    let annotations_optimized_target = crate::annotations::optimized_target(&c.annotations);
-
-    // Lower and validate annotations/pragmas (emits diagnostics for unknown/misplaced items).
-    let annotations = lower_annotations(&c.annotations, diagnostics);
-    validate_annotations(&annotations, "constraint_def", diagnostics);
-    validate_pragmas(&c.pragmas, "constraint_def", diagnostics);
-
-    // Convert syntax TypeParamDecls to compiled TypeParams.
-    let type_params = convert_type_params(&c.type_params);
-
-    // Build a set of type parameter names so param type resolution can accept them.
-    let type_param_names: std::collections::HashSet<String> =
-        type_params.iter().map(|tp| tp.name.clone()).collect();
-
-    // Compile each param: resolve the cell type for its diagnostic side-effect (catches
-    // typoed param types at def-compile time), then keep only the name/default/span.
-    // The resolved type is not stored because entity.rs only reads `param.name` and
-    // `param.default` at instantiation time; storing it would be dead weight.
-    let params: Vec<CompiledConstraintParam> = c
-        .params
-        .iter()
-        .map(|param| {
-            // Resolve the param type: if resolution returns None for a Named type that is
-            // neither a builtin nor a declared type parameter, the name is unknown — emit
-            // an error so the user sees the typo at def-compile time rather than silently
-            // accepting it and getting a confusing error at the instantiation site.
-            if let Some(te) = &param.type_expr
-                && resolve_type_expr_with_aliases(
-                    te,
-                    &type_param_names,
-                    alias_registry,
-                    diagnostics,
-                    trait_names,
-                )
-                .is_none()
-                && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
-                && resolve_enum_type(name, enum_defs).is_none()
-            {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "unknown type '{}' in param '{}' of constraint def '{}'",
-                        name, param.name, c.name
-                    ))
-                    .with_label(DiagnosticLabel::new(te.span, "unknown type")),
-                );
-            }
-            CompiledConstraintParam {
-                name: param.name.clone(),
-                default: param.default.clone(),
-                span: param.span,
-            }
-        })
-        .collect();
-
-    CompiledConstraintDef {
-        name: c.name.clone(),
-        is_pub: c.is_pub,
-        type_params,
-        params,
-        predicates: c.predicates.clone(),
-        span: c.span,
-        content_hash: c.content_hash,
-        pragmas: c.pragmas.clone(),
-        annotations,
-        annotations_optimized_target,
-    }
-}
-
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
@@ -287,24 +193,19 @@ pub(crate) fn compile_with_prelude_refs(
     // 3. Fields (need all resolution_enums + all compiled functions)
     compile_builder::fields_phase::phase_fields(&mut ctx, &decl_refs.field_refs);
 
+    // Compile all local constraint defs in a single pass.
+    compile_builder::defs_phase::phase_constraint_defs(
+        &mut ctx,
+        parsed,
+        prelude,
+        &trait_names,
+    );
+
     // Build a field registry so entity scopes can resolve field names.
+    // Built alongside the other entity-phase registries so the mutable
+    // borrow needed by phase_constraint_defs above can complete first.
     let field_registry: HashMap<String, &CompiledField> =
         ctx.fields.iter().map(|f| (f.name.clone(), f)).collect();
-
-    // Compile all local constraint defs in a single pass.
-    // Results are used both to populate the module output and to seed the registry.
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Constraint(c) = decl {
-            let compiled = compile_constraint_def(
-                c,
-                &ctx.alias_registry,
-                &ctx.resolution_enums,
-                &trait_names,
-                &mut ctx.diagnostics,
-            );
-            ctx.constraint_defs.push(compiled);
-        }
-    }
 
     // Build a constraint def registry so entity scopes can resolve constraint instantiations.
     // Prelude defs (pub-only, from imported modules) are seeded first; local defs override.
@@ -321,11 +222,13 @@ pub(crate) fn compile_with_prelude_refs(
                     // The first-imported module wins; emit a warning that names the winner
                     // (prev_path) before the loser (module_path_str) so users know which
                     // import is retained and which is silently discarded.
-                    ctx.diagnostics.push(Diagnostic::warning(format_shadow_warning(
-                        &cd.name,
-                        prev_path,
-                        &module_path_str,
-                    )));
+                    ctx.diagnostics.push(Diagnostic::warning(
+                        compile_builder::defs_phase::format_shadow_warning(
+                            &cd.name,
+                            prev_path,
+                            &module_path_str,
+                        ),
+                    ));
                 }
                 // First-import wins: do not overwrite the existing registry entry.
             } else {
