@@ -15,8 +15,36 @@ use reify_test_support::{
     BrokenCountOptimizedImpl, MockOptimizedImpl, make_simple_engine, parse_and_compile,
 };
 use reify_types::{
-    ConstraintDiagnostics, ConstraintNodeId, ConstraintResult, Satisfaction, Severity,
+    ConstraintDiagnostics, ConstraintNodeId, ConstraintResult, Diagnostic, Satisfaction, Severity,
 };
+
+/// Assert that `diagnostics` contains an `Error`-severity diagnostic describing
+/// the OptimizedImpl-count-mismatch fallback for `expected_target`. Used by tests
+/// 6, 8, 9, and 10 to DRY up the identical inline block that searches for a
+/// diagnostic whose message contains "OptimizedImpl", "falling back", and the
+/// registered target name.
+fn assert_has_fallback_diagnostic(diagnostics: &[Diagnostic], expected_target: &str) {
+    let error_diags: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic for the broken OptimizedImpl, got diagnostics: {:?}",
+        diagnostics
+    );
+    let violation_diag = error_diags.iter().find(|d| {
+        d.message.contains("OptimizedImpl")
+            && d.message.contains("falling back")
+            && d.message.contains(expected_target)
+    });
+    assert!(
+        violation_diag.is_some(),
+        "expected a diagnostic mentioning 'OptimizedImpl', 'falling back', and target {:?}, got error diagnostics: {:?}",
+        expected_target,
+        error_diags
+    );
+}
 
 // ── Test 1: register_optimized_impl stores & dispatches ─────────────────────
 
@@ -454,26 +482,7 @@ structure def S {
     );
 
     // (b) diagnostic error for the contract violation
-    let error_diags: Vec<_> = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !error_diags.is_empty(),
-        "expected at least one Error diagnostic for the broken OptimizedImpl, \
-         got diagnostics: {:?}",
-        check_result.diagnostics
-    );
-    let violation_diag = error_diags
-        .iter()
-        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
-    assert!(
-        violation_diag.is_some(),
-        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
-         got error diagnostics: {:?}",
-        error_diags
-    );
+    assert_has_fallback_diagnostic(&check_result.diagnostics, "geo::coincident");
 
     // Broken impl was still invoked (before fallback kicked in)
     assert!(
@@ -688,26 +697,7 @@ structure def S {
     );
 
     // (b) Error diagnostic for the contract violation
-    let error_diags: Vec<_> = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !error_diags.is_empty(),
-        "expected at least one Error diagnostic for the broken OptimizedImpl (too many results), \
-         got diagnostics: {:?}",
-        check_result.diagnostics
-    );
-    let violation_diag = error_diags
-        .iter()
-        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
-    assert!(
-        violation_diag.is_some(),
-        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
-         got error diagnostics: {:?}",
-        error_diags
-    );
+    assert_has_fallback_diagnostic(&check_result.diagnostics, "geo::coincident");
 
     // Broken impl was still invoked
     assert!(
@@ -769,26 +759,7 @@ structure def S {
     );
 
     // (b) Error diagnostic for the contract violation is still emitted
-    let error_diags: Vec<_> = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !error_diags.is_empty(),
-        "expected at least one Error diagnostic for the broken OptimizedImpl, \
-         got diagnostics: {:?}",
-        check_result.diagnostics
-    );
-    let violation_diag = error_diags
-        .iter()
-        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
-    assert!(
-        violation_diag.is_some(),
-        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
-         got error diagnostics: {:?}",
-        error_diags
-    );
+    assert_has_fallback_diagnostic(&check_result.diagnostics, "geo::coincident");
 
     // Broken impl was still invoked (before fallback kicked in)
     assert!(
@@ -868,28 +839,8 @@ structure def S {
         "second constraint (Coincident(a: x, b: y), 1.0 == 2.0) must be Violated via fallback"
     );
 
-    // (f) inline diagnostic-assertion block — same shape as tests 6/8/9;
-    // will be collapsed into assert_has_fallback_diagnostic in step-3.
-    let error_diags: Vec<_> = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !error_diags.is_empty(),
-        "expected at least one Error diagnostic for the broken OptimizedImpl, \
-         got diagnostics: {:?}",
-        check_result.diagnostics
-    );
-    let violation_diag = error_diags
-        .iter()
-        .find(|d| d.message.contains("OptimizedImpl") && d.message.contains("falling back"));
-    assert!(
-        violation_diag.is_some(),
-        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
-         got error diagnostics: {:?}",
-        error_diags
-    );
+    // (f) fallback diagnostic via the new helper
+    assert_has_fallback_diagnostic(&check_result.diagnostics, "geo::coincident");
 
     // (g) broken impl ran before fallback kicked in
     assert!(
