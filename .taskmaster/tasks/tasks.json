@@ -8542,7 +8542,7 @@
         "id": "397",
         "title": "Review: Eval meta_map performance and refactoring (17 suggestions from task 212)",
         "description": "Triage and address 17 code review suggestions from the task-212 review. Key themes: hot-path clones, code duplication, eager cloning, async safety, test gaps.",
-        "details": "",
+        "details": "<info added on 2026-04-21T14:28:33.374Z>\nMemory hints have been updated to include entities: [\"evaluate_let_bindings\", \"meta_map\", \"TopologyTemplate\"] and queries: [\"evaluate_let_bindings extract_dependency_trace topological sort\", \"meta_map performance review suggestions task 212\", \"task 470 eliminate redundant computation let_bindings\"]. Note: Task 470 (Eliminate redundant computation in evaluate_let_bindings) was created directly from this review's findings and is currently in-progress. Task 397 was blocked on 2026-04-21T14:20:45Z without a formal dependency recorded; unblocking should be considered once task 470 and other derived implementation tasks complete.\n</info added on 2026-04-21T14:28:33.374Z>",
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
@@ -8551,12 +8551,19 @@
           "modules": [],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "evaluate_let_bindings",
+              "meta_map",
+              "TopologyTemplate"
+            ],
             "queries": [
-              "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
+              "evaluate_let_bindings extract_dependency_trace topological sort",
+              "meta_map performance review suggestions task 212",
+              "task 470 eliminate redundant computation let_bindings"
             ]
           },
-          "files": []
+          "files": [],
+          "_causation_id": "887cc4b8-99d3-43d5-8c9c-a0b027cdaca9"
         },
         "subtasks": [],
         "updatedAt": "2026-04-21T14:20:45.947Z"
