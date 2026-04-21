@@ -1823,12 +1823,15 @@ describe('viewStateStore — reorderUserViews', () => {
       // User-view suffix should reflect the new order
       const userSuffix = ordered.filter((id) => !id.startsWith('auto:'));
       expect(userSuffix).toEqual([id3, id1, id2]);
-      // Auto views still precede user views
-      const autoCount = ordered.filter((id) => id.startsWith('auto:')).length;
-      expect(autoCount).toBeGreaterThan(0);
-      expect(ordered.indexOf(ordered.find((id) => id.startsWith('auto:'))!)).toBeLessThan(
-        ordered.indexOf(id3),
-      );
+      // Auto views still precede user views — every auto id must come before every user id
+      const autoIndices = ordered
+        .map((id, i) => (id.startsWith('auto:') ? i : -1))
+        .filter((i) => i >= 0);
+      const userIndices = ordered
+        .map((id, i) => (!id.startsWith('auto:') ? i : -1))
+        .filter((i) => i >= 0);
+      expect(autoIndices.length).toBeGreaterThan(0);
+      expect(Math.max(...autoIndices)).toBeLessThan(Math.min(...userIndices));
       dispose();
     });
   });

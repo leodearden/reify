@@ -58,7 +58,11 @@ describe('ViewManageModal — dialog structure', () => {
     // After queueMicrotask, focus should be inside the dialog
     await new Promise((r) => queueMicrotask(r as () => void));
     const dialog = screen.getByRole('dialog');
-    const focusable = dialog.querySelector('button, input, [tabindex]:not([tabindex="-1"])');
+    // Must match ViewManageModal.tsx's FOCUSABLE_SELECTOR exactly so a disabled
+    // control appearing before the first enabled one never causes a false negative.
+    const focusable = dialog.querySelector(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
     expect(focusable).toBeTruthy();
     expect(document.activeElement).toBe(focusable);
   });
