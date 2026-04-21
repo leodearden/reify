@@ -43865,8 +43865,10 @@
             "crates/reify-compiler/src/stdlib_loader.rs"
           ],
           "modules": [
-            "crates/reify-types/src",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-compiler/src/stdlib_loader.rs",
+            "crates/reify-compiler/tests/module_dag_tests.rs",
+            "crates/reify-types/src/identity.rs"
           ]
         }
       },
@@ -43919,7 +43921,9 @@
       "completedCount": 1815,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T20:25:20.975Z",
+      "description": "Tasks for master context"
     }
   }
 }
