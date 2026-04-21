@@ -518,7 +518,7 @@ structure S {
 /// message that deliberately does NOT embed the raw `ConstraintNodeId` string.
 ///
 /// Used to verify that `Engine::labeled_diagnostics` does not panic (debug_assert
-/// must be demoted to tracing::warn!) when the checker omits the raw id, and
+/// must be demoted to `tracing::debug!`) when the checker omits the raw id, and
 /// that the domain message passes through to users verbatim.
 struct NonEmbeddingChecker;
 
@@ -541,7 +541,7 @@ impl ConstraintChecker for NonEmbeddingChecker {
 /// A `ConstraintChecker` that emits an Error diagnostic whose message does NOT
 /// contain the raw `ConstraintNodeId` string is a valid third-party checker:
 /// before the fix, the `debug_assert!` in `labeled_diagnostics` would panic in
-/// debug builds; after the fix it should be demoted to `tracing::warn!` so that:
+/// debug builds; after the fix it should be demoted to `tracing::debug!` so that:
 /// 1. The call to `engine.check()` returns without panicking.
 /// 2. Exactly one `Severity::Error` diagnostic is present.
 /// 3. The diagnostic message is the domain text "wall thickness below minimum"
@@ -576,5 +576,53 @@ structure S {
         "wall thickness below minimum",
         "expected domain message to pass through verbatim, got: {:?}",
         errors[0].message
+    );
+}
+
+/// The drift branch in `labeled_diagnostics` must emit a `tracing::debug!`
+/// event — exactly once per labeled constraint whose Error-severity message
+/// omits the raw `ConstraintNodeId` — so that first-party Display-drift is
+/// observable via debug logging without penalising third-party checkers at
+/// WARN level.
+///
+/// Uses `CountingSubscriberBuilder` with `Level::DEBUG` and a `target_prefix`
+/// of `"reify_eval"` so that only events from this crate are counted, avoiding
+/// interference from any debug instrumentation in transitive dependencies.
+#[test]
+fn drift_signal_fires_for_non_embedding_checker() {
+    use std::sync::atomic::Ordering;
+    use reify_test_support::CountingSubscriberBuilder;
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_eval")
+        .build();
+    // Clone the Arc before moving `counters` into the closure so we can read
+    // the count after the subscriber is dropped.
+    let debug_arc = counters[&tracing::Level::DEBUG].clone();
+
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param thickness: Length = 1
+    constraint MinWall(wall: thickness)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = reify_eval::Engine::new(Box::new(NonEmbeddingChecker), None);
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = engine.check(&compiled);
+    });
+
+    let count = debug_arc.load(Ordering::Acquire);
+    assert_eq!(
+        count,
+        1,
+        "expected exactly one DEBUG drift signal for a single labeled constraint \
+         whose Error message omits the raw ConstraintNodeId; got {count}"
     );
 }

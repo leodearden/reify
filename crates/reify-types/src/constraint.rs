@@ -143,9 +143,13 @@ pub trait ConstraintChecker: Send + Sync {
     /// emit domain-specific error text without embedding the raw id (e.g.
     /// `"wall thickness below minimum"`) will have that text surface to users
     /// unmodified — which is still correct. The engine will emit a
-    /// `tracing::warn!` when an Error-severity message is present but the raw
-    /// id is absent, flagging the missed substitution for first-party
-    /// developers without panicking or altering the diagnostic content.
+    /// `tracing::debug!` event (target `reify_eval::engine_constraints`) when
+    /// an Error-severity message is present but the raw id is absent. This
+    /// signal is aimed at **first-party developers** diagnosing `Display`-impl
+    /// drift; third-party `ConstraintChecker` implementations that intentionally
+    /// use domain-specific text can safely ignore it — the debug level is off
+    /// by default and will not appear in production logs unless explicitly
+    /// enabled (e.g. `RUST_LOG=reify_eval=debug`).
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 }
 

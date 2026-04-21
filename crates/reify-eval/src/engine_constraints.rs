@@ -198,15 +198,15 @@ impl Engine {
     ///
     /// In-place mutation (`&mut [Diagnostic]`) avoids the `.collect()`
     /// round-trip used before task 847.2 and enables a `contains`-guarded
-    /// `tracing::warn!` drift signal: when an Error-severity message is
-    /// present but the raw id is absent, we emit a non-fatal `tracing::warn!`
-    /// so first-party format drift is observable without crashing third-party
-    /// `ConstraintChecker` implementations that emit domain-specific error
-    /// text. The signal is scoped to Error-severity because Info/Warning
-    /// diagnostics attached to a labeled constraint (e.g. "inputs still
-    /// undetermined") may be natural-language only and need not embed the
-    /// raw id. When `label` is `None` (inline constraints without a label),
-    /// the messages are returned unchanged. A slice (not `&mut Vec`) is
+    /// `tracing::debug!` drift signal: when an Error-severity message is
+    /// present but the raw id is absent, we emit a non-fatal `tracing::debug!`
+    /// so first-party format drift is observable without flooding WARN logs
+    /// for third-party `ConstraintChecker` implementations that intentionally
+    /// emit domain-specific error text. The signal is scoped to Error-severity
+    /// because Info/Warning diagnostics attached to a labeled constraint (e.g.
+    /// "inputs still undetermined") may be natural-language only and need not
+    /// embed the raw id. When `label` is `None` (inline constraints without a
+    /// label), the messages are returned unchanged. A slice (not `&mut Vec`) is
     /// taken because the rewrite never adds or removes entries — only
     /// mutates existing ones.
     pub(crate) fn labeled_diagnostics(
@@ -235,17 +235,19 @@ impl Engine {
                 }
             }
         }
-        // Emit a non-fatal drift signal when at least one Error-severity
-        // diagnostic is present but the raw id never appeared in any message.
-        // This covers two cases: (1) first-party Display drift — our own
-        // ConstraintNodeId::Display impl changed without updating this helper;
-        // (2) a third-party ConstraintChecker that emits domain-specific error
-        // text without embedding the raw id. Runtime output is still correct in
-        // both cases (domain text reaches users unchanged); the warn! lets
-        // first-party developers notice Display drift without crashing
-        // third-party checkers.
+        // Emit a non-fatal drift signal at DEBUG level when at least one
+        // Error-severity diagnostic is present but the raw id never appeared in
+        // any message. This covers two cases: (1) first-party Display drift —
+        // our own ConstraintNodeId::Display impl changed without updating this
+        // helper; (2) a third-party ConstraintChecker that emits domain-specific
+        // error text without embedding the raw id. Runtime output is still
+        // correct in both cases (domain text reaches users unchanged). Using
+        // debug! rather than warn! means third-party checkers that legitimately
+        // omit the raw id will not flood WARN logs; first-party developers can
+        // observe the signal by enabling DEBUG logging for the "reify_eval"
+        // target (e.g. RUST_LOG=reify_eval=debug).
         if !replaced_any && has_error {
-            tracing::warn!(
+            tracing::debug!(
                 label = ?label,
                 id = %id_str,
                 "labeled_diagnostics: id format drift or non-embedding ConstraintChecker \
