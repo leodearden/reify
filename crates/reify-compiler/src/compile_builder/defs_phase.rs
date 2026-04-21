@@ -12,7 +12,7 @@
 //! downstream entity phase; by design, the downstream rebuild does NOT
 //! re-emit shadow warnings (avoids duplicate diagnostics).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_syntax::ParsedModule;
 use reify_types::{Diagnostic, DiagnosticLabel};
@@ -122,18 +122,17 @@ fn compile_constraint_def(
 
 /// Run phase-10 (constraint defs). Iterates `parsed.declarations`, filtering
 /// `Declaration::Constraint`, compiling each into a `CompiledConstraintDef`
-/// that is pushed onto `ctx.constraint_defs`.
+/// that is pushed onto `ctx.constraint_defs`. Also emits the one-time
+/// shadow-warning diagnostics for cross-prelude constraint-def name
+/// collisions (see [`emit_constraint_def_shadow_warnings`]).
 ///
-/// The `prelude` argument is currently unused by the phase body itself —
-/// constraint-def compilation only needs the alias registry, resolution
-/// enums, and trait names — but is accepted so the signature anticipates
-/// the step-14 design where `entities_phase` will rebuild the registry
-/// without re-emitting shadow warnings. Callers pass the `prelude` slice
-/// unchanged from the orchestrator.
+/// The registry that entity scopes consume is rebuilt fresh in
+/// `entities_phase` without re-emitting these warnings, avoiding duplicate
+/// diagnostics.
 pub(crate) fn phase_constraint_defs(
     ctx: &mut CompilationCtx,
     parsed: &ParsedModule,
-    _prelude: &[&crate::CompiledModule],
+    prelude: &[&crate::CompiledModule],
     trait_names: &HashSet<String>,
 ) {
     for decl in &parsed.declarations {
@@ -146,6 +145,41 @@ pub(crate) fn phase_constraint_defs(
                 &mut ctx.diagnostics,
             );
             ctx.constraint_defs.push(compiled);
+        }
+    }
+
+    emit_constraint_def_shadow_warnings(ctx, prelude);
+}
+
+/// Emit the phase-10 one-time shadow warnings for cross-prelude constraint
+/// def name collisions. Two different prelude modules exporting the same
+/// `pub constraint def` name trigger a warning naming the winner (first
+/// imported) and loser (later imported). The first-imported definition
+/// wins silently; later imports are discarded.
+///
+/// The entity phase rebuilds the registry fresh without re-emitting these
+/// warnings — they are only reported here, at phase-10.
+fn emit_constraint_def_shadow_warnings(
+    ctx: &mut CompilationCtx,
+    prelude: &[&crate::CompiledModule],
+) {
+    // Maps def name → path of the first module that contributed it.
+    let mut prelude_source: HashMap<String, String> = HashMap::new();
+    for m in prelude {
+        let module_path_str = m.path.to_string();
+        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
+            if let Some(prev_path) = prelude_source.get(&cd.name) {
+                if *prev_path != module_path_str {
+                    ctx.diagnostics.push(Diagnostic::warning(format_shadow_warning(
+                        &cd.name,
+                        prev_path,
+                        &module_path_str,
+                    )));
+                }
+                // First-import wins: do not record a second source.
+            } else {
+                prelude_source.insert(cd.name.clone(), module_path_str.clone());
+            }
         }
     }
 }
