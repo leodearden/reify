@@ -368,6 +368,56 @@ mod tests {
         );
     }
 
+    // ── assert_orientation_approx tol = tests ───────────────────────────────
+
+    #[test]
+    fn explicit_tolerance_loose_passes() {
+        // tol=1e-2 allows x=1e-3 to pass; the default 1e-12 tolerance would reject this.
+        assert_orientation_approx!(
+            Value::Orientation {
+                w: 1.0,
+                x: 1.0e-3,
+                y: 0.0,
+                z: 0.0
+            },
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            tol = 1e-2
+        );
+    }
+
+    #[test]
+    fn explicit_tolerance_tight_panics() {
+        // tol=1e-6 is tighter than the x offset of 1e-5 — macro must panic with "x:" in message.
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Orientation {
+                    w: 1.0,
+                    x: 1e-5,
+                    y: 0.0,
+                    z: 0.0
+                },
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                tol = 1e-6
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx with tight tol to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("x:"),
+            "expected panic message to contain 'x:', got: {msg:?}"
+        );
+    }
+
     // ── assert_orientation_approx sign_insensitive = tests ──────────────────
 
     #[test]
