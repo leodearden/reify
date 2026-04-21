@@ -42301,15 +42301,8 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-eval/src/geometry_ops.rs",
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-types/src/geometry.rs"
-          ],
-          "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-types/src"
-          ]
+          "files": [],
+          "modules": []
         },
         "updatedAt": "2026-04-20T12:20:07.802Z"
       },
@@ -42347,16 +42340,8 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/src/snapshot.rs",
-            "crates/reify-eval/src/dirty.rs",
-            "crates/reify-eval/src/demand.rs",
-            "crates/reify-eval/src/deps.rs"
-          ],
-          "modules": [
-            "crates/reify-eval/src"
-          ]
+          "files": [],
+          "modules": []
         },
         "updatedAt": "2026-04-20T12:20:07.863Z"
       },
