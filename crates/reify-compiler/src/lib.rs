@@ -273,13 +273,7 @@ pub(crate) fn compile_with_prelude_refs(
     compile_builder::aliases_phase::phase_aliases(&mut ctx, &decl_refs.alias_refs);
 
     // Build resolution_enums: prelude enums + module-local enums.
-    // resolution_enums is used for type resolution during compilation;
-    // only enum_defs (module-local) goes into the output CompiledModule.
-    ctx.resolution_enums = prelude
-        .iter()
-        .flat_map(|m| m.enum_defs.iter().cloned())
-        .collect();
-    ctx.resolution_enums.extend(ctx.enum_defs.iter().cloned());
+    compile_builder::enums_phase::build_resolution_enums(&mut ctx, prelude);
 
     // Compile in dependency order after collecting all references:
     // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
