@@ -2594,3 +2594,185 @@ fn build_modify_draft_missing_angle_no_kernel_error() {
 fn build_modify_chamfer_missing_distance_no_kernel_error() {
     build_modify_missing_arg_case(reify_compiler::ModifyKind::Chamfer, "distance", "chamfer");
 }
+
+// ---------------------------------------------------------------------------
+// Boolean unresolved-ref coverage: Union / Difference / Intersection
+// ---------------------------------------------------------------------------
+//
+// `compile_geometry_op`'s Boolean arm resolves `left` first, then `right`,
+// using `?` so the first Err short-circuits. The resulting Err string is
+// turned into a `Diagnostic::error("failed to compile geometry operation:
+// {err}")` by `engine_build.rs` — no Warning is emitted on the unresolved-ref
+// path (unlike missing-arg, which does emit a Warning from `eval_named_arg*`).
+// These tests therefore assert on the Error diagnostic's message directly.
+
+/// Assert the 4-signal unresolved-ref rejection shape for a single failing
+/// Boolean op preceded by a Box primitive:
+/// 1. Kernel received exactly one recorded op (the Box — Boolean never reached).
+/// 2. `result.geometry_output` is None.
+/// 3. An Error diagnostic contains `"failed to compile geometry operation"`
+///    and every string in `error_needles`.
+/// 4. No diagnostic contains `"geometry error"` (kernel was never called
+///    for the Boolean op).
+fn assert_boolean_unresolved_ref_rejected(
+    result: &reify_eval::BuildResult,
+    ops: &[reify_test_support::GeometryOpRecord],
+    error_needles: &[&str],
+) {
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected exactly one kernel op (the preceding Box), got {}",
+        ops.len()
+    );
+    assert!(
+        matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
+        "expected the only recorded kernel op to be a Box, got: {:?}",
+        ops[0].op
+    );
+
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when the Boolean op is rejected at compile time"
+    );
+
+    let has_compile_error = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Error
+            && d.message.contains("failed to compile geometry operation")
+            && error_needles
+                .iter()
+                .all(|needle| d.message.contains(needle))
+    });
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic containing 'failed to compile geometry operation' and all needles {:?}; got: {:?}",
+        error_needles,
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for the Boolean op), but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Drive an engine.build() through [Box, Boolean(op, left, right)] where at
+/// least one of `left`/`right` is an out-of-bounds `GeomRef::Step(99)`.
+fn run_boolean_unresolved_ref_case(
+    op: BooleanOp,
+    left: GeomRef,
+    right: GeomRef,
+    module_path: &str,
+) -> (
+    reify_eval::BuildResult,
+    std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
+) {
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let boolean_op = CompiledGeometryOp::Boolean { op, left, right };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, boolean_op])
+        .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(module_path))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+    (result, ops_ref)
+}
+
+/// Union with an out-of-bounds `left` ref (Step(99)) — the first unresolved
+/// ref short-circuits compile via `?` before `right` is even consulted.
+#[test]
+fn build_boolean_union_unresolved_left_no_kernel_error() {
+    let (result, ops_ref) = run_boolean_unresolved_ref_case(
+        BooleanOp::Union,
+        GeomRef::Step(99),
+        GeomRef::Step(0),
+        "test_boolean_union_unresolved_left",
+    );
+    assert_boolean_unresolved_ref_rejected(
+        &result,
+        &ops_ref.lock().unwrap(),
+        &["unresolvable GeomRef::Step", "99"],
+    );
+}
+
+/// Difference with an out-of-bounds `right` ref (Step(99)) — after `left`
+/// resolves, resolving `right` returns Err and compile short-circuits.
+#[test]
+fn build_boolean_difference_unresolved_right_no_kernel_error() {
+    let (result, ops_ref) = run_boolean_unresolved_ref_case(
+        BooleanOp::Difference,
+        GeomRef::Step(0),
+        GeomRef::Step(99),
+        "test_boolean_difference_unresolved_right",
+    );
+    assert_boolean_unresolved_ref_rejected(
+        &result,
+        &ops_ref.lock().unwrap(),
+        &["unresolvable GeomRef::Step", "99"],
+    );
+}
+
+/// Intersection with both refs out-of-bounds — fail-fast invariant: the first
+/// unresolved ref (`left`) short-circuits via `?` so only one
+/// "unresolvable GeomRef::Step" Error is emitted, not two.
+#[test]
+fn build_boolean_intersection_unresolved_both_no_kernel_error() {
+    let (result, ops_ref) = run_boolean_unresolved_ref_case(
+        BooleanOp::Intersection,
+        GeomRef::Step(99),
+        GeomRef::Step(99),
+        "test_boolean_intersection_unresolved_both",
+    );
+    assert_boolean_unresolved_ref_rejected(
+        &result,
+        &ops_ref.lock().unwrap(),
+        &["unresolvable GeomRef::Step", "99"],
+    );
+
+    // Fail-fast: only the first unresolved ref produces an Error — not two.
+    let unresolved_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Step"))
+        .count();
+    assert_eq!(
+        unresolved_count, 1,
+        "fail-fast invariant: expected exactly one 'unresolvable GeomRef::Step' Error (short-circuit on `left`), got {}: {:?}",
+        unresolved_count,
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
