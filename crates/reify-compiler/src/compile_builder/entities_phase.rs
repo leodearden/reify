@@ -19,11 +19,11 @@ use reify_types::{Diagnostic, DiagnosticLabel};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
+use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::check_trait_arg_conformance;
 use crate::entity::{EntityDefRef, PendingBoundCheck, check_type_param_bounds, compile_entity};
 use crate::types::{
-    CompiledConstraintDef, CompiledField, CompiledImport, CompiledTrait, EntityKind,
-    TopologyTemplate,
+    CompiledConstraintDef, CompiledField, CompiledImport, EntityKind, TopologyTemplate,
 };
 
 /// Run phase-11 (entity compile) over `parsed.declarations`.
@@ -41,15 +41,7 @@ pub(crate) fn phase_entities(
     prelude: &[&CompiledModule],
 ) {
     // Rebuild the trait registry fresh: prelude first, then local overrides.
-    let prelude_trait_defs: Vec<&CompiledTrait> =
-        prelude.iter().flat_map(|m| m.trait_defs.iter()).collect();
-    let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-    for t in &prelude_trait_defs {
-        trait_registry.insert(t.name.clone(), t);
-    }
-    for t in &ctx.trait_defs {
-        trait_registry.insert(t.name.clone(), t);
-    }
+    let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
 
     // Field registry built from local ctx.fields only (fields are not
     // re-exported from prelude modules in the current scope resolution).
@@ -190,15 +182,7 @@ pub(crate) fn phase_pending_bound_checks(
         .collect();
 
     // Rebuild the trait registry (same composition as phase_entities).
-    let prelude_trait_defs: Vec<&CompiledTrait> =
-        prelude.iter().flat_map(|m| m.trait_defs.iter()).collect();
-    let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-    for t in &prelude_trait_defs {
-        trait_registry.insert(t.name.clone(), t);
-    }
-    for t in &ctx.trait_defs {
-        trait_registry.insert(t.name.clone(), t);
-    }
+    let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
 
     let pending_bound_checks = std::mem::take(&mut ctx.pending_bound_checks);
     for check in pending_bound_checks {

@@ -5,9 +5,9 @@
 //! Returns `trait_names` so downstream phases (fields, defs, entities) can
 //! resolve `param m : TraitName` against it. The trait registry (a
 //! phase-local `HashMap<String, &CompiledTrait>`) is rebuilt lazily inside
-//! each phase that needs it — it borrows from ctx's owned `trait_defs` and
-//! therefore can't live on ctx alongside the owner (see task 2035 design
-//! decision #2).
+//! each phase that needs it via [`build_trait_registry`] — it borrows from
+//! ctx's owned `trait_defs` and therefore can't live on ctx alongside the
+//! owner (see task 2035 design decision #2).
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,6 +18,30 @@ use crate::annotations::{deprecation_message, emit_deprecation_warning};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::traits::compile_trait;
 use crate::types::CompiledTrait;
+
+/// Build a combined trait registry (prelude first, then local override on
+/// name collision) used by downstream phases for deprecation checks and
+/// type-parameter bound resolution.
+///
+/// Borrows from both `local` (module-local trait defs in ctx) and every
+/// prelude module's `trait_defs`. The returned map is phase-local because
+/// its `&'a CompiledTrait` values borrow fields of `CompilationCtx` that
+/// can't be stored alongside the owners (see task 2035 design decision #2).
+pub(crate) fn build_trait_registry<'a>(
+    local: &'a [CompiledTrait],
+    prelude: &[&'a CompiledModule],
+) -> HashMap<String, &'a CompiledTrait> {
+    let mut registry: HashMap<String, &'a CompiledTrait> = HashMap::new();
+    for m in prelude {
+        for t in &m.trait_defs {
+            registry.insert(t.name.clone(), t);
+        }
+    }
+    for t in local {
+        registry.insert(t.name.clone(), t);
+    }
+    registry
+}
 
 /// Run phase-8 (traits). Returns the compile-time `trait_names` set used by
 /// downstream phases for `Type::TraitObject` resolution.
@@ -66,19 +90,9 @@ pub(crate) fn phase_traits(
         ctx.trait_defs.push(compiled_trait);
     }
 
-    // 3. Build trait registry for deprecation checking.
-    //    Start with prelude traits, then add module-local traits (module overrides prelude on collision).
-    let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-    // Hold prelude trait references in scope so trait_registry can borrow from them.
-    let prelude_trait_defs: Vec<&CompiledTrait> =
-        prelude.iter().flat_map(|m| m.trait_defs.iter()).collect();
-    for t in &prelude_trait_defs {
-        trait_registry.insert(t.name.clone(), t);
-    }
-    // Module-local traits override prelude on name collision.
-    for t in &ctx.trait_defs {
-        trait_registry.insert(t.name.clone(), t);
-    }
+    // 3. Build trait registry for deprecation checking (prelude first,
+    //    local overrides on name collision).
+    let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
 
     // Deprecation check: warn when a trait refinement references a @deprecated parent trait.
     // TraitDecl.refinements is Vec<String> without individual spans; use the child trait's span.
