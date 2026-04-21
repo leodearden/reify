@@ -44,6 +44,17 @@ struct CliState {
     engine_construction_count: usize,
 }
 
+impl CliState {
+    /// Clear both `user_overrides` and `warned_overrides` together, enforcing
+    /// the invariant that the two collections are always pruned as a unit.
+    /// Called from `load_file`, `open_file`, and the early-return branch of
+    /// `reapply_user_overrides` (when there is nothing left to dedupe against).
+    fn clear_overrides(&mut self) {
+        self.user_overrides.clear();
+        self.warned_overrides.clear();
+    }
+}
+
 /// CLI-mode implementation of ReifyToolContext.
 ///
 /// Backed by a real Engine with interior mutability via Mutex<CliState>.
@@ -114,8 +125,7 @@ impl CliToolContext {
         let mut state = self.lock_state();
         // load_file semantically starts over with a new file — clear any prior
         // user overrides so get_parameters() returns fresh module defaults.
-        state.user_overrides.clear();
-        state.warned_overrides.clear();
+        state.clear_overrides();
         ensure_engine(&mut state).eval(&compiled);
         state.files.insert(
             abs_path.clone(),
@@ -180,16 +190,23 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 /// - **`Err(CellNotFound)`** — topology changed (the param was deleted or renamed);
 ///   skip silently and keep the override in `user_overrides` so it can reappear if
 ///   the topology reverts in a subsequent edit.
-/// - **Any other `Err`** (`TypeKindMismatch`, `DimensionMismatch`, `NotInitialized`) —
+/// - **Any other `Err`** (`TypeKindMismatch`, `DimensionMismatch`) —
 ///   the cell exists but the stored value is incompatible with its current type.  The
 ///   **first** occurrence emits a `tracing::warn!` event with the cell id and error for
 ///   diagnostic inspection; subsequent occurrences of the same `(cell_id, error_variant)`
 ///   pair are downgraded to `tracing::debug!` to avoid log spam when a stale override
 ///   persists across repeated saves.  The override is kept in `user_overrides` so the
 ///   user's intent survives a transient mismatch and reapplies when the type becomes
-///   compatible again.
+///   compatible again.  `NotInitialized` is matched only to satisfy exhaustiveness —
+///   it is unreachable here because `reapply_user_overrides` is only invoked from
+///   `update_source` immediately after `ensure_engine(...).eval(...)` populates the
+///   snapshot.
 fn reapply_user_overrides(state: &mut CliState) {
     if state.user_overrides.is_empty() {
+        // Nothing left to dedupe against — prune both override collections so
+        // stale entries from earlier mismatches don't linger.  user_overrides
+        // is already empty here; clear_overrides() also prunes warned_overrides.
+        state.clear_overrides();
         return;
     }
     let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
@@ -670,8 +687,7 @@ impl ReifyToolContext for CliToolContext {
         if let Some(compiled) = pipeline_result {
             // open_file semantically starts over with a new file — clear any
             // prior user overrides so get_parameters() returns fresh module defaults.
-            state.user_overrides.clear();
-            state.warned_overrides.clear();
+            state.clear_overrides();
             ensure_engine(&mut state).eval(&compiled);
             state.compiled = Some(compiled);
         }
@@ -1059,6 +1075,69 @@ structure Bracket {
             run_reapply_with_source(BRACKET_NO_WIDTH),
             0,
             "CellNotFound must NOT emit a warn — silent skip"
+        );
+    }
+
+    /// Invariant-guard test: `warned_overrides` must remain a subset of the
+    /// cells currently in `user_overrides`.  Specifically, when `user_overrides`
+    /// is empty, `warned_overrides` must also be empty after the next
+    /// `reapply_user_overrides` call.
+    ///
+    /// The scenario: `warned_overrides` was populated by a prior `TypeKindMismatch`
+    /// reapply, then `user_overrides` was manually cleared (simulating a caller that
+    /// removes all overrides without going through `load_file`/`open_file`).  Calling
+    /// `update_source` with valid source drives `reapply_user_overrides` through its
+    /// early-return branch, which delegates to `state.clear_overrides()` to prune
+    /// the now-stale `warned_overrides`.
+    ///
+    /// Note: no public API can reach this state today — `load_file`/`open_file`
+    /// clear both collections together, and `set_parameter` always re-pushes to
+    /// `user_overrides`.  The test exercises a defensive invariant guard.
+    #[test]
+    fn reapply_user_overrides_maintains_warned_subset_invariant() {
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
+
+        // 1. Populate warned_overrides via the normal flow: set a Scalar[LENGTH]
+        //    override, then update_source with BRACKET_INT_WIDTH which changes
+        //    width to Int, triggering TypeKindMismatch → inserts into warned_overrides.
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter should succeed");
+        ctx.update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
+            .expect("update_source should return Ok even on override mismatch");
+
+        // 2. Precondition: warned_overrides must be non-empty after the mismatch.
+        {
+            let state = ctx.lock_state();
+            assert!(
+                !state.warned_overrides.is_empty(),
+                "test setup precondition: warned_overrides must be populated after a \
+                 type-mismatch reapply"
+            );
+        }
+
+        // 3. Clear user_overrides directly to create the "empty user_overrides with
+        //    populated warned_overrides" state that the early-return branch guards.
+        {
+            let mut state = ctx.lock_state();
+            state.user_overrides.clear();
+        }
+
+        // 4. Drive reapply_user_overrides through the early-return branch by
+        //    calling update_source with the original valid bracket source.
+        let source = std::fs::read_to_string(BRACKET_PATH)
+            .expect("bracket.ri fixture must be readable");
+        ctx.update_source(BRACKET_PATH, &source)
+            .expect("update_source with valid source should succeed");
+
+        // 5. Assert warned_overrides is now empty — the early-return branch must
+        //    clear the stale dedupe set when there is nothing left to dedupe against.
+        let state = ctx.lock_state();
+        assert!(
+            state.warned_overrides.is_empty(),
+            "reapply_user_overrides must clear warned_overrides when user_overrides is empty \
+             (nothing left to dedupe against)"
         );
     }
 
