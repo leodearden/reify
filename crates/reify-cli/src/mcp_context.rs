@@ -1078,6 +1078,24 @@ structure Bracket {
         );
     }
 
+    /// Verify that the second `update_source` call that triggers the same
+    /// `TypeKindMismatch` error for the same `(cell_id, variant)` pair is
+    /// downgraded from WARN to DEBUG.
+    ///
+    /// A total WARN delta of 1 means the first call emits the warn and the
+    /// second is silently demoted — the dedupe set is working.  A delta of 2
+    /// would mean the downgrade path is broken (missing `insert`, wrong hash, …)
+    /// and the caller's log would be flooded with repeated warns.
+    #[test]
+    fn reapply_user_overrides_warn_deduped_on_repeat() {
+        assert_eq!(
+            run_reapply_with_sources(&[BRACKET_INT_WIDTH, BRACKET_INT_WIDTH]),
+            1,
+            "second TypeKindMismatch on the same (cell_id, variant) pair must be \
+             downgraded to debug — warned_overrides.insert() should return false on repeat"
+        );
+    }
+
     /// Invariant-guard test: `warned_overrides` must remain a subset of the
     /// cells currently in `user_overrides`.  Specifically, when `user_overrides`
     /// is empty, `warned_overrides` must also be empty after the next
