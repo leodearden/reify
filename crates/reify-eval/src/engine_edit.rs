@@ -760,11 +760,16 @@ impl Engine {
     /// and demand registry. Returns `Err(EngineError::NotInitialized)` when
     /// called on a fresh Engine before any eval.
     ///
-    /// On success (implemented in later steps), returns an `EvalResult` whose
-    /// `values` map reflects the post-edit state, computed incrementally by
-    /// diffing the old vs new `EvaluationGraph` and re-evaluating only the
-    /// dependency cones touched by the structural diff.
-    pub fn edit_source(&mut self, _module: &CompiledModule) -> Result<EvalResult, EngineError> {
+    /// Current implementation (step-4): the "no-change" code path — builds
+    /// a fresh snapshot, rebuilds reverse index / trace map / demand registry
+    /// from the new graph, refreshes function / purpose / meta / objective
+    /// tables from the new module, and seeds per-cell values by copying the
+    /// prior snapshot's values for every cell that is also present in the
+    /// new graph. This is semantically correct whenever the edit leaves
+    /// every cell's content_hash unchanged; later steps replace the
+    /// "copy all values" shortcut with diff-driven re-evaluation so that
+    /// genuinely structural edits produce the right downstream values.
+    pub fn edit_source(&mut self, module: &CompiledModule) -> Result<EvalResult, EngineError> {
         // Precondition: prior eval() must have populated eval_state. This is
         // the same precondition as edit_param and is validated first so that
         // all later steps can rely on a present baseline.
@@ -772,10 +777,114 @@ impl Engine {
             return Err(EngineError::NotInitialized);
         }
 
-        // Placeholder: later steps replace this with the diff-driven
-        // incremental re-evaluation pipeline.
+        // (1) Capture the parent snapshot id before we mutate any state.
+        let parent_id = self.eval_state.as_ref().unwrap().snapshot.id;
+
+        // (2) Build the new snapshot from the incoming CompiledModule.
+        //     Snapshot::from_compiled_module seeds every value cell to
+        //     (Undef, Undetermined) or (Undef, Auto); the seeding loop
+        //     below overwrites those with the preserved prior values.
+        let snapshot_id = self.next_snapshot_id;
+        self.next_snapshot_id += 1;
+        let version_id = self.next_version_id;
+        self.next_version_id += 1;
+        let mut new_snapshot = crate::snapshot::Snapshot::from_compiled_module(module);
+        new_snapshot.id = SnapshotId(snapshot_id);
+        new_snapshot.version = VersionId(version_id);
+        new_snapshot.provenance = SnapshotProvenance::Edit {
+            changed: HashSet::new(),
+            parent: parent_id,
+        };
+
+        // (3) Rebuild dependency structures against the NEW graph. Full
+        //     rebuild is O(nodes · avg_trace_size), matching cold eval(); see
+        //     the design-decision rationale in plan.json for why we don't
+        //     patch in place.
+        let new_reverse_index =
+            crate::deps::ReverseDependencyIndex::build_from_graph(&new_snapshot.graph);
+        let new_trace_map = crate::deps::build_trace_map(&new_snapshot.graph);
+
+        let mut new_demand = crate::demand::DemandRegistry::new();
+        for (_, node) in new_snapshot.graph.value_cells.iter() {
+            new_demand.add_demand(NodeId::Value(node.id.clone()));
+        }
+        for (_, cnode) in new_snapshot.graph.constraints.iter() {
+            new_demand.add_demand(NodeId::Constraint(cnode.id.clone()));
+        }
+        for (_, rnode) in new_snapshot.graph.realizations.iter() {
+            new_demand.add_demand(NodeId::Realization(rnode.id.clone()));
+        }
+        new_demand.rebuild_cone(&new_snapshot.graph);
+
+        // (4) Seed values by copying from the OLD snapshot for every cell
+        //     that also exists in the NEW graph. Cells present only in the
+        //     new graph stay at their Snapshot::from_compiled_module default
+        //     (Undef + {Undetermined, Auto}).
+        //
+        //     This implements the plan's "zero-diff code path"; later steps
+        //     layer diff-driven re-evaluation on top.
+        let mut values = ValueMap::new();
+        let old_values = {
+            let state = self.eval_state.as_ref().unwrap();
+            state.snapshot.values.clone()
+        };
+        let cell_ids: Vec<ValueCellId> = new_snapshot
+            .graph
+            .value_cells
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &cell_ids {
+            if let Some((val, det)) = old_values.get(id) {
+                new_snapshot
+                    .values
+                    .insert(id.clone(), (val.clone(), *det));
+                values.insert(id.clone(), val.clone());
+            } else if let Some((val, _)) = new_snapshot.values.get(id) {
+                // New-only cell: keep the Snapshot::from_compiled_module
+                // default (Undef). The diff-driven path (step-6+) will
+                // evaluate it properly.
+                values.insert(id.clone(), val.clone());
+            }
+        }
+
+        // (5) Refresh function / purpose / meta / objective tables from the
+        //     new module, identical to the block at the head of Engine::eval.
+        //     A source edit can add/remove/change a user function body,
+        //     purpose declaration, meta block, or objective — none of these
+        //     are captured by the per-cell content_hash diff, so relying on
+        //     cell-level diffing alone would silently serve stale tables.
+        self.functions = module.functions.clone();
+        self.functions
+            .extend(self.prelude_functions.iter().cloned());
+        self.compiled_purposes = module.compiled_purposes.clone();
+        self.meta_map = module
+            .templates
+            .iter()
+            .filter(|t| !t.meta.is_empty())
+            .map(|t| (t.name.clone(), t.meta.clone()))
+            .collect();
+        self.objectives.clear();
+        for template in &module.templates {
+            if let Some(obj) = &template.objective {
+                self.objectives
+                    .insert(template.name.clone(), obj.clone());
+            }
+        }
+
+        // (6) Install the new snapshot + dependency structures, (7) reset
+        //     last_eval_set (no incremental eval performed on this no-change
+        //     path), and (8) return the preserved values.
+        self.eval_state = Some(crate::EvaluationState {
+            snapshot: new_snapshot,
+            reverse_index: new_reverse_index,
+            trace_map: new_trace_map,
+        });
+        self.demand = new_demand;
+        self.last_eval_set = Vec::new();
+
         Ok(EvalResult {
-            values: ValueMap::new(),
+            values,
             diagnostics: Vec::new(),
             resolved_params: HashMap::new(),
         })
