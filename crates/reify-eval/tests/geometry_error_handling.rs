@@ -1986,3 +1986,143 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression guards: Extrude distance threshold boundary (DEGENERATE_LENGTH_M)
+// ---------------------------------------------------------------------------
+
+/// Boundary test: distance=1e-13 is strictly less than DEGENERATE_LENGTH_M=1e-12
+/// and must be rejected at compile time with an "extrude dropped" Warning.
+/// Pins the strictly-less-than floor semantics so a future refactor to `>` or
+/// a different constant can't silently let sub-picometer distances through.
+#[test]
+fn build_extrude_distance_just_below_threshold_rejected() {
+    use reify_compiler::SweepKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let length_literal = |si_value: f64| {
+        reify_types::CompiledExpr::literal(
+            reify_types::Value::Scalar {
+                si_value,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+            Type::length(),
+        )
+    };
+
+    // Op 0: Sphere primitive — provides step_handles[0] as the Extrude's profile handle
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Extrude with distance=1e-13 m — strictly below DEGENERATE_LENGTH_M=1e-12
+    let extrude_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![("distance".into(), length_literal(1e-13))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, extrude_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_extrude_below_threshold",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["extrude dropped", "degenerate"],
+    );
+}
+
+/// Boundary test: distance=1e-12 is exactly DEGENERATE_LENGTH_M, the documented
+/// floor (`v.abs() >= DEGENERATE_LENGTH_M`), and must be accepted — the Extrude
+/// op should be forwarded to the kernel. Pins the inclusive `>=` boundary
+/// semantics so a future refactor to `>` would be caught.
+#[test]
+fn build_extrude_distance_at_threshold_accepted() {
+    use reify_compiler::SweepKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let length_literal = |si_value: f64| {
+        reify_types::CompiledExpr::literal(
+            reify_types::Value::Scalar {
+                si_value,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+            Type::length(),
+        )
+    };
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Extrude with distance=1e-12 m — exactly at the floor, must pass
+    let extrude_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![("distance".into(), length_literal(1e-12))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, extrude_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extrude_at_threshold"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 kernel ops (Sphere + Extrude) when distance is exactly at the floor, got {}",
+        ops.len()
+    );
+    assert!(
+        matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
+        "expected ops[0] to be Sphere, got: {:?}",
+        ops[0].op
+    );
+    assert!(
+        matches!(ops[1].op, reify_types::GeometryOp::Extrude { .. }),
+        "expected ops[1] to be Extrude (accepted at threshold), got: {:?}",
+        ops[1].op
+    );
+
+    // No 'extrude dropped' Warning should fire at the inclusive boundary
+    let spurious_drop = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning && d.message.contains("extrude dropped")
+    });
+    assert!(
+        !spurious_drop,
+        "expected no 'extrude dropped' Warning at the inclusive floor, got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("extrude dropped"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
