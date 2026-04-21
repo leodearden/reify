@@ -1,0 +1,48 @@
+/* DualViewport: vertical-stack layout (def-preview on top, design on bottom) */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Wrapper around each active Viewport — fills available space */
+.viewportWrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Minimized 40px strip shown when a viewport is not active */
+.strip {
+  flex: 0 0 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--reify-surface, #313244);
+  color: var(--reify-text-muted, #a6adc8);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  border-top: 1px solid var(--reify-border, #45475a);
+}
+
+.strip:hover {
+  background: var(--reify-surface-hover, #45475a);
+  color: var(--reify-text, #cdd6f4);
+}
+
+/* Centered placeholder when neither viewport is active */
+.empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--reify-text-muted, #a6adc8);
+  font-size: 14px;
+}
