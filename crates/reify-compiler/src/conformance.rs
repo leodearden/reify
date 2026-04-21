@@ -173,115 +173,53 @@ pub(crate) fn check_phase_resolve_structure_members(
     (structure_members, structure_constraint_labels)
 }
 
-/// Phase 2 of trait conformance checking: collect all requirements and defaults from
-/// all trait bounds in the structure's trait bound list.
+/// Phase 3 of trait conformance checking: pre-register default types into the compilation scope.
 ///
-/// Creates a fresh `MergeContext` and calls `collect_all_requirements` for each trait bound,
-/// which recursively walks refinement chains and deduplicates requirements/defaults across
-/// the full bound set. The returned `MergeContext` carries both `requirements` and `defaults`
-/// for use by later phases.
+/// Implements a two-pass pre-registration strategy:
+/// - **Pass 1** registers every *annotated* default (Param + Let with `Some(cell_type)`) into
+///   `scope` using `register_if_absent`. No expression compilation happens here, so ordering
+///   within `ctx.defaults` does not matter for the annotated types made visible to Pass 2.
+/// - **Pass 2** compiles each *unannotated* Let's expression against the fully-populated
+///   annotated scope from Pass 1, caches the compiled expression in `inferred_let_exprs`, and
+///   registers the inferred `result_type`. When `register_if_absent` finds the scope slot
+///   already claimed (Pass 1 registered an annotated Param or Let), the name is added to
+///   `pass2_skipped` and the Let-cell injection is suppressed in phase 6.
 ///
-/// `MergeContext` bundles the output accumulators (`requirements`, `defaults`) and the 5 mutable
-/// tracking maps (`visited`, `seen_names`, `seen_defaults`, `seen_let_hashes`,
-/// `seen_let_conflict_names`) so the recursive `collect_all_requirements` signature stays
-/// within Clippy's argument-count limit.
-pub(crate) fn check_phase_collect_trait_bounds(
-    structure: &EntityDefRef<'_>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
-    structure_members: &HashMap<String, Type>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> MergeContext {
-    let mut ctx = MergeContext::new();
-
-    for trait_bound in structure.trait_bounds {
-        collect_all_requirements(
-            &trait_bound.name,
-            trait_registry,
-            &mut ctx,
-            structure_members,
-            structure.span,
-            0,
-            diagnostics,
-        );
-    }
-
-    ctx
-}
-
+/// # INVARIANTS for `inferred_let_exprs` name-only key
+///
+/// 1. Only `DefaultKind::Let { cell_type: None }` inserts into this cache — no cross-kind
+///    writes, so a `Param`-named `x` and a `Let`-named `x` never collide on this map.
+/// 2. Only the `DefaultKind::Let` arm of the injection loop (phase 6) reads from this cache
+///    — reads are kind-guarded by the enclosing match, so the lookup cannot be satisfied by
+///    a non-Let entry.
+/// 3. `collect_all_requirements` deduplicates defaults by (name, kind) across the trait-bound
+///    set, so at most one unannotated-let default with a given name reaches this loop.
+///
+/// # TWO-PASS DESIGN RATIONALE (task 1834 amendment)
+///
+/// The split restores the pre-1834 tolerance for forward references to any *annotated* member:
+/// before this amendment, Pass 1+2 were a single pass that walked `ctx.defaults` in source
+/// order, so an unannotated `let a = b + 1mm` appearing before `let b : Length = 2mm` would
+/// compile against a scope that did not yet contain `b`. Both passes run BEFORE
+/// `available_defaults` is built so Pass 2's inference results feed requirement-matching.
+///
+/// # DESIGN LIMITATION
+///
+/// Pass 2 still walks `ctx.defaults` in source order. Two *unannotated* lets that
+/// forward-reference each other will fail inference for the forward-referencing binding
+/// (`b` is not in scope when `a`'s expression is compiled), yielding an `unresolved name`
+/// diagnostic. Annotating *either* binding unblocks the case. A topological ordering pass
+/// would remove the limitation but is out of scope ("documenting as intentional simplification").
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn check_trait_conformance(
-    structure: &EntityDefRef<'_>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
-    trait_names: &HashSet<String>,
+pub(crate) fn check_phase_pre_register_default_types(
+    ctx: &MergeContext,
+    structure_members: &HashMap<String, Type>,
+    structure_name: &str,
     scope: &mut CompilationScope,
-    value_cells: &mut Vec<ValueCellDecl>,
-    constraints: &mut Vec<CompiledConstraint>,
-    constraint_index: &mut u32,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
-    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
-) {
-    let (structure_members, structure_constraint_labels) =
-        check_phase_resolve_structure_members(structure, trait_names, enum_defs, alias_registry, diagnostics);
-
-    let ctx =
-        check_phase_collect_trait_bounds(structure, trait_registry, &structure_members, diagnostics);
-
-    // Cache of compiled expressions for unannotated let defaults, keyed by
-    // default name.  Populated by Pass 2 below and drained by the injection
-    // loop (task 1834 step-9) to avoid double-compilation of the same
-    // expression.  Also consumed by the `available_defaults` builder
-    // (task 1834 step-8) so unannotated let defaults contribute their
-    // *inferred* type to requirement-matching, instead of the previous
-    // `Type::Real` fallback.
-    //
-    // INVARIANTS that make the name-only key safe (no `AvailableDefaultKind`
-    // discriminator, unlike `available_defaults` below):
-    //   1. Only `DefaultKind::Let { cell_type: None }` inserts into this cache —
-    //      no cross-kind writes, so a `Param`-named `x` and a `Let`-named `x`
-    //      never collide on this map.
-    //   2. Only the `DefaultKind::Let` arm of the injection loop reads from
-    //      this cache — reads are kind-guarded by the enclosing match, so
-    //      the lookup cannot be satisfied by a non-Let entry.
-    //   3. `collect_all_requirements` deduplicates defaults by (name, kind)
-    //      across the trait-bound set, so at most one unannotated-let default
-    //      with a given name reaches this loop.
-    //
-    // If any of these ever drift, key the cache on
-    // `(String, AvailableDefaultKind)` to match `available_defaults` for
-    // symmetry and explicit kind discrimination.
-    //
-    // TWO-PASS PRE-REGISTER DESIGN (task 1834 amendment — reviewer_comprehensive
-    // behavior_regression fix):
-    //   Pass 1 — register every *annotated* default (Param + Let with
-    //     `Some(cell_type)`) into the scope.  No expression compilation
-    //     happens here, so ordering within `ctx.defaults` does not matter
-    //     for the annotated types made visible to Pass 2.
-    //   Pass 2 — for each *unannotated* Let (`cell_type: None`), compile
-    //     the expression against the fully-populated annotated scope from
-    //     Pass 1, cache the compiled_expr in `inferred_let_exprs`, and
-    //     register the inferred `result_type`.
-    //
-    // The split restores the pre-1834 tolerance for forward references to
-    // any *annotated* member: before this amendment, Pass 1+2 were a single
-    // pass that walked `ctx.defaults` in source order, so an unannotated
-    // `let a = b + 1mm` appearing before `let b : Length = 2mm` would compile
-    // against a scope that did not yet contain `b` — a silent regression
-    // vs. the pre-1834 code, which registered every annotated type up front.
-    // Both passes run BEFORE `available_defaults` is built so Pass 2's
-    // inference results feed the requirement-matching lookup below.
-    //
-    // DESIGN LIMITATION (acknowledged simplification): Pass 2 still walks
-    // `ctx.defaults` in source order.  Two *unannotated* lets that
-    // forward-reference each other — e.g., `let a = b + 1mm` where
-    // `let b = 5mm` is *also* unannotated — will fail inference for the
-    // forward-referencing binding (`b` is not in scope when `a`'s
-    // expression is compiled), yielding an `unresolved name` diagnostic.
-    // Annotating *either* binding unblocks the case because annotated
-    // types are registered by Pass 1.  A topological ordering pass over
-    // unannotated lets would remove the limitation entirely but is out of
-    // scope for task 1834 ("documenting as intentional simplification").
+) -> (HashMap<String, CompiledExpr>, HashSet<String>) {
     let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
     // Unannotated-let defaults whose scope slot was already claimed by an annotated
     // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
@@ -291,14 +229,14 @@ pub(crate) fn check_trait_conformance(
     let mut pass2_skipped: HashSet<String> = HashSet::new();
 
     // Shared conflict logger for `register_if_absent` Occupied returns.  Captures
-    // `&structure.name` from the enclosing scope so both Pass 1 and Pass 2 call
+    // `structure_name` from the enclosing scope so both Pass 1 and Pass 2 call
     // sites stay structurally identical — no drift risk if the message or fields
     // ever change.
     let log_conflict = |name: &str, ignored_ty: Type| {
         tracing::debug!(
             target: "reify_compiler::conformance",
             name = %name,
-            entity = %structure.name,
+            entity = %structure_name,
             ignored_ty = ?ignored_ty,
             "trait-merge conflict: second default with same name ignored; first-seen type wins"
         );
@@ -368,6 +306,74 @@ pub(crate) fn check_trait_conformance(
             }
         }
     }
+
+    (inferred_let_exprs, pass2_skipped)
+}
+
+/// Phase 2 of trait conformance checking: collect all requirements and defaults from
+/// all trait bounds in the structure's trait bound list.
+///
+/// Creates a fresh `MergeContext` and calls `collect_all_requirements` for each trait bound,
+/// which recursively walks refinement chains and deduplicates requirements/defaults across
+/// the full bound set. The returned `MergeContext` carries both `requirements` and `defaults`
+/// for use by later phases.
+///
+/// `MergeContext` bundles the output accumulators (`requirements`, `defaults`) and the 5 mutable
+/// tracking maps (`visited`, `seen_names`, `seen_defaults`, `seen_let_hashes`,
+/// `seen_let_conflict_names`) so the recursive `collect_all_requirements` signature stays
+/// within Clippy's argument-count limit.
+pub(crate) fn check_phase_collect_trait_bounds(
+    structure: &EntityDefRef<'_>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_members: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> MergeContext {
+    let mut ctx = MergeContext::new();
+
+    for trait_bound in structure.trait_bounds {
+        collect_all_requirements(
+            &trait_bound.name,
+            trait_registry,
+            &mut ctx,
+            structure_members,
+            structure.span,
+            0,
+            diagnostics,
+        );
+    }
+
+    ctx
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_trait_conformance(
+    structure: &EntityDefRef<'_>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_names: &HashSet<String>,
+    scope: &mut CompilationScope,
+    value_cells: &mut Vec<ValueCellDecl>,
+    constraints: &mut Vec<CompiledConstraint>,
+    constraint_index: &mut u32,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (structure_members, structure_constraint_labels) =
+        check_phase_resolve_structure_members(structure, trait_names, enum_defs, alias_registry, diagnostics);
+
+    let ctx =
+        check_phase_collect_trait_bounds(structure, trait_registry, &structure_members, diagnostics);
+
+    let (mut inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+        &ctx,
+        &structure_members,
+        structure.name,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+    );
 
     // Build a map of available default names from ctx.defaults (non-constraint, named).
     // Used to cross-check requirements: a requirement is satisfied if the structure
