@@ -10264,15 +10264,18 @@
         "description": "Replace is_some() guard + unwrap() patterns with if-let bindings in concurrent_eval.rs and filter_map in evaluate_let_bindings",
         "details": "1. In crates/reify-runtime/src/concurrent_eval.rs evaluate(): replace is_some() guard + unwrap() with `if let Some(expr) = cell_node.default_expr.as_ref()`\n2. In crates/reify-eval/src/lib.rs evaluate_let_bindings(): replace filter(is_some)+unwrap with filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))\n\nFrom review of task 397 (esc-397-121).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:50.626Z",
+        "updatedAt": "2026-04-21T14:52:26.831Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [],
+          "done_provenance": {
+            "commit": "f67d64c835b44ec25469cb89c7161226e69b692b"
+          }
         }
       },
       {
@@ -43743,14 +43746,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T14:47:44.792Z",
+      "lastModified": "2026-04-21T14:52:26.832Z",
       "taskCount": 2064,
-      "completedCount": 1803,
+      "completedCount": 1804,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T14:50:14.899Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
