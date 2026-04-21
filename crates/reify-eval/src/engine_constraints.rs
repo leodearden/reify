@@ -1,6 +1,7 @@
 // Split from lib.rs (task 2032) — constraints methods.
 
 use std::collections::{BTreeMap, HashMap};
+use tracing;
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
 use reify_types::{
@@ -198,16 +199,17 @@ impl Engine {
     ///
     /// In-place mutation (`&mut [Diagnostic]`) avoids the `.collect()`
     /// round-trip used before task 847.2 and enables a `contains`-guarded
-    /// debug-assert: when a label is supplied, at least one Error-severity
-    /// message references the ConstraintNodeId, yet none was rewritten,
-    /// the id format has drifted from what the engine emits and future
-    /// callers should investigate. The assert is scoped to Error-severity
-    /// because Info/Warning diagnostics attached to a labeled constraint
-    /// (e.g. "inputs still undetermined") may be natural-language only
-    /// and need not embed the raw id. When `label` is `None` (inline
-    /// constraints without a label), the messages are returned unchanged.
-    /// A slice (not `&mut Vec`) is taken because the rewrite never adds
-    /// or removes entries — only mutates existing ones.
+    /// `tracing::warn!` drift signal: when an Error-severity message is
+    /// present but the raw id is absent, we emit a non-fatal `tracing::warn!`
+    /// so first-party format drift is observable without crashing third-party
+    /// `ConstraintChecker` implementations that emit domain-specific error
+    /// text. The signal is scoped to Error-severity because Info/Warning
+    /// diagnostics attached to a labeled constraint (e.g. "inputs still
+    /// undetermined") may be natural-language only and need not embed the
+    /// raw id. When `label` is `None` (inline constraints without a label),
+    /// the messages are returned unchanged. A slice (not `&mut Vec`) is
+    /// taken because the rewrite never adds or removes entries — only
+    /// mutates existing ones.
     pub(crate) fn labeled_diagnostics(
         messages: &mut [Diagnostic],
         id: &reify_types::ConstraintNodeId,
@@ -234,16 +236,24 @@ impl Engine {
                 }
             }
         }
-        // Only assert on drift when at least one Error-severity diagnostic
-        // is present — informational/warning diagnostics on labeled
-        // constraints may legitimately omit the raw id string.
-        debug_assert!(
-            replaced_any || !has_error,
-            "labeled_diagnostics: label={:?} provided with Error-severity messages, but \
-             ConstraintNodeId {} did not appear in any message — id format drift?",
-            label,
-            id_str,
-        );
+        // Emit a non-fatal drift signal when at least one Error-severity
+        // diagnostic is present but the raw id never appeared in any message.
+        // This covers two cases: (1) first-party Display drift — our own
+        // ConstraintNodeId::Display impl changed without updating this helper;
+        // (2) a third-party ConstraintChecker that emits domain-specific error
+        // text without embedding the raw id. Runtime output is still correct in
+        // both cases (domain text reaches users unchanged); the warn! lets
+        // first-party developers notice Display drift without crashing
+        // third-party checkers.
+        if !(replaced_any || !has_error) {
+            tracing::warn!(
+                label = ?label,
+                id = %id_str,
+                "labeled_diagnostics: id format drift or non-embedding ConstraintChecker \
+                 — label substitution had no target; Error-severity message present but \
+                 ConstraintNodeId did not appear in any message",
+            );
+        }
     }
 
     /// Consume a `ConstraintResult`, run the label-rewrite over its diagnostic
