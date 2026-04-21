@@ -43121,11 +43121,11 @@
         "description": "Dedup repeated PathBuf+CliToolContext::new in test module of crates/reify-cli/src/mcp_context.rs (sites ~807,832,865,891,931,1115,1136). Introduce `fn fresh_ctx() -> CliToolContext` helper and update callers. Spawned from Task 2015 review (reviewer_comprehensive, code_reuse).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:17:08.273Z",
+        "updatedAt": "2026-04-21T09:17:37.100Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43139,7 +43139,7 @@
           "done_provenance": {
             "commit": "89835e8faa01e64c0357a712a109a324c54f8c3c",
             "commit_input": "89835e8fa",
-            "note": "fresh_ctx() helper introduced in cb4146af7 and all call sites migrated in 89835e8fa; both commits on main. Verified: fresh_ctx() defined at line 808 of crates/reify-cli/src/mcp_context.rs, only remaining CliToolContext::new(PathBuf::from(...)) is inside the helper itself."
+            "note": "fresh_ctx() helper added in cb4146af7; 8 call sites refactored in 89835e8fa; smoke test in 1d1ef1e5f — all already on main (merge-base = HEAD). Task 2015 folded the refactor."
           }
         }
       },
@@ -43539,9 +43539,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:17:08.274Z",
+      "lastModified": "2026-04-21T09:17:37.100Z",
       "taskCount": 2060,
-      "completedCount": 1796,
+      "completedCount": 1797,
       "tags": [
         "master"
       ]
