@@ -387,4 +387,274 @@ mod tests {
         );
         assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
     }
+
+    // ---- helpers for the additional branch tests below ----
+
+    /// Minimal `LetDecl` fixture; only `content_hash` varies between callers.
+    fn make_let_decl(name: &str, hash_val: u128) -> reify_syntax::LetDecl {
+        reify_syntax::LetDecl {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None,
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(hash_val),
+        }
+    }
+
+    /// Minimal `ParamDecl` fixture (for `DefaultKind::Param` construction).
+    fn make_param_decl(name: &str) -> reify_syntax::ParamDecl {
+        reify_syntax::ParamDecl {
+            name: name.to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        }
+    }
+
+    /// Minimal `ConstraintDecl` fixture (for `DefaultKind::Constraint` construction).
+    fn make_constraint_decl() -> reify_syntax::ConstraintDecl {
+        reify_syntax::ConstraintDecl {
+            label: None,
+            expr: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::BoolLiteral(true),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        }
+    }
+
+    /// Depth guard: calling at `depth = MAX_TRAIT_DEPTH + 1` emits exactly one
+    /// "too deep" diagnostic and does not panic.
+    ///
+    /// Simulates being at the tip of a refinement chain longer than `MAX_TRAIT_DEPTH`
+    /// by invoking directly with an above-threshold depth. The `visited.insert` check
+    /// fires first (correct dedup ordering), then the depth guard fires and returns
+    /// after pushing one diagnostic. The registry is empty so this also confirms the
+    /// depth guard short-circuits before the registry lookup.
+    #[test]
+    fn collect_all_requirements_depth_guard_emits_one_diagnostic() {
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "DeepTrait",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            MAX_TRAIT_DEPTH + 1,
+            &mut diags,
+        );
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected exactly one 'too deep' diagnostic, got: {:?}",
+            diags
+        );
+    }
+
+    /// Let-binding conflict: two traits providing `let x` with different `content_hash`
+    /// emit exactly one conflict diagnostic; the diagnostic is suppressed when
+    /// `structure_members` contains the name (structure override wins).
+    ///
+    /// Exercises the `seen_let_hashes` dedup path and the
+    /// `seen_let_conflict_names` once-per-name gate, plus the
+    /// `structure_members.contains_key` suppression branch.
+    #[test]
+    fn collect_all_requirements_let_conflict_diagnostic_and_suppression() {
+        let trait_a = CompiledTrait {
+            name: "TraitA".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: None,
+                    let_decl: make_let_decl("x", 1),
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let trait_b = CompiledTrait {
+            name: "TraitB".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: None,
+                    let_decl: make_let_decl("x", 2), // different hash → conflict
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let top = CompiledTrait {
+            name: "Top".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec!["TraitA".to_string(), "TraitB".to_string()],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("TraitA".to_string(), &trait_a);
+        trait_registry.insert("TraitB".to_string(), &trait_b);
+        trait_registry.insert("Top".to_string(), &top);
+
+        // Case 1: No structure override — exactly one conflict diagnostic.
+        {
+            let mut ctx = MergeContext::new();
+            let mut diags: Vec<Diagnostic> = vec![];
+            collect_all_requirements(
+                "Top",
+                &trait_registry,
+                &mut ctx,
+                &HashMap::new(),
+                SourceSpan::empty(0),
+                0,
+                &mut diags,
+            );
+            assert_eq!(
+                diags.len(),
+                1,
+                "Expected exactly one let-conflict diagnostic, got: {:?}",
+                diags
+            );
+        }
+
+        // Case 2: `structure_members` overrides "x" — hash is never recorded so
+        // the second trait's `seen_let_hashes.get` returns None and no conflict fires.
+        {
+            let mut ctx = MergeContext::new();
+            let mut diags: Vec<Diagnostic> = vec![];
+            let mut structure_members: HashMap<String, Type> = HashMap::new();
+            structure_members.insert("x".to_string(), Type::Real);
+            collect_all_requirements(
+                "Top",
+                &trait_registry,
+                &mut ctx,
+                &structure_members,
+                SourceSpan::empty(0),
+                0,
+                &mut diags,
+            );
+            assert!(
+                diags.is_empty(),
+                "Expected no diagnostics when 'x' is overridden by structure_members, got: {:?}",
+                diags
+            );
+        }
+    }
+
+    /// Param/Constraint cross-interference: two traits each providing a named default
+    /// for the same member name — one `Param`, one `Constraint` — produce no conflict
+    /// diagnostic and both defaults are collected.
+    ///
+    /// The composite key `(name, DefaultKindTag)` gives `Param` and `Constraint`
+    /// independent slots in `seen_defaults`, so they never cross-compare or conflict.
+    #[test]
+    fn collect_all_requirements_param_and_constraint_same_name_no_cross_interference() {
+        let trait_a = CompiledTrait {
+            name: "TraitA".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("y".to_string()),
+                kind: DefaultKind::Param {
+                    cell_type: Type::Real,
+                    default_decl: make_param_decl("y"),
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let trait_b = CompiledTrait {
+            name: "TraitB".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("y".to_string()),
+                kind: DefaultKind::Constraint(make_constraint_decl()),
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let top = CompiledTrait {
+            name: "Top".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec!["TraitA".to_string(), "TraitB".to_string()],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("TraitA".to_string(), &trait_a);
+        trait_registry.insert("TraitB".to_string(), &trait_b);
+        trait_registry.insert("Top".to_string(), &top);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Top",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics: Param and Constraint use separate composite-key slots, got: {:?}",
+            diags
+        );
+        // Both defaults are independently collected (one Param, one Constraint).
+        assert_eq!(
+            ctx.defaults.len(),
+            2,
+            "Expected 2 defaults (one Param, one Constraint), got {}",
+            ctx.defaults.len()
+        );
+    }
 }
