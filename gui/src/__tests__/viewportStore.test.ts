@@ -150,4 +150,50 @@ describe('viewportStore', () => {
       });
     });
   });
+
+  describe('updateCamera', () => {
+    it('persists the camera state for a viewport', () => {
+      createRoot((dispose) => {
+        const newCamera = { position: [1, 2, 3] as [number, number, number], target: [0, 0, 0] as [number, number, number], up: [0, 1, 0] as [number, number, number], zoom: 2 };
+        const store = createViewportStore();
+        const result = store.updateCamera('design-main', newCamera);
+        expect(result).toBe(true);
+        expect(store.getViewport('design-main')!.camera).toEqual(newCamera);
+        dispose();
+      });
+    });
+
+    it('subsequent updateCamera on the same viewport overwrites the previous state', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.updateCamera('design-main', { position: [1, 2, 3], target: [0, 0, 0], up: [0, 1, 0], zoom: 2 });
+        const second = { position: [4, 5, 6] as [number, number, number], target: [1, 1, 1] as [number, number, number], up: [0, 0, 1] as [number, number, number], zoom: 3 };
+        store.updateCamera('design-main', second);
+        expect(store.getViewport('design-main')!.camera).toEqual(second);
+        dispose();
+      });
+    });
+
+    it('updating one viewport camera does not affect the other', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const previewCamera = { ...store.getViewport('def-preview')!.camera };
+        store.updateCamera('design-main', { position: [9, 9, 9], target: [1, 1, 1], up: [0, 0, 1], zoom: 5 });
+        // def-preview camera should be unchanged
+        expect(store.getViewport('def-preview')!.camera).toEqual(previewCamera);
+        dispose();
+      });
+    });
+
+    it('updateCamera on unknown id returns false and does not mutate', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const before = { ...store.getViewport('design-main')!.camera };
+        const result = store.updateCamera('unknown-id', { position: [1, 2, 3], target: [0, 0, 0], up: [0, 1, 0], zoom: 99 });
+        expect(result).toBe(false);
+        expect(store.getViewport('design-main')!.camera).toEqual(before);
+        dispose();
+      });
+    });
+  });
 });
