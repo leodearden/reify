@@ -185,4 +185,115 @@ describe('defPreviewStore', () => {
       });
     });
   });
+
+  // ── Race condition tests ─────────────────────────────────────────────────────
+
+  describe('race condition', () => {
+    it('(a) stale slow fetch result is discarded when a newer fast fetch resolves first', async () => {
+      const { createDefPreviewStore } = await importStore();
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const store = createDefPreviewStore();
+
+          let resolveSlowFetch!: (gs: GuiState) => void;
+          let resolveFastFetch!: (gs: GuiState) => void;
+          const slowFetchPromise = new Promise<GuiState>(r => { resolveSlowFetch = r; });
+          const fastFetchPromise = new Promise<GuiState>(r => { resolveFastFetch = r; });
+
+          const gsA = makeGuiState('A.body');
+          const gsB = makeGuiState('B.body');
+
+          // Start slow fetch for 'A' (not awaited)
+          const slowLoad = store.loadPreview('A', () => slowFetchPromise);
+          // Start fast fetch for 'B' (not awaited)
+          const fastLoad = store.loadPreview('B', () => fastFetchPromise);
+
+          // Fast fetch resolves first with gsB
+          resolveFastFetch(gsB);
+          await fastLoad;
+
+          expect(store.state.defName).toBe('B');
+          expect(store.state.meshes['B.body']).toBeDefined();
+          expect(store.state.meshes['A.body']).toBeUndefined();
+
+          // Now slow fetch resolves with gsA (stale)
+          resolveSlowFetch(gsA);
+          await slowLoad;
+
+          // Stale result must NOT have overwritten B
+          expect(store.state.defName).toBe('B');
+          expect(store.state.meshes['B.body']).toBeDefined();
+          expect(store.state.meshes['A.body']).toBeUndefined();
+
+          dispose();
+          done();
+        });
+      });
+    });
+
+    it('(b) stale slow fetch error does not overwrite state set by a newer fetch', async () => {
+      const { createDefPreviewStore } = await importStore();
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const store = createDefPreviewStore();
+
+          let resolveSlowFetch!: (gs: GuiState) => void;
+          let rejectSlowFetch!: (err: unknown) => void;
+          let resolveFastFetch!: (gs: GuiState) => void;
+          const slowFetchPromise = new Promise<GuiState>((res, rej) => {
+            resolveSlowFetch = res;
+            rejectSlowFetch = rej;
+          });
+          const fastFetchPromise = new Promise<GuiState>(r => { resolveFastFetch = r; });
+
+          void resolveSlowFetch; // suppress unused-variable lint
+
+          const gsB = makeGuiState('B.body');
+
+          // Start slow fetch for 'A'
+          const slowLoad = store.loadPreview('A', () => slowFetchPromise);
+          // Start fast fetch for 'B'
+          const fastLoad = store.loadPreview('B', () => fastFetchPromise);
+
+          // Fast resolves first
+          resolveFastFetch(gsB);
+          await fastLoad;
+
+          expect(store.state.defName).toBe('B');
+          expect(store.state.error).toBeNull();
+
+          // Slow rejects (stale error)
+          rejectSlowFetch(new Error('stale network failure'));
+          await slowLoad;
+
+          // Stale error must NOT have been recorded
+          expect(store.state.error).toBeNull();
+          expect(store.state.defName).toBe('B');
+
+          dispose();
+          done();
+        });
+      });
+    });
+
+    it('(c) pure happy path: single loadPreview still populates state correctly after guard', async () => {
+      const { createDefPreviewStore } = await importStore();
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const store = createDefPreviewStore();
+          const gsA = makeGuiState('A.body');
+
+          await store.loadPreview('A', async () => gsA);
+
+          expect(store.state.defName).toBe('A');
+          expect(store.state.meshes['A.body']).toBeDefined();
+          expect(store.state.isLoading).toBe(false);
+          expect(store.state.error).toBeNull();
+
+          dispose();
+          done();
+        });
+      });
+    });
+  });
 });
