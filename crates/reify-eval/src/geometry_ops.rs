@@ -1051,6 +1051,17 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_constants_have_expected_values() {
+        // Pins the documented floor values for degenerate-guard constants.
+        // Each is 1e-12 (sub-picometer / sub-picoradian). These constants
+        // name what were previously magic `1e-12` literals sprinkled across
+        // the Extrude / Revolve / ExtrudeSymmetric arms.
+        assert_eq!(DEGENERATE_LENGTH_M, 1e-12);
+        assert_eq!(DEGENERATE_ANGLE_RAD, 1e-12);
+        assert_eq!(GEOMETRY_EPSILON, 1e-12);
+    }
+
+    #[test]
     fn compile_geometry_op_scale_produces_scale_variant() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
