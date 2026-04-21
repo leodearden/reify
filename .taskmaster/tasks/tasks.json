@@ -23329,7 +23329,15 @@
           ],
           "modules": [
             "crates/reify-stdlib/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "assert_orientation_approx macro quaternion sign insensitive tolerance",
+              "reify-stdlib assert orientation test coverage table-driven catch_unwind",
+              "quaternion comparison sign insensitive fully populated 0.5 0.5 0.5 0.5"
+            ]
+          }
         },
         "updatedAt": "2026-04-21T14:47:44.792Z"
       },
