@@ -1416,9 +1416,9 @@ fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
 
     let stdlib = stdlib_loader::load_stdlib();
     assert!(
-        stdlib.len() >= 3,
-        "this test needs at least 3 stdlib modules to set up two disjoint-prefix \
-         compile_module calls, got {}",
+        stdlib.len() >= 4,
+        "this test needs at least 4 stdlib modules so the second compile_module call \
+         actually inserts a non-empty suffix (stdlib[3..=len-1]); got {}",
         stdlib.len()
     );
     let expected_paths: Vec<String> = stdlib.iter().map(|m| m.path.0.join(".")).collect();
