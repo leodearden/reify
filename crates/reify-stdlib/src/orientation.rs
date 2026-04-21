@@ -288,17 +288,21 @@ mod tests {
         ];
         // Collect all label mismatches rather than short-circuiting, so a regression
         // that breaks multiple components surfaces every broken label in one run.
+        // A silent-pass regression (case stops panicking at all) is also surfaced here.
         let mut failures: Vec<String> = Vec::new();
         for (label, case) in cases {
-            let err = std::panic::catch_unwind(case)
-                .expect_err("expected assert_orientation_approx to panic");
-            let msg = err
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or_else(|| err.downcast_ref::<&str>().copied())
-                .unwrap_or("");
-            if !msg.contains(label) {
-                failures.push(format!("label {label:?}: panic message was {msg:?}"));
+            match std::panic::catch_unwind(case) {
+                Err(err) => {
+                    let msg = err
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| err.downcast_ref::<&str>().copied())
+                        .unwrap_or("");
+                    if !msg.contains(label) {
+                        failures.push(format!("label {label:?}: panic message was {msg:?}"));
+                    }
+                }
+                Ok(_) => failures.push(format!("label {label:?}: case did not panic")),
             }
         }
         assert!(
