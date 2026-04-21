@@ -10065,11 +10065,11 @@
         "description": "From task 421 review — non-blocking quality improvements to unfold_recursive_sub (crates/reify-eval/src/lib.rs): (1) Rename child_recursive_subs/child_recursive_sub_names to next_recursive_subs/next_recursive_sub_names for clarity. (2) Add inline comment at recursive call site documenting child_template→current_template handoff. (3) Extract find_template() utility (same pattern at lib.rs:1137, lib.rs:3339, graph.rs:155, and test helper at recursive_detection_tests.rs:25). (4) Test: unknown structure_name failure mode — verify diagnostic emitted. (5) Test: n=3 variant for deeper alternation coverage. (6) Test: negative assertion that B is not instantiated as top-level entity. Modules: crates/reify-eval, crates/reify-compiler (find_template reuse). Reviewers: architect, test_analyst, reuse_auditor.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:16:28.019Z",
+        "updatedAt": "2026-04-21T09:16:57.021Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
@@ -43539,7 +43539,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:16:55.410Z",
+      "lastModified": "2026-04-21T09:16:57.021Z",
       "taskCount": 2060,
       "completedCount": 1796,
       "tags": [
