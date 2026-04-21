@@ -43650,11 +43650,11 @@
         "description": "Two related test-quality improvements landed alongside the Value::Field::lambda Box→Arc change (task 1629).\n\n(1) Extract a shared helper in crates/reify-expr/tests/field_calculus_tests.rs (~lines 4284-4485). The four tests `gradient_result_arc_shares_source_lambda`, `divergence_result_arc_shares_source_lambda`, `curl_result_arc_shares_source_lambda`, `laplacian_result_arc_shares_source_lambda` are near-identical ~30-line copy-paste, differing only in the operator name and the source field's codomain (scalar vs vec3). Extract `assert_unary_op_shares_source_lambda(op_name: &str, codomain: Type, lambda: Value)` and call it four times. Reduces ~120 lines → ~40 and makes adding a fifth unary field operator a one-liner.\n\n(2) Add SafetyFactor coverage to crates/reify-types/tests/field_lambda_arc_sharing.rs. The current characterization test only covers `FieldSourceKind::Analytical` with an `Undef`-free Lambda payload. The `lambda` slot's docstring in `crates/reify-types/src/value.rs` notes the payload shape varies by `FieldSourceKind` (Field for Gradient/Divergence/Curl/Laplacian, List for SafetyFactor, Undef for Sampled/Imported). Add a single ptr_eq case constructing `lambda: Arc::new(Value::List(vec![...]))` with `source: FieldSourceKind::SafetyFactor` to guard against a future refactor that accidentally deep-clones through the list path. Reviewer notes this is not required for correctness — pure tighter coverage.\n\nVerification: `cargo test -p reify-expr field_calculus` and `cargo test -p reify-types field_lambda_arc_sharing`.\n\nSource: post-merge review suggestions on task 1629 (reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:44:04.658Z",
+        "updatedAt": "2026-04-21T09:08:10.390Z",
         "metadata": {
           "files": [
             "crates/reify-expr/tests/field_calculus_tests.rs",
@@ -43663,15 +43663,18 @@
           "modules": [
             "crates/reify-expr/tests",
             "crates/reify-types/tests"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "c85e92ea8b869c5c697676ff0d6364392da7b52d"
+          }
         }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:00:52.531Z",
+      "lastModified": "2026-04-21T09:08:10.390Z",
       "taskCount": 2060,
-      "completedCount": 1792,
+      "completedCount": 1793,
       "tags": [
         "master"
       ]
