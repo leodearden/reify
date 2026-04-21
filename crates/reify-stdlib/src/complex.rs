@@ -612,6 +612,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_zero_dimensioned_complex_returns_undef() {
+        // phase(Complex{0,0,LENGTH}) → Undef (dimensioned zero-vector).
+        //
+        // phase() is dimension-invariant by contract — the zero-vector guard fires
+        // before dimension is ever consulted. Mirrors phase_zero_complex_returns_undef
+        // but for the dimensioned (Scalar) branch, locking the invariant that a future
+        // refactor which added a dimension-aware fast path cannot silently drop the
+        // zero-vector guard on one branch.
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("phase", &[z]).is_undef(),
+            "phase(Complex{{0,0,LENGTH}}) should be Undef regardless of dimension"
+        );
+    }
+
     // ── complex_add() tests (step-15) ─────────────────────────────────────────
 
     #[test]

@@ -585,6 +585,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_zero_dimensioned_complex_returns_undef() {
+        // Complex{re:0.0, im:0.0, LENGTH}.phase → Undef (dimensioned zero-vector)
+        //
+        // phase() is dimension-invariant by contract — the zero-vector guard fires
+        // before dimension is ever consulted. This test mirrors
+        // phase_zero_complex_returns_undef but with LENGTH dimension, locking the
+        // invariant that a future refactor which added a dimension-aware fast path
+        // cannot silently drop the zero-vector guard on one branch.
+        assert!(
+            call_complex_method(0.0, 0.0, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            "z.phase with dimensioned zero vector (LENGTH) should return Undef"
+        );
+    }
+
     // ── method regressions: finite phase values still work ────────────────────
 
     #[test]
