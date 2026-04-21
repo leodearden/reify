@@ -10015,15 +10015,18 @@
         "description": "Two suggestions from task 396 review about compile_geometry_op in crates/reify-eval/src/lib.rs:\n\n1. **Doc comment** (architect_reviewer): Add doc comment to `compile_geometry_op` clarifying that returning `None` when evaluation is incomplete (missing args, unresolvable refs) is intentional propagation, not the forbidden silent-default pattern (per feedback_silent_defaults_pattern.md). Location: compile_geometry_op function definition.\n\n2. **Richer error propagation** (robustness): Consider returning `Result<GeometryOp, String>` with the missing arg name so callers can emit specific diagnostics like \"missing required argument 'ox'\" instead of the generic \"failed to compile geometry operation\". Location: compile_geometry_op and its callers.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:49.905Z",
+        "updatedAt": "2026-04-21T15:12:27.023Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [],
+          "done_provenance": {
+            "commit": "ec9d8903e50d360808125b9171897b955fcacb89"
+          }
         }
       },
       {
@@ -43749,9 +43752,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T15:06:09.194Z",
+      "lastModified": "2026-04-21T15:12:27.023Z",
       "taskCount": 2064,
-      "completedCount": 1805,
+      "completedCount": 1806,
       "tags": [
         "master"
       ]
