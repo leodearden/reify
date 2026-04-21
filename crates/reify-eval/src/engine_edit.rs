@@ -35,6 +35,45 @@ pub(crate) fn deactivate_if_not_auto(
     }
 }
 
+/// Classify every `ValueCellId` across a pair of graphs into three disjoint
+/// sets by comparing per-node `ValueCellNode::content_hash`:
+///
+/// - `changed`: present in both graphs with differing `content_hash`.
+/// - `added`: present only in the new graph.
+/// - `removed`: present only in the old graph.
+///
+/// The content_hash already combines the cell's ID hash and expression
+/// content_hash (see `EvaluationGraph::from_templates`), so a match signals
+/// "equivalent node; cached value is still valid" while a mismatch signals
+/// "re-evaluate". This is the identity/equivalence key used by
+/// `Engine::edit_source`.
+pub(crate) fn diff_value_cells(
+    old_graph: &EvaluationGraph,
+    new_graph: &EvaluationGraph,
+) -> (HashSet<ValueCellId>, HashSet<ValueCellId>, HashSet<ValueCellId>) {
+    let mut changed = HashSet::new();
+    let mut added = HashSet::new();
+    for (id, new_node) in new_graph.value_cells.iter() {
+        match old_graph.value_cells.get(id) {
+            Some(old_node) => {
+                if old_node.content_hash != new_node.content_hash {
+                    changed.insert(id.clone());
+                }
+            }
+            None => {
+                added.insert(id.clone());
+            }
+        }
+    }
+    let mut removed = HashSet::new();
+    for (id, _) in old_graph.value_cells.iter() {
+        if !new_graph.value_cells.contains_key(id) {
+            removed.insert(id.clone());
+        }
+    }
+    (changed, added, removed)
+}
+
 impl Engine {
     /// Set a parameter override and invalidate cache entries that depend on it.
     pub fn set_param_and_invalidate(&mut self, param: &ValueCellId, value: reify_types::Value) {
