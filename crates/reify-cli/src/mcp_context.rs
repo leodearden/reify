@@ -1108,6 +1108,28 @@ structure Bracket {
         );
     }
 
+    /// Verify that a successful `reapply_user_overrides` call clears the dedupe
+    /// entry for a `(cell_id, variant)` pair, so a subsequent mismatch for the
+    /// same pair emits a fresh WARN rather than a downgraded DEBUG.
+    ///
+    /// The sequence is:
+    /// 1. `BRACKET_INT_WIDTH` — TypeKindMismatch; warns, inserts into `warned_overrides`.
+    /// 2. Original `bracket.ri` — all overrides succeed; `retain` prunes the entry.
+    /// 3. `BRACKET_INT_WIDTH` again — TypeKindMismatch; warns again (entry gone).
+    ///
+    /// A delta of 2 means both mismatch calls warned (correct).  A delta of 1
+    /// would mean the `retain` in the success path was missing or broken.
+    #[test]
+    fn reapply_user_overrides_warn_cleared_on_success() {
+        let original = std::fs::read_to_string(BRACKET_PATH)
+            .expect("bracket.ri fixture must be readable");
+        assert_eq!(
+            run_reapply_with_sources(&[BRACKET_INT_WIDTH, original.as_str(), BRACKET_INT_WIDTH]),
+            2,
+            "successful reapply must clear the dedupe entry so the next mismatch warns again"
+        );
+    }
+
     /// Invariant-guard test: `warned_overrides` must remain a subset of the
     /// cells currently in `user_overrides`.  Specifically, when `user_overrides`
     /// is empty, `warned_overrides` must also be empty after the next
