@@ -682,6 +682,12 @@ pub(crate) fn compile_geometry_op(
                     // meaningful solid. Emit a warning so model authors see why
                     // the op was dropped instead of only the caller's generic
                     // "failed to compile geometry operation" error.
+                    //
+                    // Boundary semantics: `v.abs() >= DEGENERATE_LENGTH_M` is an
+                    // inclusive floor — a distance of exactly 1e-12 m is accepted;
+                    // a distance of 1e-13 m is rejected. Pinned by
+                    // `build_extrude_distance_{just_below,at}_threshold_*` in
+                    // `tests/geometry_error_handling.rs`.
                     match distance.as_f64() {
                         Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
                         Some(v) => {
