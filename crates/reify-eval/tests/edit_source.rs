@@ -228,3 +228,156 @@ fn edit_source_modified_let_reevaluates_only_dependents() {
         );
     }
 }
+
+// ── Added / removed let bindings ───────────────────────────────────────────
+
+/// Adding a brand-new let binding (`perimeter`) to module_B must (a) evaluate
+/// it against the current param values, (b) preserve the unchanged `volume`
+/// value, (c) include the added cell in `last_eval_set()`, and (d) leave all
+/// params untouched. This locks the "added cell" diff path: the cell is in
+/// neither the old snapshot nor the old cache, so the eval loop must fill it
+/// in from scratch without disturbing any upstream cached state.
+#[test]
+fn edit_source_added_cell_is_evaluated_and_unchanged_cells_preserved() {
+    let mut engine = fresh_engine();
+
+    // Module A: canonical bracket with volume let. No perimeter.
+    let module_a = parse_and_compile(&bracket_with_volume_expr("width * height * thickness"));
+    let result_a = engine.eval(&module_a);
+
+    let e = "Bracket";
+    let volume_id = ValueCellId::new(e, "volume");
+    let perimeter_id = ValueCellId::new(e, "perimeter");
+    let width_id = ValueCellId::new(e, "width");
+    let height_id = ValueCellId::new(e, "height");
+    let thickness_id = ValueCellId::new(e, "thickness");
+
+    let volume_a = result_a
+        .values
+        .get(&volume_id)
+        .expect("volume must be computed by eval(module_a)")
+        .clone();
+    let width_a = result_a.values.get(&width_id).cloned();
+    let height_a = result_a.values.get(&height_id).cloned();
+    let thickness_a = result_a.values.get(&thickness_id).cloned();
+
+    // Module B: identical to A except a new `perimeter = 2 * (width + height)`
+    // let binding is inserted after `volume`. No other semantic changes.
+    let module_b_src = format!(
+        r#"structure Bracket {{
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+
+    let volume = width * height * thickness
+    let perimeter = 2.0 * (width + height)
+
+    constraint thickness > 2mm
+}}"#
+    );
+    let module_b = parse_and_compile(&module_b_src);
+    let result_b = engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    // (a) perimeter evaluated against the canonical param defaults
+    //     2 * (80mm + 100mm) = 360mm = 0.36 m.
+    let perimeter_b = si(
+        result_b
+            .values
+            .get(&perimeter_id)
+            .expect("perimeter must be present in edit_source result"),
+        "perimeter_b",
+    );
+    assert!(
+        (perimeter_b - 0.36).abs() < 1e-12,
+        "perimeter_b should be 0.36 m (2 * (80mm + 100mm)); got {perimeter_b}"
+    );
+
+    // (b) volume preserved — its content_hash is unchanged across the edit.
+    assert_eq!(
+        result_b.values.get(&volume_id),
+        Some(&volume_a),
+        "volume must be preserved when only a new let is added"
+    );
+
+    // (c) last_eval_set contains the added cell but not the unchanged params.
+    let eval_set = engine.last_eval_set();
+    assert!(
+        eval_set.contains(&NodeId::Value(perimeter_id.clone())),
+        "last_eval_set must contain the added perimeter, got: {:?}",
+        eval_set
+    );
+    for param in [&width_id, &height_id, &thickness_id] {
+        assert!(
+            !eval_set.contains(&NodeId::Value(param.clone())),
+            "last_eval_set must NOT contain unchanged param {param}, got: {:?}",
+            eval_set
+        );
+    }
+
+    // (d) params retained verbatim.
+    assert_eq!(result_b.values.get(&width_id), width_a.as_ref());
+    assert_eq!(result_b.values.get(&height_id), height_a.as_ref());
+    assert_eq!(result_b.values.get(&thickness_id), thickness_a.as_ref());
+}
+
+/// Removing a let binding (`volume`) from module_B must (a) drop that cell's
+/// entry from the returned `values` map, (b) drop it from
+/// `snapshot.graph.value_cells`, and (c) leave the retained params untouched.
+/// This locks the "removed cell" diff path: the cell was evaluated by
+/// module_A but is absent from module_B, so seeding + eval must skip it
+/// and cache invalidation must not surface it downstream.
+#[test]
+fn edit_source_removed_cell_drops_value_from_map() {
+    let mut engine = fresh_engine();
+
+    // Module A: canonical bracket with volume let.
+    let module_a = parse_and_compile(&bracket_with_volume_expr("width * height * thickness"));
+    let _result_a = engine.eval(&module_a);
+
+    let e = "Bracket";
+    let volume_id = ValueCellId::new(e, "volume");
+    let width_id = ValueCellId::new(e, "width");
+    let height_id = ValueCellId::new(e, "height");
+    let thickness_id = ValueCellId::new(e, "thickness");
+
+    // Module B: drop the `volume` let entirely. Params and constraint stay.
+    let module_b_src = r#"structure Bracket {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+
+    constraint thickness > 2mm
+}"#;
+    let module_b = parse_and_compile(module_b_src);
+    let result_b = engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    // (a) values map contains no entry for the removed volume cell.
+    assert!(
+        result_b.values.get(&volume_id).is_none(),
+        "removed volume must not appear in the values map; got: {:?}",
+        result_b.values.get(&volume_id)
+    );
+
+    // (b) snapshot's graph no longer carries the removed cell.
+    let snapshot = engine.snapshot().expect("snapshot must be installed");
+    assert!(
+        !snapshot.graph.value_cells.contains_key(&volume_id),
+        "removed volume must be absent from snapshot.graph.value_cells"
+    );
+
+    // (c) retained params are still present.
+    for param in [&width_id, &height_id, &thickness_id] {
+        assert!(
+            result_b.values.get(param).is_some(),
+            "retained param {param} must still have a value after removal edit"
+        );
+        assert!(
+            snapshot.graph.value_cells.contains_key(param),
+            "retained param {param} must still be present in the graph"
+        );
+    }
+}
