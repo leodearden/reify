@@ -43612,7 +43612,16 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "expr.rs"
+            ],
+            "queries": [
+              "Type::Real silent fallback expr.rs index quantifier method",
+              "expr.rs collection_sub_member_types defensive fallback unreachable"
+            ]
+          }
         },
         "updatedAt": "2026-04-21T06:30:55.421Z"
       },
