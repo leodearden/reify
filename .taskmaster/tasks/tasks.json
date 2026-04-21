@@ -11318,7 +11318,7 @@
         "description": "Address robustness suggestions from task #326 review:\n1. Add debug_assert in load_stdlib() that no module has error-level diagnostics — silent cache of broken modules is dangerous (stdlib_loader.rs:23-38)\n2. Compile stdlib modules sequentially with compile_with_prelude so cross-module deps work when second .ri file is added (stdlib_loader.rs:33-36)\n3. Document function shadowing semantics in eval() — user functions shadow prelude by insertion order with iter().find() first-match (lib.rs:847-854)\n4. Investigate _distance_f64 rename — confirm whether is_finite() guard was intentional validation or dead code (lib.rs:3244)\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-eval/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11331,9 +11331,12 @@
             "queries": [
               "resolution for: Stdlib robustness: debug_assert on compile errors, sequential compilation, shadowing docs"
             ]
+          },
+          "done_provenance": {
+            "note": "All four items already implemented in merged code (branch is ancestor of main). Items #1 (assert!) and #2 (sequential compilation) landed in commits 4a15762cd and fbbb1e664 in stdlib_loader.rs; #3 (shadowing docs) extensively documented in engine_eval.rs lines 40-98 (SHADOWING INVARIANT / COEXISTENCE COROLLARY); #4 (_distance_f64 rename) replaced by explicit `match distance.as_f64()` validation at geometry_ops.rs:623-634 and :718-729."
           }
         },
-        "updatedAt": "2026-04-21T09:20:24.553Z"
+        "updatedAt": "2026-04-21T09:21:31.312Z"
       },
       {
         "id": "516",
@@ -43551,9 +43554,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:20:24.553Z",
+      "lastModified": "2026-04-21T09:21:31.312Z",
       "taskCount": 2060,
-      "completedCount": 1796,
+      "completedCount": 1797,
       "tags": [
         "master"
       ]
