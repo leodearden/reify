@@ -256,7 +256,28 @@ pub struct TopologyTemplate {
     pub meta: HashMap<String, String>,
     pub content_hash: ContentHash,
     /// True if this template participates in a recursive sub-component cycle.
-    /// Set by the post-compilation recursive structure detection pass.
+    ///
+    /// **Producer** — set to `true` by `detect_recursive_structures` in `scc.rs` during
+    /// the post-compilation Tarjan SCC pass. Every template that belongs to a non-trivial
+    /// SCC (i.e., is reachable from itself via sub-component edges) is marked here.
+    /// The flag is also mixed into `content_hash` (`compiler::lib.rs`) so that otherwise
+    /// identical templates with different recursion topology produce distinct cache keys.
+    ///
+    /// **Consumers** (runtime) — the flag is used in three distinct places by code that
+    /// runs *after* compilation:
+    /// - `termination.rs`: gates the termination-condition check so non-recursive templates
+    ///   are skipped early.
+    /// - `reify-eval/src/unfold.rs` (`collect_recursive_subs`): gates child-sub collection
+    ///   to prevent the evaluator from treating non-recursive subs as candidates for
+    ///   `unfold_recursive_sub`.
+    /// - `reify-eval/src/engine_eval.rs` (`elaborate_root_frame`): gates root-frame
+    ///   elaboration and activates `unfold_recursive_sub` for the recursive path.
+    /// - `gui/src-tauri/src/engine.rs` (`build_template_node`): gates Design Tree traversal
+    ///   to prevent infinite descent into non-terminating sub-graphs.
+    ///
+    /// The field is intentionally named `is_recursive` (not `has_recursive_structure`) to
+    /// avoid a cascading rename across ~15 call sites in compiler, eval, GUI, test-support
+    /// builder, and test files. See task 205 review / task 424 for the rationale.
     pub is_recursive: bool,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
