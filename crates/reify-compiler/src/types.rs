@@ -620,6 +620,10 @@ pub enum SweepKind {
     SweepGuided,
     /// Loft through multiple sections with one or more guide wires.
     LoftGuided,
+    /// Circular cross-section sweep along a path: `pipe(path, radius)`.
+    /// Composed at the kernel layer as `make_pipe(make_circle_face(radius,
+    /// 0.0), path)`.
+    Pipe,
 }
 
 impl std::fmt::Display for SweepKind {
@@ -632,6 +636,7 @@ impl std::fmt::Display for SweepKind {
             SweepKind::ExtrudeSymmetric => f.write_str("extrude_symmetric"),
             SweepKind::SweepGuided => f.write_str("sweep_guided"),
             SweepKind::LoftGuided => f.write_str("loft_guided"),
+            SweepKind::Pipe => f.write_str("pipe"),
         }
     }
 }
@@ -825,6 +830,7 @@ mod kind_display_tests {
             (SweepKind::ExtrudeSymmetric, "extrude_symmetric"),
             (SweepKind::SweepGuided, "sweep_guided"),
             (SweepKind::LoftGuided, "loft_guided"),
+            (SweepKind::Pipe, "pipe"),
         ]);
     }
 

@@ -75,6 +75,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
+        "pipe" => &[0],
         // NOTE: `loft` is handled specially (variadic geometry args) in the resolution block.
         // IMPORTANT: New geometry functions that take geometry args MUST be registered here
         // (or handled like loft for variadic cases). Missing entries are silently treated as
@@ -760,6 +761,35 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // pipe(path, radius) — circular cross-section sweep along a path
+        "pipe" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "pipe() expects exactly 2 arguments (path, radius), got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            // Labelled per-arg diagnostic — path is the only geom arg; radius is scalar.
+            let path_ref = resolve_named_geom_arg(
+                0, "pipe", "path", args, &geom_refs, diagnostics, step_offset,
+            );
+            let mut it = compiled_args.into_iter();
+            let pipe_args: Vec<(String, CompiledExpr)> = vec![
+                ("path".to_string(), it.next().unwrap()),
+                ("radius".to_string(), it.next().unwrap()),
+            ];
+            let op = CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                profiles: vec![path_ref],
+                args: pipe_args,
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         // --- Transforms ---
         "translate" | "rotate" | "scale" | "rotate_around" => {
             compile_transform_op(name, compiled_args, geom_ref(0), diagnostics, sub_ops)
@@ -868,6 +898,7 @@ mod tests {
         "fillet",
         "sweep",
         "sweep_guided",
+        "pipe",
     ];
 
     /// Every non-boolean function dispatched in `compile_geometry_call` that has
@@ -904,11 +935,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    18
+    /// GEOM_ARG_FUNCTIONS    19
     /// NO_GEOM_ARG_FUNCTIONS 12
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 37
+    /// Total                 38
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -920,7 +951,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 37;
+    const EXPECTED_DISPATCH_COUNT: usize = 38;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
