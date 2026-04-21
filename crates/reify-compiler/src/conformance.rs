@@ -415,40 +415,40 @@ pub(crate) fn check_phase_build_available_defaults_map(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn check_trait_conformance(
+/// Phase 5 of trait conformance checking: verify structure members against trait requirements.
+///
+/// For each requirement in `ctx.requirements`, checks that either:
+/// 1. The structure provides a member of the correct type (type-mismatch branch), OR
+/// 2. Another trait in the merged bound set provides a same-kind default with a compatible
+///    type (`available_defaults` lookup), OR
+/// 3. Neither — emits "missing required member" diagnostic.
+///
+/// ## Same-kind default satisfaction
+///
+/// Only a same-kind default satisfies a requirement: a `let` default does NOT satisfy a
+/// `param` requirement (param slots must be externally settable at call-site). The composite
+/// `(name, AvailableDefaultKind)` key in `available_defaults` encodes this: lookups are
+/// inherently kind-filtered and require no additional guard on the match arm.
+///
+/// ## Anti-cascade via `Type::Error`
+///
+/// Structure members with an unresolved annotation are stored as `Type::Error` by phase 1.
+/// `implicitly_converts_to(Error, _)` short-circuits to `true` (producer-side wildcard in
+/// `type_compat.rs:3–26`), so a single root-cause diagnostic suppresses the cascade
+/// "type mismatch" that would otherwise appear here.
+///
+/// ## Allocation note
+///
+/// `.get(&(req.name.clone(), kind))` allocates a `String` per lookup because
+/// `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`. Requirement counts are
+/// small in practice; the escape hatch is a two-level `HashMap<String, HashMap<K, V>>`.
+pub(crate) fn check_phase_check_members_against_requirements(
+    ctx: &MergeContext,
     structure: &EntityDefRef<'_>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
-    trait_names: &HashSet<String>,
-    scope: &mut CompilationScope,
-    value_cells: &mut Vec<ValueCellDecl>,
-    constraints: &mut Vec<CompiledConstraint>,
-    constraint_index: &mut u32,
-    enum_defs: &[reify_types::EnumDef],
-    functions: &[CompiledFunction],
-    alias_registry: &TypeAliasRegistry,
+    structure_members: &HashMap<String, Type>,
+    available_defaults: &HashMap<(String, AvailableDefaultKind), Type>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let (structure_members, structure_constraint_labels) =
-        check_phase_resolve_structure_members(structure, trait_names, enum_defs, alias_registry, diagnostics);
-
-    let ctx =
-        check_phase_collect_trait_bounds(structure, trait_registry, &structure_members, diagnostics);
-
-    let (mut inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
-        &ctx,
-        &structure_members,
-        structure.name,
-        scope,
-        enum_defs,
-        functions,
-        diagnostics,
-    );
-
-    let available_defaults =
-        check_phase_build_available_defaults_map(&ctx, &inferred_let_exprs, &pass2_skipped);
-
-    // Check each requirement against structure members.
     for req in &ctx.requirements {
         match &req.kind {
             RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
@@ -538,6 +538,48 @@ pub(crate) fn check_trait_conformance(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_trait_conformance(
+    structure: &EntityDefRef<'_>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_names: &HashSet<String>,
+    scope: &mut CompilationScope,
+    value_cells: &mut Vec<ValueCellDecl>,
+    constraints: &mut Vec<CompiledConstraint>,
+    constraint_index: &mut u32,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (structure_members, structure_constraint_labels) =
+        check_phase_resolve_structure_members(structure, trait_names, enum_defs, alias_registry, diagnostics);
+
+    let ctx =
+        check_phase_collect_trait_bounds(structure, trait_registry, &structure_members, diagnostics);
+
+    let (mut inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+        &ctx,
+        &structure_members,
+        structure.name,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+    );
+
+    let available_defaults =
+        check_phase_build_available_defaults_map(&ctx, &inferred_let_exprs, &pass2_skipped);
+
+    check_phase_check_members_against_requirements(
+        &ctx,
+        structure,
+        &structure_members,
+        &available_defaults,
+        diagnostics,
+    );
 
     // Inject defaults for members not overridden by the structure.
     for default in &ctx.defaults {
