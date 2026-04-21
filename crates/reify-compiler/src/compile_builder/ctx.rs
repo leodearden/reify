@@ -122,6 +122,42 @@ impl CompilationCtx {
 mod tests {
     use super::*;
 
+    /// `is_first_entity_def` returns true when the name is absent from the
+    /// tracker, true when the name is present with a matching span (same
+    /// definition site, e.g. re-visiting the same decl), and false when the
+    /// name is present with a different span (genuine duplicate).
+    ///
+    /// Anchors the `(name, span) → "first def?"` contract so a future
+    /// tracker-shape change only needs to update `is_first_entity_def`.
+    #[test]
+    fn is_first_entity_def_absent_same_span_different_span() {
+        let mut ctx = CompilationCtx::new();
+        let span_a = SourceSpan::new(0, 10);
+        let span_b = SourceSpan::new(20, 30);
+
+        // (a) name absent → first def
+        assert!(
+            ctx.is_first_entity_def("Widget", span_a),
+            "absent name should be treated as first def"
+        );
+
+        // Seed the tracker as pre_pass would.
+        ctx.seen_entity_names
+            .insert("Widget".to_string(), (span_a, "structure"));
+
+        // (b) same span → still the first def (same definition revisited)
+        assert!(
+            ctx.is_first_entity_def("Widget", span_a),
+            "matching span should be treated as first def"
+        );
+
+        // (c) different span → duplicate
+        assert!(
+            !ctx.is_first_entity_def("Widget", span_b),
+            "different span should not be treated as first def"
+        );
+    }
+
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec
     /// is empty, the entity-name tracker is empty, and both registries have no
     /// entries.  Anchors the invariant that construction does no hidden seeding
