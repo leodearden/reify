@@ -12,7 +12,9 @@
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    check_source_with_stdlib as check_source, make_simple_engine, parse_and_compile_with_stdlib,
+};
 use reify_types::{Diagnostic, ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -59,13 +61,6 @@ fn check_canonical() -> &'static reify_eval::CheckResult {
         let mut engine = make_simple_engine();
         engine.check(compiled())
     })
-}
-
-/// Parse, compile (with stdlib), check a mutated source string.
-fn check_source(src: &str) -> reify_eval::CheckResult {
-    let compiled = parse_and_compile_with_stdlib(src);
-    let mut engine = make_simple_engine();
-    engine.check(&compiled)
 }
 
 /// Assert that a diagnostics slice contains no entries with [`Severity::Error`].
