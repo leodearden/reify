@@ -10084,7 +10084,15 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/recursive_detection_tests.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/graph.rs",
+            "crates/reify-eval/src/unfold.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
         }
       },
       {
