@@ -511,3 +511,70 @@ structure S {
         }
     }
 }
+
+// ── step-13: non-embedding checker does not panic on labeled constraint ────────
+
+/// A `ConstraintChecker` that always reports `Violated` with a domain-specific
+/// message that deliberately does NOT embed the raw `ConstraintNodeId` string.
+///
+/// Used to verify that `Engine::labeled_diagnostics` does not panic (debug_assert
+/// must be demoted to tracing::warn!) when the checker omits the raw id, and
+/// that the domain message passes through to users verbatim.
+struct NonEmbeddingChecker;
+
+impl ConstraintChecker for NonEmbeddingChecker {
+    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        input
+            .constraints
+            .iter()
+            .map(|(id, _)| ConstraintResult {
+                id: id.clone(),
+                satisfaction: Satisfaction::Violated,
+                diagnostics: ConstraintDiagnostics {
+                    messages: vec![Diagnostic::error("wall thickness below minimum")],
+                },
+            })
+            .collect()
+    }
+}
+
+/// A `ConstraintChecker` that emits an Error diagnostic whose message does NOT
+/// contain the raw `ConstraintNodeId` string is a valid third-party checker:
+/// before the fix, the `debug_assert!` in `labeled_diagnostics` would panic in
+/// debug builds; after the fix it should be demoted to `tracing::warn!` so that:
+/// 1. The call to `engine.check()` returns without panicking.
+/// 2. Exactly one `Severity::Error` diagnostic is present.
+/// 3. The diagnostic message is the domain text "wall thickness below minimum"
+///    unchanged — the engine must pass it through verbatim when the raw id is absent.
+#[test]
+fn non_embedding_checker_does_not_panic_on_labeled_constraint() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param thickness: Length = 1
+    constraint MinWall(wall: thickness)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = reify_eval::Engine::new(Box::new(NonEmbeddingChecker), None);
+    // Before the fix this panics with debug_assert! ("id format drift?").
+    // After the fix it must return normally.
+    let result = engine.check(&compiled);
+
+    let errors = error_diags(&result.diagnostics);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one Error diagnostic, got: {:?}",
+        errors
+    );
+    assert_eq!(
+        errors[0].message,
+        "wall thickness below minimum",
+        "expected domain message to pass through verbatim, got: {:?}",
+        errors[0].message
+    );
+}
