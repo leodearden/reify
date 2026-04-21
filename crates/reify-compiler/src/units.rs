@@ -39,6 +39,8 @@ pub(crate) fn is_geometry_function(name: &str) -> bool {
             | "interp"
             | "bezier"
             | "nurbs"
+            | "tube"
+            | "pipe"
     )
 }
 
