@@ -43671,7 +43671,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "2069"
+        ],
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-21T14:20:13.074Z",
@@ -43691,7 +43693,9 @@
       "completedCount": 1801,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:28:19.627Z",
+      "description": "Tasks for master context"
     }
   }
 }
