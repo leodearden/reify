@@ -43870,23 +43870,21 @@
         "description": "Post-merge review follow-up. Task 1062 shipped (merge commit 4cfc63bd7) with two small residual gaps in crates/reify-stdlib/src/orientation.rs tests. 1062 is DONE — this is net-new work, not a duplicate.",
         "details": "Residual gaps after 1062 merged:\n\n1. orient_per_component_diagnostics (orientation.rs lines 292-303): the loop uses `catch_unwind(case).expect_err(\"expected ... to panic\")`. If a case silently passes (e.g. future regression where the macro stops checking one component), `expect_err` aborts with a label-less message. Replace with explicit match: `match catch_unwind(case) { Err(e) => /* existing label check */, Ok(_) => failures.push(format!(\"label {label:?}: case did not panic\")) }`. Preserves the collect-all-mismatches invariant 1062 introduced.\n\n2. sign_insensitive_macro_fully_populated_quaternion (orientation.rs lines 437-455): currently only exercises neg_ok (actual = -0.5s vs expected = +0.5s). The existing sign_insensitive_macro_positive test uses (1,0,0,0) so pos_ok's `y - $ey` / `z - $ez` comparisons only ever run against zero operands. Add a companion positive-form assertion: actual `Value::Orientation { w: 0.5, x: 0.5, y: 0.5, z: 0.5 }` vs expected `(0.5, 0.5, 0.5, 0.5)` under `sign_insensitive = 1e-10`. This was originally in 1062's revised deliverable 3 but was dropped in the amend commit 49d1c4a7c as \"redundant\" — the reviewer pushed back and the reasoning above shows why it is not redundant.\n\nSource: post-merge reviewer_comprehensive suggestions on esc-1062-3.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-21T19:53:37.033Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T19:52:32.765Z",
-      "taskCount": 2066,
+      "lastModified": "2026-04-21T19:53:37.040Z",
+      "taskCount": 2067,
       "completedCount": 1813,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T19:53:26.566Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-21T19:53:26.585Z"
+      ]
     }
   }
 }
