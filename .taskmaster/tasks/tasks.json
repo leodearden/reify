@@ -44136,7 +44136,12 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:33:37.499Z"
+        "updatedAt": "2026-04-21T22:33:37.499Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -44146,7 +44151,9 @@
       "completedCount": 1822,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T22:37:18.278Z",
+      "description": "Tasks for master context"
     }
   }
 }
