@@ -23,6 +23,8 @@ export interface ViewportState {
   defPath: string | null;
   /** Whether this viewport is the active/focused viewport. */
   active: boolean;
+  /** User override: force this viewport expanded even when auto-activation says it should be minimized. */
+  forceExpanded: boolean;
   /** Persisted camera state. */
   camera: CameraState;
 }
@@ -69,6 +71,7 @@ function defaultViewports(): Record<string, ViewportState> {
       viewId: null,
       defPath: null,
       active: true,
+      forceExpanded: false,
       camera: cloneCamera(DEFAULT_CAMERA),
     },
     'def-preview': {
@@ -77,6 +80,7 @@ function defaultViewports(): Record<string, ViewportState> {
       viewId: null,
       defPath: null,
       active: false,
+      forceExpanded: false,
       camera: cloneCamera(DEFAULT_CAMERA),
     },
   };
@@ -160,6 +164,16 @@ export function createViewportStore(
     return true;
   }
 
+  /**
+   * Set the forceExpanded override for a viewport. Returns `false` if the
+   * viewport is not found; `true` on success.
+   */
+  function setForceExpanded(viewportId: string, flag: boolean): boolean {
+    if (!state.viewports[viewportId]) return false;
+    setState('viewports', viewportId, 'forceExpanded', flag);
+    return true;
+  }
+
   return {
     state,
     getViewport,
@@ -167,6 +181,7 @@ export function createViewportStore(
     assignView,
     updateCamera,
     setDefPath,
+    setForceExpanded,
   };
 }
 
