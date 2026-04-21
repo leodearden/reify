@@ -413,18 +413,37 @@ structure S {
 
     assert_eq!(tmpl.constraints.len(), 2, "expected exactly 2 constraints");
 
-    assert_eq!(
-        tmpl.constraints[0].label,
-        Some("Bounded#0[0]".to_string()),
-        "expected first constraint label Some(\"Bounded#0[0]\"), got: {:?}",
-        tmpl.constraints[0].label
-    );
-    assert_eq!(
-        tmpl.constraints[1].label,
-        Some("Bounded#0[1]".to_string()),
-        "expected second constraint label Some(\"Bounded#0[1]\"), got: {:?}",
-        tmpl.constraints[1].label
-    );
+    // Use label-based lookup rather than positional access (task 848.2) —
+    // robust against future changes to constraint ordering in the template.
+    let bounded_0 = tmpl
+        .constraints
+        .iter()
+        .find(|c| c.label.as_deref() == Some("Bounded#0[0]"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected constraint with label Some(\"Bounded#0[0]\"), got labels: {:?}",
+                tmpl.constraints
+                    .iter()
+                    .map(|c| c.label.as_deref())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let bounded_1 = tmpl
+        .constraints
+        .iter()
+        .find(|c| c.label.as_deref() == Some("Bounded#0[1]"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected constraint with label Some(\"Bounded#0[1]\"), got labels: {:?}",
+                tmpl.constraints
+                    .iter()
+                    .map(|c| c.label.as_deref())
+                    .collect::<Vec<_>>()
+            )
+        });
+    // Touch both variables so the lookups are exercised (presence is the
+    // assertion; .expr/.id/etc. inspection isn't what this test covers).
+    let _ = (&bounded_0.expr, &bounded_1.expr);
 }
 
 // ── Step 3 (task-1717): substitute_expr recurses into Conditional branches ───
