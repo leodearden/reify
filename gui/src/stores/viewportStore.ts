@@ -150,12 +150,23 @@ export function createViewportStore(
     return true;
   }
 
+  /**
+   * Set the defPath for a viewport. Returns `false` if the viewport is
+   * not found; `true` on success. Passing `null` clears the defPath.
+   */
+  function setDefPath(viewportId: string, defPath: string | null): boolean {
+    if (!state.viewports[viewportId]) return false;
+    setState('viewports', viewportId, 'defPath', defPath);
+    return true;
+  }
+
   return {
     state,
     getViewport,
     setActiveViewport,
     assignView,
     updateCamera,
+    setDefPath,
   };
 }
 
