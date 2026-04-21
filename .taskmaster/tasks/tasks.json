@@ -36826,9 +36826,19 @@
             "gui/src/stores/viewStateStore.ts"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "viewStateStore.ts",
+              "sidecarPersistence.ts",
+              "viewPersistence.ts",
+              "fuzzyPathMatcher.ts"
+            ],
             "queries": [
-              "resolution for: View persistence: localStorage + sidecar file + fuzzy path matching"
+              "task 1749 viewStateStore prune state.explicit regenerateAutoViews missing paths",
+              "sidecar .ri.views.json durable persistence naming convention",
+              "localStorage view state ephemeral key reify:views:",
+              "fuzzy path recovery rename suffix match structural match user confirmation",
+              "Tauri command read_view_sidecar write_view_sidecar file commands",
+              "view persistence localStorage sidecar two-layer priority"
             ]
           }
         },
@@ -43818,7 +43828,9 @@
       "completedCount": 1811,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T18:23:45.194Z",
+      "description": "Tasks for master context"
     }
   }
 }
