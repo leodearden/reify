@@ -210,6 +210,68 @@ structure def S : T {
     );
 }
 
+// ── Scenario D: unresolved annotation on let (Named path, Let arm) ────────────
+
+/// Regression pin for the `Let` arm of the `structure_members` filter_map at
+/// `conformance.rs:100`.
+///
+/// ## What this tests
+///
+/// The `resolve_member_annotation_type` closure is called from two places:
+///   • conformance.rs:79 — `Param` arm (covered by Scenario C above)
+///   • conformance.rs:100 — `Let` arm (covered here)
+///
+/// Both call the **same** closure, so a single implementation change fixes both.
+/// This test is a coverage/regression pin: it ensures that a future refactor
+/// touching only the Param call-site at :79 without updating the Let call-site
+/// at :100 would be caught.
+///
+/// ## Assertions (same shape as Scenario C)
+///
+/// (a) Root-cause pin: ≥1 `Severity::Error` diagnostic contains both
+///     `"unresolved type in conformance check"` and `"UnknownType"`.
+/// (b) Anti-cascade pin: NO diagnostic (at **any** severity) contains
+///     `"type mismatch for trait member"`.
+#[test]
+fn let_unresolved_annotation_suppresses_conformance_cascade() {
+    let source = r#"
+trait T {
+    let x : Length
+}
+structure def S : T {
+    let x : UnknownType = 5mm
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // (a) Root-cause: at least one error mentions "unresolved type in conformance check"
+    // AND the unresolved name "UnknownType".
+    assert!(
+        errors.iter().any(|d| {
+            d.message.contains("unresolved type in conformance check")
+                && d.message.contains("UnknownType")
+        }),
+        "expected an error containing 'unresolved type in conformance check' and \
+         'UnknownType' (root-cause pin for Let arm of resolve_member_annotation_type \
+         at conformance.rs:100); got: {:?}",
+        errors,
+    );
+
+    // (b) Anti-cascade: no "type mismatch for trait member" at any severity.
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "unexpected 'type mismatch for trait member' cascade diagnostic (regardless of \
+         severity) — Type::Error returned from resolve_member_annotation_type (Let arm) \
+         should suppress this via the producer-side wildcard in type_compat.rs:3–26; \
+         all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
+
 // ── Severity-robustness regression test ──────────────────────────────────────
 
 /// Robustness test: check (b) must catch a "type mismatch for trait" cascade
