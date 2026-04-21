@@ -380,6 +380,15 @@ impl EvaluationGraph {
         graph
     }
 
+    /// Returns `true` iff `id` refers to a value cell present in this graph
+    /// whose `kind` is `Auto` (strict or free). Returns `false` for missing
+    /// cells — callers relying on that "missing → false" branch (e.g. the
+    /// guard-deactivation helper) get the same semantics as the prior
+    /// `value_cells.get(id).is_some_and(|n| n.kind.is_auto())` form.
+    pub fn is_auto_cell(&self, id: &ValueCellId) -> bool {
+        self.value_cells.get(id).is_some_and(|n| n.kind.is_auto())
+    }
+
     /// Determine which constraint IDs are active given the current values.
     ///
     /// For each guarded group, inspects the guard cell's value:
