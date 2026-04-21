@@ -43606,7 +43606,7 @@
         "description": "Task 1921 completed the Type::Error sentinel audit but missed three specific silent `_ => Type::Real` fallbacks in crates/reify-compiler/src/expr.rs. These are NOT error-producer branches — they are type-inference fallbacks that swallow logic errors without emitting diagnostics, violating the \"errors must be noisy\" rule (briefing convention, task-117 origin).\n\nThree sites to fix:\n\n1. **expr.rs:1323-1328** — `index_access` compiles `obj[idx]`; when `obj.result_type` is neither `Type::List(_)` nor `Type::Map(_,_)` nor `Type::Error`, the result silently defaults to `Type::Real` with no diagnostic. Reachable from user code e.g. `let x = 5; let y = x[0]`.\n\n2. **expr.rs:1635-1642** — quantifier (`forall`/`exists`) compiles `∀x ∈ collection. P(x)`; when `collection.result_type` is neither `Type::List(_)` nor `Type::Set(_)` nor `Type::Error`, `elem_type` silently defaults to `Type::Real` with no diagnostic. Reachable from user code e.g. `forall x in 5 { x > 0 }`.\n\n3. **expr.rs:1152-1167** — inside `if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str())` guard, the trailing `_ => Type::Real` catch-all is unreachable (the guard restricts to count/sum/keys/values) but is still coded as a silent default. Should be `unreachable!()`.\n\nFixes:\n- (1) and (2): push `Diagnostic::error(...)` with a span, then use `make_poison_type(diagnostics, n)` to return `Type::Error` (same pattern as range-no-bounds, match-no-arms).\n- (3): replace with `unreachable!(\"COLLECTION_AGGREGATION_MEMBERS restricts member to count/sum/keys/values\")`.\n\nAdd regression tests to crates/reify-compiler/tests/silent_defaults_tests.rs:\n- `index_into_non_collection_emits_diagnostic`\n- `quantifier_over_non_collection_emits_diagnostic`\n\nNo test needed for (3) since it's purely a defensive-coding style change (unreachable assertion).\n\nRelated: task 1921 (parent audit, done), task 117 (silent-defaults test infrastructure), task 448 (anti-cascade parent).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -43629,7 +43629,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-21T08:40:12.058Z"
+        "updatedAt": "2026-04-21T08:44:04.025Z"
       },
       {
         "id": "2067",
@@ -43676,7 +43676,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T08:44:03.496Z",
+      "lastModified": "2026-04-21T08:44:04.025Z",
       "taskCount": 2060,
       "completedCount": 1788,
       "tags": [
