@@ -25650,7 +25650,12 @@
         "testStrategy": null,
         "subtasks": [],
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/extrude_symmetric_e2e.rs",
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ],
           "files": [],
           "bundled_from": [
             "1189",
@@ -43659,7 +43664,9 @@
       "completedCount": 1801,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:21:50.661Z",
+      "description": "Tasks for master context"
     }
   }
 }
