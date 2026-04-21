@@ -60,6 +60,7 @@ describe('ViewManageModal — dialog structure', () => {
     const dialog = screen.getByRole('dialog');
     const focusable = dialog.querySelector('button, input, [tabindex]:not([tabindex="-1"])');
     expect(focusable).toBeTruthy();
+    expect(document.activeElement).toBe(focusable);
   });
 });
 
