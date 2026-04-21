@@ -14,7 +14,7 @@ use reify_eval::{Engine, EngineError, EvalResult};
 use reify_test_support::{bracket_compiled_module, parse_and_compile};
 
 use reify_compiler::CompiledModule;
-use reify_types::{SnapshotProvenance, Value, ValueCellId};
+use reify_types::{ConstraintNodeId, Satisfaction, SnapshotProvenance, Value, ValueCellId};
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -380,4 +380,140 @@ fn edit_source_removed_cell_drops_value_from_map() {
             "retained param {param} must still be present in the graph"
         );
     }
+}
+
+// ── Constraint diff (changed / added) ──────────────────────────────────────
+
+/// Bracket source with a configurable constraint expression on `thickness`.
+/// Params are fixed at canonical defaults; only the constraint text varies.
+fn bracket_with_constraint(constraint_expr: &str) -> String {
+    format!(
+        r#"structure Bracket {{
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+
+    let volume = width * height * thickness
+
+    constraint {constraint_expr}
+}}"#
+    )
+}
+
+/// Changing a constraint's expression in-place must (a) flip its satisfaction
+/// under `check_snapshot` (which reads the engine's installed snapshot) and
+/// (b) place the constraint's node in `last_eval_set()`. thickness=5mm
+/// satisfies `> 2mm` but violates `> 10mm`, so the same params produce
+/// different outcomes purely from the structural edit.
+#[test]
+fn edit_source_modified_constraint_invalidates_check_result() {
+    let mut engine = fresh_engine();
+
+    // Module A: thickness > 2mm — satisfied at thickness default = 5mm.
+    let module_a = parse_and_compile(&bracket_with_constraint("thickness > 2mm"));
+    let _ = engine.eval(&module_a);
+
+    // Sanity check: pre-edit check_snapshot reports Satisfied.
+    let pre = engine
+        .check_snapshot(&module_a)
+        .expect("check_snapshot must return after eval");
+    assert!(
+        pre.constraint_results
+            .iter()
+            .all(|e| e.satisfaction == Satisfaction::Satisfied),
+        "pre-edit constraint should be Satisfied, got: {:?}",
+        pre.constraint_results
+    );
+
+    // Module B: thickness > 10mm — violated at thickness default = 5mm.
+    let module_b = parse_and_compile(&bracket_with_constraint("thickness > 10mm"));
+    let _ = engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    // Post-edit: check_snapshot uses the installed snapshot (from edit_source)
+    // and module_b's constraint expressions, so the result must be Violated.
+    let post = engine
+        .check_snapshot(&module_b)
+        .expect("check_snapshot must return after edit_source");
+    assert_eq!(
+        post.constraint_results.len(),
+        1,
+        "expected exactly one constraint in module_b, got: {:?}",
+        post.constraint_results
+    );
+    let entry = &post.constraint_results[0];
+    assert_eq!(
+        entry.satisfaction,
+        Satisfaction::Violated,
+        "modified constraint must be Violated after edit_source; entry: {:?}",
+        entry
+    );
+
+    // last_eval_set must include the changed constraint node so downstream
+    // book-keeping (diagnostics, caller filters) can observe it.
+    let eval_set = engine.last_eval_set();
+    assert!(
+        eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new("Bracket", 0))),
+        "last_eval_set must contain the modified constraint, got: {:?}",
+        eval_set
+    );
+}
+
+/// Adding a brand-new constraint in module_B must (a) produce an additional
+/// entry in `check_snapshot` keyed by the new constraint's `ConstraintNodeId`,
+/// (b) evaluate with the current value map (thickness=5mm satisfies `< 20mm`),
+/// and (c) include the added constraint node in `last_eval_set()`. This locks
+/// the "added constraint" diff path — the new node has no prior cache entry
+/// and must land in the dirty cone via the added-set.
+#[test]
+fn edit_source_added_constraint_is_demanded_and_checked() {
+    let mut engine = fresh_engine();
+
+    // Module A: single constraint thickness > 2mm.
+    let module_a = parse_and_compile(&bracket_with_constraint("thickness > 2mm"));
+    let _ = engine.eval(&module_a);
+
+    // Module B: keeps the original constraint AND adds a second one.
+    let module_b_src = r#"structure Bracket {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+
+    let volume = width * height * thickness
+
+    constraint thickness > 2mm
+    constraint thickness < 20mm
+}"#;
+    let module_b = parse_and_compile(module_b_src);
+    let _ = engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let post = engine
+        .check_snapshot(&module_b)
+        .expect("check_snapshot must return after edit_source");
+    assert_eq!(
+        post.constraint_results.len(),
+        2,
+        "expected 2 constraints (1 original + 1 added) in module_b, got: {:?}",
+        post.constraint_results
+    );
+    for entry in &post.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "both constraints should be satisfied at thickness=5mm; entry: {:?}",
+            entry
+        );
+    }
+
+    // The added constraint lives at index 1 (the second declaration) —
+    // it must appear in last_eval_set via the "added" diff path.
+    let eval_set = engine.last_eval_set();
+    assert!(
+        eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new("Bracket", 1))),
+        "last_eval_set must contain the added constraint (Bracket#1), got: {:?}",
+        eval_set
+    );
 }
