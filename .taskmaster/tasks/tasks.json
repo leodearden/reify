@@ -8178,7 +8178,14 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/compile_api_tests.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/sweep_e2e.rs",
+            "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+            "crates/reify-kernel-occt/src/lib.rs"
+          ]
         }
       },
       {
@@ -43610,7 +43617,9 @@
       "completedCount": 1801,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:18:35.414Z",
+      "description": "Tasks for master context"
     }
   }
 }
