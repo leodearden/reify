@@ -269,6 +269,11 @@ pub(crate) fn compile_geometry_op(
                 PrimitiveKind::Sphere => Ok(reify_types::GeometryOp::Sphere {
                     radius: eval_arg("radius")?,
                 }),
+                PrimitiveKind::Tube => Ok(reify_types::GeometryOp::Tube {
+                    outer_r: eval_arg("outer_r")?,
+                    inner_r: eval_arg("inner_r")?,
+                    height: eval_arg("height")?,
+                }),
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {
