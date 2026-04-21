@@ -292,39 +292,6 @@ mod tests {
         diagnostics
     }
 
-    /// Unit test for the Option B fix (task 1951).
-    ///
-    /// This test exercises the code path the integration-level
-    /// `phantom_let_advertisement_contract_for_future_parser_extension` test in
-    /// `trait_merge_tests.rs` CANNOT reach: it hand-builds a `RequirementKind::Let`
-    /// requirement (not parseable from reify source today — see
-    /// `let_type_disambiguation_tests.rs:470-497` and esc-1951-6) and verifies that
-    /// the Option B guard in `available_defaults` suppresses the phantom
-    /// `(name, Let) -> Type::Real` entry for names recorded in `pass2_skipped`.
-    ///
-    /// ## Scenario
-    ///
-    /// - **TraitX**: requires `let x : Length` (hand-built `RequirementKind::Let` — not
-    ///   parser-reachable today)
-    /// - **TraitY**: provides `param x : Length` — Pass 1 claims the scope slot for "x"
-    /// - **TraitZ**: provides `let x = 5.5` (unannotated; `cell_type: None`) — Pass 2
-    ///   sees the slot already claimed and records "x" in `pass2_skipped`
-    /// - **Structure S : TraitX + TraitY + TraitZ { }** — no member override
-    ///
-    /// ## Expected behavior (post-fix)
-    ///
-    /// The `pass2_skipped.contains(name)` guard in the `DefaultKind::Let` arm of
-    /// `available_defaults` returns `None` before reaching the `Type::Real` fallback.
-    /// The `RequirementKind::Let` lookup for "x" finds no entry → the `None` arm fires →
-    /// correct "missing required member" diagnostic (not the spurious "available default
-    /// has Real" phantom type-mismatch).
-    ///
-    /// ## Pre-fix behavior (should NOT happen after fix)
-    ///
-    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::Real`.
-    /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
-    /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
-    ///
     /// Characterization test that enum-typed `param` and `let` members resolve to
     /// `Type::Enum` through `check_trait_conformance`.
     ///
@@ -468,6 +435,38 @@ mod tests {
         );
     }
 
+    /// Unit test for the Option B fix (task 1951).
+    ///
+    /// This test exercises the code path the integration-level
+    /// `phantom_let_advertisement_contract_for_future_parser_extension` test in
+    /// `trait_merge_tests.rs` CANNOT reach: it hand-builds a `RequirementKind::Let`
+    /// requirement (not parseable from reify source today — see
+    /// `let_type_disambiguation_tests.rs:470-497` and esc-1951-6) and verifies that
+    /// the Option B guard in `available_defaults` suppresses the phantom
+    /// `(name, Let) -> Type::Real` entry for names recorded in `pass2_skipped`.
+    ///
+    /// ## Scenario
+    ///
+    /// - **TraitX**: requires `let x : Length` (hand-built `RequirementKind::Let` — not
+    ///   parser-reachable today)
+    /// - **TraitY**: provides `param x : Length` — Pass 1 claims the scope slot for "x"
+    /// - **TraitZ**: provides `let x = 5.5` (unannotated; `cell_type: None`) — Pass 2
+    ///   sees the slot already claimed and records "x" in `pass2_skipped`
+    /// - **Structure S : TraitX + TraitY + TraitZ { }** — no member override
+    ///
+    /// ## Expected behavior (post-fix)
+    ///
+    /// The `pass2_skipped.contains(name)` guard in the `DefaultKind::Let` arm of
+    /// `available_defaults` returns `None` before reaching the `Type::Real` fallback.
+    /// The `RequirementKind::Let` lookup for "x" finds no entry → the `None` arm fires →
+    /// correct "missing required member" diagnostic (not the spurious "available default
+    /// has Real" phantom type-mismatch).
+    ///
+    /// ## Pre-fix behavior (should NOT happen after fix)
+    ///
+    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::Real`.
+    /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
+    /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
     #[test]
     fn option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name() {
         // --- Build CompiledTrait fixtures ---
@@ -1249,6 +1248,159 @@ mod tests {
         );
     }
 
+    /// Phase-contract test: Pass 2 of `check_phase_pre_register_default_types` caches an
+    /// unannotated Let's compiled expression into `inferred_let_exprs`.
+    ///
+    /// When a `DefaultKind::Let { cell_type: None }` default is present and its scope slot
+    /// is not yet claimed (no preceding annotated default for the same name), Pass 2 should
+    /// compile the expression, register the inferred type in scope, and store the compiled
+    /// expression in `inferred_let_exprs` for phase 6 to reuse without double-compilation.
+    #[test]
+    fn check_phase_pre_register_default_types_caches_unannotated_let_in_inferred_map() {
+        let let_decl = reify_syntax::LetDecl {
+            name: "y".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // unannotated — must go through Pass 2 inference
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(2.5),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("y".to_string()),
+            kind: DefaultKind::Let {
+                cell_type: None,
+                let_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let (inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics for a simple number literal; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            pass2_skipped.is_empty(),
+            "Expected no pass2_skipped when no scope collision occurred"
+        );
+        assert!(
+            inferred_let_exprs.contains_key("y"),
+            "Expected 'y' in inferred_let_exprs after Pass 2 compiled the unannotated let"
+        );
+        assert_eq!(
+            inferred_let_exprs["y"].result_type,
+            Type::Real,
+            "Expected Type::Real for a floating-point number literal 2.5"
+        );
+    }
+
+    /// Phase-contract test: Pass 2 of `check_phase_pre_register_default_types` records
+    /// the name in `pass2_skipped` (not `inferred_let_exprs`) when the scope slot was
+    /// already claimed by a Pass 1 annotated default.
+    ///
+    /// When a `DefaultKind::Param` (or annotated `DefaultKind::Let`) for name "x" is
+    /// processed first in Pass 1, the scope slot for "x" is claimed. A subsequent
+    /// unannotated `DefaultKind::Let` for the same name in Pass 2 sees the slot occupied
+    /// and must record "x" in `pass2_skipped` (preventing duplicate cell injection in
+    /// phase 6) without inserting into `inferred_let_exprs`.
+    #[test]
+    fn check_phase_pre_register_default_types_records_collision_in_pass2_skipped() {
+        let param_decl = reify_syntax::ParamDecl {
+            name: "x".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // unannotated — will be compiled in Pass 2
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![
+            // Pass 1 claims the scope slot for "x" with Type::length()
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Param {
+                    cell_type: Type::length(),
+                    default_decl: param_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+            // Pass 2 finds "x" already claimed → should record in pass2_skipped
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: None,
+                    let_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+        ];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let (inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
+
+        // The collision must be recorded in pass2_skipped, not the expression cache.
+        assert!(
+            inferred_let_exprs.is_empty(),
+            "Expected inferred_let_exprs to be empty when Pass 2 finds a scope collision; \
+             got: {:?}",
+            inferred_let_exprs.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            pass2_skipped.contains("x"),
+            "Expected 'x' in pass2_skipped after Pass 2 found its scope slot already claimed"
+        );
+    }
+
     /// Phase-contract test for `check_phase_build_available_defaults_map`.
     ///
     /// Verifies that the helper builds a composite-keyed HashMap from ctx.defaults,
@@ -1374,6 +1526,193 @@ mod tests {
         assert!(
             diagnostics[0].message.contains("'w'"),
             "Expected member name 'w' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Phase-contract test: `check_phase_check_members_against_requirements` emits a
+    /// "type mismatch" diagnostic when the structure provides the required member but
+    /// with the wrong type.
+    ///
+    /// Covers the `Some(actual_type)` arm where `implicitly_converts_to(actual, expected)`
+    /// is false — the mismatch path inside the `structure_members.get(&req.name)` match.
+    #[test]
+    fn check_phase_check_members_against_requirements_emits_type_mismatch_for_wrong_member_type() {
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        ctx.requirements = vec![TraitRequirement {
+            name: "w".to_string(),
+            kind: RequirementKind::Param(Type::length()),
+            span: SourceSpan::empty(0),
+        }];
+
+        // Structure member "w" exists but has wrong type: Real, not Length
+        let mut structure_members: HashMap<String, Type> = HashMap::new();
+        structure_members.insert("w".to_string(), Type::Real);
+        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_check_members_against_requirements(
+            &ctx,
+            &entity_ref,
+            &structure_members,
+            &available_defaults,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected 1 type-mismatch diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0].message.contains("type mismatch"),
+            "Expected 'type mismatch' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("'w'"),
+            "Expected member name 'w' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Phase-contract test: `check_phase_check_members_against_requirements` emits a
+    /// "type mismatch" diagnostic when no structure member exists but there IS a same-kind
+    /// available default whose type does not satisfy the requirement.
+    ///
+    /// Covers the `Some(default_type)` (non-matching) arm of the `available_defaults.get`
+    /// match — the default exists but `implicitly_converts_to(default_type, expected)` is
+    /// false, so the "requirement expects …, available default has …" diagnostic fires.
+    #[test]
+    fn check_phase_check_members_against_requirements_emits_mismatch_for_wrong_default_type() {
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        ctx.requirements = vec![TraitRequirement {
+            name: "w".to_string(),
+            kind: RequirementKind::Param(Type::length()),
+            span: SourceSpan::empty(0),
+        }];
+
+        // No structure member "w", but there IS a same-kind (Param) default with wrong type
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
+        available_defaults.insert(
+            ("w".to_string(), AvailableDefaultKind::Param),
+            Type::Real, // Wrong type — Length is required
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_check_members_against_requirements(
+            &ctx,
+            &entity_ref,
+            &structure_members,
+            &available_defaults,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected 1 diagnostic for wrong-typed default; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0].message.contains("available default"),
+            "Expected 'available default' in diagnostic message; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("'w'"),
+            "Expected member name 'w' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Phase-contract test: `check_phase_check_members_against_requirements` emits a
+    /// "missing required sub-component" diagnostic for a `RequirementKind::Sub` requirement
+    /// when the structure has no matching sub-component declaration.
+    ///
+    /// Covers the `RequirementKind::Sub` arm: when `structure.members` contains no
+    /// `MemberDecl::Sub` entry matching both the required name and structure type, the
+    /// "missing required sub-component" diagnostic is emitted.
+    #[test]
+    fn check_phase_check_members_against_requirements_emits_missing_sub_for_absent_sub_component()
+    {
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![], // No sub-components declared
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        ctx.requirements = vec![TraitRequirement {
+            name: "mount".to_string(),
+            kind: RequirementKind::Sub("Hole".to_string()),
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_check_members_against_requirements(
+            &ctx,
+            &entity_ref,
+            &structure_members,
+            &available_defaults,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected 1 diagnostic for missing sub-component 'mount'; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0].message.contains("missing required sub-component"),
+            "Expected 'missing required sub-component' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("'mount'"),
+            "Expected sub-component name 'mount' in diagnostic; got: {}",
             diagnostics[0].message
         );
     }
