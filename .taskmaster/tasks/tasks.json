@@ -43606,23 +43606,21 @@
         "description": "Post-merge review follow-up on task 2038. Reviewer argues that two defensive patterns introduced in `crates/reify-cli/src/mcp_context.rs::reapply_user_overrides` guard states that are unreachable through public API and should be replaced with type-enforced invariants or `debug_assert!` that fails loudly when the assumption breaks.\n\nScope:\n\n1. **Early-return branch (lines ~204-211).** Currently calls `state.clear_overrides()` when `user_overrides` is empty to prune any stale `warned_overrides`. The reviewer observes that no public mutation path can leave `warned_overrides` non-empty while `user_overrides` is empty: `load_file`/`open_file` call `clear_overrides()`, `set_parameter` only pushes, the `Ok` arm removes the cell-specific warn entry, and mismatch arms keep entries in `user_overrides`. Consider one of:\n   - Revert to bare `return;` and rely on `clear_overrides()` as the single invariant-enforcing entry point.\n   - Keep `return;` but add `debug_assert!(state.warned_overrides.is_empty())` so violations fail loudly in tests.\n\n2. **Paired test (lines ~1096-1142).** `reapply_user_overrides_maintains_warned_subset_invariant` reaches into `ctx.lock_state()` and calls `state.user_overrides.clear()` directly to fabricate an otherwise-unreachable state. This ossifies the private `CliState` field layout. If the defensive branch is removed, delete this test. If kept as a `debug_assert!`, rewrite the test to trigger the assertion under pre-fix conditions rather than behaviorally verify the silent mutation.\n\n3. **NotInitialized docstring (lines ~193-203).** The docstring asserts `NotInitialized` is unreachable because `reapply_user_overrides` runs immediately after `ensure_engine(...).eval(...)`. This is an unenforced calling convention. Consider `debug_assert!(!matches!(err, EngineError::NotInitialized), \"reapply called before eval\")` when classifying the variant, or reword the docstring to mark this as an unenforced precondition rather than an invariant.\n\nKeep all three changes in one commit; they share a theme (\"prefer loud invariant failures over silent defensive cleanup\").\n\nmemory_hints:\n- search(\"task 2038 reapply_user_overrides clear_overrides\")\n- review comments on esc-2038-9 from reviewer_comprehensive",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-21T06:44:55.856Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T06:30:55.951Z",
-      "taskCount": 2058,
+      "lastModified": "2026-04-21T06:44:55.856Z",
+      "taskCount": 2059,
       "completedCount": 1792,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T06:44:48.768Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-21T06:44:48.789Z"
+      ]
     }
   }
 }
