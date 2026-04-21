@@ -19,13 +19,6 @@ use crate::CompiledModule;
 /// - Other imports resolve relative to `<project_root>/...`
 /// - Dots become path separators
 /// - Tries `<path>.ri` first, then `<path>/mod.ri`
-///
-/// **Precedence for `std.*` paths:** `ModuleDag::compile_module` tries the
-/// filesystem resolver first. If the filesystem lookup fails (e.g., no
-/// stdlib_root directory on disk), the DAG falls back to the pre-compiled
-/// modules returned by `stdlib_loader::load_stdlib()`. This ensures that user
-/// projects without a local stdlib directory still get `import std.units` to
-/// resolve correctly via the embedded copy.
 pub struct ModuleResolver {
     /// Root of the project (for non-std imports).
     pub project_root: PathBuf,
@@ -84,6 +77,20 @@ impl ModuleResolver {
     }
 }
 
+/// Tracks which stdlib source was committed on the first `std.*` resolution.
+///
+/// All `std.*` modules within a single `ModuleDag` instance must come from the
+/// same source. Mixing filesystem-resolved and embedded modules is unsafe because
+/// the embedded stdlib was compiled as a unit; using an embedded `std.materials.mechanical`
+/// alongside a filesystem-resolved `std.units` can produce downstream type/trait mismatches.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum StdlibMode {
+    /// All `std.*` modules resolved from the filesystem stdlib_root.
+    FileSystem,
+    /// All `std.*` modules resolved from the embedded compiled stdlib.
+    Embedded,
+}
+
 /// The module dependency DAG.
 ///
 /// Tracks compiled modules, detects cycles, and provides topological ordering.
@@ -96,6 +103,8 @@ pub struct ModuleDag {
     /// IndexSet preserves insertion order (= DFS traversal order), enabling
     /// the cycle error to show the actual import chain.
     in_progress: IndexSet<String>,
+    /// Source committed on the first `std.*` resolution (all-or-nothing invariant).
+    stdlib_mode: Option<StdlibMode>,
 }
 
 impl Default for ModuleDag {
@@ -110,12 +119,32 @@ impl ModuleDag {
             modules: HashMap::new(),
             topo_order: Vec::new(),
             in_progress: IndexSet::new(),
+            stdlib_mode: None,
         }
     }
 
     /// Compile a module and all its transitive dependencies.
     ///
     /// Performs DFS with cycle detection. Returns diagnostics on error.
+    ///
+    /// **Stdlib resolution precedence for `std.*` paths:**
+    ///
+    /// 1. The filesystem resolver is always tried first. If `stdlib_root` contains
+    ///    the module (e.g. a user-supplied override), the filesystem version wins.
+    /// 2. If the filesystem lookup fails, the DAG falls back to the pre-compiled
+    ///    modules returned by `stdlib_loader::load_stdlib()` (embedded copy). This
+    ///    ensures `import std.units` resolves correctly even when no local stdlib
+    ///    directory exists.
+    ///
+    /// **All-or-nothing invariant (enforced by `stdlib_mode`):**
+    ///
+    /// On the first `std.*` resolution, the DAG commits to one source (filesystem
+    /// or embedded). Any subsequent `std.*` import that would resolve via the other
+    /// source emits a `"partial stdlib overlay"` diagnostic naming the offending
+    /// module and the stdlib_root path. Users must either populate the stdlib dir
+    /// fully or remove it to use the embedded stdlib exclusively. This prevents
+    /// silent type/trait mismatches that arise when the embedded stdlib modules are
+    /// mixed with a partial filesystem overlay.
     pub fn compile_module(
         &mut self,
         module_path: &str,
@@ -152,28 +181,87 @@ impl ModuleDag {
         // real units.ri under stdlib_root and expects the filesystem version to win.
         let is_std_path = module_path == "std" || module_path.starts_with("std.");
 
+        // `commit_fs_mode` is set to true in the Ok-and-std branch when we are
+        // about to commit filesystem mode for the first time. We defer the actual
+        // write to `self.stdlib_mode` until after the module body compiles
+        // successfully so that a parse or compile failure does not taint the mode
+        // for subsequent (legitimate) calls.
+        let mut commit_fs_mode = false;
+
         // Resolve to filesystem path, with embedded-stdlib fallback for std.* paths.
         let fs_path = match resolver.resolve_import_path(module_path) {
+            Ok(path) if is_std_path => {
+                // Filesystem resolved a std.* path.
+                // All-or-nothing invariant: if a prior std.* was served from the
+                // embedded stdlib, mixing in a filesystem-resolved module is unsafe.
+                if self.stdlib_mode == Some(StdlibMode::Embedded) {
+                    return Err(vec![Diagnostic::error(format!(
+                        "partial stdlib overlay: '{}' resolved on the filesystem but earlier \
+                         std.* imports were served from the embedded stdlib; either populate \
+                         all stdlib modules under '{}' or remove that directory to use the \
+                         embedded stdlib exclusively",
+                        module_path,
+                        resolver.stdlib_root.display(),
+                    ))]);
+                }
+                // Defer committing filesystem mode until after successful compile so
+                // that a parse/compile failure does not taint the mode (a failed
+                // compile produces no DAG entry, so no std.* module was actually
+                // loaded from the filesystem yet).
+                commit_fs_mode = self.stdlib_mode.is_none();
+                path
+            }
             Ok(path) => path,
             Err(fs_err) if is_std_path => {
-                // Filesystem lookup failed for a std.* path — consult the embedded stdlib.
+                // Filesystem lookup failed for a std.* path.
+                // All-or-nothing invariant: if a prior std.* was served from the
+                // filesystem, falling back to embedded now would mix sources.
+                if self.stdlib_mode == Some(StdlibMode::FileSystem) {
+                    return Err(vec![Diagnostic::error(format!(
+                        "partial stdlib overlay: '{}' not found on the filesystem under '{}' \
+                         but earlier std.* imports were resolved from the filesystem; either \
+                         add the missing module to '{}' or remove that directory to use the \
+                         embedded stdlib exclusively",
+                        module_path,
+                        resolver.stdlib_root.display(),
+                        resolver.stdlib_root.display(),
+                    ))]);
+                }
+                // Consult the embedded stdlib. We commit to Embedded mode only after
+                // confirming the module exists there — an unknown std.* path (e.g. a
+                // typo like "std.unknonwn") must not taint the mode for subsequent
+                // valid imports.
                 let target = reify_types::ModulePath::from_dotted(module_path);
                 let stdlib = crate::stdlib_loader::load_stdlib();
                 if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
+                    // Commit embedded mode now that we know the module is present.
+                    if self.stdlib_mode.is_none() {
+                        self.stdlib_mode = Some(StdlibMode::Embedded);
+                    }
                     // Found in embedded stdlib. Insert all modules up to and including
                     // the target in topological order. The stdlib slice is itself
                     // topologically ordered: module at index i was compiled against
-                    // all modules at indices 0..i. By inserting the full prefix we
-                    // ensure transitive deps (e.g. std.units and std.si_units when
-                    // std.materials.mechanical is requested) are present in both
-                    // `modules` and `topo_order`, so consumers that iterate
-                    // topo_order see a consistent view of all stdlib transitive deps.
-                    for embedded in &stdlib[..=idx] {
+                    // all modules at indices 0..i.
+                    //
+                    // Insert-prefix invariant: if stdlib[k] is present in self.modules,
+                    // then stdlib[0..=k] are all present (because any prior fallback call
+                    // that reached index k must have inserted the full prefix 0..=k).
+                    // We exploit this invariant via a backward walk: scan from idx
+                    // downward to find the largest already-present index j, then insert
+                    // stdlib[j+1..=idx] unconditionally (no per-entry contains_key).
+                    // This is faster on repeat calls with overlapping prefixes and makes
+                    // the invariant explicit in code.
+                    let start = (0..=idx)
+                        .rev()
+                        .find(|&j| {
+                            self.modules.contains_key(&stdlib[j].path.0.join("."))
+                        })
+                        .map(|j| j + 1)
+                        .unwrap_or(0);
+                    for embedded in &stdlib[start..=idx] {
                         let dotted = embedded.path.0.join(".");
-                        if !self.modules.contains_key(&dotted) {
-                            self.topo_order.push(dotted.clone());
-                            self.modules.insert(dotted, embedded.clone());
-                        }
+                        self.topo_order.push(dotted.clone());
+                        self.modules.insert(dotted, embedded.clone());
                     }
                     return Ok(());
                 }
@@ -246,6 +334,14 @@ impl ModuleDag {
 
         // Propagate error after cleanup
         let compiled = result?;
+
+        // Commit filesystem mode now that the module has compiled successfully.
+        // Deferred from the Ok-and-std match arm above so that a parse/compile
+        // failure does not taint stdlib_mode (no std.* module was actually inserted
+        // into self.modules on a failed compile).
+        if commit_fs_mode {
+            self.stdlib_mode = Some(StdlibMode::FileSystem);
+        }
 
         // Record in post-order (only on success)
         self.topo_order.push(module_path.to_string());
