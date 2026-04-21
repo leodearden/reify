@@ -42598,11 +42598,11 @@
         "description": "gui/src/__tests__/App.test.tsx:642-670 asserts mockFlyToEntity was called and that one selected group appears in PropertyEditor, but does not check that the entity path routed to selectionStore.selectEntity is 'Bracket'. A regression that selected the wrong entity would still satisfy `selectedGroups.length === 1`.\n\nFix: Also assert the selected group's identity (e.g. that the data-selected element corresponds to 'Bracket', or inspect selectionStore state) so the test verifies the value routed through, not merely that something got selected.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:51:30.231Z",
+        "updatedAt": "2026-04-21T08:52:13.091Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -42615,8 +42615,7 @@
           },
           "done_provenance": {
             "commit": "1c4cd4653cb25603afe7d1ada3e2cddc5a8c16dc",
-            "commit_input": "1c4cd4653",
-            "note": "Identity assertion on selected entity 'Bracket' already merged to main via commit 1c4cd4653; test at gui/src/__tests__/App.test.tsx:673 asserts capturedViewportProps.selectedEntity === 'Bracket'."
+            "note": "Identity assertion expect(capturedViewportProps.selectedEntity).toBe('Bracket') already merged to main at gui/src/__tests__/App.test.tsx:673."
           }
         }
       },
@@ -43674,9 +43673,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T08:51:30.232Z",
+      "lastModified": "2026-04-21T08:52:13.091Z",
       "taskCount": 2060,
-      "completedCount": 1789,
+      "completedCount": 1790,
       "tags": [
         "master"
       ]
