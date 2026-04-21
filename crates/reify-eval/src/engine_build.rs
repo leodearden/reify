@@ -577,4 +577,61 @@ mod tests {
             compile_failures, diagnostics
         );
     }
+
+    /// Richer error propagation: the compile-failure Error diagnostic must include
+    /// the specific reason from `compile_geometry_op`'s `Err(reason)`, not just the
+    /// generic prefix.  Uses a Boolean op whose GeomRef::Step(99) is out-of-bounds
+    /// so the reason string contains "unresolvable" / "Step" / "99".
+    ///
+    /// This test drives step-4: it fails until `execute_realization_ops` appends
+    /// the `err` string to the diagnostic message.
+    #[test]
+    fn execute_realization_ops_compile_failure_diagnostic_includes_specific_reason() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // Step(99) is out-of-bounds when step_handles is empty →
+        // compile_geometry_op returns Err("unresolvable GeomRef::Step(99) …")
+        let ops = vec![CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(99),
+            right: GeomRef::Step(99),
+        }];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+        );
+
+        // The Error diagnostic must contain the standard prefix (preserves
+        // existing integration-test substring checks) AND the specific reason.
+        let compile_err_diag = diagnostics
+            .iter()
+            .find(|d| {
+                d.message.contains("failed to compile geometry operation")
+                    && matches!(d.severity, reify_types::Severity::Error)
+            })
+            .expect("expected an Error diagnostic with 'failed to compile geometry operation'");
+
+        assert!(
+            compile_err_diag.message.contains("unresolvable")
+                || compile_err_diag.message.contains("Step")
+                || compile_err_diag.message.contains("99"),
+            "Error diagnostic should include the specific reason (unresolvable / Step / 99), \
+             got: {:?}",
+            compile_err_diag.message
+        );
+    }
 }
