@@ -438,3 +438,44 @@ describe('bridge kernel commands', () => {
     expect(result).toEqual(sample);
   });
 });
+
+describe('bridge def-preview commands', () => {
+  it('getContainingDefinition invokes get_containing_definition with {line, col} and resolves to DefInfo', async () => {
+    const mockDefInfo = { name: 'BoltFlange', kind: 'structure', span: { start: 0, end: 42 } };
+    mockInvoke.mockResolvedValue(mockDefInfo);
+
+    const { getContainingDefinition } = await import('../bridge');
+    const result = await getContainingDefinition(7, 12);
+
+    expect(mockInvoke).toHaveBeenCalledWith('get_containing_definition', { line: 7, col: 12 });
+    expect(result).toEqual(mockDefInfo);
+  });
+
+  it('getContainingDefinition resolves to null when backend returns null', async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const { getContainingDefinition } = await import('../bridge');
+    const result = await getContainingDefinition(1, 1);
+
+    expect(result).toBeNull();
+  });
+
+  it('getDefPreview invokes get_def_preview with {defName} and resolves to a converted GuiState', async () => {
+    const rawState: RawGuiState = {
+      meshes: [{ entity_path: 'BoltFlange.body', vertices: [0, 1, 2], indices: [0, 1, 2], normals: null }],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+    };
+    mockInvoke.mockResolvedValue(rawState);
+
+    const { getDefPreview } = await import('../bridge');
+    const result = await getDefPreview('BoltFlange');
+
+    expect(mockInvoke).toHaveBeenCalledWith('get_def_preview', { defName: 'BoltFlange' });
+    expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
+    expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
+    expect(result.meshes[0].entity_path).toBe('BoltFlange.body');
+  });
+});
