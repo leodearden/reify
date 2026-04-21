@@ -641,3 +641,54 @@ structure S {
         other => panic!("expected Match constraint expr, got {:?}", other),
     }
 }
+
+// ── Task 845: unique labels across multi-instantiation ───────────────────────
+
+/// Two distinct instantiations of the same constraint def inside one entity
+/// must produce distinct labels (else they collide in diagnostic output).
+/// The label format is `{def_name}#{inst_idx}[{pred_idx}]`; each instantiation
+/// gets its own inst_idx so two single-predicate instantiations become
+/// `MinWall#0[0]` and `MinWall#1[0]`.
+#[test]
+fn multi_instantiation_labels_are_unique() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param wall_a: Length
+    param wall_b: Length
+    constraint MinWall(wall: wall_a)
+    constraint MinWall(wall: wall_b)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 2, "expected exactly 2 constraints");
+
+    let labels: Vec<_> = tmpl
+        .constraints
+        .iter()
+        .map(|c| c.label.clone())
+        .collect();
+
+    assert_ne!(
+        labels[0], labels[1],
+        "labels from two instantiations must differ, got {:?}",
+        labels
+    );
+    assert!(
+        labels.contains(&Some("MinWall#0[0]".to_string())),
+        "expected MinWall#0[0] among labels, got {:?}",
+        labels
+    );
+    assert!(
+        labels.contains(&Some("MinWall#1[0]".to_string())),
+        "expected MinWall#1[0] among labels, got {:?}",
+        labels
+    );
+}
