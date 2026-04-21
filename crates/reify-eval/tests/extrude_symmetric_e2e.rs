@@ -212,6 +212,22 @@ fn extrude_symmetric_per_side_just_below_threshold_rejected() {
          got diagnostics: {:?}",
         result.diagnostics
     );
+
+    // The paired Error diagnostic (from `Err(...)` returned by compile_geometry_op,
+    // wrapped as "failed to compile geometry operation: ..." by engine_build) must
+    // also name the specific op — `extrude_symmetric`, not generic `extrude` — so
+    // the two diagnostic channels stay in sync. Locks the Err-string fix so a
+    // future refactor can't silently regress the Err back to "extrude distance ...".
+    let has_extsym_error = result.diagnostics.iter().any(|d| {
+        matches!(d.severity, reify_types::Severity::Error)
+            && d.message.contains("extrude_symmetric distance is degenerate")
+    });
+    assert!(
+        has_extsym_error,
+        "expected an Error diagnostic containing 'extrude_symmetric distance is degenerate' \
+         (not the generic 'extrude distance ...'), got diagnostics: {:?}",
+        result.diagnostics
+    );
 }
 
 /// Per-side threshold accepted boundary: distance = 2e-12 m means the

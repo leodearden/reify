@@ -709,9 +709,12 @@ pub(crate) fn compile_geometry_op(
                     match distance.as_f64() {
                         Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
                         Some(v) => {
+                            // Threshold constant (`DEGENERATE_LENGTH_M`) is a source-level
+                            // maintenance aid — user-facing diagnostics show only the numeric
+                            // floor so model authors aren't distracted by the Rust name.
                             diagnostics.push(Diagnostic::warning(format!(
                                 "extrude dropped: distance={} is degenerate \
-                                 (|distance| must be finite and >= DEGENERATE_LENGTH_M = 1e-12 m)",
+                                 (|distance| must be finite and >= 1e-12 m)",
                                 v
                             )));
                             return Err(format!("extrude distance is degenerate: {}", v));
@@ -748,9 +751,12 @@ pub(crate) fn compile_geometry_op(
                     // define a revolve. Warn so model authors see a specific
                     // explanation instead of only the caller's generic error.
                     if !mag.is_finite() || mag < GEOMETRY_EPSILON {
+                        // Threshold constant (`GEOMETRY_EPSILON`) is a source-level
+                        // maintenance aid — user-facing diagnostics show only the numeric
+                        // floor so model authors aren't distracted by the Rust name.
                         diagnostics.push(Diagnostic::warning(format!(
                             "revolve dropped: rotation axis [{}, {}, {}] has \
-                             degenerate magnitude={} (must be finite and >= GEOMETRY_EPSILON = 1e-12)",
+                             degenerate magnitude={} (must be finite and >= 1e-12)",
                             axis_dir[0], axis_dir[1], axis_dir[2], mag
                         )));
                         return Err(format!("revolve axis has degenerate magnitude: {}", mag));
@@ -768,9 +774,12 @@ pub(crate) fn compile_geometry_op(
                     // See `build_revolve_angle_negative_just_below_threshold_rejected`
                     // in `tests/geometry_error_handling.rs`.
                     if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
+                        // Threshold constant (`DEGENERATE_ANGLE_RAD`) is a source-level
+                        // maintenance aid — user-facing diagnostics show only the numeric
+                        // floor so model authors aren't distracted by the Rust name.
                         diagnostics.push(Diagnostic::warning(format!(
                             "revolve dropped: angle={} rad is degenerate \
-                             (|angle| must be >= DEGENERATE_ANGLE_RAD = 1e-12 rad)",
+                             (|angle| must be >= 1e-12 rad)",
                             angle_rad
                         )));
                         return Err(format!("revolve angle is degenerate: {} rad", angle_rad));
@@ -830,15 +839,22 @@ pub(crate) fn compile_geometry_op(
                         // extrude_symmetric_negative_per_side_just_below_threshold_rejected.
                         Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
                         Some(v) => {
+                            // Threshold constant (`DEGENERATE_LENGTH_M`) is a source-level
+                            // maintenance aid — user-facing diagnostics show only the numeric
+                            // floor so model authors aren't distracted by the Rust name.
+                            // The Err string names the specific op (`extrude_symmetric`,
+                            // not `extrude`) so the caller's "failed to compile geometry
+                            // operation" Error channel matches the Warning — pinned by
+                            // `extrude_symmetric_per_side_just_below_threshold_rejected`.
                             diagnostics.push(Diagnostic::warning(format!(
                                 "extrude_symmetric dropped: distance={} is \
-                                 degenerate (|distance/2| must be finite and >= DEGENERATE_LENGTH_M = 1e-12 m \
+                                 degenerate (|distance/2| must be finite and >= 1e-12 m \
                                  per-side; i.e. |distance| >= 2e-12 m, half-distance floor)",
                                 v
                             )));
-                            return Err(format!("extrude distance is degenerate: {}", v));
+                            return Err(format!("extrude_symmetric distance is degenerate: {}", v));
                         }
-                        None => return Err("extrude distance is non-numeric".into()),
+                        None => return Err("extrude_symmetric distance is non-numeric".into()),
                     }
                     Ok(reify_types::GeometryOp::ExtrudeSymmetric {
                         profile: profile_handle,
