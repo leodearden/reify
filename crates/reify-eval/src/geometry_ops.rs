@@ -272,6 +272,11 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {
+            // Fail-fast: `?` on `left` short-circuits before `right` is resolved,
+            // so at most one "unresolvable GeomRef::Step" Error surfaces per
+            // Boolean op. Pinned by
+            // `build_boolean_{union,difference,intersection}_unresolved_*_no_kernel_error`
+            // in `tests/geometry_error_handling.rs`.
             let left_id = resolve_geom_ref(left, step_handles, diagnostics)?;
             let right_id = resolve_geom_ref(right, step_handles, diagnostics)?;
             match op {
