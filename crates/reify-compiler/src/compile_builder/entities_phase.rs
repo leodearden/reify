@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_syntax::ParsedModule;
-use reify_types::{CompiledFunction, Diagnostic, DiagnosticLabel, EnumDef, SourceSpan};
+use reify_types::{CompiledFunction, Diagnostic, DiagnosticLabel, EnumDef};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
@@ -68,22 +68,23 @@ pub(crate) fn phase_entities(
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                compile_entity_decl(
-                    EntityDefRef::from(structure),
-                    EntityKind::Structure,
-                    &ctx.seen_entity_names,
-                    &ctx.resolution_enums,
-                    &ctx.resolution_functions,
-                    &trait_registry,
-                    trait_names,
-                    &field_registry,
-                    &constraint_def_registry,
-                    &ctx.unit_registry,
-                    &ctx.alias_registry,
-                    &mut ctx.pending_bound_checks,
-                    &mut ctx.diagnostics,
-                    &mut ctx.templates,
-                );
+                if ctx.is_first_entity_def(&structure.name, structure.span) {
+                    compile_entity_decl(
+                        EntityDefRef::from(structure),
+                        EntityKind::Structure,
+                        &ctx.resolution_enums,
+                        &ctx.resolution_functions,
+                        &trait_registry,
+                        trait_names,
+                        &field_registry,
+                        &constraint_def_registry,
+                        &ctx.unit_registry,
+                        &ctx.alias_registry,
+                        &mut ctx.pending_bound_checks,
+                        &mut ctx.diagnostics,
+                        &mut ctx.templates,
+                    );
+                }
             }
             reify_syntax::Declaration::Enum(_) => {
                 // Already collected in pre-pass above.
@@ -110,22 +111,23 @@ pub(crate) fn phase_entities(
                 // Already compiled in trait pre-pass above.
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
-                compile_entity_decl(
-                    EntityDefRef::from(occurrence),
-                    EntityKind::Occurrence,
-                    &ctx.seen_entity_names,
-                    &ctx.resolution_enums,
-                    &ctx.resolution_functions,
-                    &trait_registry,
-                    trait_names,
-                    &field_registry,
-                    &constraint_def_registry,
-                    &ctx.unit_registry,
-                    &ctx.alias_registry,
-                    &mut ctx.pending_bound_checks,
-                    &mut ctx.diagnostics,
-                    &mut ctx.templates,
-                );
+                if ctx.is_first_entity_def(&occurrence.name, occurrence.span) {
+                    compile_entity_decl(
+                        EntityDefRef::from(occurrence),
+                        EntityKind::Occurrence,
+                        &ctx.resolution_enums,
+                        &ctx.resolution_functions,
+                        &trait_registry,
+                        trait_names,
+                        &field_registry,
+                        &constraint_def_registry,
+                        &ctx.unit_registry,
+                        &ctx.alias_registry,
+                        &mut ctx.pending_bound_checks,
+                        &mut ctx.diagnostics,
+                        &mut ctx.templates,
+                    );
+                }
             }
             reify_syntax::Declaration::Field(_) => {
                 // Already compiled in field pre-pass above.
@@ -157,12 +159,13 @@ pub(crate) fn phase_entities(
 /// `&mut CompilationCtx` because the caller holds shared borrows of
 /// `ctx.trait_defs`, `ctx.fields`, and `ctx.constraint_defs` (via the
 /// phase-local registries) that would conflict with an exclusive borrow of
-/// the whole ctx.
+/// the whole ctx. The first-def guard (`ctx.is_first_entity_def`) is
+/// evaluated at the call site in `phase_entities` before invoking this
+/// function.
 #[allow(clippy::too_many_arguments)]
 fn compile_entity_decl(
     entity_ref: EntityDefRef<'_>,
     kind: EntityKind,
-    seen_entity_names: &HashMap<String, (SourceSpan, &'static str)>,
     resolution_enums: &[EnumDef],
     resolution_functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
@@ -175,12 +178,6 @@ fn compile_entity_decl(
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
 ) {
-    let is_first_def = seen_entity_names
-        .get(entity_ref.name)
-        .is_none_or(|(first_span, _)| *first_span == entity_ref.span);
-    if !is_first_def {
-        return;
-    }
     let template = compile_entity(
         &entity_ref,
         kind,
