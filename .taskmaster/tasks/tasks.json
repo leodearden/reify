@@ -36942,7 +36942,10 @@
         "subtasks": [],
         "updatedAt": "2026-04-21T14:28:39.846Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-types/src/geometry.rs"
+          ],
           "memory_hints": {
             "entities": [],
             "queries": [
