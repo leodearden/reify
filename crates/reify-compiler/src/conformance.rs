@@ -173,6 +173,41 @@ pub(crate) fn check_phase_resolve_structure_members(
     (structure_members, structure_constraint_labels)
 }
 
+/// Phase 2 of trait conformance checking: collect all requirements and defaults from
+/// all trait bounds in the structure's trait bound list.
+///
+/// Creates a fresh `MergeContext` and calls `collect_all_requirements` for each trait bound,
+/// which recursively walks refinement chains and deduplicates requirements/defaults across
+/// the full bound set. The returned `MergeContext` carries both `requirements` and `defaults`
+/// for use by later phases.
+///
+/// `MergeContext` bundles the output accumulators (`requirements`, `defaults`) and the 5 mutable
+/// tracking maps (`visited`, `seen_names`, `seen_defaults`, `seen_let_hashes`,
+/// `seen_let_conflict_names`) so the recursive `collect_all_requirements` signature stays
+/// within Clippy's argument-count limit.
+pub(crate) fn check_phase_collect_trait_bounds(
+    structure: &EntityDefRef<'_>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_members: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> MergeContext {
+    let mut ctx = MergeContext::new();
+
+    for trait_bound in structure.trait_bounds {
+        collect_all_requirements(
+            &trait_bound.name,
+            trait_registry,
+            &mut ctx,
+            structure_members,
+            structure.span,
+            0,
+            diagnostics,
+        );
+    }
+
+    ctx
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
@@ -190,25 +225,8 @@ pub(crate) fn check_trait_conformance(
     let (structure_members, structure_constraint_labels) =
         check_phase_resolve_structure_members(structure, trait_names, enum_defs, alias_registry, diagnostics);
 
-    // Collect all requirements and defaults from all trait bounds,
-    // handling refinement chains and deduplication.
-    // MergeContext bundles the output accumulators (requirements, defaults) and
-    // the 5 mutable tracking maps (visited, seen_names, seen_defaults,
-    // seen_let_hashes, seen_let_conflict_names) so the recursive
-    // collect_all_requirements signature stays within Clippy's argument-count limit.
-    let mut ctx = MergeContext::new();
-
-    for trait_bound in structure.trait_bounds {
-        collect_all_requirements(
-            &trait_bound.name,
-            trait_registry,
-            &mut ctx,
-            &structure_members,
-            structure.span,
-            0,
-            diagnostics,
-        );
-    }
+    let ctx =
+        check_phase_collect_trait_bounds(structure, trait_registry, &structure_members, diagnostics);
 
     // Cache of compiled expressions for unannotated let defaults, keyed by
     // default name.  Populated by Pass 2 below and drained by the injection
