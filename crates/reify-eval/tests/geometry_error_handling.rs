@@ -1131,6 +1131,131 @@ fn build_primitive_missing_arg_no_kernel_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Anti-cascade regression lock: one Warning + one Error, no downstream cascade
+// ---------------------------------------------------------------------------
+
+/// Regression lock for the fail-fast / anti-cascade contract (tasks 1196, 1198).
+///
+/// When a primitive op is missing a required arg, `compile_geometry_op` must
+/// emit exactly one Warning (from `eval_named_arg*`'s `.ok_or_else` path) and
+/// exactly one Error (from the caller in `engine_build.rs`: "failed to compile
+/// geometry operation: {err}"). It must NOT produce a second Warning from any
+/// downstream "expected Geometry, found Undef" / type-coercion cascade.
+///
+/// The invariants pinned here:
+/// - `.filter(|d| Severity::Warning).count() == 1` — one (not two) warnings.
+/// - That Warning contains 'missing required geometry argument' and 'width'.
+/// - Exactly one `failed to compile geometry operation` Error diagnostic.
+/// - No diagnostic contains 'expected Geometry' or 'found Undef' (no cascade).
+///
+/// This test will break if a future refactor re-introduces the Undef-value
+/// cascade — whether by computing a post-error value-cell type check, by
+/// downgrading `.ok_or_else` to `.unwrap_or(Value::Undef)`, or by otherwise
+/// letting the compile pipeline emit a second diagnostic for the same op.
+#[test]
+fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+            // width deliberately omitted
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op])
+        .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_anti_cascade_single_warning",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) Exactly one Warning containing the missing-arg message and 'width'.
+    let matching_warnings: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Warning
+                && d.message.contains("missing required geometry argument")
+                && d.message.contains("width")
+        })
+        .collect();
+    assert_eq!(
+        matching_warnings.len(),
+        1,
+        "expected exactly one Warning about missing 'width'; got {}: {:?}",
+        matching_warnings.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (c) "one Warning, no cascade" invariant — total Warning count is also 1.
+    let warning_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .count();
+    assert_eq!(
+        warning_count, 1,
+        "anti-cascade invariant: expected exactly one Warning diagnostic across the whole realization; got {}: {:?}",
+        warning_count,
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) Exactly one Error containing 'failed to compile geometry operation'.
+    let compile_errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Error
+                && d.message.contains("failed to compile geometry operation")
+        })
+        .collect();
+    assert_eq!(
+        compile_errors.len(),
+        1,
+        "expected exactly one 'failed to compile geometry operation' Error; got {}: {:?}",
+        compile_errors.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (d) No diagnostic mentions 'expected Geometry' or 'found Undef' (cascade).
+    for d in &result.diagnostics {
+        assert!(
+            !d.message.contains("expected Geometry"),
+            "anti-cascade invariant violated: a diagnostic contained 'expected Geometry' (downstream cascade): {:?}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("found Undef"),
+            "anti-cascade invariant violated: a diagnostic contained 'found Undef' (downstream cascade): {:?}",
+            d.message
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Regression guard: missing modify arg → no Modify kernel call, no 'geometry error'
 // ---------------------------------------------------------------------------
 
@@ -1157,12 +1282,36 @@ fn build_primitive_missing_arg_no_kernel_error() {
 /// `compile_geometry_op_modify_missing_arg_returns_none` in lib.rs:4955-5007.
 #[test]
 fn build_modify_missing_arg_no_kernel_error() {
-    use reify_compiler::ModifyKind;
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Fillet, "radius", "fillet");
+}
+
+/// Drive an engine.build() through a Modify op whose required arg is omitted,
+/// then assert compile-time rejection via `assert_rejected_at_compile`.
+///
+/// The realization is a two-op sequence [Box, Modify(kind, empty args)] because
+/// `compile_geometry_op` resolves `Modify { target, .. }` via
+/// `step_handles.get(idx).copied()?` *before* reaching arg-validation — so a
+/// lone Modify with an empty step_handles would short-circuit at target lookup
+/// without ever emitting the missing-arg warning. The Box is the minimum setup
+/// needed to populate step_handles[0] so the Modify's target resolves and the
+/// arg-validation path is exercised.
+///
+/// Callers pass:
+/// - `kind` — the ModifyKind variant under test (Fillet/Chamfer/Shell/Draft/Thicken).
+/// - `missing_arg_for_warning` — the arg name expected in the Warning message
+///   (e.g. `"radius"` for Fillet, `"thickness"` for Shell).
+/// - `kind_name_for_warning` — the lowercase Display name of the kind
+///   (e.g. `"fillet"`, `"shell"`, `"thicken"`, `"draft"`, `"chamfer"`).
+fn build_modify_missing_arg_case(
+    kind: reify_compiler::ModifyKind,
+    missing_arg_for_warning: &str,
+    kind_name_for_warning: &str,
+) {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
-    // as the Fillet's target
+    // as the Modify op's target.
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
@@ -1172,25 +1321,25 @@ fn build_modify_missing_arg_no_kernel_error() {
         ],
     };
 
-    // Op 1: Fillet modify op with 'radius' deliberately omitted
-    let fillet_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Fillet,
+    // Op 1: Modify op with its required arg deliberately omitted.
+    let modify_op = CompiledGeometryOp::Modify {
+        kind,
         target: GeomRef::Step(0),
-        args: vec![], // radius deliberately omitted
+        args: vec![],
     };
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
-        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
-        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
-        .realization(e, 0, vec![box_op, fillet_op])
+        .realization(e, 0, vec![box_op, modify_op])
         .build();
-
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_radius"))
+    let module_path = format!(
+        "test_modify_{}_missing_{}",
+        kind_name_for_warning, missing_arg_for_warning
+    );
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(&module_path))
         .template(template)
         .build();
 
-    // Standard MockGeometryKernel — if execute() were called for the Fillet it
+    // Standard MockGeometryKernel — if execute() were called for the Modify it
     // would succeed, but it should never be reached for that op.
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -1202,7 +1351,11 @@ fn build_modify_missing_arg_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "radius", "Fillet"],
+        &[
+            "missing required geometry argument",
+            missing_arg_for_warning,
+            kind_name_for_warning,
+        ],
     );
 }
 
@@ -1979,6 +2132,643 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
         has_summary,
         "expected 'all geometry operations failed' diagnostic when total_ops>0 \
          and all kernel ops fail, got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression guards: Extrude distance threshold boundary (DEGENERATE_LENGTH_M)
+// ---------------------------------------------------------------------------
+
+/// Boundary test: distance=1e-13 is strictly less than DEGENERATE_LENGTH_M=1e-12
+/// and must be rejected at compile time with an "extrude dropped" Warning.
+/// Pins the strictly-less-than floor semantics so a future refactor to `>` or
+/// a different constant can't silently let sub-picometer distances through.
+#[test]
+fn build_extrude_distance_just_below_threshold_rejected() {
+    use reify_compiler::SweepKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let length_literal = |si_value: f64| {
+        reify_types::CompiledExpr::literal(
+            reify_types::Value::Scalar {
+                si_value,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+            Type::length(),
+        )
+    };
+
+    // Op 0: Sphere primitive — provides step_handles[0] as the Extrude's profile handle
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Extrude with distance=1e-13 m — strictly below DEGENERATE_LENGTH_M=1e-12
+    let extrude_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![("distance".into(), length_literal(1e-13))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, extrude_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_extrude_below_threshold",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["extrude dropped", "degenerate"],
+    );
+}
+
+/// Boundary test: distance=1e-12 is exactly DEGENERATE_LENGTH_M, the documented
+/// floor (`v.abs() >= DEGENERATE_LENGTH_M`), and must be accepted — the Extrude
+/// op should be forwarded to the kernel. Pins the inclusive `>=` boundary
+/// semantics so a future refactor to `>` would be caught.
+#[test]
+fn build_extrude_distance_at_threshold_accepted() {
+    use reify_compiler::SweepKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let length_literal = |si_value: f64| {
+        reify_types::CompiledExpr::literal(
+            reify_types::Value::Scalar {
+                si_value,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+            Type::length(),
+        )
+    };
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Extrude with distance=1e-12 m — exactly at the floor, must pass
+    let extrude_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![("distance".into(), length_literal(1e-12))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, extrude_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extrude_at_threshold"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 kernel ops (Sphere + Extrude) when distance is exactly at the floor, got {}",
+        ops.len()
+    );
+    assert!(
+        matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
+        "expected ops[0] to be Sphere, got: {:?}",
+        ops[0].op
+    );
+    assert!(
+        matches!(ops[1].op, reify_types::GeometryOp::Extrude { .. }),
+        "expected ops[1] to be Extrude (accepted at threshold), got: {:?}",
+        ops[1].op
+    );
+
+    // No 'extrude dropped' Warning should fire at the inclusive boundary
+    let spurious_drop = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning && d.message.contains("extrude dropped")
+    });
+    assert!(
+        !spurious_drop,
+        "expected no 'extrude dropped' Warning at the inclusive floor, got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("extrude dropped"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression guards: Revolve angle threshold boundary (DEGENERATE_ANGLE_RAD)
+// ---------------------------------------------------------------------------
+
+/// Boundary test: angle=1e-13 rad with a valid z-axis is strictly below
+/// DEGENERATE_ANGLE_RAD=1e-12 and must be rejected at compile time.
+/// Augments `build_revolve_zero_angle_emits_diagnostic` (which only covers
+/// exactly 0.0) by pinning the `|angle| < 1e-12` near-zero boundary.
+#[test]
+fn build_revolve_angle_just_below_threshold_rejected() {
+    use reify_compiler::SweepKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Revolve with valid z-axis (az=1.0) but angle=1e-13 rad —
+    // strictly below DEGENERATE_ANGLE_RAD=1e-12
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("angle".into(), real_literal(1e-13)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_revolve_angle_below_threshold",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["revolve dropped", "angle", "degenerate"],
+    );
+}
+
+/// Boundary test: angle=-1e-13 rad must be rejected for the same reason as
+/// the positive near-zero case, proving the guard is sign-symmetric via
+/// `angle_rad.abs() < DEGENERATE_ANGLE_RAD`. A future refactor dropping the
+/// `.abs()` would silently accept small negative angles — this test catches
+/// that regression.
+#[test]
+fn build_revolve_angle_negative_just_below_threshold_rejected() {
+    use reify_compiler::SweepKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("angle".into(), real_literal(-1e-13)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_revolve_angle_negative_below_threshold",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["revolve dropped", "angle", "degenerate"],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Circular / Mirror pattern missing-arg coverage
+// ---------------------------------------------------------------------------
+
+/// Circular pattern dispatch rejects a missing `count` argument at compile
+/// time. The Warning message identifies both the arg name and the kind name
+/// (lowercase `circular` via the Display impl).
+#[test]
+fn build_circular_pattern_missing_count_no_kernel_error() {
+    use reify_compiler::PatternKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    // Circular pattern with full ox/oy/oz/ax/ay/az/angle but no `count`.
+    let circular_op = CompiledGeometryOp::Pattern {
+        kind: PatternKind::Circular,
+        target: GeomRef::Step(0),
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("angle".into(), real_literal(90.0)),
+            // count deliberately omitted
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, circular_op])
+        .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_circular_missing_count",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "count", "circular"],
+    );
+}
+
+/// Circular pattern dispatch rejects a missing `ax` (first axis-direction
+/// component) at compile time. `ax` is read after ox/oy/oz; this exercises
+/// the Circular arm after the origin components already resolved.
+#[test]
+fn build_circular_pattern_missing_axis_no_kernel_error() {
+    use reify_compiler::PatternKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    // Circular pattern missing `ax` (axis X-component).
+    let circular_op = CompiledGeometryOp::Pattern {
+        kind: PatternKind::Circular,
+        target: GeomRef::Step(0),
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            // ax deliberately omitted
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("count".into(), real_literal(3.0)),
+            ("angle".into(), real_literal(90.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, circular_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_circular_missing_ax"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "ax", "circular"],
+    );
+}
+
+/// Mirror pattern dispatch rejects a missing `ox` (plane origin X) at
+/// compile time. First f64 arg in the Mirror arm; exercises the arm's
+/// entry.
+#[test]
+fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
+    use reify_compiler::PatternKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let mirror_op = CompiledGeometryOp::Pattern {
+        kind: PatternKind::Mirror,
+        target: GeomRef::Step(0),
+        args: vec![
+            // ox deliberately omitted
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("nx".into(), real_literal(0.0)),
+            ("ny".into(), real_literal(0.0)),
+            ("nz".into(), real_literal(1.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, mirror_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_mirror_missing_ox"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "ox", "mirror"],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Modify missing-arg coverage: Shell / Thicken / Draft / Chamfer
+// ---------------------------------------------------------------------------
+
+/// Shell modify op rejects a missing `thickness` arg at compile time.
+#[test]
+fn build_modify_shell_missing_thickness_no_kernel_error() {
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Shell, "thickness", "shell");
+}
+
+/// Thicken modify op rejects a missing `offset` arg at compile time.
+#[test]
+fn build_modify_thicken_missing_offset_no_kernel_error() {
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Thicken, "offset", "thicken");
+}
+
+/// Draft modify op rejects a missing `angle` arg at compile time.
+#[test]
+fn build_modify_draft_missing_angle_no_kernel_error() {
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Draft, "angle", "draft");
+}
+
+/// Chamfer modify op rejects a missing `distance` arg at compile time.
+#[test]
+fn build_modify_chamfer_missing_distance_no_kernel_error() {
+    build_modify_missing_arg_case(reify_compiler::ModifyKind::Chamfer, "distance", "chamfer");
+}
+
+// ---------------------------------------------------------------------------
+// Boolean unresolved-ref coverage: Union / Difference / Intersection
+// ---------------------------------------------------------------------------
+//
+// `compile_geometry_op`'s Boolean arm resolves `left` first, then `right`,
+// using `?` so the first Err short-circuits. The resulting Err string is
+// turned into a `Diagnostic::error("failed to compile geometry operation:
+// {err}")` by `engine_build.rs` — no Warning is emitted on the unresolved-ref
+// path (unlike missing-arg, which does emit a Warning from `eval_named_arg*`).
+// These tests therefore assert on the Error diagnostic's message directly.
+
+/// Assert the 4-signal unresolved-ref rejection shape for a single failing
+/// Boolean op preceded by a Box primitive:
+/// 1. Kernel received exactly one recorded op (the Box — Boolean never reached).
+/// 2. `result.geometry_output` is None.
+/// 3. An Error diagnostic contains `"failed to compile geometry operation"`
+///    and every string in `error_needles`.
+/// 4. No diagnostic contains `"geometry error"` (kernel was never called
+///    for the Boolean op).
+fn assert_boolean_unresolved_ref_rejected(
+    result: &reify_eval::BuildResult,
+    ops: &[reify_test_support::GeometryOpRecord],
+    error_needles: &[&str],
+) {
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected exactly one kernel op (the preceding Box), got {}",
+        ops.len()
+    );
+    assert!(
+        matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
+        "expected the only recorded kernel op to be a Box, got: {:?}",
+        ops[0].op
+    );
+
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when the Boolean op is rejected at compile time"
+    );
+
+    let has_compile_error = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Error
+            && d.message.contains("failed to compile geometry operation")
+            && error_needles
+                .iter()
+                .all(|needle| d.message.contains(needle))
+    });
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic containing 'failed to compile geometry operation' and all needles {:?}; got: {:?}",
+        error_needles,
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for the Boolean op), but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Drive an engine.build() through [Box, Boolean(op, left, right)] where at
+/// least one of `left`/`right` is an out-of-bounds `GeomRef::Step(99)`.
+fn run_boolean_unresolved_ref_case(
+    op: BooleanOp,
+    left: GeomRef,
+    right: GeomRef,
+    module_path: &str,
+) -> (
+    reify_eval::BuildResult,
+    std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
+) {
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let boolean_op = CompiledGeometryOp::Boolean { op, left, right };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, boolean_op])
+        .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(module_path))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+    (result, ops_ref)
+}
+
+/// Union with an out-of-bounds `left` ref (Step(99)) — the first unresolved
+/// ref short-circuits compile via `?` before `right` is even consulted.
+#[test]
+fn build_boolean_union_unresolved_left_no_kernel_error() {
+    let (result, ops_ref) = run_boolean_unresolved_ref_case(
+        BooleanOp::Union,
+        GeomRef::Step(99),
+        GeomRef::Step(0),
+        "test_boolean_union_unresolved_left",
+    );
+    assert_boolean_unresolved_ref_rejected(
+        &result,
+        &ops_ref.lock().unwrap(),
+        &["unresolvable GeomRef::Step", "99"],
+    );
+}
+
+/// Difference with an out-of-bounds `right` ref (Step(99)) — after `left`
+/// resolves, resolving `right` returns Err and compile short-circuits.
+#[test]
+fn build_boolean_difference_unresolved_right_no_kernel_error() {
+    let (result, ops_ref) = run_boolean_unresolved_ref_case(
+        BooleanOp::Difference,
+        GeomRef::Step(0),
+        GeomRef::Step(99),
+        "test_boolean_difference_unresolved_right",
+    );
+    assert_boolean_unresolved_ref_rejected(
+        &result,
+        &ops_ref.lock().unwrap(),
+        &["unresolvable GeomRef::Step", "99"],
+    );
+}
+
+/// Intersection with both refs out-of-bounds — fail-fast invariant: the first
+/// unresolved ref (`left`) short-circuits via `?` so only one
+/// "unresolvable GeomRef::Step" Error is emitted, not two.
+#[test]
+fn build_boolean_intersection_unresolved_both_no_kernel_error() {
+    let (result, ops_ref) = run_boolean_unresolved_ref_case(
+        BooleanOp::Intersection,
+        GeomRef::Step(99),
+        GeomRef::Step(99),
+        "test_boolean_intersection_unresolved_both",
+    );
+    assert_boolean_unresolved_ref_rejected(
+        &result,
+        &ops_ref.lock().unwrap(),
+        &["unresolvable GeomRef::Step", "99"],
+    );
+
+    // Fail-fast: only the first unresolved ref produces an Error — not two.
+    let unresolved_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Step"))
+        .count();
+    assert_eq!(
+        unresolved_count, 1,
+        "fail-fast invariant: expected exactly one 'unresolvable GeomRef::Step' Error (short-circuit on `left`), got {}: {:?}",
+        unresolved_count,
         result
             .diagnostics
             .iter()

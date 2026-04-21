@@ -7,13 +7,42 @@ use std::collections::HashMap;
 
 use reify_types::{CompiledFunction, Diagnostic, GeometryHandleId, ValueMap};
 
+/// Minimum meaningful distance in meters (1 picometer).
+///
+/// Distances with `|v| < DEGENERATE_LENGTH_M` cannot produce a well-defined
+/// solid — any kernel attempting to extrude / sweep at sub-picometer lengths
+/// is likely to return an opaque error. Named constants (not bare literals)
+/// also let future refactors relocate the tolerance without a regex sweep.
+/// Boundary semantics are pinned by
+/// `build_extrude_distance_{just_below,at}_threshold_*` tests.
+pub(crate) const DEGENERATE_LENGTH_M: f64 = 1e-12;
+
+/// Minimum meaningful angle in radians (sub-picoradian).
+///
+/// Revolve angles with `|a| < DEGENERATE_ANGLE_RAD` cannot produce a
+/// well-defined revolved solid. Boundary semantics are pinned by
+/// `build_revolve_angle_*_threshold_*` tests.
+pub(crate) const DEGENERATE_ANGLE_RAD: f64 = 1e-12;
+
+/// Generic geometry epsilon for axis-magnitude / direction-vector checks
+/// (e.g. rejecting near-zero revolve axes).
+pub(crate) const GEOMETRY_EPSILON: f64 = 1e-12;
+
 /// Look up a named argument in `args`, evaluate it, and return the resulting
 /// `Value`.  If the argument is absent, push a `Warning` diagnostic and return
 /// `None`.  Callers that need a finite `f64` should use [`eval_named_arg_f64`],
 /// which also emits a `Warning` when the value is non-numeric or non-finite.
+///
+/// Fail-fast / anti-cascade contract: the caller is expected to propagate the
+/// `None` via `.ok_or_else(...)?` so `compile_geometry_op` short-circuits with
+/// a single Error before any downstream type-coercion check can fire. This
+/// produces exactly one Warning + one Error per missing arg — no
+/// "expected Geometry, found Undef" cascade. That invariant is regression-locked
+/// by `build_primitive_missing_arg_emits_exactly_one_compile_warning` in
+/// `tests/geometry_error_handling.rs`.
 pub(crate) fn eval_named_arg(
     name: &str,
-    kind_label: impl std::fmt::Debug,
+    kind_label: impl std::fmt::Display,
     args: &[(String, reify_types::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -27,7 +56,7 @@ pub(crate) fn eval_named_arg(
         )),
         None => {
             diagnostics.push(Diagnostic::warning(format!(
-                "missing required geometry argument '{}' for {:?}",
+                "missing required geometry argument '{}' for {}",
                 name, kind_label
             )));
             None
@@ -40,11 +69,14 @@ pub(crate) fn eval_named_arg(
 /// to [`eval_named_arg`]) or when the argument is present but evaluates to a
 /// non-numeric or non-finite value (NaN, ±Infinity, or a non-`f64` type such
 /// as `String` or `Bool`).  In the latter case a `Warning` diagnostic is
-/// pushed with the message `"argument '{name}' for {kind:?} evaluated to
+/// pushed with the message `"argument '{name}' for {kind} evaluated to
 /// non-numeric/non-finite value"`.
+///
+/// Non-numeric / non-finite path coverage is locked by
+/// `eval_named_arg_f64_{undef,nan,infinity}_value_returns_none_with_warning`.
 pub(crate) fn eval_named_arg_f64(
     name: &str,
-    kind_label: impl std::fmt::Debug + Copy,
+    kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_types::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -64,7 +96,7 @@ pub(crate) fn eval_named_arg_f64(
         Some(v) if v.is_finite() => Some(v),
         _ => {
             diagnostics.push(Diagnostic::warning(format!(
-                "argument '{}' for {:?} evaluated to non-numeric/non-finite value",
+                "argument '{}' for {} evaluated to non-numeric/non-finite value",
                 name, kind_label
             )));
             None
@@ -113,26 +145,26 @@ pub(crate) fn eval_all_args_to_f64(
 fn validate_pattern_count(
     raw: f64,
     arg_name: &str,
-    kind_label: impl std::fmt::Debug,
+    kind_label: impl std::fmt::Display,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<usize, String> {
     if raw < 1.0 {
         diagnostics.push(Diagnostic::warning(format!(
-            "pattern {:?} dropped: {}={} is less than 1 (must be a positive integer)",
+            "pattern {} dropped: {}={} is less than 1 (must be a positive integer)",
             kind_label, arg_name, raw
         )));
         return Err("invalid pattern count: less than 1".to_string());
     }
     if raw != raw.floor() {
         diagnostics.push(Diagnostic::warning(format!(
-            "pattern {:?} dropped: {}={} is not an integer",
+            "pattern {} dropped: {}={} is not an integer",
             kind_label, arg_name, raw
         )));
         return Err("invalid pattern count: not an integer".to_string());
     }
     if raw > 100_000.0 {
         diagnostics.push(Diagnostic::warning(format!(
-            "pattern {:?} dropped: {}={} exceeds upper bound of 100000",
+            "pattern {} dropped: {}={} exceeds upper bound of 100000",
             kind_label, arg_name, raw
         )));
         return Err("invalid pattern count: exceeds upper bound".to_string());
@@ -221,7 +253,7 @@ pub(crate) fn compile_geometry_op(
         CompiledGeometryOp::Primitive { kind, args } => {
             let mut eval_arg = |name: &str| -> Result<reify_types::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing required argument '{}' for {:?}", name, kind))
+                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
             };
 
             match kind {
@@ -240,6 +272,11 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {
+            // Fail-fast: `?` on `left` short-circuits before `right` is resolved,
+            // so at most one "unresolvable GeomRef::Step" Error surfaces per
+            // Boolean op. Pinned by
+            // `build_boolean_{union,difference,intersection}_unresolved_*_no_kernel_error`
+            // in `tests/geometry_error_handling.rs`.
             let left_id = resolve_geom_ref(left, step_handles, diagnostics)?;
             let right_id = resolve_geom_ref(right, step_handles, diagnostics)?;
             match op {
@@ -261,7 +298,7 @@ pub(crate) fn compile_geometry_op(
             let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
             let mut eval_arg = |name: &str| -> Result<reify_types::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing required argument '{}' for {:?}", name, kind))
+                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
             };
             match kind {
                 reify_compiler::ModifyKind::Fillet => Ok(reify_types::GeometryOp::Fillet {
@@ -359,7 +396,7 @@ pub(crate) fn compile_geometry_op(
             let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
             let mut f64_arg = |name: &str| -> Result<f64, String> {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                    .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
@@ -431,7 +468,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
                     let count_raw = f64_arg("count")?;
@@ -445,7 +482,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'spacing' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'spacing' for {}", kind))?;
                     Ok(reify_types::GeometryOp::LinearPattern {
                         target: target_id,
                         direction,
@@ -454,6 +491,7 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
+                    // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
                         eval_named_arg_f64(
                             name,
@@ -464,7 +502,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
@@ -479,7 +517,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'angle' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
                     // CAD convention: a bare numeric angle (no unit suffix) is
                     // interpreted as degrees and converted to radians.  Values
                     // that already carry an ANGLE dimension (from `deg`/`rad`
@@ -507,6 +545,7 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Mirror => {
+                    // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
                         eval_named_arg_f64(
                             name,
@@ -517,7 +556,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     Ok(reify_types::GeometryOp::Mirror {
                         target: target_id,
@@ -536,7 +575,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
                     let count1_raw = f64_arg("count1")?;
@@ -550,7 +589,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'spacing1' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'spacing1' for {}", kind))?;
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
                         eval_named_arg_f64(
                             name,
@@ -561,7 +600,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
                     let count2_raw = f64_arg("count2")?;
@@ -575,7 +614,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'spacing2' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'spacing2' for {}", kind))?;
                     Ok(reify_types::GeometryOp::LinearPattern2D {
                         target: target_id,
                         direction1,
@@ -606,7 +645,7 @@ pub(crate) fn compile_geometry_op(
                                 meta_map,
                                 diagnostics,
                             )
-                            .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                            .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                         };
                         let dx = f64_arg(&format!("t{}_dx", idx))?;
                         let dy = f64_arg(&format!("t{}_dy", idx))?;
@@ -655,15 +694,24 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'distance' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
                     // Reject sub-picometer magnitudes as degenerate geometry: a
                     // distance near the f64 rounding floor cannot produce a
                     // meaningful solid. Emit a warning so model authors see why
                     // the op was dropped instead of only the caller's generic
                     // "failed to compile geometry operation" error.
+                    //
+                    // Boundary semantics: `v.abs() >= DEGENERATE_LENGTH_M` is an
+                    // inclusive floor — a distance of exactly 1e-12 m is accepted;
+                    // a distance of 1e-13 m is rejected. Pinned by
+                    // `build_extrude_distance_{just_below,at}_threshold_*` in
+                    // `tests/geometry_error_handling.rs`.
                     match distance.as_f64() {
-                        Some(v) if v.is_finite() && v.abs() >= 1e-12 => {}
+                        Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
                         Some(v) => {
+                            // Threshold constant (`DEGENERATE_LENGTH_M`) is a source-level
+                            // maintenance aid — user-facing diagnostics show only the numeric
+                            // floor so model authors aren't distracted by the Rust name.
                             diagnostics.push(Diagnostic::warning(format!(
                                 "extrude dropped: distance={} is degenerate \
                                  (|distance| must be finite and >= 1e-12 m)",
@@ -694,7 +742,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -702,7 +750,10 @@ pub(crate) fn compile_geometry_op(
                     // zero-length (or effectively zero) rotation axis cannot
                     // define a revolve. Warn so model authors see a specific
                     // explanation instead of only the caller's generic error.
-                    if !mag.is_finite() || mag < 1e-12 {
+                    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
+                        // Threshold constant (`GEOMETRY_EPSILON`) is a source-level
+                        // maintenance aid — user-facing diagnostics show only the numeric
+                        // floor so model authors aren't distracted by the Rust name.
                         diagnostics.push(Diagnostic::warning(format!(
                             "revolve dropped: rotation axis [{}, {}, {}] has \
                              degenerate magnitude={} (must be finite and >= 1e-12)",
@@ -717,7 +768,15 @@ pub(crate) fn compile_geometry_op(
                     // Reject sub-picoradian angles as degenerate: an angle at
                     // the f64 rounding floor cannot produce a meaningful
                     // revolve. Warn so model authors see a specific explanation.
-                    if angle_rad.abs() < 1e-12 {
+                    //
+                    // `.abs()` pins sign-symmetric semantics — small negative
+                    // angles are rejected identically to small positive ones.
+                    // See `build_revolve_angle_negative_just_below_threshold_rejected`
+                    // in `tests/geometry_error_handling.rs`.
+                    if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
+                        // Threshold constant (`DEGENERATE_ANGLE_RAD`) is a source-level
+                        // maintenance aid — user-facing diagnostics show only the numeric
+                        // floor so model authors aren't distracted by the Rust name.
                         diagnostics.push(Diagnostic::warning(format!(
                             "revolve dropped: angle={} rad is degenerate \
                              (|angle| must be >= 1e-12 rad)",
@@ -764,23 +823,38 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'distance' for {:?}", kind))?;
-                    // Reject sub-picometer magnitudes as degenerate geometry,
-                    // mirroring the standard Extrude arm above: a distance
-                    // near the f64 rounding floor cannot produce a meaningful
-                    // solid. Emit a warning so model authors see a specific
-                    // explanation instead of only the caller's generic error.
+                    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
+                    // ExtrudeSymmetric extrudes `distance/2` each way, so the
+                    // per-side magnitude must clear DEGENERATE_LENGTH_M; we
+                    // require |distance| >= 2 * DEGENERATE_LENGTH_M so OCCT
+                    // never receives a sub-picometer per-side length. A
+                    // total-distance threshold would admit values like
+                    // 1.5e-12 whose per-side half is below the floor and
+                    // would still fail at the kernel with a less specific
+                    // diagnostic.
+                    // See: extrude_symmetric_per_side_just_below_threshold_rejected
+                    //      / extrude_symmetric_per_side_at_threshold_accepted.
                     match distance.as_f64() {
-                        Some(v) if v.is_finite() && v.abs() >= 1e-12 => {}
+                        // `.abs()` preserves sign-symmetric semantics — see
+                        // extrude_symmetric_negative_per_side_just_below_threshold_rejected.
+                        Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
                         Some(v) => {
+                            // Threshold constant (`DEGENERATE_LENGTH_M`) is a source-level
+                            // maintenance aid — user-facing diagnostics show only the numeric
+                            // floor so model authors aren't distracted by the Rust name.
+                            // The Err string names the specific op (`extrude_symmetric`,
+                            // not `extrude`) so the caller's "failed to compile geometry
+                            // operation" Error channel matches the Warning — pinned by
+                            // `extrude_symmetric_per_side_just_below_threshold_rejected`.
                             diagnostics.push(Diagnostic::warning(format!(
                                 "extrude_symmetric dropped: distance={} is \
-                                 degenerate (|distance| must be finite and >= 1e-12 m)",
+                                 degenerate (|distance/2| must be finite and >= 1e-12 m \
+                                 per-side; i.e. |distance| >= 2e-12 m, half-distance floor)",
                                 v
                             )));
-                            return Err(format!("extrude distance is degenerate: {}", v));
+                            return Err(format!("extrude_symmetric distance is degenerate: {}", v));
                         }
-                        None => return Err("extrude distance is non-numeric".into()),
+                        None => return Err("extrude_symmetric distance is non-numeric".into()),
                     }
                     Ok(reify_types::GeometryOp::ExtrudeSymmetric {
                         profile: profile_handle,
@@ -853,7 +927,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     Ok(reify_types::GeometryOp::LineSegment {
                         x1: f64_arg("x1")?,
@@ -875,7 +949,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     Ok(reify_types::GeometryOp::Arc {
                         center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
@@ -896,7 +970,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     Ok(reify_types::GeometryOp::Helix {
                         radius: f64_arg("radius")?,
@@ -1049,6 +1123,18 @@ mod tests {
             reify_types::Type::angle(),
         )
     }
+
+    // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
+    // `GEOMETRY_EPSILON` (top of file) are not pinned by a standalone unit
+    // test — that would just restate the `const` definitions. Their behavior
+    // is pinned by the boundary tests that drive the guards they feed:
+    //   - `build_extrude_distance_{just_below,at}_threshold_*` (geometry_error_handling.rs)
+    //     → DEGENERATE_LENGTH_M (inclusive floor)
+    //   - `build_revolve_angle_{just_below,negative_just_below}_threshold_rejected`
+    //     → DEGENERATE_ANGLE_RAD (sign-symmetric floor)
+    //   - `extrude_symmetric_{per_side,negative_per_side}_{just_below,at}_threshold_*`
+    //     (extrude_symmetric_e2e.rs) → 2 * DEGENERATE_LENGTH_M (per-side floor)
+    // Any numeric change to the constants will fail those boundary tests.
 
     #[test]
     fn compile_geometry_op_scale_produces_scale_variant() {
@@ -1280,8 +1366,8 @@ mod tests {
                 diagnostics[0].message
             );
             assert!(
-                diagnostics[0].message.contains("Revolve"),
-                "diagnostic for missing '{omit}' should mention 'Revolve', got: {}",
+                diagnostics[0].message.contains("revolve"),
+                "diagnostic for missing '{omit}' should mention 'revolve', got: {}",
                 diagnostics[0].message
             );
         }
@@ -1476,9 +1562,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("ax")
-                    && d.message.contains("Revolve")
+                    && d.message.contains("revolve")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'ax', and 'Revolve', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'ax', and 'revolve', got: {:?}",
             diagnostics
         );
     }
@@ -1759,9 +1845,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("factor")
-                    && d.message.contains("Scale")
+                    && d.message.contains("scale")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'factor', and 'Scale', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'factor', and 'scale', got: {:?}",
             diagnostics
         );
     }
@@ -2412,8 +2498,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Box"),
-            "diagnostic message should mention 'Box', got: {}",
+            diagnostics[0].message.contains("box"),
+            "diagnostic message should mention 'box', got: {}",
             diagnostics[0].message
         );
     }
@@ -2466,8 +2552,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Fillet"),
-            "diagnostic message should mention 'Fillet', got: {}",
+            diagnostics[0].message.contains("fillet"),
+            "diagnostic message should mention 'fillet', got: {}",
             diagnostics[0].message
         );
     }
@@ -2694,8 +2780,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Extrude"),
-            "diagnostic message should mention 'Extrude', got: {}",
+            diagnostics[0].message.contains("extrude"),
+            "diagnostic message should mention 'extrude', got: {}",
             diagnostics[0].message
         );
     }
@@ -2753,8 +2839,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Linear"),
-            "diagnostic message should mention 'Linear', got: {}",
+            diagnostics[0].message.contains("linear"),
+            "diagnostic message should mention 'linear', got: {}",
             diagnostics[0].message
         );
     }
@@ -2806,8 +2892,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Translate"),
-            "diagnostic message should mention 'Translate', got: {}",
+            diagnostics[0].message.contains("translate"),
+            "diagnostic message should mention 'translate', got: {}",
             diagnostics[0].message
         );
     }
@@ -2856,9 +2942,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
-                    && d.message.contains("Translate")
+                    && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -2899,9 +2985,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
-                    && d.message.contains("Translate")
+                    && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -2942,9 +3028,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
-                    && d.message.contains("Translate")
+                    && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -3906,9 +3992,109 @@ mod tests {
             err_msg
         );
         assert!(
-            err_msg.contains("Revolve"),
-            "error message should mention the op kind 'Revolve', got: {:?}",
+            err_msg.contains("revolve"),
+            "error message should mention the op kind 'revolve', got: {:?}",
             err_msg
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // eval_named_arg_f64: non-numeric / non-finite value coverage
+    // -----------------------------------------------------------------
+    //
+    // These close the gap left by existing coverage (which only exercises
+    // numeric paths through compile_geometry_op): the three branches of
+    // `match value.as_f64() { Some(v) if v.is_finite() => ..., _ => warn; None }`
+    // must all emit a Warning diagnostic naming the arg and kind.
+
+    #[test]
+    fn eval_named_arg_f64_undef_value_returns_none_with_warning() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        // Value::Undef is the universal no-value sentinel — `as_f64()` returns None.
+        let undef_expr = reify_types::CompiledExpr::literal(
+            reify_types::Value::Undef,
+            reify_types::Type::Real,
+        );
+        let args = vec![("width".to_string(), undef_expr)];
+
+        let result = eval_named_arg_f64(
+            "width",
+            reify_compiler::PrimitiveKind::Box,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_none(), "Undef value should return None");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
+                && d.message.contains("width")
+                && d.message.contains("box")
+                && d.message.contains("non-numeric/non-finite")),
+            "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
+             got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn eval_named_arg_f64_nan_value_returns_none_with_warning() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let nan_expr = literal_f64(f64::NAN);
+        let args = vec![("width".to_string(), nan_expr)];
+
+        let result = eval_named_arg_f64(
+            "width",
+            reify_compiler::PrimitiveKind::Box,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_none(), "NaN value should return None");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
+                && d.message.contains("width")
+                && d.message.contains("box")
+                && d.message.contains("non-numeric/non-finite")),
+            "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
+             got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn eval_named_arg_f64_infinity_value_returns_none_with_warning() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let inf_expr = literal_f64(f64::INFINITY);
+        let args = vec![("width".to_string(), inf_expr)];
+
+        let result = eval_named_arg_f64(
+            "width",
+            reify_compiler::PrimitiveKind::Box,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_none(), "infinity should return None");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
+                && d.message.contains("width")
+                && d.message.contains("box")
+                && d.message.contains("non-numeric/non-finite")),
+            "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
+             got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 }
