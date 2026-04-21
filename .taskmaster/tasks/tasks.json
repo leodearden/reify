@@ -43950,23 +43950,21 @@
         "description": "Post-merge cleanup for task 2035 (compile_builder extraction). Three related items in `crates/reify-compiler/src/compile_builder/`:\n\n1. **Stale `above`/`below` comments in `entities_phase.rs` (L88-145).** The passthrough match arms carry over lib.rs-era text: \"Already compiled in pre-pass above\", \"Compiled in dedicated purpose pass below\", etc. After the refactor those phases live in sibling modules — retarget each comment at its module (e.g. `// Already compiled by functions_phase::phase_functions.`, `// Handled later by post_passes::phase_purposes.`).\n\n2. **Duplicate-filter in `entities_phase::compile_entity_decl` (L178-183).** `is_first_def` re-derives duplicate-entity filtering from `seen_entity_names` via span-equality, duplicating pre_pass's detection logic. If the tracker's value shape ever changes (e.g. stops storing first span), Structure/Occurrence duplicates silently double-push or all-skip. Lift into an explicit predicate on `CompilationCtx`, e.g. `fn is_first_entity_def(&self, name: &str, span: SourceSpan) -> bool`, and call it from both pre_pass and entities_phase so the cross-module contract has one source of truth.\n\n3. **Extract `build_constraint_def_registry` helper (entities_phase.rs L54-66).** The prelude-first / local-override rebuild currently inlines in `phase_entities` while `build_trait_registry` is already factored out. Mirror the pattern — `fn build_constraint_def_registry(local: &[CompiledConstraintDef], prelude: &[&CompiledModule]) -> HashMap<String, &CompiledConstraintDef>` — and call it from `phase_entities` (and from `phase_pending_bound_checks` if it grows to need it).\n\nNo behavior change expected. `cargo test -p reify-compiler` must pass unchanged.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-21T21:56:15.962Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T21:49:31.351Z",
-      "taskCount": 2070,
+      "lastModified": "2026-04-21T21:56:15.977Z",
+      "taskCount": 2071,
       "completedCount": 1817,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T21:56:09.639Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-21T21:56:09.935Z"
+      ]
     }
   }
 }
