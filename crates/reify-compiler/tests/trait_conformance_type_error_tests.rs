@@ -142,6 +142,74 @@ structure def S : HasX {}
     assert_poisoned_conformance_invariant(&module);
 }
 
+// ── Scenario C: unresolved annotation on param (Named path) ──────────────────
+
+/// Pins the `Type::Error` fallback invariant for the `Named`-path branch of
+/// `resolve_member_annotation_type` (conformance.rs:49–58).
+///
+/// ## What this tests
+///
+/// When a structure param's type annotation names a type that cannot be resolved
+/// (neither via `resolve_type_with_aliases` nor the enum set), the closure at
+/// conformance.rs:49–58 pushes an `"unresolved type in conformance check: …"`
+/// diagnostic.  **Before the fix** it then returned `Type::Real`; because the
+/// trait requires `Length ≠ Real`, `implicitly_converts_to(Real, Length)` returns
+/// `false` (conformance.rs:358), and a second misleading
+/// `"type mismatch for trait member 'x': expected Length, got Real"` diagnostic
+/// is emitted on top of the root-cause error.
+///
+/// **After the fix** the closure returns `Type::Error` instead.  The
+/// producer-side wildcard in `type_compat.rs:3–26` then short-circuits
+/// `implicitly_converts_to(Error, Length)` to `true`, suppressing the cascade.
+///
+/// ## Assertions
+///
+/// (a) Root-cause pin: ≥1 `Severity::Error` diagnostic contains both
+///     `"unresolved type in conformance check"` and the literal type name
+///     `"UnknownType"` — the specific message from conformance.rs:51.
+/// (b) Anti-cascade pin: NO diagnostic (at **any** severity) contains
+///     `"type mismatch for trait member"` — checked across all severities so a
+///     future Warning-severity downgrade of the cascade is also caught.
+#[test]
+fn param_unresolved_annotation_suppresses_conformance_cascade() {
+    let source = r#"
+trait T {
+    param x : Length
+}
+structure def S : T {
+    param x : UnknownType
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // (a) Root-cause: at least one error mentions "unresolved type in conformance check"
+    // AND the unresolved name "UnknownType".
+    assert!(
+        errors.iter().any(|d| {
+            d.message.contains("unresolved type in conformance check")
+                && d.message.contains("UnknownType")
+        }),
+        "expected an error containing 'unresolved type in conformance check' and \
+         'UnknownType' (root-cause pin for Named-path of resolve_member_annotation_type); \
+         got: {:?}",
+        errors,
+    );
+
+    // (b) Anti-cascade: no "type mismatch for trait member" at any severity.
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "unexpected 'type mismatch for trait member' cascade diagnostic (regardless of \
+         severity) — Type::Error returned from resolve_member_annotation_type should \
+         suppress this via the producer-side wildcard in type_compat.rs:3–26; \
+         all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
+
 // ── Severity-robustness regression test ──────────────────────────────────────
 
 /// Robustness test: check (b) must catch a "type mismatch for trait" cascade
