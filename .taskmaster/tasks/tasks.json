@@ -6770,7 +6770,7 @@
           "307",
           "310"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6787,7 +6787,7 @@
           "files": []
         },
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:16:44.560Z"
+        "updatedAt": "2026-04-21T19:43:25.936Z"
       },
       {
         "id": "325",
@@ -8546,7 +8546,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -8571,7 +8571,7 @@
           "_causation_id": "887cc4b8-99d3-43d5-8c9c-a0b027cdaca9"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-21T14:31:46.519Z"
+        "updatedAt": "2026-04-21T19:43:26.116Z"
       },
       {
         "id": "398",
@@ -43853,14 +43853,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T18:16:35.439Z",
+      "lastModified": "2026-04-21T19:43:26.116Z",
       "taskCount": 2066,
       "completedCount": 1811,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T18:23:45.194Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
