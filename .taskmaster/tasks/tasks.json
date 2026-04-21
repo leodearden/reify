@@ -43899,7 +43899,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T20:17:45.034Z"
+        "updatedAt": "2026-04-21T20:17:45.034Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-compiler/tests/module_dag_tests.rs"
+          ]
+        }
       },
       {
         "id": "2077",
