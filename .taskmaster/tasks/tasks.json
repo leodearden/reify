@@ -12314,12 +12314,8 @@
         "subtasks": [],
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-eval/src/lib.rs"
-          ],
-          "modules": [
-            "crates/reify-eval/src"
-          ]
+          "files": [],
+          "modules": []
         },
         "updatedAt": "2026-04-20T12:20:04.610Z"
       },
@@ -15867,13 +15863,8 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/src/graph.rs"
-          ],
-          "modules": [
-            "crates/reify-eval/src"
-          ]
+          "files": [],
+          "modules": []
         },
         "updatedAt": "2026-04-20T12:20:04.684Z"
       },
