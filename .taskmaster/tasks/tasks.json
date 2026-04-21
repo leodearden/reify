@@ -43591,7 +43591,13 @@
           "done_provenance": {
             "note": "Fix shipped in dark-factory commit 452ce221b2 (merged via cac00003f5 on 2026-04-20). Target files (scheduler.py, mcp_lifecycle.py, task_fetcher.py) live in /home/leo/src/dark-factory, not in reify. Post-restart reify orchestrator logs show zero 'Failed to fetch tasks' occurrences."
           },
-          "_causation_id": "37be0550-2c1a-4eee-a3d4-810dafacdf64"
+          "_causation_id": "37be0550-2c1a-4eee-a3d4-810dafacdf64",
+          "files": [
+            "orchestrator.yaml"
+          ],
+          "modules": [
+            "."
+          ]
         }
       },
       {
@@ -43635,7 +43641,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:40:12.125Z"
+        "updatedAt": "2026-04-21T08:40:12.125Z",
+        "metadata": {
+          "files": [
+            "crates/reify-cli/src/mcp_context.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/src"
+          ]
+        }
       },
       {
         "id": "2068",
@@ -43657,7 +43671,9 @@
       "completedCount": 1788,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T08:43:57.793Z",
+      "description": "Tasks for master context"
     }
   }
 }
