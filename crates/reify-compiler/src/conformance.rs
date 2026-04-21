@@ -24,6 +24,22 @@ pub(crate) fn check_trait_conformance(
     // Receives `diagnostics` as an explicit parameter (rather than capturing it) so
     // the filter_map closure can also push to `diagnostics` for the "missing annotation"
     // case without a mutable-borrow conflict.
+    //
+    // When a type name cannot be resolved (Named arm, unwrap_or_else branch) or when a
+    // dimensional-op annotation is encountered (DimensionalOp arm), the closure pushes
+    // a root-cause "unresolved type in conformance check" error diagnostic and then
+    // returns `Type::Error` — NOT `Type::Real`.
+    //
+    // Rationale: the member's annotated type is always passed as the `from`/producer
+    // side of `implicitly_converts_to(actual_type, expected_type)` at conformance.rs:358
+    // and `type_compatible(annotation_ty, &compiled_expr.result_type)` at :565.  The
+    // asymmetric producer-side wildcard in `type_compat.rs:3–26` short-circuits
+    // `implicitly_converts_to(Error, _)` to `true`, suppressing the cascade
+    // "type mismatch for trait member" diagnostic that would otherwise appear on top of
+    // the root-cause error already emitted here.  Returning `Type::Real` instead would
+    // poison the downstream requirement check whenever the trait requires a non-Real type
+    // (e.g. Length), generating a misleading second diagnostic and obscuring the actual
+    // problem for the user.
     let resolve_member_annotation_type =
         |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
             match &te.kind {
@@ -54,7 +70,13 @@ pub(crate) fn check_trait_conformance(
                                 ))
                                 .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                             );
-                            Type::Real
+                            // Return Type::Error (poison sentinel) so the downstream
+                            // `implicitly_converts_to` / `type_compatible` producer-side
+                            // wildcard (type_compat.rs:3-26, :119-130) suppresses the
+                            // cascade "type mismatch for trait member" diagnostic.
+                            // The diagnostic emitted on the preceding line is the root
+                            // cause; a second mismatch diagnostic would mislead the user.
+                            Type::Error
                         })
                 }
                 reify_syntax::TypeExprKind::DimensionalOp { .. } => {
@@ -65,7 +87,10 @@ pub(crate) fn check_trait_conformance(
                         ))
                         .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
                     );
-                    Type::Real
+                    // Return Type::Error (poison sentinel) — same rationale as the Named
+                    // arm above: suppress downstream "type mismatch for trait member"
+                    // cascade via the type_compat.rs producer-side wildcard.
+                    Type::Error
                 }
             }
         };
