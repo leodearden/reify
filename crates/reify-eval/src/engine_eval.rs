@@ -23,6 +23,33 @@ use crate::{
     guard_state_fingerprint,
 };
 
+/// Populate a fresh `DemandRegistry` with the full per-node-kind demand
+/// set for a graph and rebuild its cone.
+///
+/// This is the demand-initialization block shared by `Engine::eval` and
+/// `Engine::edit_source`: every value cell, constraint, and realization
+/// node in the graph is marked always-demanded, then `rebuild_cone` is
+/// called so `is_demanded` reflects the transitive closure. Kept as a
+/// single helper so a future node kind (e.g. Resolution, once it
+/// participates in demand) is added once rather than drifting between
+/// the two call sites.
+pub(crate) fn build_demand_for_graph(
+    graph: &crate::graph::EvaluationGraph,
+) -> DemandRegistry {
+    let mut demand = DemandRegistry::new();
+    for (_, node) in graph.value_cells.iter() {
+        demand.add_demand(NodeId::Value(node.id.clone()));
+    }
+    for (_, cnode) in graph.constraints.iter() {
+        demand.add_demand(NodeId::Constraint(cnode.id.clone()));
+    }
+    for (_, rnode) in graph.realizations.iter() {
+        demand.add_demand(NodeId::Realization(rnode.id.clone()));
+    }
+    demand.rebuild_cone(graph);
+    demand
+}
+
 impl Engine {
     /// Evaluate a compiled module, returning computed values.
     ///
@@ -123,18 +150,10 @@ impl Engine {
         let reverse_index = ReverseDependencyIndex::build_from_graph(&snapshot.graph);
         let trace_map = crate::deps::build_trace_map(&snapshot.graph);
 
-        // Set up demand registry: demand all value cells, constraints, and realizations
-        let mut demand = DemandRegistry::new();
-        for (_, node) in snapshot.graph.value_cells.iter() {
-            demand.add_demand(NodeId::Value(node.id.clone()));
-        }
-        for (_, cnode) in snapshot.graph.constraints.iter() {
-            demand.add_demand(NodeId::Constraint(cnode.id.clone()));
-        }
-        for (_, rnode) in snapshot.graph.realizations.iter() {
-            demand.add_demand(NodeId::Realization(rnode.id.clone()));
-        }
-        demand.rebuild_cone(&snapshot.graph);
+        // Set up demand registry: demand all value cells, constraints, and
+        // realizations, then rebuild the cone. Shared helper keeps this in
+        // sync with the matching block in `Engine::edit_source`.
+        let demand = build_demand_for_graph(&snapshot.graph);
 
         // Evaluate field declarations first: they must be available in the
         // values map before templates are evaluated, because structure

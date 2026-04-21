@@ -936,17 +936,9 @@ impl Engine {
             crate::deps::ReverseDependencyIndex::build_from_graph(&new_snapshot.graph);
         let new_trace_map = crate::deps::build_trace_map(&new_snapshot.graph);
 
-        let mut new_demand = crate::demand::DemandRegistry::new();
-        for (_, node) in new_snapshot.graph.value_cells.iter() {
-            new_demand.add_demand(NodeId::Value(node.id.clone()));
-        }
-        for (_, cnode) in new_snapshot.graph.constraints.iter() {
-            new_demand.add_demand(NodeId::Constraint(cnode.id.clone()));
-        }
-        for (_, rnode) in new_snapshot.graph.realizations.iter() {
-            new_demand.add_demand(NodeId::Realization(rnode.id.clone()));
-        }
-        new_demand.rebuild_cone(&new_snapshot.graph);
+        // Shared demand-seeding helper with Engine::eval — see
+        // `build_demand_for_graph` for the per-kind initialization.
+        let new_demand = crate::engine_eval::build_demand_for_graph(&new_snapshot.graph);
 
         // (4) Diff the old and new graphs at value-cell granularity.
         let (changed, added, removed) = diff_value_cells(
