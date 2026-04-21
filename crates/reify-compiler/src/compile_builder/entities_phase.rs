@@ -100,7 +100,7 @@ pub(crate) fn phase_entities(
                 }
             }
             reify_syntax::Declaration::Enum(_) => {
-                // Already collected in pre-pass above.
+                // Already collected by pre_pass::collect_decl_refs.
             }
             reify_syntax::Declaration::Import(import) => {
                 ctx.imports.push(CompiledImport {
@@ -118,10 +118,10 @@ pub(crate) fn phase_entities(
                 );
             }
             reify_syntax::Declaration::Function(_) => {
-                // Already compiled in pre-pass above.
+                // Already compiled by functions_phase::phase_functions.
             }
             reify_syntax::Declaration::Trait(_) => {
-                // Already compiled in trait pre-pass above.
+                // Already compiled by traits_phase::phase_traits.
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
                 if ctx.is_first_entity_def(&occurrence.name, occurrence.span) {
@@ -143,20 +143,19 @@ pub(crate) fn phase_entities(
                 }
             }
             reify_syntax::Declaration::Field(_) => {
-                // Already compiled in field pre-pass above.
+                // Already compiled by fields_phase::phase_fields.
             }
             reify_syntax::Declaration::Purpose(_) => {
-                // Compiled in dedicated purpose pass below.
+                // Handled later by post_passes::phase_purposes.
             }
             reify_syntax::Declaration::Constraint(_) => {
-                // Already compiled by the constraint_defs pre-pass above;
-                // annotation/pragma validation ran there too.
+                // Already compiled by defs_phase::phase_constraint_defs; annotation/pragma validation ran there too.
             }
             reify_syntax::Declaration::Unit(_) => {
-                // Already compiled in unit pre-pass above.
+                // Already compiled by units_phase::phase_units.
             }
             reify_syntax::Declaration::TypeAlias(_) => {
-                // Already compiled in type alias pre-pass above.
+                // Already compiled by aliases_phase::phase_aliases.
             }
         }
     }
