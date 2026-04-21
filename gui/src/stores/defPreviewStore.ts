@@ -1,5 +1,6 @@
 import { createStore } from 'solid-js/store';
 import type { MeshData, GuiState } from '../types';
+import { errorMessage } from '../utils/errorClassifier';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -52,7 +53,29 @@ export function createDefPreviewStore() {
     setState('isLoading', loading);
   }
 
-  return { state, applyPreview, clearPreview, setError, setLoading };
+  /**
+   * Fetch and apply preview meshes for a definition.
+   * Early-returns (no-op) if `defName` matches the currently-loaded `state.defName`.
+   * Sets `isLoading=true` synchronously, then on resolve calls `applyPreview`,
+   * on reject calls `setError`.
+   */
+  async function loadPreview(
+    defName: string,
+    fetch: (name: string) => Promise<GuiState>,
+  ): Promise<void> {
+    // De-duplication: skip if the same definition is already loaded
+    if (state.defName === defName) return;
+
+    setLoading(true);
+    try {
+      const guiState = await fetch(defName);
+      applyPreview(defName, guiState);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  return { state, applyPreview, clearPreview, setError, setLoading, loadPreview };
 }
 
 export type DefPreviewStore = ReturnType<typeof createDefPreviewStore>;
