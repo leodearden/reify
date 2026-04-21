@@ -1094,14 +1094,14 @@ impl Engine {
                 continue;
             }
 
-            if unchanged_hash {
-                if let Some((val, det)) = old_graph_snapshot_values.get(id) {
-                    new_snapshot
-                        .values
-                        .insert(id.clone(), (val.clone(), *det));
-                    values.insert(id.clone(), val.clone());
-                    continue;
-                }
+            if unchanged_hash
+                && let Some((val, det)) = old_graph_snapshot_values.get(id)
+            {
+                new_snapshot
+                    .values
+                    .insert(id.clone(), (val.clone(), *det));
+                values.insert(id.clone(), val.clone());
+                continue;
             }
             // Changed/added/no prior entry: read the Undef seed placed by
             // Snapshot::from_compiled_module so the working values map has

@@ -263,8 +263,7 @@ fn edit_source_added_cell_is_evaluated_and_unchanged_cells_preserved() {
 
     // Module B: identical to A except a new `perimeter = 2 * (width + height)`
     // let binding is inserted after `volume`. No other semantic changes.
-    let module_b_src = format!(
-        r#"structure Bracket {{
+    let module_b_src = r#"structure Bracket {
     param width: Scalar = 80mm
     param height: Scalar = 100mm
     param thickness: Scalar = 5mm
@@ -273,9 +272,8 @@ fn edit_source_added_cell_is_evaluated_and_unchanged_cells_preserved() {
     let perimeter = 2.0 * (width + height)
 
     constraint thickness > 2mm
-}}"#
-    );
-    let module_b = parse_and_compile(&module_b_src);
+}"#;
+    let module_b = parse_and_compile(module_b_src);
     let result_b = engine
         .edit_source(&module_b)
         .expect("edit_source must succeed after eval");
@@ -712,8 +710,8 @@ fn edit_source_matches_cold_eval_on_mixed_bracket_edit() {
     let cold_keys: HashSet<&ValueCellId> = cold_check.values.iter().map(|(k, _)| k).collect();
     let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
     for key in &all_keys {
-        let incr_val = incr_edit.values.get(*key);
-        let cold_val = cold_check.values.get(*key);
+        let incr_val = incr_edit.values.get(key);
+        let cold_val = cold_check.values.get(key);
         assert_eq!(
             incr_val, cold_val,
             "value for {key} diverges: incremental={:?}, cold={:?}",
@@ -727,12 +725,12 @@ fn edit_source_matches_cold_eval_on_mixed_bracket_edit() {
     let incr_by_id: std::collections::HashMap<_, _> = incr_check
         .constraint_results
         .iter()
-        .map(|e| (e.id.clone(), e.satisfaction.clone()))
+        .map(|e| (e.id.clone(), e.satisfaction))
         .collect();
     let cold_by_id: std::collections::HashMap<_, _> = cold_check
         .constraint_results
         .iter()
-        .map(|e| (e.id.clone(), e.satisfaction.clone()))
+        .map(|e| (e.id.clone(), e.satisfaction))
         .collect();
     assert_eq!(
         incr_by_id, cold_by_id,
