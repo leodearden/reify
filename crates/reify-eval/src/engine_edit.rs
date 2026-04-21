@@ -1049,9 +1049,13 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
 
         // (8) Seed values by preserving unchanged-content_hash entries from
-        //     the old snapshot. Changed/added cells retain their Snapshot::
-        //     from_compiled_module default (Undef) so the eval loop fills
-        //     them in; removed cells are simply absent from the new graph.
+        //     the old snapshot, with `param_overrides` winning for Param cells
+        //     (step-12). Changed cells retain their
+        //     Snapshot::from_compiled_module default (Undef) so the eval loop
+        //     fills them in; added cells are seeded from overrides (if any,
+        //     for Param kind) else left Undef for the eval loop. Removed cells
+        //     are simply absent from the new graph, and their override entries
+        //     are purged from `self.param_overrides` below.
         let mut values = ValueMap::new();
         let old_graph_snapshot_values = self.eval_state.as_ref().unwrap().snapshot.values.clone();
         let old_graph_cells = self
@@ -1063,11 +1067,34 @@ impl Engine {
             .value_cells
             .clone();
         for (id, new_node) in new_snapshot.graph.value_cells.iter() {
-            let preserved = old_graph_cells
+            // `param_overrides` wins for Param cells whose content_hash is
+            // unchanged across the edit. This mirrors eval_cached's precedence
+            // rule ("override always wins for Param cells") and ensures an
+            // override established before a structural edit survives the edit.
+            // For Param cells whose content_hash CHANGED (e.g. the source
+            // default was edited), we intentionally skip the override — the
+            // diff has classified the cell as dirty and the eval loop will
+            // re-derive it from the new default_expr. If the user wants the
+            // override to persist across a content-hash-shifting edit, they
+            // can re-install it via set_param_and_invalidate after edit_source.
+            let unchanged_hash = old_graph_cells
                 .get(id)
                 .map(|old_node| old_node.content_hash == new_node.content_hash)
                 .unwrap_or(false);
-            if preserved {
+
+            if matches!(new_node.kind, reify_compiler::ValueCellKind::Param)
+                && unchanged_hash
+                && let Some(override_val) = self.param_overrides.get(id)
+            {
+                new_snapshot.values.insert(
+                    id.clone(),
+                    (override_val.clone(), DeterminacyState::Determined),
+                );
+                values.insert(id.clone(), override_val.clone());
+                continue;
+            }
+
+            if unchanged_hash {
                 if let Some((val, det)) = old_graph_snapshot_values.get(id) {
                     new_snapshot
                         .values
@@ -1084,6 +1111,22 @@ impl Engine {
                 values.insert(id.clone(), val.clone());
             }
         }
+
+        // (8b) Purge param_overrides entries for cells that no longer exist
+        //      in the new graph (step-12). A dormant override on a removed
+        //      cell has nothing to apply to and, if left in place, would
+        //      zombie-resurrect if a future edit re-adds a cell with the same
+        //      ValueCellId. We also drop overrides for cells that still exist
+        //      but are no longer Param (kind changed from Param to Let or
+        //      Auto) — the override is only meaningful for Param cells.
+        self.param_overrides.retain(|id, _| {
+            new_snapshot
+                .graph
+                .value_cells
+                .get(id)
+                .map(|node| matches!(node.kind, reify_compiler::ValueCellKind::Param))
+                .unwrap_or(false)
+        });
 
         // (9) Invalidate cache entries for changed and removed cells, plus
         //     changed/removed constraints and realizations (step-10). Added
