@@ -441,6 +441,42 @@ structure S {
                     .collect::<Vec<_>>()
             )
         });
+
+    // Intra-instantiation source-order guard (task 2083) — complements the
+    // label-presence checks above (task 848.2).
+    //
+    // The `.find()` lookups above are cross-instantiation-safe: they assert
+    // that both Bounded#0[0] and Bounded#0[1] exist somewhere in the list,
+    // regardless of order.  But they do not verify that pred_idx matches the
+    // source order of predicates within the single `Bounded(...)` invocation.
+    //
+    // The compiler guarantees intra-instantiation order via the sequential
+    // `for (pred_idx, predicate) in def.predicates.iter().enumerate()` loop
+    // in entity.rs:1276-1306.  This assertion locks in that invariant as a
+    // regression guard: if a future refactor (e.g. parallelised predicate
+    // compilation or a non-ordered emit) breaks the contract, this assertion
+    // will fail with a clear diagnostic showing the actual index sequence.
+    //
+    // Cross-instantiation independence is preserved: the prefix filter pins
+    // inst_idx=0 exclusively, so any hypothetical additional instantiations
+    // (inst_idx=1, etc.) in the constraint list are ignored.
+    let inst_0_pred_indices: Vec<usize> = tmpl
+        .constraints
+        .iter()
+        .filter_map(|c| c.label.as_deref())
+        .filter_map(|lbl| {
+            lbl.strip_prefix("Bounded#0[")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|n| n.parse::<usize>().ok())
+        })
+        .collect();
+    assert_eq!(
+        inst_0_pred_indices,
+        vec![0, 1],
+        "pred_idx must match source order within a single instantiation \
+         (inst_idx=0); got {:?}",
+        inst_0_pred_indices
+    );
 }
 
 // ── Step 3 (task-1717): substitute_expr recurses into Conditional branches ───
