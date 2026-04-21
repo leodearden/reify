@@ -3581,6 +3581,86 @@ mod execute_with_config_tests {
     }
 } // mod execute_with_config_tests
 
+/// Characterization: ConcurrentEvalAdapter returns Unchanged for a Value cell
+/// whose `default_expr` is None.  Uses `.auto_param()` which produces
+/// `kind = Auto { free: false }` and `default_expr = None`, exercising the
+/// fallthrough branch that the step-2 refactor must preserve.
+#[tokio::test]
+async fn adapter_evaluate_returns_unchanged_for_cell_without_default_expr() {
+    let e = "T";
+
+    // Build template: param "a" (so the graph is non-empty) + auto-param "x"
+    // (kind = Auto { free: false }, default_expr = None).
+    let template = TopologyTemplateBuilder::new(e)
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(1.0),
+                Type::Real,
+            )),
+        )
+        .auto_param(e, "x", Type::Real)
+        .build();
+
+    let graph = EvaluationGraph::from_templates(&[template]);
+    let reverse_index = ReverseDependencyIndex::build_from_graph(&graph);
+
+    let mut values = ValueMap::new();
+    values.insert(ValueCellId::new(e, "a"), Value::Real(1.0));
+
+    let mut snapshot_values = PersistentMap::new();
+    snapshot_values.insert(
+        ValueCellId::new(e, "a"),
+        (Value::Real(1.0), DeterminacyState::Determined),
+    );
+
+    let mut changed_cells = HashSet::new();
+    changed_cells.insert(ValueCellId::new(e, "a"));
+
+    let setup = ConcurrentEditSetup {
+        eval_set: vec![NodeId::Value(ValueCellId::new(e, "x"))],
+        graph,
+        values,
+        snapshot_values,
+        traces: HashMap::new(),
+        reverse_index,
+        previous_hashes: HashMap::new(),
+        version: VersionId(1),
+        snapshot_id: SnapshotId(1),
+        parent_snapshot_id: SnapshotId(0),
+        changed_cells,
+        functions: vec![],
+        meta_map: Arc::new(HashMap::new()),
+        objective: None,
+    };
+
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+    let x_node = NodeId::Value(ValueCellId::new(e, "x"));
+
+    // Evaluate x: default_expr is None → must fall through and return Unchanged.
+    let outcome = adapter.evaluate(x_node).await;
+
+    assert_eq!(
+        outcome,
+        EvalOutcome::Unchanged,
+        "auto-param with no default_expr must return Unchanged"
+    );
+
+    // No value must be written for x (fallthrough must not write).
+    assert!(
+        adapter.values().get(&ValueCellId::new(e, "x")).is_none(),
+        "x must not appear in the values map when default_expr is None"
+    );
+
+    // No result entry must be pushed.
+    assert!(
+        adapter.take_results().is_empty(),
+        "no result entry should be pushed for a cell without default_expr"
+    );
+}
+
 #[cfg(feature = "test-utils")]
 mod poison_fields_constants {
     use super::*;
