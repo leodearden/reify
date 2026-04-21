@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use reify_compiler::CompiledModule;
 use reify_types::{
     AutoParam, ContentHash, DeterminacyState, Diagnostic, PersistentMap, ResolutionProblem,
     SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
@@ -749,6 +750,34 @@ impl Engine {
             values,
             diagnostics,
             resolved_params,
+        })
+    }
+
+    /// Incrementally re-evaluate after a structural source edit.
+    ///
+    /// Mirrors `edit_param`'s `NotInitialized` precondition: requires a prior
+    /// `eval()` to establish the baseline snapshot, reverse index, trace map,
+    /// and demand registry. Returns `Err(EngineError::NotInitialized)` when
+    /// called on a fresh Engine before any eval.
+    ///
+    /// On success (implemented in later steps), returns an `EvalResult` whose
+    /// `values` map reflects the post-edit state, computed incrementally by
+    /// diffing the old vs new `EvaluationGraph` and re-evaluating only the
+    /// dependency cones touched by the structural diff.
+    pub fn edit_source(&mut self, _module: &CompiledModule) -> Result<EvalResult, EngineError> {
+        // Precondition: prior eval() must have populated eval_state. This is
+        // the same precondition as edit_param and is validated first so that
+        // all later steps can rely on a present baseline.
+        if self.eval_state.is_none() {
+            return Err(EngineError::NotInitialized);
+        }
+
+        // Placeholder: later steps replace this with the diff-driven
+        // incremental re-evaluation pipeline.
+        Ok(EvalResult {
+            values: ValueMap::new(),
+            diagnostics: Vec::new(),
+            resolved_params: HashMap::new(),
         })
     }
 
