@@ -39755,11 +39755,11 @@
         "description": "The Bool arm of `value_type_kind_matches` (i.e. `Value::Bool(_) => matches!(ty, Type::Bool)` in crates/reify-eval/src/lib.rs around line 125-147) is not directly covered by a unit test, even though sibling Tensor/Matrix/Real arms have dedicated positive + negative unit tests at lines 3442-3496 in the same file.\n\nWhen task 1886 reverted the fixture-level `param enabled : Bool = true` in examples/integration_full_v01.ri and retargeted the edit_param/edit_check TypeKindMismatch regression tests onto the existing `Assembly.grade` Enum cell (see crates/reify-eval/tests/incremental_integration.rs:897-941), the direct Bool-arm regression lock was lost. Close that gap with small unit tests near the existing `value_type_kind_matches_*` tests.\n\nSuggested additions:\n- `value_type_kind_matches_bool_value_into_int_type_returns_false` — `Value::Bool(true)` into `Type::Int` must be false\n- `value_type_kind_matches_int_value_into_bool_type_returns_false` — `Value::Int(1)` into `Type::Bool` must be false\n- Optionally a positive-path test: `Value::Bool(true)` into `Type::Bool` returns true\n\nSource: task 1886 reviewer_comprehensive suggestion S1 (esc-1886-52).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:46.878Z",
+        "updatedAt": "2026-04-21T19:43:27.211Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
@@ -42080,11 +42080,11 @@
         "description": "Every call to `Engine::eval()` and `Engine::edit_param()` clones the entire merged function table (`self.functions: Vec<CompiledFunction>`). `CompiledFunction` contains boxed expression trees, so cost is O(|user_fns + prelude_fns| * avg_tree_size) per call — a significant allocation for modules with a large prelude.",
         "details": "Change `Engine::functions` from `Vec<CompiledFunction>` to `Arc<Vec<CompiledFunction>>` so the borrow-checker workaround clone in `eval()` and `edit_param()` becomes O(1).\n\nKey sites:\n- `crates/reify-eval/src/lib.rs` near `let functions: Vec<CompiledFunction> = self.functions.clone();` inside `eval()` (the PERFORMANCE NOTE comment describes the fix)\n- `crates/reify-eval/src/lib.rs` near line ~1548: `let functions = self.functions.clone();` inside `edit_param()` — same pattern\n- `crates/reify-eval/src/concurrent.rs`: `ConcurrentEditSetup::functions` field is typed `Vec<CompiledFunction>` and assigned via `functions: self.functions.clone()` — needs the type change to `Arc<Vec<CompiledFunction>>`\n\nThe desired end state:\n```rust\nself.functions = Arc::new({ let mut v = module.functions.clone(); v.extend(prelude); v });\nlet functions = Arc::clone(&self.functions);   // O(1)\n```\n\nThe `concurrent.rs` change is the blocker that prevented this fix in task 515 (it lies outside that task's scope lock). This task should scope both files together.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T15:06:09.194Z",
+        "updatedAt": "2026-04-21T19:43:27.320Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/lib.rs",
@@ -42407,7 +42407,7 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:175-186` — `GeomRef::Sub(name)` resolution currently ignores the name and falls back to `step_handles.last()`, emitting a warning diagnostic. Downstream boolean/modify ops target the wrong shape whenever a model refers to a named sub-geometry.\n\nFix:\n1. Extend the geometry compile phase to record a name→step-index map for named sub-references (or expose it on TopologyTemplate).\n2. Resolve `GeomRef::Sub(name)` by lookup into that map.\n3. Return a proper error (not a warning + fallback) if the name is unknown — follow the \"errors must be noisy\" convention.\n4. Test with a sketch that has multiple named sub-references.\n\nRelated to stdlib geometry work; confirm this isn't already covered by an existing task before duplicating.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42425,7 +42425,7 @@
             "crates/reify-test-support/src/builders"
           ]
         },
-        "updatedAt": "2026-04-21T15:12:29.192Z"
+        "updatedAt": "2026-04-21T19:43:27.447Z"
       },
       {
         "id": "2012",
@@ -43853,7 +43853,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T19:43:27.105Z",
+      "lastModified": "2026-04-21T19:43:27.447Z",
       "taskCount": 2066,
       "completedCount": 1811,
       "tags": [
