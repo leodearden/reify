@@ -181,6 +181,13 @@ impl ModuleDag {
         // real units.ri under stdlib_root and expects the filesystem version to win.
         let is_std_path = module_path == "std" || module_path.starts_with("std.");
 
+        // `commit_fs_mode` is set to true in the Ok-and-std branch when we are
+        // about to commit filesystem mode for the first time. We defer the actual
+        // write to `self.stdlib_mode` until after the module body compiles
+        // successfully so that a parse or compile failure does not taint the mode
+        // for subsequent (legitimate) calls.
+        let mut commit_fs_mode = false;
+
         // Resolve to filesystem path, with embedded-stdlib fallback for std.* paths.
         let fs_path = match resolver.resolve_import_path(module_path) {
             Ok(path) if is_std_path => {
@@ -197,10 +204,11 @@ impl ModuleDag {
                         resolver.stdlib_root.display(),
                     ))]);
                 }
-                // Commit to filesystem mode on first std.* filesystem success.
-                if self.stdlib_mode.is_none() {
-                    self.stdlib_mode = Some(StdlibMode::FileSystem);
-                }
+                // Defer committing filesystem mode until after successful compile so
+                // that a parse/compile failure does not taint the mode (a failed
+                // compile produces no DAG entry, so no std.* module was actually
+                // loaded from the filesystem yet).
+                commit_fs_mode = self.stdlib_mode.is_none();
                 path
             }
             Ok(path) => path,
@@ -219,13 +227,17 @@ impl ModuleDag {
                         resolver.stdlib_root.display(),
                     ))]);
                 }
-                // Commit to embedded mode and consult the embedded stdlib.
-                if self.stdlib_mode.is_none() {
-                    self.stdlib_mode = Some(StdlibMode::Embedded);
-                }
+                // Consult the embedded stdlib. We commit to Embedded mode only after
+                // confirming the module exists there — an unknown std.* path (e.g. a
+                // typo like "std.unknonwn") must not taint the mode for subsequent
+                // valid imports.
                 let target = reify_types::ModulePath::from_dotted(module_path);
                 let stdlib = crate::stdlib_loader::load_stdlib();
                 if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
+                    // Commit embedded mode now that we know the module is present.
+                    if self.stdlib_mode.is_none() {
+                        self.stdlib_mode = Some(StdlibMode::Embedded);
+                    }
                     // Found in embedded stdlib. Insert all modules up to and including
                     // the target in topological order. The stdlib slice is itself
                     // topologically ordered: module at index i was compiled against
@@ -322,6 +334,14 @@ impl ModuleDag {
 
         // Propagate error after cleanup
         let compiled = result?;
+
+        // Commit filesystem mode now that the module has compiled successfully.
+        // Deferred from the Ok-and-std match arm above so that a parse/compile
+        // failure does not taint stdlib_mode (no std.* module was actually inserted
+        // into self.modules on a failed compile).
+        if commit_fs_mode {
+            self.stdlib_mode = Some(StdlibMode::FileSystem);
+        }
 
         // Record in post-order (only on success)
         self.topo_order.push(module_path.to_string());

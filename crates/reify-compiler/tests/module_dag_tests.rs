@@ -1247,11 +1247,12 @@ fn partial_stdlib_overlay_errors_when_fs_missing_later_module() {
     let dir = _tmp.path().to_path_buf();
 
     // Create a partial stdlib dir: units.ri present, materials_mechanical.ri absent.
+    // Use the real stdlib content so the compile is robust against semantic changes.
     let stdlib_dir = dir.join("stdlib");
     fs::create_dir_all(&stdlib_dir).unwrap();
     fs::write(
         stdlib_dir.join("units.ri"),
-        "pub unit myunit : Length = 1.0",
+        include_str!("../stdlib/units.ri"),
     )
     .unwrap();
     // materials_mechanical.ri intentionally NOT written.
@@ -1287,6 +1288,90 @@ fn partial_stdlib_overlay_errors_when_fs_missing_later_module() {
     assert!(
         msg.contains("std.materials.mechanical"),
         "diagnostic must mention the offending module 'std.materials.mechanical', got: {}",
+        msg
+    );
+
+    // (b) Must mention the overlay / partial mix.
+    assert!(
+        msg.to_lowercase().contains("overlay") || msg.to_lowercase().contains("partial"),
+        "diagnostic must mention 'overlay' or 'partial', got: {}",
+        msg
+    );
+
+    // (c) Must reference the stdlib source (filesystem or embedded).
+    assert!(
+        msg.to_lowercase().contains("filesystem") || msg.to_lowercase().contains("embedded"),
+        "diagnostic must reference 'filesystem' or 'embedded', got: {}",
+        msg
+    );
+}
+
+// ── amend (task-2073): reverse-direction overlay — embedded-first, then fs ───
+
+/// Companion to `partial_stdlib_overlay_errors_when_fs_missing_later_module`.
+/// That test checks the FileSystem-first → Embedded-miss path. This test checks
+/// the Embedded-first → FileSystem-hit path: the `Ok(path) if is_std_path` arm
+/// when `stdlib_mode == Some(Embedded)`.
+///
+/// Setup: stdlib dir contains `materials_mechanical.ri` but NOT `units.ri`.
+/// - `compile_module("std.units")` → fs lookup fails → found in embedded stdlib →
+///   commits Embedded mode → Ok.
+/// - `compile_module("std.materials.mechanical")` → fs lookup succeeds →
+///   `stdlib_mode == Some(Embedded)` → partial stdlib overlay error.
+///
+/// The diagnostic must (a) mention "std.materials.mechanical", (b) contain
+/// "overlay" or "partial", and (c) reference "filesystem" or "embedded".
+#[test]
+fn partial_stdlib_overlay_errors_when_embedded_first_then_fs() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Create a partial stdlib dir: tolerancing.ri present, units.ri absent.
+    // The resolver maps `std.tolerancing` → `stdlib_dir/tolerancing.ri` (simple path,
+    // no subdirectory) and `std.units` → `stdlib_dir/units.ri` (also simple).
+    // Only tolerancing.ri is written — units.ri is absent so std.units must fall back
+    // to the embedded stdlib.
+    let stdlib_dir = dir.join("stdlib");
+    fs::create_dir_all(&stdlib_dir).unwrap();
+    fs::write(
+        stdlib_dir.join("tolerancing.ri"),
+        include_str!("../stdlib/tolerancing.ri"),
+    )
+    .unwrap();
+    // units.ri intentionally NOT written — std.units must fall back to embedded.
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_dir);
+    let mut dag = ModuleDag::new();
+
+    // First std.* import: fs fails for std.units → falls back to embedded → commits Embedded.
+    let result_units = dag.compile_module("std.units", &resolver);
+    assert!(
+        result_units.is_ok(),
+        "compile_module(\"std.units\") should succeed via embedded stdlib, got: {:?}",
+        result_units.err()
+    );
+
+    // Second std.* import: fs succeeds for std.tolerancing (tolerancing.ri is present) but
+    // stdlib_mode is Embedded → partial overlay → must error.
+    let result_tol = dag.compile_module("std.tolerancing", &resolver);
+    assert!(
+        result_tol.is_err(),
+        "compile_module(\"std.tolerancing\") should fail because std.units was already \
+         resolved from the embedded stdlib but tolerancing.ri exists on the filesystem; \
+         the DAG must not silently mix sources"
+    );
+
+    let errors = result_tol.unwrap_err();
+    let msg = errors
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (a) Must name the offending module.
+    assert!(
+        msg.contains("std.tolerancing"),
+        "diagnostic must mention the offending module 'std.tolerancing', got: {}",
         msg
     );
 
