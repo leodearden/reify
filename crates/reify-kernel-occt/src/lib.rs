@@ -197,6 +197,45 @@ impl OcctKernel {
                 ffi::ffi::make_sphere(r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Tube {
+                outer_r,
+                inner_r,
+                height,
+            } => {
+                let outer = extract_f64(outer_r)?;
+                let inner = extract_f64(inner_r)?;
+                let h = extract_f64(height)?;
+                if !(outer.is_finite() && outer > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "tube outer radius must be a finite positive value".into(),
+                    ));
+                }
+                if !(inner.is_finite() && inner > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "tube inner radius must be a finite positive value".into(),
+                    ));
+                }
+                if !(h.is_finite() && h > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "tube height must be a finite positive value".into(),
+                    ));
+                }
+                if !(inner < outer) {
+                    return Err(GeometryError::OperationFailed(
+                        "tube inner radius must be strictly less than outer radius"
+                            .into(),
+                    ));
+                }
+                // Compose: outer cylinder - inner cylinder via boolean_cut.
+                // Reuses validated FFI primitives rather than adding a
+                // bespoke C++ wrapper (mirrors ExtrudeSymmetric pattern).
+                let outer_shape = ffi::ffi::make_cylinder(outer, h)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let inner_shape = ffi::ffi::make_cylinder(inner, h)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ffi::ffi::boolean_cut(&outer_shape, &inner_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
