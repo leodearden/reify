@@ -43814,7 +43814,18 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T18:16:04.038Z"
+        "updatedAt": "2026-04-21T18:16:04.038Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-compiler/src/stdlib_loader.rs",
+            "crates/reify-compiler/tests/module_dag_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "2074",
@@ -43826,7 +43837,18 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T18:16:35.439Z"
+        "updatedAt": "2026-04-21T18:16:35.439Z",
+        "metadata": {
+          "files": [
+            "crates/reify-types/src/identity.rs",
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-compiler/src/stdlib_loader.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-compiler/src"
+          ]
+        }
       }
     ],
     "metadata": {
