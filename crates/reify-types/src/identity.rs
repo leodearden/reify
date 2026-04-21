@@ -12,6 +12,30 @@ impl ModulePath {
     pub fn single(name: impl Into<String>) -> Self {
         Self(vec![name.into()])
     }
+
+    /// Parse a dot-separated module path string into a `ModulePath`.
+    ///
+    /// Each segment between dots becomes one element of the path vector:
+    /// - `"std.units"` → `["std", "units"]`
+    /// - `"a.b.c"` → `["a", "b", "c"]`
+    /// - `"foo"` → `["foo"]`
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if `dotted` is empty or contains empty segments (e.g. `"a..b"`).
+    /// In release builds these inputs are silently accepted per `str::split`
+    /// semantics, but the resulting paths (`[""]` or `["a", "", "b"]`) are
+    /// semantically meaningless. Add a `debug_assert` at call sites that accept
+    /// user-provided strings to surface misuse during development.
+    pub fn from_dotted(dotted: &str) -> Self {
+        debug_assert!(!dotted.is_empty(), "from_dotted: dotted path must not be empty");
+        debug_assert!(
+            !dotted.split('.').any(str::is_empty),
+            "from_dotted: path must not contain empty segments (e.g. 'a..b'), got: '{}'",
+            dotted
+        );
+        Self::new(dotted.split('.').map(String::from).collect())
+    }
 }
 
 impl fmt::Display for ModulePath {
@@ -303,6 +327,29 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert_ne!(a, d);
+    }
+
+    // ── ModulePath::from_dotted ───────────────────────────────────────
+
+    #[test]
+    fn from_dotted_two_segments() {
+        let path = ModulePath::from_dotted("std.units");
+        assert_eq!(path.0, vec!["std".to_string(), "units".to_string()]);
+    }
+
+    #[test]
+    fn from_dotted_three_segments() {
+        let path = ModulePath::from_dotted("a.b.c");
+        assert_eq!(
+            path.0,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn from_dotted_single_segment() {
+        let path = ModulePath::from_dotted("foo");
+        assert_eq!(path.0, vec!["foo".to_string()]);
     }
 
     #[test]

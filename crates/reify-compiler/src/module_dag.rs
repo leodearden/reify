@@ -19,6 +19,13 @@ use crate::CompiledModule;
 /// - Other imports resolve relative to `<project_root>/...`
 /// - Dots become path separators
 /// - Tries `<path>.ri` first, then `<path>/mod.ri`
+///
+/// **Precedence for `std.*` paths:** `ModuleDag::compile_module` tries the
+/// filesystem resolver first. If the filesystem lookup fails (e.g., no
+/// stdlib_root directory on disk), the DAG falls back to the pre-compiled
+/// modules returned by `stdlib_loader::load_stdlib()`. This ensures that user
+/// projects without a local stdlib directory still get `import std.units` to
+/// resolve correctly via the embedded copy.
 pub struct ModuleResolver {
     /// Root of the project (for non-std imports).
     pub project_root: PathBuf,
@@ -137,10 +144,45 @@ impl ModuleDag {
             ))]);
         }
 
-        // Resolve to filesystem path
-        let fs_path = resolver
-            .resolve_import_path(module_path)
-            .map_err(|d| vec![d])?;
+        // Detect std.* / bare std paths for embedded-stdlib fallback.
+        // Filesystem lookup is always tried first; the embedded stdlib is only
+        // consulted when the filesystem cannot resolve the module (e.g., no
+        // stdlib_root directory on disk). This preserves the behaviour of
+        // compile_project_stdlib_unit_collision_mentions_stdlib, which places a
+        // real units.ri under stdlib_root and expects the filesystem version to win.
+        let is_std_path = module_path == "std" || module_path.starts_with("std.");
+
+        // Resolve to filesystem path, with embedded-stdlib fallback for std.* paths.
+        let fs_path = match resolver.resolve_import_path(module_path) {
+            Ok(path) => path,
+            Err(fs_err) if is_std_path => {
+                // Filesystem lookup failed for a std.* path — consult the embedded stdlib.
+                let target = reify_types::ModulePath::from_dotted(module_path);
+                let stdlib = crate::stdlib_loader::load_stdlib();
+                if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
+                    // Found in embedded stdlib. Insert all modules up to and including
+                    // the target in topological order. The stdlib slice is itself
+                    // topologically ordered: module at index i was compiled against
+                    // all modules at indices 0..i. By inserting the full prefix we
+                    // ensure transitive deps (e.g. std.units and std.si_units when
+                    // std.materials.mechanical is requested) are present in both
+                    // `modules` and `topo_order`, so consumers that iterate
+                    // topo_order see a consistent view of all stdlib transitive deps.
+                    for embedded in &stdlib[..=idx] {
+                        let dotted = embedded.path.0.join(".");
+                        if !self.modules.contains_key(&dotted) {
+                            self.topo_order.push(dotted.clone());
+                            self.modules.insert(dotted, embedded.clone());
+                        }
+                    }
+                    return Ok(());
+                }
+                // Unknown std.* submodule — surface the original fs error so callers
+                // get a clear diagnostic rather than a silent no-op.
+                return Err(vec![fs_err]);
+            }
+            Err(fs_err) => return Err(vec![fs_err]),
+        };
 
         // Read and parse
         let source = std::fs::read_to_string(&fs_path).map_err(|e| {
@@ -152,9 +194,7 @@ impl ModuleDag {
             ))]
         })?;
 
-        let module_path_type =
-            reify_types::ModulePath::new(module_path.split('.').map(|s| s.to_string()).collect());
-        let parsed = reify_syntax::parse(&source, module_path_type);
+        let parsed = reify_syntax::parse(&source, reify_types::ModulePath::from_dotted(module_path));
 
         if !parsed.errors.is_empty() {
             return Err(parsed

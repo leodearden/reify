@@ -594,3 +594,50 @@ fn end_to_end_material_elastic_conformance() {
         );
     }
 }
+
+// ── step-5: Engine::with_prelude ──────────────────────────────────────
+
+/// Engine::with_prelude accepts an empty prelude slice; prelude() returns
+/// an empty slice afterwards.
+#[test]
+fn engine_with_prelude_accepts_custom_slice() {
+    let checker = MockConstraintChecker::new();
+    let engine = reify_eval::Engine::with_prelude(Box::new(checker), None, &[]);
+    assert!(
+        engine.prelude().is_empty(),
+        "Engine::with_prelude(&[]) should store an empty prelude, got {} modules",
+        engine.prelude().len()
+    );
+}
+
+/// Compiling a source that references a stdlib trait (`Elastic`) with an empty
+/// prelude produces at least one diagnostic, confirming that the empty-prelude
+/// opt-out actually suppresses stdlib trait resolution.
+///
+/// The preceding test (`engine_with_prelude_accepts_custom_slice`) already pins
+/// the empty-prelude invariant; this test verifies the concrete consequence:
+/// without stdlib in the prelude, trait references cannot be resolved and the
+/// compiler reports an error.
+#[test]
+fn engine_with_prelude_empty_slice_disables_stdlib_resolution() {
+    let source = steel_elastic_source();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    // Compile WITHOUT any prelude (empty slice). The source declares conformance
+    // to the stdlib trait `Elastic`, which is unavailable without the prelude.
+    let compiled = reify_compiler::compile_with_prelude(&parsed, &[]);
+
+    // Without stdlib in the prelude, trait conformance cannot be verified:
+    // the compiler must emit at least one diagnostic about the unresolved trait.
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "compiling 'Steel : Elastic' with an empty prelude should produce at least \
+         one diagnostic (unresolved trait 'Elastic'), but got zero diagnostics. \
+         This would indicate stdlib resolution is NOT disabled by the empty prelude."
+    );
+}

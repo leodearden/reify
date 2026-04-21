@@ -10,21 +10,6 @@ use reify_types::{ModulePath, Severity};
 use crate::CompiledModule;
 use crate::si_units;
 
-/// Embedded source for stdlib/units.ri.
-const UNITS_SRC: &str = include_str!("../stdlib/units.ri");
-
-/// Embedded source for stdlib/materials_mechanical.ri.
-const MATERIALS_MECHANICAL_SRC: &str = include_str!("../stdlib/materials_mechanical.ri");
-
-/// Embedded source for stdlib/structural_physical.ri.
-const STRUCTURAL_PHYSICAL_SRC: &str = include_str!("../stdlib/structural_physical.ri");
-
-/// Embedded source for stdlib/analysis.ri.
-const ANALYSIS_SRC: &str = include_str!("../stdlib/analysis.ri");
-
-/// Embedded source for stdlib/tolerancing.ri.
-const TOLERANCING_SRC: &str = include_str!("../stdlib/tolerancing.ri");
-
 /// Global cache for compiled stdlib modules.
 static STDLIB_CACHE: OnceLock<Vec<CompiledModule>> = OnceLock::new();
 
@@ -58,12 +43,12 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
         let si_units_source = si_units::build_si_units_source();
 
         let sources: Vec<(&str, &str)> = vec![
-            ("std.units", UNITS_SRC),
+            ("std.units", include_str!("../stdlib/units.ri")),
             ("std.si_units", si_units_source.as_str()),
-            ("std.materials.mechanical", MATERIALS_MECHANICAL_SRC),
-            ("std.structural.physical", STRUCTURAL_PHYSICAL_SRC),
-            ("std.analysis", ANALYSIS_SRC),
-            ("std.tolerancing", TOLERANCING_SRC),
+            ("std.materials.mechanical", include_str!("../stdlib/materials_mechanical.ri")),
+            ("std.structural.physical", include_str!("../stdlib/structural_physical.ri")),
+            ("std.analysis", include_str!("../stdlib/analysis.ri")),
+            ("std.tolerancing", include_str!("../stdlib/tolerancing.ri")),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
@@ -74,8 +59,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
         // types declared in earlier modules (e.g. std.materials.mechanical).
         let mut modules = Vec::with_capacity(sources.len());
         for (module_name, source) in &sources {
-            let segments: Vec<String> = module_name.split('.').map(String::from).collect();
-            let parsed = reify_syntax::parse(source, ModulePath::new(segments));
+            let parsed = reify_syntax::parse(source, ModulePath::from_dotted(module_name));
 
             // Fail fast: parse errors in embedded stdlib are always programming errors.
             assert!(

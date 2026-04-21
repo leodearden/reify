@@ -1109,3 +1109,116 @@ fn cycle_error_preserves_dfs_traversal_order() {
         "message must reflect DFS insertion order, not alphabetical order"
     );
 }
+
+// ── step-7 (task-512): std.* delegation to embedded stdlib ────────────────────
+
+/// When stdlib_root points at a non-existent directory, compile_module for a
+/// `std.*` path must delegate to the embedded stdlib loader rather than
+/// returning an fs-resolution error.
+///
+/// Today this fails because ModuleDag::compile_module attempts resolver.resolve_import_path
+/// which returns Err when the stdlib_root directory is missing, and the error
+/// propagates without any embedded-stdlib fallback.
+///
+/// After step-8 implements the fallback, this test turns green.
+#[test]
+fn std_module_import_delegates_to_embedded_stdlib_loader_when_stdlib_root_missing() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // nonexistent_stdlib intentionally does NOT exist on disk.
+    let stdlib_root = dir.join("nonexistent_stdlib");
+    assert!(
+        !stdlib_root.exists(),
+        "precondition: stdlib_root must not exist for this test"
+    );
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_root);
+    let mut dag = ModuleDag::new();
+
+    // Attempting to compile std.units must succeed via the embedded stdlib fallback.
+    let result = dag.compile_module("std.units", &resolver);
+    assert!(
+        result.is_ok(),
+        "compile_module(\"std.units\") with missing stdlib_root should succeed via embedded fallback, \
+         but got: {:?}",
+        result.err()
+    );
+
+    // The compiled module must be stored in the DAG under its canonical dotted key.
+    assert!(
+        dag.modules.contains_key("std.units"),
+        "dag.modules must contain \"std.units\" after successful delegation"
+    );
+
+    // The module's path must decode to ["std", "units"].
+    let m = dag.modules.get("std.units").unwrap();
+    assert_eq!(
+        m.path.0,
+        vec!["std".to_string(), "units".to_string()],
+        "embedded std.units module must have path [\"std\", \"units\"]"
+    );
+}
+
+// ── amend:task-512: embedded stdlib fallback adds transitive deps ─────────────
+
+/// When `std.materials.mechanical` is requested via the embedded stdlib fallback
+/// (stdlib_root is missing), all modules that appear before it in the stdlib
+/// slice — i.e. its transitive compile-time deps — must also be added to
+/// `modules` and `topo_order`.
+///
+/// Without this fix, consumers that iterate `topo_order` expecting to see every
+/// transitively-imported stdlib module would only see `std.materials.mechanical`
+/// but miss `std.units` and `std.si_units` (which it was compiled against).
+#[test]
+fn std_module_fallback_adds_transitive_dependencies_to_dag() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // nonexistent_stdlib intentionally does NOT exist on disk.
+    let stdlib_root = dir.join("nonexistent_stdlib");
+    assert!(
+        !stdlib_root.exists(),
+        "precondition: stdlib_root must not exist for this test"
+    );
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_root);
+    let mut dag = ModuleDag::new();
+
+    // std.materials.mechanical is preceded by std.units and std.si_units in the
+    // embedded stdlib slice (topological order); they are its transitive deps.
+    let result = dag.compile_module("std.materials.mechanical", &resolver);
+    assert!(
+        result.is_ok(),
+        "compile_module(\"std.materials.mechanical\") with missing stdlib_root should \
+         succeed via embedded fallback, but got: {:?}",
+        result.err()
+    );
+
+    // The directly-imported module must be in the DAG.
+    assert!(
+        dag.modules.contains_key("std.materials.mechanical"),
+        "dag.modules must contain \"std.materials.mechanical\" after delegation"
+    );
+
+    // Transitive dependencies that std.materials.mechanical was compiled against
+    // must also appear in both modules and topo_order.
+    for dep in &["std.units", "std.si_units"] {
+        assert!(
+            dag.modules.contains_key(*dep),
+            "dag.modules must contain transitive dep \"{}\" after delegating \
+             embedded stdlib for std.materials.mechanical",
+            dep
+        );
+        assert!(
+            dag.topo_order.contains(&dep.to_string()),
+            "topo_order must contain transitive dep \"{}\"",
+            dep
+        );
+    }
+    // The requested module itself must also be in topo_order.
+    assert!(
+        dag.topo_order.contains(&"std.materials.mechanical".to_string()),
+        "topo_order must contain \"std.materials.mechanical\""
+    );
+}
