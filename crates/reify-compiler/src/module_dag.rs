@@ -158,13 +158,23 @@ impl ModuleDag {
             Err(fs_err) if is_std_path => {
                 // Filesystem lookup failed for a std.* path — consult the embedded stdlib.
                 let target = reify_types::ModulePath::from_dotted(module_path);
-                if let Some(embedded) = crate::stdlib_loader::load_stdlib()
-                    .iter()
-                    .find(|m| m.path == target)
-                {
-                    // Found in embedded stdlib: clone, record, and return early.
-                    self.topo_order.push(module_path.to_string());
-                    self.modules.insert(module_path.to_string(), embedded.clone());
+                let stdlib = crate::stdlib_loader::load_stdlib();
+                if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
+                    // Found in embedded stdlib. Insert all modules up to and including
+                    // the target in topological order. The stdlib slice is itself
+                    // topologically ordered: module at index i was compiled against
+                    // all modules at indices 0..i. By inserting the full prefix we
+                    // ensure transitive deps (e.g. std.units and std.si_units when
+                    // std.materials.mechanical is requested) are present in both
+                    // `modules` and `topo_order`, so consumers that iterate
+                    // topo_order see a consistent view of all stdlib transitive deps.
+                    for embedded in &stdlib[..=idx] {
+                        let dotted = embedded.path.0.join(".");
+                        if !self.modules.contains_key(&dotted) {
+                            self.topo_order.push(dotted.clone());
+                            self.modules.insert(dotted, embedded.clone());
+                        }
+                    }
                     return Ok(());
                 }
                 // Unknown std.* submodule — surface the original fs error so callers

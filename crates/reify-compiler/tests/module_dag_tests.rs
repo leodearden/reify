@@ -1159,3 +1159,66 @@ fn std_module_import_delegates_to_embedded_stdlib_loader_when_stdlib_root_missin
         "embedded std.units module must have path [\"std\", \"units\"]"
     );
 }
+
+// ── amend:task-512: embedded stdlib fallback adds transitive deps ─────────────
+
+/// When `std.materials.mechanical` is requested via the embedded stdlib fallback
+/// (stdlib_root is missing), all modules that appear before it in the stdlib
+/// slice — i.e. its transitive compile-time deps — must also be added to
+/// `modules` and `topo_order`.
+///
+/// Without this fix, consumers that iterate `topo_order` expecting to see every
+/// transitively-imported stdlib module would only see `std.materials.mechanical`
+/// but miss `std.units` and `std.si_units` (which it was compiled against).
+#[test]
+fn std_module_fallback_adds_transitive_dependencies_to_dag() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // nonexistent_stdlib intentionally does NOT exist on disk.
+    let stdlib_root = dir.join("nonexistent_stdlib");
+    assert!(
+        !stdlib_root.exists(),
+        "precondition: stdlib_root must not exist for this test"
+    );
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_root);
+    let mut dag = ModuleDag::new();
+
+    // std.materials.mechanical is preceded by std.units and std.si_units in the
+    // embedded stdlib slice (topological order); they are its transitive deps.
+    let result = dag.compile_module("std.materials.mechanical", &resolver);
+    assert!(
+        result.is_ok(),
+        "compile_module(\"std.materials.mechanical\") with missing stdlib_root should \
+         succeed via embedded fallback, but got: {:?}",
+        result.err()
+    );
+
+    // The directly-imported module must be in the DAG.
+    assert!(
+        dag.modules.contains_key("std.materials.mechanical"),
+        "dag.modules must contain \"std.materials.mechanical\" after delegation"
+    );
+
+    // Transitive dependencies that std.materials.mechanical was compiled against
+    // must also appear in both modules and topo_order.
+    for dep in &["std.units", "std.si_units"] {
+        assert!(
+            dag.modules.contains_key(*dep),
+            "dag.modules must contain transitive dep \"{}\" after delegating \
+             embedded stdlib for std.materials.mechanical",
+            dep
+        );
+        assert!(
+            dag.topo_order.contains(&dep.to_string()),
+            "topo_order must contain transitive dep \"{}\"",
+            dep
+        );
+    }
+    // The requested module itself must also be in topo_order.
+    assert!(
+        dag.topo_order.contains(&"std.materials.mechanical".to_string()),
+        "topo_order must contain \"std.materials.mechanical\""
+    );
+}
