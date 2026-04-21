@@ -197,10 +197,10 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 ///   pair are downgraded to `tracing::debug!` to avoid log spam when a stale override
 ///   persists across repeated saves.  The override is kept in `user_overrides` so the
 ///   user's intent survives a transient mismatch and reapplies when the type becomes
-///   compatible again.  `NotInitialized` is matched only to satisfy exhaustiveness —
-///   it is unreachable here because `reapply_user_overrides` is only invoked from
-///   `update_source` immediately after `ensure_engine(...).eval(...)` populates the
-///   snapshot.
+///   compatible again.  `NotInitialized` is enforced by a `debug_assert!` in the `Err`
+///   arm: callers must invoke `reapply_user_overrides` after `ensure_engine(...).eval(...)`;
+///   in release builds the assertion elides and the variant is classified harmlessly as a
+///   mismatch for exhaustiveness.
 fn reapply_user_overrides(state: &mut CliState) {
     if state.user_overrides.is_empty() {
         // Invariant: warned_overrides must also be empty whenever user_overrides
@@ -237,6 +237,11 @@ fn reapply_user_overrides(state: &mut CliState) {
                     // a subsequent edit.
                 }
                 Err(err) => {
+                    debug_assert!(
+                        !matches!(&err, reify_eval::EngineError::NotInitialized),
+                        "reapply_user_overrides: called before eval() populated the engine \
+                         snapshot — this path is only valid after ensure_engine(...).eval(...)"
+                    );
                     let variant_tag: &'static str = match &err {
                         reify_eval::EngineError::TypeKindMismatch { .. } => "TypeKindMismatch",
                         reify_eval::EngineError::DimensionMismatch { .. } => "DimensionMismatch",
