@@ -415,8 +415,9 @@ structure S {
 
     // Use label-based lookup rather than positional access (task 848.2) —
     // robust against future changes to constraint ordering in the template.
-    let bounded_0 = tmpl
-        .constraints
+    // Presence of each label is the only assertion; the `.find()` calls
+    // panic with a clear message if either is missing.
+    tmpl.constraints
         .iter()
         .find(|c| c.label.as_deref() == Some("Bounded#0[0]"))
         .unwrap_or_else(|| {
@@ -428,8 +429,7 @@ structure S {
                     .collect::<Vec<_>>()
             )
         });
-    let bounded_1 = tmpl
-        .constraints
+    tmpl.constraints
         .iter()
         .find(|c| c.label.as_deref() == Some("Bounded#0[1]"))
         .unwrap_or_else(|| {
@@ -441,9 +441,6 @@ structure S {
                     .collect::<Vec<_>>()
             )
         });
-    // Touch both variables so the lookups are exercised (presence is the
-    // assertion; .expr/.id/etc. inspection isn't what this test covers).
-    let _ = (&bounded_0.expr, &bounded_1.expr);
 }
 
 // ── Step 3 (task-1717): substitute_expr recurses into Conditional branches ───
