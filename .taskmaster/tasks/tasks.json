@@ -10276,7 +10276,10 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/boundary5_engine.rs"
+          ]
         },
         "updatedAt": "2026-04-21T09:13:51.946Z"
       },
@@ -43579,7 +43582,9 @@
       "completedCount": 1800,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:16:17.368Z",
+      "description": "Tasks for master context"
     }
   }
 }
