@@ -3964,4 +3964,104 @@ mod tests {
             err_msg
         );
     }
+
+    // -----------------------------------------------------------------
+    // eval_named_arg_f64: non-numeric / non-finite value coverage
+    // -----------------------------------------------------------------
+    //
+    // These close the gap left by existing coverage (which only exercises
+    // numeric paths through compile_geometry_op): the three branches of
+    // `match value.as_f64() { Some(v) if v.is_finite() => ..., _ => warn; None }`
+    // must all emit a Warning diagnostic naming the arg and kind.
+
+    #[test]
+    fn eval_named_arg_f64_undef_value_returns_none_with_warning() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        // Value::Undef is the universal no-value sentinel — `as_f64()` returns None.
+        let undef_expr = reify_types::CompiledExpr::literal(
+            reify_types::Value::Undef,
+            reify_types::Type::Real,
+        );
+        let args = vec![("width".to_string(), undef_expr)];
+
+        let result = eval_named_arg_f64(
+            "width",
+            reify_compiler::PrimitiveKind::Box,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_none(), "Undef value should return None");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
+                && d.message.contains("width")
+                && d.message.contains("box")
+                && d.message.contains("non-numeric/non-finite")),
+            "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
+             got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn eval_named_arg_f64_nan_value_returns_none_with_warning() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let nan_expr = literal_f64(f64::NAN);
+        let args = vec![("width".to_string(), nan_expr)];
+
+        let result = eval_named_arg_f64(
+            "width",
+            reify_compiler::PrimitiveKind::Box,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_none(), "NaN value should return None");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
+                && d.message.contains("width")
+                && d.message.contains("box")
+                && d.message.contains("non-numeric/non-finite")),
+            "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
+             got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn eval_named_arg_f64_infinity_value_returns_none_with_warning() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let inf_expr = literal_f64(f64::INFINITY);
+        let args = vec![("width".to_string(), inf_expr)];
+
+        let result = eval_named_arg_f64(
+            "width",
+            reify_compiler::PrimitiveKind::Box,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_none(), "infinity should return None");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_types::Severity::Warning
+                && d.message.contains("width")
+                && d.message.contains("box")
+                && d.message.contains("non-numeric/non-finite")),
+            "expected Warning mentioning 'width', 'box', and 'non-numeric/non-finite', \
+             got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 }
