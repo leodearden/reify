@@ -1053,58 +1053,61 @@ impl Engine {
         //     are simply absent from the new graph, and their override entries
         //     are purged from `self.param_overrides` below.
         let mut values = ValueMap::new();
-        let old_graph_snapshot_values = self.eval_state.as_ref().unwrap().snapshot.values.clone();
-        let old_graph_cells = self
-            .eval_state
-            .as_ref()
-            .unwrap()
-            .snapshot
-            .graph
-            .value_cells
-            .clone();
-        for (id, new_node) in new_snapshot.graph.value_cells.iter() {
-            // `param_overrides` wins for Param cells whose content_hash is
-            // unchanged across the edit. This mirrors eval_cached's precedence
-            // rule ("override always wins for Param cells") and ensures an
-            // override established before a structural edit survives the edit.
-            // For Param cells whose content_hash CHANGED (e.g. the source
-            // default was edited), we intentionally skip the override — the
-            // diff has classified the cell as dirty and the eval loop will
-            // re-derive it from the new default_expr. If the user wants the
-            // override to persist across a content-hash-shifting edit, they
-            // can re-install it via set_param_and_invalidate after edit_source.
-            let unchanged_hash = old_graph_cells
-                .get(id)
-                .map(|old_node| old_node.content_hash == new_node.content_hash)
-                .unwrap_or(false);
+        // Read-only references into the old snapshot: avoids the full
+        // PersistentMap clones that previously existed solely to placate the
+        // borrow checker against the later `param_overrides.retain` call.
+        // The immutable borrow on `self.eval_state` is held only for the
+        // seeding loop (below); once the loop scope ends, Rust's NLL drops
+        // the borrow so the retain can take its mutable borrow on
+        // `self.param_overrides`.
+        {
+            let old_state = self.eval_state.as_ref().unwrap();
+            let old_graph_snapshot_values = &old_state.snapshot.values;
+            let old_graph_cells = &old_state.snapshot.graph.value_cells;
+            for (id, new_node) in new_snapshot.graph.value_cells.iter() {
+                // `param_overrides` wins for Param cells whose content_hash is
+                // unchanged across the edit. This mirrors eval_cached's precedence
+                // rule ("override always wins for Param cells") and ensures an
+                // override established before a structural edit survives the edit.
+                // For Param cells whose content_hash CHANGED (e.g. the source
+                // default was edited), we intentionally skip the override — the
+                // diff has classified the cell as dirty and the eval loop will
+                // re-derive it from the new default_expr. If the user wants the
+                // override to persist across a content-hash-shifting edit, they
+                // can re-install it via set_param_and_invalidate after edit_source.
+                let unchanged_hash = old_graph_cells
+                    .get(id)
+                    .map(|old_node| old_node.content_hash == new_node.content_hash)
+                    .unwrap_or(false);
 
-            if matches!(new_node.kind, reify_compiler::ValueCellKind::Param)
-                && unchanged_hash
-                && let Some(override_val) = self.param_overrides.get(id)
-            {
-                new_snapshot.values.insert(
-                    id.clone(),
-                    (override_val.clone(), DeterminacyState::Determined),
-                );
-                values.insert(id.clone(), override_val.clone());
-                continue;
-            }
+                if matches!(new_node.kind, reify_compiler::ValueCellKind::Param)
+                    && unchanged_hash
+                    && let Some(override_val) = self.param_overrides.get(id)
+                {
+                    new_snapshot.values.insert(
+                        id.clone(),
+                        (override_val.clone(), DeterminacyState::Determined),
+                    );
+                    values.insert(id.clone(), override_val.clone());
+                    continue;
+                }
 
-            if unchanged_hash
-                && let Some((val, det)) = old_graph_snapshot_values.get(id)
-            {
-                new_snapshot
-                    .values
-                    .insert(id.clone(), (val.clone(), *det));
-                values.insert(id.clone(), val.clone());
-                continue;
-            }
-            // Changed/added/no prior entry: read the Undef seed placed by
-            // Snapshot::from_compiled_module so the working values map has
-            // an entry for every present cell (downstream expressions can
-            // fail-stop on missing reads).
-            if let Some((val, _)) = new_snapshot.values.get(id) {
-                values.insert(id.clone(), val.clone());
+                if unchanged_hash
+                    && let Some((val, det)) = old_graph_snapshot_values.get(id)
+                {
+                    new_snapshot
+                        .values
+                        .insert(id.clone(), (val.clone(), *det));
+                    values.insert(id.clone(), val.clone());
+                    continue;
+                }
+                // Changed/added/no prior entry: read the Undef seed placed by
+                // Snapshot::from_compiled_module so the working values map has
+                // an entry for every present cell (downstream expressions can
+                // fail-stop on missing reads).
+                if let Some((val, _)) = new_snapshot.values.get(id) {
+                    values.insert(id.clone(), val.clone());
+                }
             }
         }
 
