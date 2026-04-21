@@ -29,6 +29,13 @@ export function createDefPreviewStore() {
     error: null,
   });
 
+  /**
+   * Monotonically-increasing token for race-condition guarding inside loadPreview.
+   * Each loadPreview call increments this and captures its value; after the await,
+   * a mismatch means a newer call has superseded the current one.
+   */
+  let latestLoadToken = 0;
+
   /** Apply a fetched GuiState as the current preview. Keys meshes by entity_path. */
   function applyPreview(defName: string, guiState: GuiState): void {
     const meshes: Record<string, MeshData> = {};
@@ -58,6 +65,12 @@ export function createDefPreviewStore() {
    * Early-returns (no-op) if `defName` matches the currently-loaded `state.defName`.
    * Sets `isLoading=true` synchronously, then on resolve calls `applyPreview`,
    * on reject calls `setError`.
+   *
+   * Race-condition guard: each call captures a monotonically-increasing `token`
+   * before awaiting `fetch`. After the await, `if (token !== latestLoadToken)`
+   * the result is stale (a newer call has superseded this one) and is silently
+   * discarded. `isLoading` is reset inside the guarded finally path so a stale
+   * in-flight load cannot flip `isLoading` false and make a fresh load look done.
    */
   async function loadPreview(
     defName: string,
@@ -66,11 +79,17 @@ export function createDefPreviewStore() {
     // De-duplication: skip if the same definition is already loaded
     if (state.defName === defName) return;
 
+    // Capture token before the await (post same-defName guard)
+    const token = ++latestLoadToken;
     setLoading(true);
     try {
       const guiState = await fetch(defName);
+      // Discard stale results: a newer loadPreview call has superseded this one
+      if (token !== latestLoadToken) return;
       applyPreview(defName, guiState);
     } catch (err) {
+      // Discard stale errors too
+      if (token !== latestLoadToken) return;
       setError(errorMessage(err));
     }
   }
