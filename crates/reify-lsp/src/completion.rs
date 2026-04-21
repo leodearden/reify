@@ -155,6 +155,7 @@ pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<C
         }
         CursorContext::DotAccess => {
             push_all_members(&mut items, &ctx);
+            push_complex_methods(&mut items);
         }
         CursorContext::TypePosition => {
             push_type_names(&mut items);
@@ -232,6 +233,24 @@ fn push_entity_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
         items.push(CompletionItem {
             label: entity.name.to_string(),
             kind: Some(CompletionItemKind::STRUCT),
+            ..Default::default()
+        });
+    }
+}
+
+/// Push METHOD-kind completions for the fixed list of complex-number methods.
+///
+/// This is emitted unconditionally in the DotAccess cursor context. A full
+/// type-aware method completion would require running compilation-time type
+/// inference inside the LSP on each keystroke — out of scope for this polish
+/// pass. If the user dotted into a non-Complex value, they get a few extra
+/// suggestions alongside the correct ones.
+fn push_complex_methods(items: &mut Vec<CompletionItem>) {
+    for name in COMPLEX_METHODS {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some("complex method".to_string()),
             ..Default::default()
         });
     }
@@ -746,6 +765,15 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
 
 /// Built-in type names.
 const TYPE_NAMES: &[&str] = &["Scalar", "Bool", "Int", "Real", "String"];
+
+/// Method names offered in `DotAccess` completions as METHOD-kind items.
+///
+/// These are the methods defined on `Value::Complex` (see
+/// `reify-expr/src/complex.rs::eval_complex_method` and
+/// `reify-stdlib/src/complex.rs`). Emission is unconditional in DotAccess
+/// context — a future type-aware filter could restrict to actual Complex
+/// receivers.
+const COMPLEX_METHODS: &[&str] = &["re", "im", "magnitude", "phase", "conjugate"];
 
 #[cfg(test)]
 mod tests {
