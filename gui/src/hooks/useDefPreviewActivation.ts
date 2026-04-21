@@ -60,6 +60,18 @@ export function createDefPreviewActivation(opts: DefPreviewActivationOptions): D
 
   let timerId: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * Monotonically-increasing request token.
+   *
+   * Invariant: each debounce callback captures `const token = ++latestRequestToken`
+   * before awaiting `getContainingDefinition`. After the await, if
+   * `token !== latestRequestToken` the result is stale and is silently discarded.
+   * The debounce timer handles pre-await staleness (cursor moved again within the
+   * debounce window); this token handles post-await staleness (two async calls
+   * resolve out of order).
+   */
+  let latestRequestToken = 0;
+
   createEffect(() => {
     // Read cursor reactively so the effect re-runs on every cursor change
     const pos = editorStore.state.cursorPosition;
@@ -77,7 +89,12 @@ export function createDefPreviewActivation(opts: DefPreviewActivationOptions): D
 
     timerId = setTimeout(async () => {
       timerId = null;
+      // Capture token before the await so we can detect stale results
+      const token = ++latestRequestToken;
       const result = await getContainingDefinition(line, column);
+
+      // Discard stale results: a newer request fired while this one was in flight
+      if (token !== latestRequestToken) return;
 
       if (result !== null) {
         setDefInfo(result);
