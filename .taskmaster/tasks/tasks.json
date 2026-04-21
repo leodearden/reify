@@ -36820,6 +36820,7 @@
             "gui/src/App.tsx",
             "gui/src/__tests__/App.test.tsx",
             "gui/src/__tests__/DesignTree.test.tsx",
+            "gui/src/__tests__/Toast.test.tsx",
             "gui/src/__tests__/ViewSelector.test.tsx",
             "gui/src/__tests__/bridge.test.ts",
             "gui/src/__tests__/fuzzyPathMatcher.test.ts",
@@ -36828,13 +36829,15 @@
             "gui/src/__tests__/viewStateStore.test.ts",
             "gui/src/bridge.ts",
             "gui/src/panels/DesignTree.tsx",
+            "gui/src/panels/Toast.tsx",
             "gui/src/panels/ViewSelector.tsx",
             "gui/src/panels/index.ts",
             "gui/src/stores/fuzzyPathMatcher.ts",
             "gui/src/stores/index.ts",
             "gui/src/stores/sidecarPersistence.ts",
             "gui/src/stores/viewPersistence.ts",
-            "gui/src/stores/viewStateStore.ts"
+            "gui/src/stores/viewStateStore.ts",
+            "gui/src/types.ts"
           ],
           "memory_hints": {
             "entities": [
@@ -43884,7 +43887,9 @@
       "completedCount": 1813,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T19:54:54.073Z",
+      "description": "Tasks for master context"
     }
   }
 }
