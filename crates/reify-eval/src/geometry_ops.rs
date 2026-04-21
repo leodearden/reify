@@ -32,6 +32,14 @@ pub(crate) const GEOMETRY_EPSILON: f64 = 1e-12;
 /// `Value`.  If the argument is absent, push a `Warning` diagnostic and return
 /// `None`.  Callers that need a finite `f64` should use [`eval_named_arg_f64`],
 /// which also emits a `Warning` when the value is non-numeric or non-finite.
+///
+/// Fail-fast / anti-cascade contract: the caller is expected to propagate the
+/// `None` via `.ok_or_else(...)?` so `compile_geometry_op` short-circuits with
+/// a single Error before any downstream type-coercion check can fire. This
+/// produces exactly one Warning + one Error per missing arg — no
+/// "expected Geometry, found Undef" cascade. That invariant is regression-locked
+/// by `build_primitive_missing_arg_emits_exactly_one_compile_warning` in
+/// `tests/geometry_error_handling.rs`.
 pub(crate) fn eval_named_arg(
     name: &str,
     kind_label: impl std::fmt::Display,
