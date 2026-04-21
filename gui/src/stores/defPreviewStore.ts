@@ -33,6 +33,8 @@ export function createDefPreviewStore() {
    * Monotonically-increasing token for race-condition guarding inside loadPreview.
    * Each loadPreview call increments this and captures its value; after the await,
    * a mismatch means a newer call has superseded the current one.
+   * Also bumped by `clearPreview()` so a pending fetch cannot resurrect cleared
+   * state after the user has navigated away.
    */
   let latestLoadToken = 0;
 
@@ -47,6 +49,7 @@ export function createDefPreviewStore() {
 
   /** Reset the store to its initial empty state. */
   function clearPreview(): void {
+    ++latestLoadToken;
     setState({ defName: null, meshes: {}, isLoading: false, error: null });
   }
 
