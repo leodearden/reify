@@ -678,9 +678,10 @@ fn index_into_non_collection_emits_diagnostic() {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let has_index_error = errors.iter().any(|d| {
-        d.message.contains("cannot index") || d.message.contains("non-collection")
-    });
+    // Tighten to a single distinctive substring that appears only in the new diagnostic
+    // (reviewer suggestion: drop the "non-collection" alternative which also appears in the
+    // quantifier diagnostic, making the two tests non-distinct).
+    let has_index_error = errors.iter().any(|d| d.message.contains("cannot index"));
     assert!(
         has_index_error,
         "expected diagnostic about indexing non-collection type, got: {:?}",
@@ -709,15 +710,40 @@ fn quantifier_over_non_collection_emits_diagnostic() {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let has_iter_error = errors.iter().any(|d| {
-        d.message.contains("cannot iterate")
-            || d.message.contains("forall")
-            || d.message.contains("exists")
-            || d.message.contains("non-collection")
-    });
+    // Tighten to a single distinctive substring (reviewer suggestion: "forall"/"exists"
+    // alternatives are too loose — any unrelated diagnostic mentioning those keywords
+    // would satisfy the assertion while the silent-fallback regression reappeared).
+    let has_iter_error = errors.iter().any(|d| d.message.contains("cannot iterate"));
     assert!(
         has_iter_error,
         "expected diagnostic about iterating over non-collection type, got: {:?}",
+        errors
+    );
+}
+
+// ── task-2066 amend: exists over non-collection emits diagnostic ──────────
+
+/// `exists` quantifier over a non-collection type should emit a diagnostic.
+///
+/// Shares the same compiler arm as `forall` (expr.rs:1652-1671); this twin test
+/// ensures the `exists` code path is also covered as a regression guard.
+///
+/// Regression guard: guards expr.rs:1635-1642 against silent fallback (task-2066).
+#[test]
+fn exists_over_non_collection_emits_diagnostic() {
+    let source = r#"
+        structure S {
+            let x = 5
+            constraint exists i in x : i > 0
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let has_iter_error = errors.iter().any(|d| d.message.contains("cannot iterate"));
+    assert!(
+        has_iter_error,
+        "expected diagnostic about iterating over non-collection type (exists), got: {:?}",
         errors
     );
 }
