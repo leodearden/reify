@@ -1131,6 +1131,131 @@ fn build_primitive_missing_arg_no_kernel_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Anti-cascade regression lock: one Warning + one Error, no downstream cascade
+// ---------------------------------------------------------------------------
+
+/// Regression lock for the fail-fast / anti-cascade contract (tasks 1196, 1198).
+///
+/// When a primitive op is missing a required arg, `compile_geometry_op` must
+/// emit exactly one Warning (from `eval_named_arg*`'s `.ok_or_else` path) and
+/// exactly one Error (from the caller in `engine_build.rs`: "failed to compile
+/// geometry operation: {err}"). It must NOT produce a second Warning from any
+/// downstream "expected Geometry, found Undef" / type-coercion cascade.
+///
+/// The invariants pinned here:
+/// - `.filter(|d| Severity::Warning).count() == 1` — one (not two) warnings.
+/// - That Warning contains 'missing required geometry argument' and 'width'.
+/// - Exactly one `failed to compile geometry operation` Error diagnostic.
+/// - No diagnostic contains 'expected Geometry' or 'found Undef' (no cascade).
+///
+/// This test will break if a future refactor re-introduces the Undef-value
+/// cascade — whether by computing a post-error value-cell type check, by
+/// downgrading `.ok_or_else` to `.unwrap_or(Value::Undef)`, or by otherwise
+/// letting the compile pipeline emit a second diagnostic for the same op.
+#[test]
+fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+            // width deliberately omitted
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op])
+        .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_anti_cascade_single_warning",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) Exactly one Warning containing the missing-arg message and 'width'.
+    let matching_warnings: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Warning
+                && d.message.contains("missing required geometry argument")
+                && d.message.contains("width")
+        })
+        .collect();
+    assert_eq!(
+        matching_warnings.len(),
+        1,
+        "expected exactly one Warning about missing 'width'; got {}: {:?}",
+        matching_warnings.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (c) "one Warning, no cascade" invariant — total Warning count is also 1.
+    let warning_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .count();
+    assert_eq!(
+        warning_count, 1,
+        "anti-cascade invariant: expected exactly one Warning diagnostic across the whole realization; got {}: {:?}",
+        warning_count,
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) Exactly one Error containing 'failed to compile geometry operation'.
+    let compile_errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Error
+                && d.message.contains("failed to compile geometry operation")
+        })
+        .collect();
+    assert_eq!(
+        compile_errors.len(),
+        1,
+        "expected exactly one 'failed to compile geometry operation' Error; got {}: {:?}",
+        compile_errors.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (d) No diagnostic mentions 'expected Geometry' or 'found Undef' (cascade).
+    for d in &result.diagnostics {
+        assert!(
+            !d.message.contains("expected Geometry"),
+            "anti-cascade invariant violated: a diagnostic contained 'expected Geometry' (downstream cascade): {:?}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("found Undef"),
+            "anti-cascade invariant violated: a diagnostic contained 'found Undef' (downstream cascade): {:?}",
+            d.message
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Regression guard: missing modify arg → no Modify kernel call, no 'geometry error'
 // ---------------------------------------------------------------------------
 
