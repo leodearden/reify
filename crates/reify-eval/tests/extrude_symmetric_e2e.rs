@@ -268,3 +268,127 @@ fn extrude_symmetric_per_side_at_threshold_accepted() {
         ops.iter().map(|o| &o.op).collect::<Vec<_>>()
     );
 }
+
+/// Negative-sign symmetric boundary: distance = -1.5e-12 m. Absolute value
+/// 1.5e-12 fails the 2 * DEGENERATE_LENGTH_M = 2e-12 floor. Must be
+/// rejected — if a future refactor drops `.abs()` from the guard and
+/// compares the raw value, -1.5e-12 would trivially fail `>= 2e-12` and
+/// still appear "correct", but a positive 1.5e-12 would incorrectly pass
+/// the sign-asymmetric check. This test, together with the positive
+/// `_per_side_just_below_threshold_rejected`, locks sign-symmetric
+/// semantics at both boundaries.
+#[test]
+fn extrude_symmetric_negative_per_side_just_below_threshold_rejected() {
+    let e = "TestExtrudeSymNegBelow";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let neg_val = reify_types::Value::Scalar {
+        si_value: -1.5e-12,
+        dimension: reify_types::DimensionVector::LENGTH,
+    };
+    let neg_expr = reify_types::CompiledExpr::literal(neg_val, Type::length());
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+    let extrude_sym_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::ExtrudeSymmetric,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)),
+            ("distance".into(), neg_expr),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, extrude_sym_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extsym_neg_below"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    let any_extsym = ops
+        .iter()
+        .any(|o| matches!(o.op, GeometryOp::ExtrudeSymmetric { .. }));
+    assert!(
+        !any_extsym,
+        "expected ExtrudeSymmetric to be dropped for negative per-side-below-threshold \
+         (distance=-1.5e-12), but it was executed: {:?}",
+        ops.iter().map(|o| &o.op).collect::<Vec<_>>()
+    );
+}
+
+/// Negative-sign forward path: distance = -10mm is well above the
+/// 2 * DEGENERATE_LENGTH_M floor. The op must be forwarded AND the
+/// distance preserved as negative — the sign indicates extrusion
+/// direction (symmetric about the profile, but the overall orientation
+/// flips). If a refactor inadvertently applies `.abs()` to the value
+/// passed to the kernel, this test catches it.
+#[test]
+fn extrude_symmetric_distance_negative_above_threshold_accepted() {
+    let e = "TestExtrudeSymNegAbove";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+    let extrude_sym_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::ExtrudeSymmetric,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)),
+            // distance = -10 mm = -0.01 m (well above 2e-12 floor).
+            ("distance".into(), mm_literal(-10.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, extrude_sym_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extsym_neg_above"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    // Find the ExtrudeSymmetric op and verify it was forwarded AND the
+    // negative sign preserved.
+    let extsym = ops
+        .iter()
+        .find_map(|o| match &o.op {
+            GeometryOp::ExtrudeSymmetric { distance, .. } => Some(distance.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected ExtrudeSymmetric to be forwarded for negative above-threshold \
+                 distance, but it was dropped; executed ops: {:?}",
+                ops.iter().map(|o| &o.op).collect::<Vec<_>>()
+            )
+        });
+    let dist_si = extsym
+        .as_f64()
+        .expect("distance should be a numeric value");
+    assert!(
+        (dist_si - (-0.01)).abs() < 1e-9,
+        "ExtrudeSymmetric distance should preserve negative sign (-0.01 m), got {}",
+        dist_si
+    );
+}
