@@ -250,30 +250,16 @@ pub(crate) fn compile_with_prelude_refs(
     // borrow from `parsed`.
     let mut ctx = compile_builder::ctx::CompilationCtx::new();
 
-    // Forward parse errors as diagnostics
-    for err in &parsed.errors {
-        ctx.diagnostics.push(
-            Diagnostic::warning(format!("parse error: {}", err.message))
-                .with_label(DiagnosticLabel::new(err.span, "parse error")),
-        );
-    }
+    // Forward parse errors as diagnostics.
+    compile_builder::pre_pass::forward_parse_errors(&mut ctx, parsed);
 
     // Validate module-level pragmas: warn on unknown names.
-    const KNOWN_MODULE_PRAGMAS: &[&str] = &["no_prelude", "precision", "solver", "kernel", "version"];
-    for pragma in &parsed.pragmas {
-        if !KNOWN_MODULE_PRAGMAS.contains(&pragma.name.as_str()) {
-            ctx.diagnostics.push(
-                Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
-                    .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
-            );
-        }
-    }
+    compile_builder::pre_pass::validate_module_pragmas(&mut ctx, parsed);
 
     // Handle #no_prelude: suppress ALL prelude-dependent behavior by shadowing
     // the prelude parameter with an empty slice. This affects unit seeding,
     // trait/enum/function resolution, and constraint def imports.
-    let has_no_prelude = parsed.pragmas.iter().any(|p| p.name == "no_prelude");
-    let prelude: &[&CompiledModule] = if has_no_prelude { &[] } else { prelude };
+    let prelude: &[&CompiledModule] = compile_builder::pre_pass::effective_prelude(parsed, prelude);
 
     // Consolidated pre-pass: iterate declarations once, collecting references
     // for deferred compilation. This replaces 4 separate loops (enum, function,
