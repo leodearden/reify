@@ -210,17 +210,27 @@ impl ModuleDag {
                     // Found in embedded stdlib. Insert all modules up to and including
                     // the target in topological order. The stdlib slice is itself
                     // topologically ordered: module at index i was compiled against
-                    // all modules at indices 0..i. By inserting the full prefix we
-                    // ensure transitive deps (e.g. std.units and std.si_units when
-                    // std.materials.mechanical is requested) are present in both
-                    // `modules` and `topo_order`, so consumers that iterate
-                    // topo_order see a consistent view of all stdlib transitive deps.
-                    for embedded in &stdlib[..=idx] {
+                    // all modules at indices 0..i.
+                    //
+                    // Insert-prefix invariant: if stdlib[k] is present in self.modules,
+                    // then stdlib[0..=k] are all present (because any prior fallback call
+                    // that reached index k must have inserted the full prefix 0..=k).
+                    // We exploit this invariant via a backward walk: scan from idx
+                    // downward to find the largest already-present index j, then insert
+                    // stdlib[j+1..=idx] unconditionally (no per-entry contains_key).
+                    // This is faster on repeat calls with overlapping prefixes and makes
+                    // the invariant explicit in code.
+                    let start = (0..=idx)
+                        .rev()
+                        .find(|&j| {
+                            self.modules.contains_key(&stdlib[j].path.0.join("."))
+                        })
+                        .map(|j| j + 1)
+                        .unwrap_or(0);
+                    for embedded in &stdlib[start..=idx] {
                         let dotted = embedded.path.0.join(".");
-                        if !self.modules.contains_key(&dotted) {
-                            self.topo_order.push(dotted.clone());
-                            self.modules.insert(dotted, embedded.clone());
-                        }
+                        self.topo_order.push(dotted.clone());
+                        self.modules.insert(dotted, embedded.clone());
                     }
                     return Ok(());
                 }
