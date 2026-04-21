@@ -1610,4 +1610,108 @@ mod tests {
             diagnostics
         );
     }
+
+    /// Phase-contract test for `check_phase_resolve_structure_members`.
+    ///
+    /// Verifies that the helper correctly builds both the `structure_members`
+    /// HashMap and the `structure_constraint_labels` HashSet from a minimal
+    /// StructureDef fixture. This test fails to compile until the helper exists
+    /// (TDD compile-tripwire) and pins the helper's return type signature.
+    #[test]
+    fn check_phase_resolve_structure_members_builds_member_and_constraint_maps() {
+        let real_type_expr = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Real".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::empty(0),
+        };
+        let length_type_expr = reify_syntax::TypeExpr {
+            kind: reify_syntax::TypeExprKind::Named {
+                name: "Length".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::empty(0),
+        };
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![
+                reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                    name: "width".to_string(),
+                    doc: None,
+                    type_expr: Some(real_type_expr),
+                    default: None,
+                    where_clause: None,
+                    annotations: vec![],
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                }),
+                reify_syntax::MemberDecl::Let(reify_syntax::LetDecl {
+                    name: "length".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    type_expr: Some(length_type_expr),
+                    value: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                        span: SourceSpan::empty(0),
+                    },
+                    where_clause: None,
+                    annotations: vec![],
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                }),
+                reify_syntax::MemberDecl::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("bound".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        span: SourceSpan::empty(0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                }),
+            ],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+        let trait_names: HashSet<String> = HashSet::new();
+        let alias_registry = TypeAliasRegistry::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let (structure_members, structure_constraint_labels) =
+            check_phase_resolve_structure_members(
+                &entity_ref,
+                &trait_names,
+                &[],
+                &alias_registry,
+                &mut diagnostics,
+            );
+
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            structure_members.contains_key("width"),
+            "Expected 'width' in structure_members"
+        );
+        assert!(
+            structure_members.contains_key("length"),
+            "Expected 'length' in structure_members"
+        );
+        assert!(
+            structure_constraint_labels.contains("bound"),
+            "Expected 'bound' in structure_constraint_labels"
+        );
+    }
 }
