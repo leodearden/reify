@@ -44033,11 +44033,16 @@
         "description": "`constraint_inst_label_multi_predicate` (crates/reify-compiler/tests/constraint_inst_tests.rs:413-444) was switched to label-based `.find()` lookups in task 848.2 to make it order-independent across instantiations. However, predicate order WITHIN a single instantiation is a meaningful contract — pred_idx must match source-order of predicates in the def — and the new test no longer exercises that.\n\nAdd a supplementary assertion that for a single instantiation the predicates appear in source order (e.g. filter to one inst_idx, verify pred_idx is monotonically increasing starting at 0). Keeps the cross-instantiation order-independence while restoring the intra-instantiation ordering guard.\n\nMemory hints: search \"constraint_inst_label_multi_predicate\", search \"pred_idx source order\", entities: ConstraintInst, pred_idx",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:05:34.742Z"
+        "updatedAt": "2026-04-21T22:25:46.691Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "f7d071baba7c2c916b8d89376cb829743ec37db9"
+          }
+        }
       },
       {
         "id": "2084",
@@ -44110,9 +44115,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T22:22:05.434Z",
+      "lastModified": "2026-04-21T22:25:46.691Z",
       "taskCount": 2080,
-      "completedCount": 1820,
+      "completedCount": 1821,
       "tags": [
         "master"
       ]
