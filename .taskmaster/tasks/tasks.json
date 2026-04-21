@@ -36809,9 +36809,13 @@
             "gui/src"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "localStorage",
+              "sidecar .ri.views.json"
+            ],
             "queries": [
-              "resolution for: View persistence: localStorage + sidecar file + fuzzy path matching"
+              "view persistence localStorage sidecar ri.views.json design",
+              "view state outside .ri files localStorage ephemeral durable"
             ]
           }
         },
@@ -43644,7 +43648,9 @@
       "completedCount": 1793,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T06:49:51.900Z",
+      "description": "Tasks for master context"
     }
   }
 }
