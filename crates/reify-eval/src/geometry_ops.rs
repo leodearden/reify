@@ -1280,8 +1280,8 @@ mod tests {
                 diagnostics[0].message
             );
             assert!(
-                diagnostics[0].message.contains("Revolve"),
-                "diagnostic for missing '{omit}' should mention 'Revolve', got: {}",
+                diagnostics[0].message.contains("revolve"),
+                "diagnostic for missing '{omit}' should mention 'revolve', got: {}",
                 diagnostics[0].message
             );
         }
@@ -1476,9 +1476,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("ax")
-                    && d.message.contains("Revolve")
+                    && d.message.contains("revolve")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'ax', and 'Revolve', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'ax', and 'revolve', got: {:?}",
             diagnostics
         );
     }
@@ -2412,8 +2412,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Box"),
-            "diagnostic message should mention 'Box', got: {}",
+            diagnostics[0].message.contains("box"),
+            "diagnostic message should mention 'box', got: {}",
             diagnostics[0].message
         );
     }
@@ -2466,8 +2466,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Fillet"),
-            "diagnostic message should mention 'Fillet', got: {}",
+            diagnostics[0].message.contains("fillet"),
+            "diagnostic message should mention 'fillet', got: {}",
             diagnostics[0].message
         );
     }
@@ -2694,8 +2694,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Extrude"),
-            "diagnostic message should mention 'Extrude', got: {}",
+            diagnostics[0].message.contains("extrude"),
+            "diagnostic message should mention 'extrude', got: {}",
             diagnostics[0].message
         );
     }
@@ -2753,8 +2753,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Linear"),
-            "diagnostic message should mention 'Linear', got: {}",
+            diagnostics[0].message.contains("linear"),
+            "diagnostic message should mention 'linear', got: {}",
             diagnostics[0].message
         );
     }
@@ -2806,8 +2806,8 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Translate"),
-            "diagnostic message should mention 'Translate', got: {}",
+            diagnostics[0].message.contains("translate"),
+            "diagnostic message should mention 'translate', got: {}",
             diagnostics[0].message
         );
     }
@@ -2856,9 +2856,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
-                    && d.message.contains("Translate")
+                    && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -2899,9 +2899,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
-                    && d.message.contains("Translate")
+                    && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -2942,9 +2942,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
-                    && d.message.contains("Translate")
+                    && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -3906,8 +3906,8 @@ mod tests {
             err_msg
         );
         assert!(
-            err_msg.contains("Revolve"),
-            "error message should mention the op kind 'Revolve', got: {:?}",
+            err_msg.contains("revolve"),
+            "error message should mention the op kind 'revolve', got: {:?}",
             err_msg
         );
     }

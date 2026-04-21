@@ -1202,7 +1202,7 @@ fn build_modify_missing_arg_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "radius", "Fillet"],
+        &["missing required geometry argument", "radius", "fillet"],
     );
 }
 
