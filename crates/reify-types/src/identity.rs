@@ -305,6 +305,29 @@ mod tests {
         assert_ne!(a, d);
     }
 
+    // ── ModulePath::from_dotted ───────────────────────────────────────
+
+    #[test]
+    fn from_dotted_two_segments() {
+        let path = ModulePath::from_dotted("std.units");
+        assert_eq!(path.0, vec!["std".to_string(), "units".to_string()]);
+    }
+
+    #[test]
+    fn from_dotted_three_segments() {
+        let path = ModulePath::from_dotted("a.b.c");
+        assert_eq!(
+            path.0,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn from_dotted_single_segment() {
+        let path = ModulePath::from_dotted("foo");
+        assert_eq!(path.0, vec!["foo".to_string()]);
+    }
+
     #[test]
     fn resolution_node_id_as_hashmap_key() {
         let mut map = HashMap::new();
