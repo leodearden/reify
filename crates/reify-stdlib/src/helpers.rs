@@ -121,6 +121,40 @@ pub(crate) fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value
     sanitize_value(Value::from_real_scalar(mag, dimension))
 }
 
+/// Compute the phase angle of a complex number: `atan2(im, re)`.
+///
+/// Returns `Value::Scalar { si_value: angle, dimension: ANGLE }` for ordinary
+/// inputs, or `Value::Undef` for two edge cases handled by pre-guards:
+///
+/// 1. **Non-finite inputs (`NaN` or `±Inf`):** `atan2` applied to such inputs
+///    often returns a *finite* value (e.g. `atan2(1.0, +Inf) = 0.0`), which
+///    [`sanitize_value`] cannot detect as a poisoned input. The `is_finite`
+///    pre-guard rejects these cases explicitly.
+/// 2. **Zero vector `(0.0, 0.0)`:** `atan2(0.0, 0.0) = 0.0` is also finite,
+///    so [`sanitize_value`] cannot distinguish this mathematically-undefined
+///    case from a legitimate zero angle. The zero-vector pre-guard catches it.
+///
+/// After both pre-guards, `atan2(finite, finite)` with at least one non-zero
+/// argument always yields a value in `[-π, π]`, so no output sanitization is
+/// required.
+///
+/// Phase is dimension-invariant by contract — `atan2` on dimensioned components
+/// still produces a dimensionless angle — so this helper takes only `re`/`im`
+/// (not a dimension parameter) and always returns an `ANGLE`-dimensioned Scalar.
+pub fn complex_phase(re: f64, im: f64) -> Value {
+    if !re.is_finite() || !im.is_finite() {
+        return Value::Undef;
+    }
+    if re == 0.0 && im == 0.0 {
+        return Value::Undef;
+    }
+    let angle = im.atan2(re);
+    Value::Scalar {
+        si_value: angle,
+        dimension: DimensionVector::ANGLE,
+    }
+}
+
 /// Extract numeric components and consistent dimension from a Tensor value.
 ///
 /// Returns `Some((values, dimension))` if:

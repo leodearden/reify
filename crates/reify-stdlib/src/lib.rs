@@ -2,6 +2,10 @@ use reify_types::Value;
 
 mod helpers;
 
+/// Public re-export of the shared complex-phase helper, so reify-expr's method
+/// path can call the same implementation used by the stdlib builtin path.
+pub use helpers::complex_phase;
+
 #[cfg(test)]
 #[macro_use]
 mod test_macros;

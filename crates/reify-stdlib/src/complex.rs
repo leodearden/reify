@@ -1,6 +1,6 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::Value;
 
-use crate::helpers::{binary, complex_abs, sanitize_value, unary};
+use crate::helpers::{binary, complex_abs, complex_phase, sanitize_value, unary};
 
 pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
@@ -62,17 +62,10 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
 
         // phase(z): compute atan2(im, re), return Scalar with ANGLE dimension.
         // phase(0+0i) is undefined — zero vector has no direction.
+        // Delegates to the shared helper so the method path (reify-expr) and
+        // builtin path share identical pre-guards and output construction.
         "phase" => unary(args, |v| match v {
-            Value::Complex { re, im, .. } => {
-                if *re == 0.0 && *im == 0.0 {
-                    return Value::Undef;
-                }
-                let angle = im.atan2(*re);
-                sanitize_value(Value::Scalar {
-                    si_value: angle,
-                    dimension: DimensionVector::ANGLE,
-                })
-            }
+            Value::Complex { re, im, .. } => complex_phase(*re, *im),
             _ => Value::Undef,
         }),
 

@@ -1,4 +1,4 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::Value;
 
 use super::sanitize::sanitize_value;
 
@@ -26,40 +26,11 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                 return Some(Value::Undef);
             }
             match obj {
-                Value::Complex { re, im, .. } => {
-                    if !re.is_finite() || !im.is_finite() {
-                        return Some(Value::Undef);
-                    }
-                    if *re == 0.0 && *im == 0.0 {
-                        return Some(Value::Undef);
-                    }
-                    // Both pre-guards above are essential — they catch finite-output
-                    // cases that would otherwise slip past sanitize_value:
-                    //
-                    //   • is_finite guard: atan2(y, ±Inf) = 0.0 or ±π, and
-                    //     atan2(±Inf, x) = ±π/2 — all finite. sanitize_value cannot
-                    //     detect Inf inputs from these outputs alone. NaN inputs would
-                    //     propagate through atan2 to a NaN output, which a hypothetical
-                    //     sanitize_value wrap on the result would catch — but phase()
-                    //     does not currently wrap its output, so the pre-guard is the
-                    //     sole NaN guard. We use the pre-guard for both NaN and Inf so
-                    //     a single check handles both, matching the conjugate/re/im
-                    //     pattern.
-                    //
-                    //   • zero-vector guard: atan2(0.0, 0.0) = 0.0 which is
-                    //     also finite, so sanitize_value cannot distinguish the
-                    //     mathematically-undefined zero-vector case from a legitimate
-                    //     zero-angle result.
-                    //
-                    // After both guards, atan2(finite, finite) with at least one
-                    // non-zero argument always returns a value in [-π, π], so no
-                    // output sanitization is needed here.
-                    let angle = im.atan2(*re);
-                    Some(Value::Scalar {
-                        si_value: angle,
-                        dimension: DimensionVector::ANGLE,
-                    })
-                }
+                // Delegate to the shared helper in reify-stdlib so this method path
+                // and the builtin path (stdlib::eval_complex "phase" arm) use the
+                // exact same pre-guards (is_finite + zero-vector) and output shape.
+                // See `reify_stdlib::complex_phase` for the guard rationale.
+                Value::Complex { re, im, .. } => Some(reify_stdlib::complex_phase(*re, *im)),
                 _ => Some(Value::Undef),
             }
         }
