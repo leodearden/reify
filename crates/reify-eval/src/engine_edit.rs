@@ -957,13 +957,8 @@ impl Engine {
             &self.eval_state.as_ref().unwrap().snapshot.graph,
             &new_snapshot.graph,
         );
-        let mut changed_set: HashSet<ValueCellId> = HashSet::new();
-        for id in &changed {
-            changed_set.insert(id.clone());
-        }
-        for id in &added {
-            changed_set.insert(id.clone());
-        }
+        let changed_set: HashSet<ValueCellId> =
+            changed.iter().chain(added.iter()).cloned().collect();
 
         // (4b) Diff constraints and realizations (step-10). These nodes are
         //      positional (`entity, index`) and have their own content_hash on
@@ -1000,8 +995,21 @@ impl Engine {
         //     reverse index is the authoritative source for "what used to
         //     read this cell"; skipping it would miss dependents whose
         //     expressions happen to remain shape-compatible (e.g., a
-        //     fallback branch). Resolution nodes are intentionally excluded
-        //     here — the resolution-node diff is handled in step-10.
+        //     fallback branch).
+        //
+        //     Resolution nodes are currently treated as not-still-present:
+        //     they are live in the graph (`deps.rs`, `cache.rs`), but the
+        //     eval() / edit_source() demand-seeding path does not
+        //     `add_demand` them, and edit_source has no `diff_resolutions`
+        //     helper yet. The moment Resolution demand is added, this arm
+        //     becomes a latent staleness hazard — a Resolution dependent of
+        //     a removed cell would silently retain a stale cached value.
+        //
+        //     TODO(resolution-diff): add a `diff_resolutions` helper and
+        //     replace this `false` with a
+        //     `new_snapshot.graph.resolutions.contains_key(rid)` presence
+        //     check, symmetric with the other arms, once Resolution nodes
+        //     participate in the demand set.
         {
             let old_reverse_index = &self.eval_state.as_ref().unwrap().reverse_index;
             for id in &removed {
@@ -1012,7 +1020,7 @@ impl Engine {
                         NodeId::Realization(rid) => {
                             new_snapshot.graph.realizations.contains_key(rid)
                         }
-                        NodeId::Resolution(_) => false,
+                        NodeId::Resolution(_) => false, // TODO(resolution-diff)
                     };
                     if still_present {
                         dirty_cone.insert(dep.clone());
@@ -1594,10 +1602,17 @@ impl Engine {
 
             if guard_changed {
                 for group in new_snapshot.graph.guarded_groups.clone() {
-                    let guard_val = values
-                        .get(&group.guard_cell)
-                        .cloned()
-                        .expect("guard cell must have a value after initial evaluation");
+                    // Phase 1 (the dirty-cone-triggered branch above) guarantees
+                    // that every guard_cell in structure_controlling has a value
+                    // in `values`. But Phase 3 is separately gated on
+                    // `guard_changed` (value diff vs. old snapshot) — a future
+                    // refactor that narrows structure_controlling could leave a
+                    // guard_cell unevaluated here. Skip those defensively rather
+                    // than panic; the old snapshot's guard value will be used for
+                    // the downstream diff in subsequent edits.
+                    let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
+                        continue;
+                    };
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
