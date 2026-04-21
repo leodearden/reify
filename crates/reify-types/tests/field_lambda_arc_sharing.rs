@@ -93,3 +93,57 @@ fn field_clone_preserves_equality() {
         "Cloned Field must equal original — PartialEq must be preserved under Arc"
     );
 }
+
+/// Guards the `Value::List`-shaped lambda payload path of the Arc-sharing
+/// storage-layout contract.
+///
+/// Per the `Value::Field.lambda` docstring, `SafetyFactor` stores
+/// `Value::List [original_field, yield_val]` in the lambda slot.  The list
+/// contents here are intentionally dummy (`Value::Real(0.0)`, `Value::Real(1.0)`)
+/// — the invariant under test is Arc sharing on clone, not list semantics.
+///
+/// This is the only `Value::List`-payload variant not already exercised by
+/// `field_clone_shares_lambda_via_arc`.
+#[test]
+fn field_clone_shares_list_lambda_via_arc_for_safety_factor() {
+    // Dummy list — real-world shape is [original_field, yield_val] per docstring.
+    let lambda_val = Value::List(vec![Value::Real(0.0), Value::Real(1.0)]);
+    let lambda_arc: Arc<Value> = Arc::new(lambda_val);
+
+    let domain = Type::Point {
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+    let codomain = Type::Real;
+
+    let original = Value::Field {
+        domain_type: domain,
+        codomain_type: codomain,
+        source: FieldSourceKind::SafetyFactor,
+        lambda: Arc::clone(&lambda_arc),
+    };
+
+    let cloned = original.clone();
+
+    // Destructure both to get the lambda Arcs.
+    let Value::Field {
+        lambda: orig_lambda, ..
+    } = &original
+    else {
+        panic!("original must be a Field");
+    };
+    let Value::Field {
+        lambda: clone_lambda,
+        ..
+    } = &cloned
+    else {
+        panic!("cloned must be a Field");
+    };
+
+    // The key invariant: clone must share the same Arc allocation, not a new one.
+    assert!(
+        Arc::ptr_eq(orig_lambda, clone_lambda),
+        "Field clone (SafetyFactor / Value::List payload) must share the lambda Arc — \
+         cloning should bump the refcount, not allocate a new heap buffer"
+    );
+}
