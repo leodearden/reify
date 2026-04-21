@@ -11332,6 +11332,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
           "modules": [
+            "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/stdlib_loader.rs",
             "crates/reify-compiler/tests/prelude_context_tests.rs"
@@ -44040,7 +44041,9 @@
       "completedCount": 1818,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T22:06:36.429Z",
+      "description": "Tasks for master context"
     }
   }
 }
