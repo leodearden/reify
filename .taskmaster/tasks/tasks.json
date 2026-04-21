@@ -39646,11 +39646,11 @@
         "description": "The Bool arm of `value_type_kind_matches` (i.e. `Value::Bool(_) => matches!(ty, Type::Bool)` in crates/reify-eval/src/lib.rs around line 125-147) is not directly covered by a unit test, even though sibling Tensor/Matrix/Real arms have dedicated positive + negative unit tests at lines 3442-3496 in the same file.\n\nWhen task 1886 reverted the fixture-level `param enabled : Bool = true` in examples/integration_full_v01.ri and retargeted the edit_param/edit_check TypeKindMismatch regression tests onto the existing `Assembly.grade` Enum cell (see crates/reify-eval/tests/incremental_integration.rs:897-941), the direct Bool-arm regression lock was lost. Close that gap with small unit tests near the existing `value_type_kind_matches_*` tests.\n\nSuggested additions:\n- `value_type_kind_matches_bool_value_into_int_type_returns_false` — `Value::Bool(true)` into `Type::Int` must be false\n- `value_type_kind_matches_int_value_into_bool_type_returns_false` — `Value::Int(1)` into `Type::Bool` must be false\n- Optionally a positive-path test: `Value::Bool(true)` into `Type::Bool` returns true\n\nSource: task 1886 reviewer_comprehensive suggestion S1 (esc-1886-52).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:26.378Z",
+        "updatedAt": "2026-04-21T09:13:46.878Z",
         "metadata": {
           "modules": [],
           "files": []
@@ -43589,7 +43589,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:13:46.100Z",
+      "lastModified": "2026-04-21T09:13:46.878Z",
       "taskCount": 2060,
       "completedCount": 1794,
       "tags": [
