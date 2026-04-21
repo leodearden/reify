@@ -1,5 +1,19 @@
 use super::*;
 
+/// Tag used when cross-checking requirements against available defaults.
+/// A `param` requirement can only be satisfied by a `param` default, and a `let`
+/// requirement only by a `let` default. A kind mismatch is treated the same as "no
+/// default" so the user sees "missing required member" rather than a confusing
+/// kind-mismatch error (the fix is the same either way: provide the member).
+///
+/// See also `DefaultKindTag` (module-level) — this enum intentionally omits
+/// `Constraint` because constraints are never candidates for satisfying requirements.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum AvailableDefaultKind {
+    Param,
+    Let,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
@@ -163,20 +177,6 @@ pub(crate) fn check_trait_conformance(
             0,
             diagnostics,
         );
-    }
-
-    // Tag used when cross-checking requirements against available defaults.
-    // A `param` requirement can only be satisfied by a `param` default, and a `let`
-    // requirement only by a `let` default. A kind mismatch is treated the same as "no
-    // default" so the user sees "missing required member" rather than a confusing
-    // kind-mismatch error (the fix is the same either way: provide the member).
-    //
-    // See also `DefaultKindTag` (module-level) — this enum intentionally omits
-    // `Constraint` because constraints are never candidates for satisfying requirements.
-    #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-    enum AvailableDefaultKind {
-        Param,
-        Let,
     }
 
     // Cache of compiled expressions for unannotated let defaults, keyed by
