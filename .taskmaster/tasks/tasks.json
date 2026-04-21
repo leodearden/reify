@@ -42574,8 +42574,10 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-cli/src",
-            "crates/reify-eval/src"
+            "crates/reify-cli/src/mcp_context.rs",
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/eval_param_overrides.rs"
           ]
         },
         "updatedAt": "2026-04-21T22:22:03.767Z"
@@ -44120,7 +44122,9 @@
       "completedCount": 1821,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T22:32:30.890Z",
+      "description": "Tasks for master context"
     }
   }
 }
