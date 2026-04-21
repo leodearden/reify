@@ -3,7 +3,7 @@
 //! Tests span from the compiled IR through evaluation to the final GeometryOp
 //! using MockGeometryKernel to capture executed operations without OCCT.
 
-use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
 use reify_types::{ExportFormat, GeometryOp, Type};
 
@@ -76,5 +76,84 @@ fn tube_through_mock_kernel_emits_geometry_op_tube() {
             );
         }
         other => panic!("expected GeometryOp::Tube at op index 0, got {:?}", other),
+    }
+}
+
+/// Exercises the full compile -> eval path for Pipe.
+///
+/// Creates a module with 2 ops:
+///   Op 0: LineSegment from (0,0,0) to (0,0,10mm) — the path wire
+///   Op 1: Sweep(Pipe) referencing Step(0) as the path, radius=2mm
+///
+/// Verifies that the Pipe runtime op receives the correct path handle from
+/// op 0 and radius of 0.002 m (2 mm SI).
+#[test]
+fn pipe_through_mock_kernel_emits_geometry_op_pipe() {
+    let e = "TestPipe";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: LineSegment (produces a wire handle at step index 0)
+    let line_op = CompiledGeometryOp::Curve {
+        kind: CurveKind::LineSegment,
+        args: vec![
+            ("x1".into(), mm_literal(0.0)),
+            ("y1".into(), mm_literal(0.0)),
+            ("z1".into(), mm_literal(0.0)),
+            ("x2".into(), mm_literal(0.0)),
+            ("y2".into(), mm_literal(0.0)),
+            ("z2".into(), mm_literal(10.0)),
+        ],
+    };
+
+    // Op 1: Pipe referencing Step(0) as the path, radius=2mm
+    let pipe_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Pipe,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("path".into(), mm_literal(0.0)), // placeholder — the geom ref is what matters
+            ("radius".into(), mm_literal(2.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![line_op, pipe_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_pipe"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry operations, got {}",
+        ops.len()
+    );
+
+    let path_handle = ops[0].result_handle;
+
+    match &ops[1].op {
+        GeometryOp::Pipe { path, radius } => {
+            assert_eq!(
+                *path, path_handle,
+                "Pipe path should be handle from op 0 ({:?}), got {:?}",
+                path_handle, path
+            );
+            let radius_si = radius.as_f64().expect("radius should be numeric");
+            assert!(
+                (radius_si - 0.002).abs() < 1e-9,
+                "Pipe radius should be 0.002 m (2 mm SI), got {}",
+                radius_si
+            );
+        }
+        other => panic!("expected GeometryOp::Pipe at op index 1, got {:?}", other),
     }
 }
