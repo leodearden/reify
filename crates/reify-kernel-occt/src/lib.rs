@@ -220,7 +220,9 @@ impl OcctKernel {
                         "tube height must be a finite positive value".into(),
                     ));
                 }
-                if !(inner < outer) {
+                // Both values are already validated finite+positive above,
+                // so `>=` is unambiguous here (no NaN possible).
+                if inner >= outer {
                     return Err(GeometryError::OperationFailed(
                         "tube inner radius must be strictly less than outer radius"
                             .into(),
