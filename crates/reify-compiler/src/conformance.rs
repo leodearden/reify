@@ -30,10 +30,11 @@ pub(crate) fn check_trait_conformance(
     // a root-cause "unresolved type in conformance check" error diagnostic and then
     // returns `Type::Error` — NOT `Type::Real`.
     //
-    // Rationale: the member's annotated type is always passed as the `from`/producer
-    // side of `implicitly_converts_to(actual_type, expected_type)` at conformance.rs:358
-    // and `type_compatible(annotation_ty, &compiled_expr.result_type)` at :565.  The
-    // asymmetric producer-side wildcard in `type_compat.rs:3–26` short-circuits
+    // Rationale: `structure_members` (populated by this closure's output) is consumed
+    // by the `RequirementKind::{Param,Let}` arm of the requirement-checking loop below,
+    // where `actual_type` is passed as the `from`/producer side of
+    // `implicitly_converts_to(actual_type, expected_type)`.  The asymmetric
+    // producer-side wildcard in `type_compat.rs:3–26` short-circuits
     // `implicitly_converts_to(Error, _)` to `true`, suppressing the cascade
     // "type mismatch for trait member" diagnostic that would otherwise appear on top of
     // the root-cause error already emitted here.  Returning `Type::Real` instead would
