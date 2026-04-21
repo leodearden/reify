@@ -7,7 +7,7 @@
 //! re-evaluates only the dependency cones touched by the structural diff.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_eval::{Engine, EvalResult};
+use reify_eval::{Engine, EngineError, EvalResult};
 use reify_test_support::bracket_compiled_module;
 
 use reify_compiler::CompiledModule;
@@ -37,4 +37,23 @@ fn run_eval_then_edit_source(
 fn fresh_eval(module_b: &CompiledModule) -> EvalResult {
     let mut engine = fresh_engine();
     engine.eval(module_b)
+}
+
+// ── Precondition tests ─────────────────────────────────────────────────────
+
+/// `edit_source` requires a prior `eval()` to establish the baseline snapshot,
+/// mirroring the `edit_param` precondition. Calling `edit_source` on a freshly
+/// constructed engine must return `Err(EngineError::NotInitialized)`.
+#[test]
+fn edit_source_returns_err_not_initialized_before_eval() {
+    let mut engine = fresh_engine();
+    let module = bracket_compiled_module();
+    let result = engine.edit_source(&module);
+    match result {
+        Err(EngineError::NotInitialized) => {}
+        other => panic!(
+            "expected Err(EngineError::NotInitialized) before eval, got: {:?}",
+            other.map(|r| r.values.len())
+        ),
+    }
 }
