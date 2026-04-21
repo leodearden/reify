@@ -475,6 +475,7 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
+                    // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
                         eval_named_arg_f64(
                             name,
@@ -528,6 +529,7 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Mirror => {
+                    // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
                         eval_named_arg_f64(
                             name,
