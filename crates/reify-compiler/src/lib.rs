@@ -276,31 +276,8 @@ pub(crate) fn compile_with_prelude_refs(
     compile_builder::enums_phase::build_resolution_enums(&mut ctx, prelude);
 
     // Compile in dependency order after collecting all references:
-    // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
-    for fn_def in &decl_refs.fn_refs {
-        if let Some(compiled_fn) = compile_function(
-            fn_def,
-            &ctx.resolution_enums,
-            &ctx.functions,
-            &ctx.alias_registry,
-            &mut ctx.diagnostics,
-        ) {
-            ctx.functions.push(compiled_fn);
-        }
-    }
-
-    // Build a resolution function list for compile-time overload resolution.
-    // User functions appear first (shadowing priority); prelude functions with
-    // distinct (name, arity, param_types) triples are appended. See
-    // merge_prelude_functions() for the canonical shadow predicate.
-    // `functions` (user-only) remains the output stored in CompiledModule.
-    ctx.resolution_functions = {
-        let prelude_fns: Vec<CompiledFunction> = prelude
-            .iter()
-            .flat_map(|m| m.functions.iter().cloned())
-            .collect();
-        merge_prelude_functions(&ctx.functions, &prelude_fns)
-    };
+    // 1. Functions (phase-7): compile user fns, then build ctx.resolution_functions.
+    compile_builder::functions_phase::phase_functions(&mut ctx, prelude, &decl_refs.fn_refs);
 
     // Build the set of trait names known at compile time so the type resolver
     // can resolve `param m : Material` (trait name) to Type::TraitObject(...).
