@@ -43776,11 +43776,11 @@
         "description": "`EvaluationGraph::is_auto_cell` in crates/reify-eval/src/graph.rs:383-389 is currently `pub`, but its only consumer is the in-crate helper `deactivate_if_not_auto` (engine_edit.rs). Change visibility to `pub(crate) fn is_auto_cell` to stop leaking an internal predicate out of the crate's API surface. Trivial one-line change; ensure the test module (same crate) still compiles.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T19:47:48.759Z",
+        "updatedAt": "2026-04-21T19:48:15.595Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/graph.rs"
@@ -43794,7 +43794,7 @@
           "done_provenance": {
             "commit": "5d5aeb2bdf8f42d1b29ad08da6bf66201419cdbb",
             "commit_input": "5d5aeb2bd",
-            "note": "Narrowed EvaluationGraph::is_auto_cell to pub(crate); already merged to main ~2h before task ran."
+            "note": "Already merged to main via commit 5d5aeb2bd (refactor(reify-eval): narrow is_auto_cell visibility to pub(crate)) ~2h before task dispatched; duplicate of completed task 2072."
           }
         }
       },
@@ -43864,9 +43864,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T19:47:48.759Z",
+      "lastModified": "2026-04-21T19:48:15.595Z",
       "taskCount": 2066,
-      "completedCount": 1811,
+      "completedCount": 1812,
       "tags": [
         "master"
       ]
