@@ -18346,11 +18346,12 @@
             "crates/reify-expr/tests/component_helper_tests.rs"
           ],
           "modules": [
-            "crates/reify-mcp/src",
-            "crates/reify-runtime/src",
-            "crates/reify-eval/src",
-            "crates/reify-compiler/src",
-            "crates/reify-expr/tests"
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-expr/tests/component_helper_tests.rs",
+            "crates/reify-mcp/src/jsonrpc.rs",
+            "crates/reify-mcp/src/tools",
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-runtime/src/lib.rs"
           ]
         },
         "updatedAt": "2026-04-21T22:06:37.477Z"
@@ -44041,7 +44042,9 @@
       "completedCount": 1818,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T22:15:46.182Z",
+      "description": "Tasks for master context"
     }
   }
 }
