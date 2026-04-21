@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
 use reify_types::{
     CompiledExpr, CompiledFunction, ConstraintInput, ConstraintNodeId, ConstraintResult,
-    DeterminacyState, Diagnostic, OptimizedImplInput, PersistentMap, Value, ValueCellId, ValueMap,
+    DeterminacyState, Diagnostic, OptimizedImplInput, PersistentMap, Severity, Value, ValueCellId,
+    ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
@@ -197,12 +198,16 @@ impl Engine {
     ///
     /// In-place mutation (`&mut [Diagnostic]`) avoids the `.collect()`
     /// round-trip used before task 847.2 and enables a `contains`-guarded
-    /// debug-assert: when a label is supplied but no message references the
-    /// ConstraintNodeId, the id format has drifted from what the engine
-    /// emits and future callers should investigate. When `label` is `None`
-    /// (inline constraints without a label), the messages are returned
-    /// unchanged. A slice (not `&mut Vec`) is taken because the rewrite
-    /// never adds or removes entries — only mutates existing ones.
+    /// debug-assert: when a label is supplied, at least one Error-severity
+    /// message references the ConstraintNodeId, yet none was rewritten,
+    /// the id format has drifted from what the engine emits and future
+    /// callers should investigate. The assert is scoped to Error-severity
+    /// because Info/Warning diagnostics attached to a labeled constraint
+    /// (e.g. "inputs still undetermined") may be natural-language only
+    /// and need not embed the raw id. When `label` is `None` (inline
+    /// constraints without a label), the messages are returned unchanged.
+    /// A slice (not `&mut Vec`) is taken because the rewrite never adds
+    /// or removes entries — only mutates existing ones.
     pub(crate) fn labeled_diagnostics(
         messages: &mut [Diagnostic],
         id: &reify_types::ConstraintNodeId,
@@ -213,7 +218,11 @@ impl Engine {
         };
         let id_str = id.to_string();
         let mut replaced_any = false;
+        let mut has_error = false;
         for d in messages.iter_mut() {
+            if d.severity == Severity::Error {
+                has_error = true;
+            }
             if d.message.contains(&id_str) {
                 d.message = d.message.replace(&id_str, lbl);
                 replaced_any = true;
@@ -225,10 +234,13 @@ impl Engine {
                 }
             }
         }
+        // Only assert on drift when at least one Error-severity diagnostic
+        // is present — informational/warning diagnostics on labeled
+        // constraints may legitimately omit the raw id string.
         debug_assert!(
-            replaced_any || messages.is_empty(),
-            "labeled_diagnostics: label={:?} provided but ConstraintNodeId {} did not \
-             appear in any message — id format drift?",
+            replaced_any || !has_error,
+            "labeled_diagnostics: label={:?} provided with Error-severity messages, but \
+             ConstraintNodeId {} did not appear in any message — id format drift?",
             label,
             id_str,
         );
