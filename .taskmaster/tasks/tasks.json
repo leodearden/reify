@@ -16679,7 +16679,7 @@
           ],
           "curator_action": "combine",
           "curator_justification": "The candidate is a small guard-eval test replacement (one file, one test) that shares the same module lock (crates/reify-eval/src, crates/reify-eval/tests) and the same concern domain (guard eval test quality) as Task 750, which already holds S3–S6 guard test improvements deferred from task 492. Both are low priority, neither is on a critical path, and serializing on the same module lock means combining loses zero parallelism. All four combine rules hold: coherent single concern (\"guard eval tes",
-          "combined_at": "2026-04-21T14:45:37.341860+00:00"
+          "combined_at": "2026-04-21T14:45:55.071744+00:00"
         }
       },
       {
@@ -43728,23 +43728,21 @@
         "description": "`EvaluationGraph::is_auto_cell` in crates/reify-eval/src/graph.rs:383-389 is currently `pub`, but its only consumer is the in-crate helper `deactivate_if_not_auto` (engine_edit.rs). Change visibility to `pub(crate) fn is_auto_cell` to stop leaking an internal predicate out of the crate's API surface. Trivial one-line change; ensure the test module (same crate) still compiles.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-21T14:46:08.440Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T14:44:41.394Z",
-      "taskCount": 2063,
+      "lastModified": "2026-04-21T14:46:08.440Z",
+      "taskCount": 2064,
       "completedCount": 1802,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T14:45:37.412Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-21T14:45:49.828Z"
+      ]
     }
   }
 }
