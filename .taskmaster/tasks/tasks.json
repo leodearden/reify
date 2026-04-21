@@ -12308,7 +12308,7 @@
         "description": "Two hardening fixes in `crates/reify-eval/src/lib.rs`:\n\n1. **filter+unwrap → filter_map** (lines ~2916-2917 and ~3715-3719): The pattern `.filter(|c| c.default_expr.is_some()).map(|c| c.default_expr.as_ref().unwrap())` is safe today but fragile under refactor. Replace with `.filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))`.\n\n2. **unreachable!() → graceful diagnostic** (lines ~2930-2932): In `evaluate_let_bindings` and `elaborate_child_lets_only`, `_ => unreachable!()` on NodeId match is a latent panic. Replace with: `_ => { diagnostics.push(Diagnostic::error(...)); continue; }`.\n\nConsistent with project convention: logic errors should be noisy, not silent, and should not crash.\n\nmemory_hints: search \"fragile unwrap pattern eval\", search \"silent defaults pattern\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12317,7 +12317,7 @@
           "files": [],
           "modules": []
         },
-        "updatedAt": "2026-04-21T09:13:25.845Z"
+        "updatedAt": "2026-04-21T09:13:54.697Z"
       },
       {
         "id": "556",
@@ -43589,7 +43589,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:13:53.968Z",
+      "lastModified": "2026-04-21T09:13:54.697Z",
       "taskCount": 2060,
       "completedCount": 1794,
       "tags": [
