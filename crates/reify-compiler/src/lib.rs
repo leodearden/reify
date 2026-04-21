@@ -225,61 +225,8 @@ pub(crate) fn compile_with_prelude_refs(
     let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut ctx, parsed);
 
     // Build a content-sensitive hash by combining the path with all compiled content.
-    let content_hash = {
-        let path_hash = ContentHash::of_str(&format!("{}", parsed.path));
-
-        // Template content hashes
-        let template_hashes = ctx.templates.iter().map(|t| t.content_hash);
-
-        // Import path hashes
-        let import_hashes = ctx.imports.iter().map(|i| ContentHash::of_str(&i.path));
-
-        // Enum def hashes
-        let enum_hashes = ctx.enum_defs.iter().map(|e| {
-            let mut h = ContentHash::of_str(&e.name);
-            for v in &e.variants {
-                h = h.combine(ContentHash::of_str(v));
-            }
-            h
-        });
-
-        // Function content hashes
-        let function_hashes = ctx.functions.iter().map(|f: &CompiledFunction| f.content_hash);
-
-        // Trait content hashes
-        let trait_hashes = ctx.trait_defs.iter().map(|t| t.content_hash);
-
-        // Field content hashes
-        let field_hashes = ctx.fields.iter().map(|f| f.content_hash);
-
-        // Purpose content hashes
-        let purpose_hashes = compiled_purposes.iter().map(|p| p.content_hash);
-
-        // Unit content hashes
-        let unit_hashes = ctx.compiled_units.iter().map(|u| u.content_hash);
-
-        // Type alias content hashes (sorted by name for deterministic ordering)
-        let mut alias_hash_pairs: Vec<_> = ctx
-            .alias_registry
-            .iter()
-            .map(|a| (a.name.clone(), a.content_hash))
-            .collect();
-        alias_hash_pairs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let alias_hashes = alias_hash_pairs.into_iter().map(|(_, h)| h);
-
-        let all_hashes = std::iter::once(path_hash)
-            .chain(template_hashes)
-            .chain(import_hashes)
-            .chain(enum_hashes)
-            .chain(function_hashes)
-            .chain(trait_hashes)
-            .chain(field_hashes)
-            .chain(purpose_hashes)
-            .chain(unit_hashes)
-            .chain(alias_hashes);
-
-        ContentHash::combine_all(all_hashes)
-    };
+    let content_hash =
+        compile_builder::hash::compute_module_hash(&ctx, parsed, &compiled_purposes);
 
     let type_aliases = ctx.alias_registry.into_compiled();
 
