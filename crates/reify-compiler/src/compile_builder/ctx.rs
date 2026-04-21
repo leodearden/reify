@@ -13,13 +13,14 @@
 
 use std::collections::HashMap;
 
-use reify_types::{Diagnostic, SourceSpan};
+use reify_syntax::ParsedModule;
+use reify_types::{ContentHash, Diagnostic, SourceSpan};
 
 use crate::entity::PendingBoundCheck;
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
-    CompiledConstraintDef, CompiledField, CompiledImport, CompiledTrait, CompiledUnit,
-    TopologyTemplate,
+    CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule, CompiledPurpose,
+    CompiledTrait, CompiledUnit, TopologyTemplate,
 };
 use crate::units::UnitRegistry;
 use reify_types::CompiledFunction;
@@ -82,6 +83,37 @@ impl CompilationCtx {
             alias_registry: TypeAliasRegistry::new(),
             resolution_enums: Vec::new(),
             resolution_functions: Vec::new(),
+        }
+    }
+
+    /// Consume this ctx and assemble the final [`CompiledModule`].
+    ///
+    /// Combines the owned state accumulated across all phases with the external
+    /// `compiled_purposes` (produced by `post_passes::phase_purposes`) and the
+    /// `content_hash` (produced by `hash::compute_module_hash`). Calls
+    /// `alias_registry.into_compiled()` to finalize type aliases.
+    pub(crate) fn into_compiled_module(
+        self,
+        parsed: &ParsedModule,
+        compiled_purposes: Vec<CompiledPurpose>,
+        content_hash: ContentHash,
+    ) -> CompiledModule {
+        let type_aliases = self.alias_registry.into_compiled();
+        CompiledModule {
+            path: parsed.path.clone(),
+            imports: self.imports,
+            enum_defs: self.enum_defs,
+            functions: self.functions,
+            trait_defs: self.trait_defs,
+            fields: self.fields,
+            compiled_purposes,
+            templates: self.templates,
+            units: self.compiled_units,
+            type_aliases,
+            constraint_defs: self.constraint_defs,
+            pragmas: parsed.pragmas.clone(),
+            diagnostics: self.diagnostics,
+            content_hash,
         }
     }
 }

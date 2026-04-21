@@ -36,14 +36,17 @@ pub(crate) use type_resolution::*;
 pub(crate) use type_compat::*;
 pub(crate) use scope::*;
 pub(crate) use expr::*;
+#[allow(unused_imports)]
 pub(crate) use traits::*;
 pub(crate) use annotations::*;
+#[allow(unused_imports)]
 pub(crate) use termination::*;
 pub(crate) use entity::*;
 pub(crate) use connect::*;
 pub(crate) use guards::*;
 pub(crate) use conformance::*;
 pub(crate) use trait_requirements::*;
+#[allow(unused_imports)]
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
 pub(crate) use geometry_boolean::*;
@@ -228,22 +231,5 @@ pub(crate) fn compile_with_prelude_refs(
     let content_hash =
         compile_builder::hash::compute_module_hash(&ctx, parsed, &compiled_purposes);
 
-    let type_aliases = ctx.alias_registry.into_compiled();
-
-    CompiledModule {
-        path: parsed.path.clone(),
-        imports: ctx.imports,
-        enum_defs: ctx.enum_defs,
-        functions: ctx.functions,
-        trait_defs: ctx.trait_defs,
-        fields: ctx.fields,
-        compiled_purposes,
-        templates: ctx.templates,
-        units: ctx.compiled_units,
-        type_aliases,
-        constraint_defs: ctx.constraint_defs,
-        pragmas: parsed.pragmas.clone(),
-        diagnostics: ctx.diagnostics,
-        content_hash,
-    }
+    ctx.into_compiled_module(parsed, compiled_purposes, content_hash)
 }
