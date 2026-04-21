@@ -42376,7 +42376,13 @@
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/edit_source.rs"
+          ]
         },
         "updatedAt": "2026-04-21T09:13:41.579Z"
       },
