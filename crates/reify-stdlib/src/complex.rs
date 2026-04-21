@@ -532,6 +532,28 @@ mod tests {
         assert_real_approx!(eval_builtin("magnitude", &[z]), 0.0);
     }
 
+    #[test]
+    fn magnitude_zero_dimensioned_complex_returns_scalar_zero() {
+        // magnitude(Complex{0,0,LENGTH}) → Scalar{0.0, LENGTH}.
+        //
+        // Unlike phase (which returns Undef for a zero vector since direction is
+        // mathematically undefined), magnitude of a zero complex is well-defined at
+        // zero. This test locks the contract that a zero dimensioned complex returns
+        // a zero Scalar carrying the original dimension — the builtin path through
+        // complex_abs → sanitize_value → from_real_scalar dispatches on LENGTH and
+        // produces Scalar{0.0, LENGTH}, NOT Real(0.0).
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_scalar_approx!(
+            eval_builtin("complex_magnitude", &[z]),
+            0.0,
+            DimensionVector::LENGTH
+        );
+    }
+
     // ── phase() tests (step-13) ───────────────────────────────────────────────
 
     #[test]

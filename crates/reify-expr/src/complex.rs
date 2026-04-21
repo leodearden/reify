@@ -303,6 +303,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn magnitude_zero_dimensioned_complex_returns_scalar_zero() {
+        // Complex{re:0.0, im:0.0, LENGTH}.magnitude → Scalar{0.0, LENGTH}
+        //
+        // Unlike phase (which returns Undef for a zero vector), magnitude of a
+        // zero complex is well-defined at zero. This test locks that zero
+        // dimensioned complexes return a zero Scalar with the ORIGINAL dimension,
+        // not Real(0.0) — mirrors the stdlib builtin-path test on the method path.
+        match call_complex_method(
+            0.0,
+            0.0,
+            DimensionVector::LENGTH,
+            Type::length(),
+            "magnitude",
+            Type::length(),
+        ) {
+            Value::Scalar { si_value, dimension } => {
+                assert!(
+                    si_value.abs() < 1e-15,
+                    "expected si_value=0.0, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{0.0, LENGTH}}, got {:?}", other),
+        }
+    }
+
     // ── method regressions: finite values still work ──────────────────────────
 
     #[test]
