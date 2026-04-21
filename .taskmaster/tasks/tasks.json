@@ -10315,7 +10315,7 @@
         "description": "Remove duplicate extract_dependency_trace call and consider pre-computing topological order at compile time",
         "details": "In crates/reify-eval/src/lib.rs:\n1. Replace duplicate extract_dependency_trace call at line ~2950 with let_traces[&node_id].clone() — the identical trace already exists in the let_traces HashMap built at lines 2919-2922\n2. Consider pre-computing let_cells/let_traces/topological order at compile time in TopologyTemplate since the expression graph is static after compilation. Store sorted_let_ids on TopologyTemplate to make evaluate_let_bindings a single linear pass with no per-call allocations.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"evaluate_let_bindings extract_dependency_trace topological sort\"\n  entities: [\"evaluate_let_bindings\", \"TopologyTemplate\", \"extract_dependency_trace\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10327,7 +10327,7 @@
             "crates/reify-eval/tests/boundary5_engine.rs"
           ]
         },
-        "updatedAt": "2026-04-21T19:43:26.330Z"
+        "updatedAt": "2026-04-21T22:22:04.816Z"
       },
       {
         "id": "471",
@@ -44109,7 +44109,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T22:22:04.245Z",
+      "lastModified": "2026-04-21T22:22:04.816Z",
       "taskCount": 2080,
       "completedCount": 1820,
       "tags": [
