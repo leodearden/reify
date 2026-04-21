@@ -42403,16 +42403,8 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/src/snapshot.rs",
-            "crates/reify-eval/src/dirty.rs",
-            "crates/reify-eval/src/demand.rs",
-            "crates/reify-eval/src/deps.rs"
-          ],
-          "modules": [
-            "crates/reify-eval/src"
-          ]
+          "files": [],
+          "modules": []
         },
         "updatedAt": "2026-04-20T12:20:07.989Z"
       },
