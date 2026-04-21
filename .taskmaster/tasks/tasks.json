@@ -43707,6 +43707,17 @@
             "crates/reify-eval/tests/recursive_unfold.rs"
           ]
         }
+      },
+      {
+        "id": "2071",
+        "title": "Narrow EvaluationGraph::is_auto_cell visibility to pub(crate)",
+        "description": "`EvaluationGraph::is_auto_cell` in crates/reify-eval/src/graph.rs:383-389 is currently `pub`, but its only consumer is the in-crate helper `deactivate_if_not_auto` (engine_edit.rs). Change visibility to `pub(crate) fn is_auto_cell` to stop leaking an internal predicate out of the crate's API surface. Trivial one-line change; ensure the test module (same crate) still compiles.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -43716,7 +43727,10 @@
       "completedCount": 1802,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:44:24.257Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-21T14:44:24.276Z"
     }
   }
 }
