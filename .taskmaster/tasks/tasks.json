@@ -34233,15 +34233,9 @@
             "gui/src-tauri/src/tests"
           ],
           "memory_hints": {
-            "entities": [
-              "Value::Field",
-              "differential operators",
-              "reify-eval"
-            ],
+            "entities": [],
             "queries": [
-              "Value Field lambda Box Arc clone differential operators",
-              "differential streaming computation immutable data sharing",
-              "deep clone performance source field evaluation"
+              "resolution for: Change Value::Field::lambda from Box<Value> to Arc<Value> to avoid deep-cloning source field in differential operators"
             ]
           },
           "files": [
@@ -42602,11 +42596,11 @@
         "description": "gui/src/__tests__/App.test.tsx:642-670 asserts mockFlyToEntity was called and that one selected group appears in PropertyEditor, but does not check that the entity path routed to selectionStore.selectEntity is 'Bracket'. A regression that selected the wrong entity would still satisfy `selectedGroups.length === 1`.\n\nFix: Also assert the selected group's identity (e.g. that the data-selected element corresponds to 'Bracket', or inspect selectionStore state) so the test verifies the value routed through, not merely that something got selected.\n\nSource: reviewer_comprehensive on task 2007.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:46:23.380Z",
+        "updatedAt": "2026-04-21T08:47:09.233Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -43676,7 +43670,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T08:46:58.133Z",
+      "lastModified": "2026-04-21T08:47:09.233Z",
       "taskCount": 2060,
       "completedCount": 1788,
       "tags": [
