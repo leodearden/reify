@@ -44014,6 +44014,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-21T22:05:18.858Z"
+      },
+      {
+        "id": "2083",
+        "title": "Restore positional predicate-order assertion in constraint_inst_label_multi_predicate",
+        "description": "`constraint_inst_label_multi_predicate` (crates/reify-compiler/tests/constraint_inst_tests.rs:413-444) was switched to label-based `.find()` lookups in task 848.2 to make it order-independent across instantiations. However, predicate order WITHIN a single instantiation is a meaningful contract — pred_idx must match source-order of predicates in the def — and the new test no longer exercises that.\n\nAdd a supplementary assertion that for a single instantiation the predicates appear in source order (e.g. filter to one inst_idx, verify pred_idx is monotonically increasing starting at 0). Keeps the cross-instantiation order-independence while restoring the intra-instantiation ordering guard.\n\nMemory hints: search \"constraint_inst_label_multi_predicate\", search \"pred_idx source order\", entities: ConstraintInst, pred_idx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44023,7 +44034,10 @@
       "completedCount": 1818,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T22:05:32.857Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-21T22:05:32.879Z"
     }
   }
 }
