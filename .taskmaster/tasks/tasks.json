@@ -39216,13 +39216,17 @@
         "description": "Follow-up from task 506 review (esc-506-23). Two small refinements to the prelude-shadowing regression tests and the accessor they use.",
         "details": "1. In crates/reify-eval/tests/stdlib_prelude_tests.rs:121-163 (`eval_is_idempotent_for_prelude_functions`), the user `symmetric_tolerance` body is `nominal + deviation`, identical to the prelude's definition. The value-level idempotency assertion (v1 == v2 == 0.007) therefore would still pass even if shadowing silently broke and eval() resolved to the prelude. Change the user impl to `nominal - deviation` (expected value 0.003) so `(v1 - 0.003).abs() < 1e-9` becomes an independent claim about per-eval resolution stability rather than a restatement of the adjacent shadowing test.\n\n2. In crates/reify-eval/src/lib.rs:585-589, `functions_count()` is `pub` (only `#[doc(hidden)]`) and was added solely for a test assertion, so it permanently exposes internal function-table size through the Engine API. Either (a) gate it with `#[cfg(any(test, feature = \"test-support\"))]`, or (b) move the accumulation-regression assertion into a `#[cfg(test)] mod tests` block inside lib.rs where `self.functions.len()` is reachable without a public accessor. Option (b) is preferred if feasible.\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs\n\nmemory_hints: search \"Engine eval prelude functions shadowing\" | entities: Engine, eval, functions_count",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:44.973Z",
+        "updatedAt": "2026-04-21T09:19:59.864Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/stdlib_prelude_tests.rs"
+          ],
           "files": []
         }
       },
@@ -43547,7 +43551,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:19:08.656Z",
+      "lastModified": "2026-04-21T09:19:59.864Z",
       "taskCount": 2060,
       "completedCount": 1796,
       "tags": [
