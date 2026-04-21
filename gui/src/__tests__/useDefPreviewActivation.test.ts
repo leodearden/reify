@@ -317,6 +317,78 @@ describe('createDefPreviewActivation', () => {
       });
     });
 
+    it('cursor moving mid-flight (after timer fires, before next timer fires) invalidates the in-flight getContainingDefinition', async () => {
+      const { createDefPreviewActivation } = await importHook();
+
+      // Two deferred promises: first is slow (still in-flight when cursor moves),
+      // second fires only after the second debounce.
+      let resolveFirstPromise!: (v: DefInfo | null) => void;
+      let resolveSecondPromise!: (v: DefInfo | null) => void;
+      const firstPromise = new Promise<DefInfo | null>(r => { resolveFirstPromise = r; });
+      const secondPromise = new Promise<DefInfo | null>(r => { resolveSecondPromise = r; });
+
+      let callCount = 0;
+      const getContainingDefinition = vi.fn().mockImplementation(() => {
+        callCount++;
+        return callCount === 1 ? firstPromise : secondPromise;
+      });
+      const getDefPreview = vi.fn();
+
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const editorStore = makeEditorStore(null);
+          const viewportStore = makeViewportStore();
+          const defPreviewStore = makeDefPreviewStore();
+
+          const { defInfo } = createDefPreviewActivation({
+            editorStore,
+            viewportStore,
+            defPreviewStore,
+            getContainingDefinition,
+            getDefPreview,
+            debounceMs: 200,
+          });
+
+          // Step 1: set cursor to pos A
+          editorStore.setCursorPosition({ line: 1, column: 1 });
+
+          // Step 2: advance past debounce — first timer fires; getContainingDefinition
+          // is called and awaiting firstPromise. T1's callback has cleared timerId.
+          await vi.advanceTimersByTimeAsync(250);
+          expect(getContainingDefinition).toHaveBeenCalledTimes(1);
+
+          // Step 3: cursor moves to pos B — second debounce scheduled.
+          // T1 is still awaiting firstPromise; T2 has NOT fired yet.
+          editorStore.setCursorPosition({ line: 2, column: 2 });
+
+          // Step 4: resolve the *first* (now stale) deferred with DefInfo for 'A'
+          const defInfoA: DefInfo = { name: 'A', kind: 'structure', span: { start: 0, end: 10 } };
+          resolveFirstPromise(defInfoA);
+          await Promise.resolve();
+          await Promise.resolve();
+
+          // The stale 'A' result must NOT have been applied:
+          expect(viewportStore.setDefPath).not.toHaveBeenCalledWith('def-preview', 'A');
+          expect(defPreviewStore.loadPreview).not.toHaveBeenCalledWith('A', getDefPreview);
+          expect(defInfo()).toBeNull();
+
+          // Step 5: fire the second debounce and resolve with null — no stale 'A' effects
+          await vi.advanceTimersByTimeAsync(250);
+          resolveSecondPromise(null);
+          await Promise.resolve();
+          await Promise.resolve();
+
+          // After the second request resolves null, setDefPath(null) and clearPreview
+          // should be called — but no 'A' effects should have fired at any point
+          expect(viewportStore.setDefPath).not.toHaveBeenCalledWith('def-preview', 'A');
+          expect(defPreviewStore.loadPreview).not.toHaveBeenCalledWith('A', getDefPreview);
+
+          dispose();
+          done();
+        });
+      });
+    });
+
     it('stale null resolution does not clear preview established by a newer call', async () => {
       const { createDefPreviewActivation } = await importHook();
 
