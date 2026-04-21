@@ -34210,11 +34210,11 @@
         "description": "In crates/reify-types/src/value.rs (~line 164), Value::Field::lambda is currently Box<Value>. In crates/reify-expr/src/calculus.rs, compute_gradient (~line 225), compute_divergence (~line 294), compute_curl (~line 365), and compute_laplacian (~line 423) each do `lambda: Box::new(field_val.clone())`, which deep-clones the entire source field (including its own inner lambda, captures, etc.) on every gradient/divergence/curl/laplacian call. Replacing Box<Value> with Arc<Value> would make these clones O(1) refcount bumps.\n\nScope: cross-crate type change. All constructors and destructurings of Value::Field need updating in: crates/reify-types/src, crates/reify-expr/src, crates/reify-eval/src, crates/reify-stdlib/src, crates/reify-test-support/src, gui/src-tauri/src, plus test code in crates/reify-expr/tests. Watch for derive impls (PartialEq, Clone, Debug, Ord, Hash) which should work transparently with Arc.\n\nVerification: cargo test -p reify-expr after the type change, plus full workspace build. Benchmark gradient sampling if a bench exists.\n\nContext: this is the one remaining unresolved item from task 412. Items (2) coords cloning and (3) captures.clone() have already been fixed — coords via scratch buffers + std::mem::take in eval_perturbed_point, captures via ValueMap's im::HashMap backing.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:46:58.133Z",
+        "updatedAt": "2026-04-21T08:47:25.841Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -34247,7 +34247,9 @@
             "crates/reify-test-support/src/lib.rs"
           ],
           "done_provenance": {
-            "commit": "8f127d421d285efb50b4febdcb4081e0bae4dbc2"
+            "commit": "8ca6f871eab5e99bf24ad08cb30d5c9e84b2d6e4",
+            "commit_input": "8ca6f871e",
+            "note": "refactor(reify-types): change Value::Field.lambda from Box<Value> to Arc<Value> — already landed on main, touches 14 files across the task's module list; characterization test field_lambda_arc_sharing.rs pins Arc::ptr_eq invariant"
           }
         }
       },
@@ -43671,9 +43673,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T08:47:24.780Z",
+      "lastModified": "2026-04-21T08:47:25.841Z",
       "taskCount": 2060,
-      "completedCount": 1789,
+      "completedCount": 1790,
       "tags": [
         "master"
       ]
