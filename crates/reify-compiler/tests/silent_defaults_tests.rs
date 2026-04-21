@@ -687,3 +687,37 @@ fn index_into_non_collection_emits_diagnostic() {
         errors
     );
 }
+
+// ── task-2066 step-3: quantifier over non-collection emits diagnostic ─────
+
+/// Quantifier over a non-collection type should emit a diagnostic.
+///
+/// `x` has type `Int` (whole-number literal `5`), so `forall i in x : i > 0`
+/// hits the currently-silent `_ => Type::Real` fallback at expr.rs:1635-1642
+/// and silently infers `elem_type = Type::Real` with no diagnostic.
+/// Before the fix (task-2066), no diagnostic is emitted.
+///
+/// Regression guard: guards expr.rs:1635-1642 against silent fallback (task-2066).
+#[test]
+fn quantifier_over_non_collection_emits_diagnostic() {
+    let source = r#"
+        structure S {
+            let x = 5
+            constraint forall i in x : i > 0
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let has_iter_error = errors.iter().any(|d| {
+        d.message.contains("cannot iterate")
+            || d.message.contains("forall")
+            || d.message.contains("exists")
+            || d.message.contains("non-collection")
+    });
+    assert!(
+        has_iter_error,
+        "expected diagnostic about iterating over non-collection type, got: {:?}",
+        errors
+    );
+}
