@@ -220,6 +220,13 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
     // Return a gradient field: source=Gradient, lambda slot stores the original field.
     // The sample handler detects lambda=Field + source=Gradient and dispatches to
     // compute_numerical_gradient_at_point.
+    //
+    // FIXME(perf): `field_val.clone()` copies the outer Value::Field struct
+    // (domain_type, codomain_type, source); only the inner lambda field is O(1)
+    // via Arc::clone.  A full O(1) wrap requires callers to pass Arc<Value> so
+    // the entire source field can be ref-counted rather than cloned.  This needs
+    // the evaluator's `evaluated_args: Vec<Value>` to become `Vec<Arc<Value>>`
+    // — a broader architectural change tracked as a follow-up task.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -288,7 +295,8 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
         dimensionless_fallback(codomain_quantity),
     );
 
-    // Result: scalar field with dimensionally-correct codomain
+    // Result: scalar field with dimensionally-correct codomain.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -359,7 +367,8 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
         dimensionless_fallback(codomain_quantity),
     );
 
-    // Result: vector field with dimensionally-correct codomain
+    // Result: vector field with dimensionally-correct codomain.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: Type::vec3(result_component),
@@ -417,7 +426,8 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
         dimensionless_fallback(codomain_type),
     );
 
-    // Result: scalar field with dimensionally-correct codomain
+    // Result: scalar field with dimensionally-correct codomain.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
