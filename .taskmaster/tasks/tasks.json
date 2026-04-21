@@ -36744,15 +36744,12 @@
           ],
           "memory_hints": {
             "entities": [
-              "Viewport",
-              "ViewStore",
-              "Named views",
-              "viewStateStore"
+              "Viewport.tsx",
+              "meshManager.ts"
             ],
             "queries": [
-              "viewport view decoupling abstraction boundary store",
-              "viewStateStore named views copy-on-write",
-              "Multi-viewport design viewport store decoupling"
+              "viewport-view decoupling Named views COW invariant",
+              "Viewport.tsx visibility createEffect meshManager orphan-prune coupled invariant"
             ]
           }
         },
