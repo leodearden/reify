@@ -189,25 +189,48 @@ impl Engine {
     /// messages with a human-readable label, when a label is present.
     ///
     /// This enriches engine-level diagnostics for constraint def instantiations
-    /// so that messages read "constraint MinWall[0] violated" instead of
-    /// "constraint S#constraint[0] violated". When `label` is `None` (inline
-    /// constraints without a label), the messages are returned unchanged.
+    /// so that messages read "constraint MinWall#0[0] violated" instead of
+    /// "constraint S#constraint[0] violated". Replacement covers BOTH the
+    /// top-level `Diagnostic::message` AND every `DiagnosticLabel::message`
+    /// inside `Diagnostic::labels` — downstream presenters may render either
+    /// field, so either carrying the raw id would leak the opaque form.
+    ///
+    /// In-place mutation (`&mut Vec<Diagnostic>`) avoids the `.collect()`
+    /// round-trip used before task 847.2 and enables a `contains`-guarded
+    /// debug-assert: when a label is supplied but no message references the
+    /// ConstraintNodeId, the id format has drifted from what the engine
+    /// emits and future callers should investigate. When `label` is `None`
+    /// (inline constraints without a label), the messages are returned
+    /// unchanged.
     pub(crate) fn labeled_diagnostics(
-        messages: Vec<Diagnostic>,
+        messages: &mut Vec<Diagnostic>,
         id: &reify_types::ConstraintNodeId,
         label: Option<&str>,
-    ) -> Vec<Diagnostic> {
+    ) {
         let Some(lbl) = label else {
-            return messages;
+            return;
         };
         let id_str = id.to_string();
-        messages
-            .into_iter()
-            .map(|mut d| {
+        let mut replaced_any = false;
+        for d in messages.iter_mut() {
+            if d.message.contains(&id_str) {
                 d.message = d.message.replace(&id_str, lbl);
-                d
-            })
-            .collect()
+                replaced_any = true;
+            }
+            for lbl_obj in d.labels.iter_mut() {
+                if lbl_obj.message.contains(&id_str) {
+                    lbl_obj.message = lbl_obj.message.replace(&id_str, lbl);
+                    replaced_any = true;
+                }
+            }
+        }
+        debug_assert!(
+            replaced_any || messages.is_empty(),
+            "labeled_diagnostics: label={:?} provided but ConstraintNodeId {} did not \
+             appear in any message — id format drift?",
+            label,
+            id_str,
+        );
     }
 
     /// Incrementally re-evaluate and check constraints after changing a parameter.
@@ -263,11 +286,9 @@ impl Engine {
             );
             diagnostics.extend(dispatch_diags);
             for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
-                diagnostics.extend(Self::labeled_diagnostics(
-                    result.diagnostics.messages,
-                    &result.id,
-                    cnode.label.as_deref(),
-                ));
+                let mut msgs = result.diagnostics.messages;
+                Self::labeled_diagnostics(&mut msgs, &result.id, cnode.label.as_deref());
+                diagnostics.extend(msgs);
                 constraint_results.push(ConstraintCheckEntry {
                     id: result.id,
                     label: cnode.label.clone(),
@@ -382,11 +403,9 @@ impl Engine {
             diagnostics.extend(dispatch_diags);
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                diagnostics.extend(Self::labeled_diagnostics(
-                    result.diagnostics.messages,
-                    &result.id,
-                    compiled.label.as_deref(),
-                ));
+                let mut msgs = result.diagnostics.messages;
+                Self::labeled_diagnostics(&mut msgs, &result.id, compiled.label.as_deref());
+                diagnostics.extend(msgs);
                 constraint_results.push(ConstraintCheckEntry {
                     id: result.id,
                     label: compiled.label.clone(),
