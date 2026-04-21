@@ -257,50 +257,96 @@ mod tests {
     // ── assert_orientation_approx diagnostic tests ──────────────────────────
 
     #[test]
-    fn orient_identity_per_component_diagnostic() {
-        let result = std::panic::catch_unwind(|| {
-            assert_orientation_approx!(
-                Value::Orientation {
-                    w: 1.0,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0
-                },
-                0.5, // wrong w
-                0.0,
-                0.0,
-                0.0
-            );
-        });
-        let err = result.expect_err("expected assert_orientation_approx to panic");
-        let msg = err
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .or_else(|| err.downcast_ref::<&str>().copied())
-            .unwrap_or("");
+    fn orient_per_component_diagnostics() {
+        // Table-driven replacement for the four per-component diagnostic tests.
+        // Each entry: (expected label in panic message, closure that triggers the wrong component).
+        let cases: [(&str, fn()); 4] = [
+            ("w:", || {
+                assert_orientation_approx!(
+                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    0.5, 0.0, 0.0, 0.0  // wrong w
+                );
+            }),
+            ("x:", || {
+                assert_orientation_approx!(
+                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    1.0, 0.5, 0.0, 0.0  // wrong x
+                );
+            }),
+            ("y:", || {
+                assert_orientation_approx!(
+                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    1.0, 0.0, 0.5, 0.0  // wrong y
+                );
+            }),
+            ("z:", || {
+                assert_orientation_approx!(
+                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    1.0, 0.0, 0.0, 0.5  // wrong z
+                );
+            }),
+        ];
+        // Collect all label mismatches rather than short-circuiting, so a regression
+        // that breaks multiple components surfaces every broken label in one run.
+        let mut failures: Vec<String> = Vec::new();
+        for (label, case) in cases {
+            let err = std::panic::catch_unwind(case)
+                .expect_err("expected assert_orientation_approx to panic");
+            let msg = err
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| err.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            if !msg.contains(label) {
+                failures.push(format!("label {label:?}: panic message was {msg:?}"));
+            }
+        }
         assert!(
-            msg.contains("w:"),
-            "expected panic message to contain 'w:', got: {msg:?}"
+            failures.is_empty(),
+            "per-component diagnostic failures:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    // ── assert_orientation_approx tol = tests ───────────────────────────────
+
+    #[test]
+    fn explicit_tolerance_loose_passes() {
+        // tol=1e-2 allows x=1e-3 to pass; the default 1e-12 tolerance would reject this.
+        assert_orientation_approx!(
+            Value::Orientation {
+                w: 1.0,
+                x: 1.0e-3,
+                y: 0.0,
+                z: 0.0
+            },
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            tol = 1e-2
         );
     }
 
     #[test]
-    fn orient_per_component_diagnostic_x() {
+    fn explicit_tolerance_tight_panics() {
+        // tol=1e-6 is tighter than the x offset of 1e-5 — macro must panic with "x:" in message.
         let result = std::panic::catch_unwind(|| {
             assert_orientation_approx!(
                 Value::Orientation {
                     w: 1.0,
-                    x: 0.0,
+                    x: 1e-5,
                     y: 0.0,
                     z: 0.0
                 },
                 1.0,
-                0.5, // wrong x
                 0.0,
-                0.0
+                0.0,
+                0.0,
+                tol = 1e-6
             );
         });
-        let err = result.expect_err("expected assert_orientation_approx to panic");
+        let err = result.expect_err("expected assert_orientation_approx with tight tol to panic");
         let msg = err
             .downcast_ref::<String>()
             .map(|s| s.as_str())
@@ -309,62 +355,6 @@ mod tests {
         assert!(
             msg.contains("x:"),
             "expected panic message to contain 'x:', got: {msg:?}"
-        );
-    }
-
-    #[test]
-    fn orient_per_component_diagnostic_y() {
-        let result = std::panic::catch_unwind(|| {
-            assert_orientation_approx!(
-                Value::Orientation {
-                    w: 1.0,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0
-                },
-                1.0,
-                0.0,
-                0.5, // wrong y
-                0.0
-            );
-        });
-        let err = result.expect_err("expected assert_orientation_approx to panic");
-        let msg = err
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .or_else(|| err.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(
-            msg.contains("y:"),
-            "expected panic message to contain 'y:', got: {msg:?}"
-        );
-    }
-
-    #[test]
-    fn orient_per_component_diagnostic_z() {
-        let result = std::panic::catch_unwind(|| {
-            assert_orientation_approx!(
-                Value::Orientation {
-                    w: 1.0,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0
-                },
-                1.0,
-                0.0,
-                0.0,
-                0.5 // wrong z
-            );
-        });
-        let err = result.expect_err("expected assert_orientation_approx to panic");
-        let msg = err
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .or_else(|| err.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(
-            msg.contains("z:"),
-            "expected panic message to contain 'z:', got: {msg:?}"
         );
     }
 
@@ -439,6 +429,27 @@ mod tests {
             s,
             0.0,
             0.0,
+            sign_insensitive = 1e-10
+        );
+    }
+
+    #[test]
+    fn sign_insensitive_macro_fully_populated_quaternion() {
+        // Exercises the neg_ok branch with all four components non-zero.
+        // Unlike sign_insensitive_macro_non_trivial_quaternion (y=z=0), the non-zero y/z here
+        // force the neg_ok y+$ey and z+$ez branches to evaluate a non-trivial sign flip.
+        // The positive-form assertion is omitted — it is dominated by sign_insensitive_macro_positive.
+        assert_orientation_approx!(
+            Value::Orientation {
+                w: -0.5,
+                x: -0.5,
+                y: -0.5,
+                z: -0.5
+            },
+            0.5,
+            0.5,
+            0.5,
+            0.5,
             sign_insensitive = 1e-10
         );
     }
