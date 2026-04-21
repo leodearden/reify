@@ -494,6 +494,40 @@ mod tests {
     }
 
     #[test]
+    fn sign_insensitive_macro_fully_populated_quaternion() {
+        // (0.5, 0.5, 0.5, 0.5): all four components non-zero, unlike non_trivial which has y=z=0.
+        // The non-zero y and z force the neg_ok y+$ey and z+$ez branches to actually flip sign.
+        // Positive form: actual (0.5, 0.5, 0.5, 0.5) must match expected (0.5, 0.5, 0.5, 0.5).
+        assert_orientation_approx!(
+            Value::Orientation {
+                w: 0.5,
+                x: 0.5,
+                y: 0.5,
+                z: 0.5
+            },
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            sign_insensitive = 1e-10
+        );
+        // Negated form: actual (-0.5, -0.5, -0.5, -0.5) must also match expected (0.5, 0.5, 0.5, 0.5).
+        assert_orientation_approx!(
+            Value::Orientation {
+                w: -0.5,
+                x: -0.5,
+                y: -0.5,
+                z: -0.5
+            },
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            sign_insensitive = 1e-10
+        );
+    }
+
+    #[test]
     fn sign_insensitive_macro_rejects_wrong_value() {
         // w=0.5,x=0.5,y=0.5,z=0.5 does not match ±(1,0,0,0) — macro should panic.
         let result = std::panic::catch_unwind(|| {
