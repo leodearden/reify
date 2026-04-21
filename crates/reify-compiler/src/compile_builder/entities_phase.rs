@@ -283,3 +283,86 @@ pub(crate) fn phase_pending_bound_checks(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::build_constraint_def_registry;
+    use crate::CompiledModule;
+    use crate::types::CompiledConstraintDef;
+    use reify_types::{ContentHash, ModulePath, SourceSpan};
+
+    fn mk_cd(name: &str, is_pub: bool) -> CompiledConstraintDef {
+        CompiledConstraintDef {
+            name: name.to_string(),
+            is_pub,
+            type_params: vec![],
+            params: vec![],
+            predicates: vec![],
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash::of_str(""),
+            pragmas: vec![],
+            annotations: vec![],
+            annotations_optimized_target: None,
+        }
+    }
+
+    fn mk_module(path: &str, cds: Vec<CompiledConstraintDef>) -> CompiledModule {
+        CompiledModule {
+            path: ModulePath::single(path),
+            imports: vec![],
+            enum_defs: vec![],
+            functions: vec![],
+            trait_defs: vec![],
+            fields: vec![],
+            compiled_purposes: vec![],
+            templates: vec![],
+            units: vec![],
+            type_aliases: vec![],
+            constraint_defs: cds,
+            pragmas: vec![],
+            diagnostics: vec![],
+            content_hash: ContentHash::of_str(""),
+        }
+    }
+
+    /// Covers four behaviours of `build_constraint_def_registry`:
+    ///
+    /// 1. Local-only: empty prelude → local def appears in registry.
+    /// 2. Prelude pub inclusion: pub defs included, non-pub filtered.
+    /// 3. Local overrides prelude: local def wins on name collision.
+    /// 4. First prelude wins: first-imported module wins on cross-prelude collision.
+    #[test]
+    fn build_constraint_def_registry_prelude_first_local_override() {
+        // Case 1: local-only baseline.
+        let local_a = vec![mk_cd("A", false)];
+        let reg = build_constraint_def_registry(&local_a, &[]);
+        assert!(
+            std::ptr::eq(reg["A"], &local_a[0]),
+            "local def should appear in registry"
+        );
+
+        // Case 2: prelude pub inclusion — pub included, non-pub filtered.
+        let prelude_bc = mk_module("prelude_bc", vec![mk_cd("B", true), mk_cd("C", false)]);
+        let reg = build_constraint_def_registry(&[], &[&prelude_bc]);
+        assert!(reg.contains_key("B"), "pub prelude def 'B' should be included");
+        assert!(!reg.contains_key("C"), "non-pub prelude def 'C' should be excluded");
+
+        // Case 3: local overrides prelude.
+        let local_d = vec![mk_cd("D", false)];
+        let prelude_d = mk_module("prelude_d", vec![mk_cd("D", true)]);
+        let reg = build_constraint_def_registry(&local_d, &[&prelude_d]);
+        assert!(
+            std::ptr::eq(reg["D"], &local_d[0]),
+            "local def should override prelude def for 'D'"
+        );
+
+        // Case 4: first prelude wins on cross-prelude collision.
+        let prelude_e1 = mk_module("prelude_e1", vec![mk_cd("E", true)]);
+        let prelude_e2 = mk_module("prelude_e2", vec![mk_cd("E", true)]);
+        let reg = build_constraint_def_registry(&[], &[&prelude_e1, &prelude_e2]);
+        assert!(
+            std::ptr::eq(reg["E"], &prelude_e1.constraint_defs[0]),
+            "first prelude's def should win on cross-prelude collision"
+        );
+    }
+}
