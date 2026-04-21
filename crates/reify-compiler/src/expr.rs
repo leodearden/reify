@@ -1650,7 +1650,21 @@ pub(crate) fn compile_expr_guarded(
             } else {
                 match &compiled_collection.result_type {
                     Type::List(elem) | Type::Set(elem) => *elem.clone(),
-                    _ => Type::Real, // fallback for unresolved types
+                    // task-2066: emit a diagnostic instead of silently defaulting to Type::Real.
+                    // Type::Error propagates into quant_scope so the bound variable also
+                    // carries Type::Error; existing is_error() guards in the predicate suppress
+                    // cascade (anti-cascade policy).
+                    _ => {
+                        let n = diagnostics.len();
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "cannot iterate over non-collection type '{}' in forall/exists: expected List<_> or Set<_>",
+                                compiled_collection.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "not iterable")),
+                        );
+                        make_poison_type(diagnostics, n)
+                    }
                 }
             };
             quant_scope
