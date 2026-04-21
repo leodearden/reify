@@ -14,7 +14,7 @@ export { createViewStateStore } from './viewStateStore';
 export type { ViewState } from './viewStateStore';
 export type { ViewStateStore } from './viewStateStore';
 
-export { createViewportStore } from './viewportStore';
+export { createViewportStore, DEFAULT_VIEWPORTS } from './viewportStore';
 export type { ViewportState, ViewportStoreState, CameraState, ViewportStore } from './viewportStore';
 
 export { generateDefaultView, generateAllGeometryView, generatePurposeViews, defaultVisibilityFor } from './autoViewGenerator';

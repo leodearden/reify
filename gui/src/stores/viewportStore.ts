@@ -44,29 +44,50 @@ const DEFAULT_CAMERA: CameraState = {
 };
 
 // ---------------------------------------------------------------------------
+// Default viewport layout
+// ---------------------------------------------------------------------------
+
+/**
+ * The default two-viewport layout seeded into a fresh store (design-main +
+ * def-preview). Exported so tests and call sites can extend or override it
+ * without importing the raw constants.
+ */
+export const DEFAULT_VIEWPORTS: Record<string, ViewportState> = {
+  'design-main': {
+    id: 'design-main',
+    type: 'design',
+    viewId: null,
+    defPath: null,
+    active: true,
+    camera: { ...DEFAULT_CAMERA },
+  },
+  'def-preview': {
+    id: 'def-preview',
+    type: 'def-preview',
+    viewId: null,
+    defPath: null,
+    active: false,
+    camera: { ...DEFAULT_CAMERA },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Store factory
 // ---------------------------------------------------------------------------
 
-export function createViewportStore() {
+/**
+ * Create a viewport store.
+ *
+ * @param initialViewports - Optional override for the initial `viewports` map.
+ *   Defaults to `DEFAULT_VIEWPORTS` (design-main + def-preview). Pass a
+ *   custom map to construct minimal stores in tests or to support alternative
+ *   layouts (single-viewport embedded view, four-up, etc.).
+ */
+export function createViewportStore(
+  initialViewports?: Record<string, ViewportState>,
+) {
   const [state, setState] = createStore<ViewportStoreState>({
-    viewports: {
-      'design-main': {
-        id: 'design-main',
-        type: 'design',
-        viewId: null,
-        defPath: null,
-        active: true,
-        camera: { ...DEFAULT_CAMERA },
-      },
-      'def-preview': {
-        id: 'def-preview',
-        type: 'def-preview',
-        viewId: null,
-        defPath: null,
-        active: false,
-        camera: { ...DEFAULT_CAMERA },
-      },
-    },
+    viewports: initialViewports ?? DEFAULT_VIEWPORTS,
   });
 
   // ---------------------------------------------------------------------------
