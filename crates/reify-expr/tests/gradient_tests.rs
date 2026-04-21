@@ -3,6 +3,8 @@
 //! Tests for numerical gradient via central differences on analytical fields.
 //! Includes edge-case guardrails and positive tests for gradient computation.
 
+use std::sync::Arc;
+
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
@@ -41,7 +43,7 @@ fn gradient_field_with_non_scalar_domain_quantity_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(Value::Undef), // lambda doesn't matter for this test
+        lambda: Arc::new(Value::Undef), // lambda doesn't matter for this test
     };
 
     let expr = make_function_call(
@@ -263,7 +265,7 @@ fn gradient_wrong_size_tensor_point_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     // Wrong-size point: 2 components instead of 3
@@ -367,7 +369,7 @@ fn partial_undef_propagation_lambda_returns_undef_on_one_axis() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -424,7 +426,7 @@ fn gradient_1d_linear_field() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -526,7 +528,7 @@ fn gradient_3d_scalar_field() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -594,7 +596,7 @@ fn gradient_field_with_undef_lambda_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(Value::Undef),
+        lambda: Arc::new(Value::Undef),
     };
 
     let expr = make_function_call(
@@ -636,7 +638,7 @@ fn gradient_sampled_field_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Sampled,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let expr = make_function_call(
@@ -736,7 +738,7 @@ fn gradient_undef_propagation_during_perturbation() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -836,7 +838,7 @@ fn gradient_1d_real_domain_cubic() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -970,7 +972,7 @@ fn gradient_dimensioned_field() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1128,7 +1130,7 @@ fn gradient_at_origin() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1248,7 +1250,7 @@ fn gradient_dimensioned_scalar_lambda_args() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1380,7 +1382,7 @@ fn gradient_1d_dimensioned_field() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1479,7 +1481,7 @@ fn gradient_1param_constant_field() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1565,7 +1567,7 @@ fn gradient_1param_magnitude_field() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1681,7 +1683,7 @@ fn gradient_of_gradient_field_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1769,7 +1771,7 @@ fn gradient_nan_in_point_coord_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1848,7 +1850,7 @@ fn gradient_inf_in_scalar_coord_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1921,7 +1923,7 @@ fn gradient_nan_in_dimensioned_scalar_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -1996,7 +1998,7 @@ fn gradient_lambda_produces_nan_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -2064,7 +2066,7 @@ fn gradient_lambda_produces_inf_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -2143,7 +2145,7 @@ fn gradient_deriv_overflow_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -2271,7 +2273,7 @@ fn gradient_3d_codomain_type_is_rq() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -2344,7 +2346,7 @@ fn gradient_1d_codomain_type_is_rq() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -2417,7 +2419,7 @@ fn gradient_dimensionless_codomain_type_unchanged() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -2494,7 +2496,7 @@ fn gradient_mixed_dimensionless_codomain_type() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -2575,7 +2577,7 @@ fn gradient_explicit_dimensionless_scalar_codomain() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -2634,7 +2636,7 @@ fn gradient_imported_field_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Imported,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let expr = make_function_call(
@@ -2684,7 +2686,7 @@ fn gradient_composed_field_returns_field() {
         domain_type: Type::Real,
         codomain_type: Type::Real,
         source: FieldSourceKind::Composed,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let expr = make_function_call(
@@ -2771,7 +2773,7 @@ fn make_gradient_field(
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -3276,7 +3278,7 @@ fn gradient_tensor_point_returns_undef() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -3429,7 +3431,7 @@ fn make_decomposed_n3_gradient_field() -> (Value, Type, Type) {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -3557,7 +3559,7 @@ fn gradient_decomposed_n3_irrational_coords() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -3668,7 +3670,7 @@ fn gradient_codomain_type_with_dimensioned_domain() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -3802,7 +3804,7 @@ fn gradient_codomain_type_nonlinear_dimensioned_domain() {
         domain_type: domain_type.clone(),
         codomain_type: codomain_type.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
 
     let field_type = Type::Field {
@@ -3941,7 +3943,7 @@ mod trust_the_declaration_tests {
             domain_type: domain_type.clone(),
             codomain_type: codomain_type.clone(),
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(lambda),
+            lambda: Arc::new(lambda),
         };
 
         let grad_expr = make_function_call(
@@ -3998,7 +4000,7 @@ mod trust_the_declaration_tests {
             domain_type: domain_type.clone(),
             codomain_type: codomain_type.clone(),
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(lambda),
+            lambda: Arc::new(lambda),
         };
 
         let grad_expr = make_function_call(
@@ -4062,7 +4064,7 @@ mod trust_the_declaration_tests {
             domain_type: domain_type.clone(),
             codomain_type: codomain_type.clone(),
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(lambda),
+            lambda: Arc::new(lambda),
         };
 
         let grad_field_type = Type::Field {

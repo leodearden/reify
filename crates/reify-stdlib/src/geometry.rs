@@ -401,6 +401,8 @@ use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::construct_point_or_vector;
     use crate::eval_builtin;
     use reify_types::{DimensionVector, Value};
@@ -458,7 +460,7 @@ mod tests {
             domain_type: reify_types::Type::StructureRef("Point3".into()),
             codomain_type: reify_types::Type::length(),
             source: reify_types::FieldSourceKind::Analytical,
-            lambda: Box::new(Value::Undef),
+            lambda: Arc::new(Value::Undef),
         };
         let result = eval_builtin("gradient", &[field]);
         assert!(
@@ -474,7 +476,7 @@ mod tests {
             domain_type: reify_types::Type::StructureRef("Point3".into()),
             codomain_type: reify_types::Type::StructureRef("Vector3".into()),
             source: reify_types::FieldSourceKind::Analytical,
-            lambda: Box::new(Value::Undef),
+            lambda: Arc::new(Value::Undef),
         };
         let result = eval_builtin("divergence", &[field]);
         assert!(
@@ -490,7 +492,7 @@ mod tests {
             domain_type: reify_types::Type::StructureRef("Point3".into()),
             codomain_type: reify_types::Type::StructureRef("Vector3".into()),
             source: reify_types::FieldSourceKind::Analytical,
-            lambda: Box::new(Value::Undef),
+            lambda: Arc::new(Value::Undef),
         };
         let result = eval_builtin("curl", &[field]);
         assert!(
@@ -508,7 +510,7 @@ mod tests {
             domain_type: reify_types::Type::StructureRef("Point3".into()),
             codomain_type: reify_types::Type::length(),
             source: reify_types::FieldSourceKind::Analytical,
-            lambda: Box::new(Value::Undef),
+            lambda: Arc::new(Value::Undef),
         };
         let result = eval_builtin("sample", &[field, Value::Int(42)]);
         assert!(

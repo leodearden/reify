@@ -8,6 +8,8 @@
 //! in calculus.rs: the original field is stored in the lambda slot, and the sample
 //! handler in lib.rs dispatches to pointwise evaluation via reify_stdlib.
 
+use std::sync::Arc;
+
 use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
 
 use super::{EvalContext, apply_lambda_with_point_unpacking};
@@ -129,11 +131,14 @@ fn wrap_tensor_field(field_val: &Value, op: &str, source_kind: FieldSourceKind) 
 
     let result_codomain = scalar_type_for_dim(elem_dim);
 
+    // FIXME(perf): `field_val.clone()` copies the outer Value::Field struct; only the
+    // inner lambda is O(1) via Arc::clone.  See compute_gradient in calculus.rs for
+    // the full note on the Arc<Value> caller optimization tracked as a follow-up task.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: source_kind,
-        lambda: Box::new(field_val.clone()),
+        lambda: Arc::new(field_val.clone()),
     }
 }
 
@@ -162,11 +167,12 @@ pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
     let scalar_ty = scalar_type_for_dim(elem_dim);
     let result_codomain = Type::List(Box::new(scalar_ty));
 
+    // FIXME(perf): see wrap_tensor_field for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: FieldSourceKind::PrincipalStresses,
-        lambda: Box::new(field_val.clone()),
+        lambda: Arc::new(field_val.clone()),
     }
 }
 
@@ -212,7 +218,7 @@ pub(crate) fn compute_safety_factor(field_val: &Value, yield_val: &Value) -> Val
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
         source: FieldSourceKind::SafetyFactor,
-        lambda: Box::new(captured),
+        lambda: Arc::new(captured),
     }
 }
 

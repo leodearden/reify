@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde_json::json;
 
 use crate::types::*;
@@ -491,7 +493,7 @@ fn format_value_field() {
         domain_type: Type::Real,
         codomain_type: Type::Real,
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(Value::Undef),
+        lambda: Arc::new(Value::Undef),
     };
     assert_eq!(
         format_value(&v),

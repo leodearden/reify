@@ -25,7 +25,7 @@
 //! `m11_full_integration.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use reify_compiler::CompiledModule;
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
@@ -637,7 +637,7 @@ fn checkpoint_value_variant_coverage() {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(Value::Lambda {
+            lambda: Arc::new(Value::Lambda {
                 params: vec![],
                 body: Box::new(lambda_body.clone()),
                 captures: ValueMap::new(),

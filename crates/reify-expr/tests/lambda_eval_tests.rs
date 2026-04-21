@@ -1,5 +1,7 @@
 //! Lambda evaluation tests.
 
+use std::sync::Arc;
+
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
@@ -757,7 +759,7 @@ fn sample_field_with_undef_lambda_returns_undef() {
         domain_type: Type::Real,
         codomain_type: Type::Real,
         source: FieldSourceKind::Sampled,
-        lambda: Box::new(Value::Undef),
+        lambda: Arc::new(Value::Undef),
     };
     let expr = make_function_call(
         "sample",

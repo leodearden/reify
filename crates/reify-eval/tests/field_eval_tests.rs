@@ -3,6 +3,8 @@
 //! Tests for evaluating `field def` declarations into Value::Field values
 //! and applying field operations (sample, gradient, etc.).
 
+use std::sync::Arc;
+
 use reify_expr::{EvalContext, eval_expr};
 use reify_test_support::{eval_source, make_engine, parse_and_compile};
 use reify_types::{
@@ -245,7 +247,7 @@ fn make_constant_tensor_field(tensor: Value) -> (Value, Type) {
         domain_type: domain.clone(),
         codomain_type: codomain.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
     let field_type = Type::Field {
         domain: Box::new(domain),
@@ -846,7 +848,7 @@ fn eval_sample_von_mises_spatially_varying_field() {
         domain_type: domain.clone(),
         codomain_type: codomain.clone(),
         source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
+        lambda: Arc::new(lambda),
     };
     let field_type = Type::Field {
         domain: Box::new(domain),
