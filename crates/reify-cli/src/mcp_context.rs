@@ -44,6 +44,17 @@ struct CliState {
     engine_construction_count: usize,
 }
 
+impl CliState {
+    /// Clear both `user_overrides` and `warned_overrides` together, enforcing
+    /// the invariant that the two collections are always pruned as a unit.
+    /// Called from `load_file`, `open_file`, and the early-return branch of
+    /// `reapply_user_overrides` (when there is nothing left to dedupe against).
+    fn clear_overrides(&mut self) {
+        self.user_overrides.clear();
+        self.warned_overrides.clear();
+    }
+}
+
 /// CLI-mode implementation of ReifyToolContext.
 ///
 /// Backed by a real Engine with interior mutability via Mutex<CliState>.
@@ -114,8 +125,7 @@ impl CliToolContext {
         let mut state = self.lock_state();
         // load_file semantically starts over with a new file — clear any prior
         // user overrides so get_parameters() returns fresh module defaults.
-        state.user_overrides.clear();
-        state.warned_overrides.clear();
+        state.clear_overrides();
         ensure_engine(&mut state).eval(&compiled);
         state.files.insert(
             abs_path.clone(),
@@ -193,9 +203,10 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 ///   snapshot.
 fn reapply_user_overrides(state: &mut CliState) {
     if state.user_overrides.is_empty() {
-        // Nothing left to dedupe against — prune warned_overrides so stale
-        // entries from earlier mismatches on cleared overrides don't linger.
-        state.warned_overrides.clear();
+        // Nothing left to dedupe against — prune both override collections so
+        // stale entries from earlier mismatches don't linger.  user_overrides
+        // is already empty here; clear_overrides() also prunes warned_overrides.
+        state.clear_overrides();
         return;
     }
     let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
@@ -676,8 +687,7 @@ impl ReifyToolContext for CliToolContext {
         if let Some(compiled) = pipeline_result {
             // open_file semantically starts over with a new file — clear any
             // prior user overrides so get_parameters() returns fresh module defaults.
-            state.user_overrides.clear();
-            state.warned_overrides.clear();
+            state.clear_overrides();
             ensure_engine(&mut state).eval(&compiled);
             state.compiled = Some(compiled);
         }
@@ -1068,19 +1078,23 @@ structure Bracket {
         );
     }
 
-    /// Verify that `reapply_user_overrides` clears `warned_overrides` when
-    /// `user_overrides` is empty.
+    /// Invariant-guard test: `warned_overrides` must remain a subset of the
+    /// cells currently in `user_overrides`.  Specifically, when `user_overrides`
+    /// is empty, `warned_overrides` must also be empty after the next
+    /// `reapply_user_overrides` call.
     ///
     /// The scenario: `warned_overrides` was populated by a prior `TypeKindMismatch`
     /// reapply, then `user_overrides` was manually cleared (simulating a caller that
     /// removes all overrides without going through `load_file`/`open_file`).  Calling
     /// `update_source` with valid source drives `reapply_user_overrides` through its
-    /// early-return branch, which must also prune the now-stale `warned_overrides`.
+    /// early-return branch, which delegates to `state.clear_overrides()` to prune
+    /// the now-stale `warned_overrides`.
     ///
-    /// Fails against pre-fix code because the early-return branch does not call
-    /// `state.warned_overrides.clear()`.
+    /// Note: no public API can reach this state today — `load_file`/`open_file`
+    /// clear both collections together, and `set_parameter` always re-pushes to
+    /// `user_overrides`.  The test exercises a defensive invariant guard.
     #[test]
-    fn reapply_user_overrides_clears_warned_when_user_overrides_is_empty() {
+    fn reapply_user_overrides_maintains_warned_subset_invariant() {
         let ctx = fresh_ctx();
         ctx.load_file(BRACKET_PATH)
             .expect("load_file should succeed");
