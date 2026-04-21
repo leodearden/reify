@@ -1,4 +1,4 @@
-import { Show, createMemo, onCleanup } from 'solid-js';
+import { Show, createEffect, createMemo, onCleanup } from 'solid-js';
 import { Viewport } from './Viewport';
 import type { ViewportProps } from './Viewport';
 import { Splitter } from '../components/Splitter';
@@ -81,6 +81,18 @@ export function DualViewport(props: DualViewportProps) {
       (props.viewportStore.state.viewports['design-main']?.forceExpanded ?? false),
   );
 
+  // Clear inner ref captures when the design viewport unmounts.
+  // Equivalent to the onCleanup inside the former function-children pattern,
+  // but compatible with SolidJS's JSX.Element children type for <Show>.
+  createEffect(() => {
+    if (designEffective()) {
+      onCleanup(() => {
+        innerFitToView = null;
+        innerFlyToEntity = null;
+      });
+    }
+  });
+
   // Label for the def-preview strip
   const defPreviewLabel = createMemo(() => {
     const name = props.defName();
@@ -144,33 +156,22 @@ export function DualViewport(props: DualViewportProps) {
             </div>
           }
         >
-          {() => {
-            // onCleanup registered here binds to the Show's owner scope,
-            // so it fires when designEffective() becomes false (Viewport unmounts).
-            // This clears the capture so the proxy becomes a safe no-op.
-            onCleanup(() => {
-              innerFitToView = null;
-              innerFlyToEntity = null;
-            });
-            return (
-              <div class={styles.viewportWrapper}>
-                <Viewport
-                  viewportId="design-main"
-                  viewportStore={props.viewportStore}
-                  meshes={props.engineStore.state.meshes}
-                  onSelect={props.onSelect}
-                  onHover={props.onHover}
-                  hoveredEntity={props.hoveredEntity}
-                  selectedEntity={props.selectedEntity}
-                  selectedEntities={props.selectedEntities}
-                  evalStatus={props.evalStatus}
-                  fitToViewRef={(fn) => { innerFitToView = fn; }}
-                  flyToEntityRef={(fn) => { innerFlyToEntity = fn; }}
-                  entityVisibility={props.entityVisibility}
-                />
-              </div>
-            );
-          }}
+          <div class={styles.viewportWrapper}>
+            <Viewport
+              viewportId="design-main"
+              viewportStore={props.viewportStore}
+              meshes={props.engineStore.state.meshes}
+              onSelect={props.onSelect}
+              onHover={props.onHover}
+              hoveredEntity={props.hoveredEntity}
+              selectedEntity={props.selectedEntity}
+              selectedEntities={props.selectedEntities}
+              evalStatus={props.evalStatus}
+              fitToViewRef={(fn) => { innerFitToView = fn; }}
+              flyToEntityRef={(fn) => { innerFlyToEntity = fn; }}
+              entityVisibility={props.entityVisibility}
+            />
+          </div>
         </Show>
       </Show>
     </div>
