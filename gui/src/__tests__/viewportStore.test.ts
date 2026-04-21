@@ -187,4 +187,77 @@ describe('viewportStore', () => {
       });
     });
   });
+
+  describe('store isolation', () => {
+    it('mutation of store A does not leak to store B', () => {
+      createRoot((dispose) => {
+        const storeA = createViewportStore();
+        // Mutate storeA via all public mutation APIs
+        storeA.setActiveViewport('def-preview');
+        storeA.assignView('design-main', 'auto:default');
+        storeA.updateCamera('design-main', { position: [7, 8, 9], target: [1, 2, 3], up: [0, 0, 1], zoom: 4 });
+
+        // Create a fresh storeB — must be completely pristine
+        const storeB = createViewportStore();
+        expect(storeB.state.viewports['design-main'].active).toBe(true);
+        expect(storeB.state.viewports['def-preview'].active).toBe(false);
+        expect(storeB.state.viewports['design-main'].viewId).toBeNull();
+        expect(storeB.state.viewports['design-main'].camera).toEqual({
+          position: [5, 5, 5],
+          target: [0, 0, 0],
+          up: [0, 1, 0],
+          zoom: 1,
+        });
+        dispose();
+      });
+    });
+
+    it('camera tuples are not aliased between two fresh stores', () => {
+      createRoot((dispose) => {
+        const storeA = createViewportStore();
+        const storeB = createViewportStore();
+
+        // Different store instances must not share array references
+        expect(storeA.state.viewports['design-main'].camera.position).not.toBe(
+          storeB.state.viewports['design-main'].camera.position,
+        );
+        expect(storeA.state.viewports['design-main'].camera.target).not.toBe(
+          storeB.state.viewports['design-main'].camera.target,
+        );
+        expect(storeA.state.viewports['design-main'].camera.up).not.toBe(
+          storeB.state.viewports['design-main'].camera.up,
+        );
+
+        // Within the same store, no aliasing between the two seeded viewports
+        expect(storeA.state.viewports['design-main'].camera.position).not.toBe(
+          storeA.state.viewports['def-preview'].camera.position,
+        );
+        expect(storeA.state.viewports['design-main'].camera.target).not.toBe(
+          storeA.state.viewports['def-preview'].camera.target,
+        );
+        expect(storeA.state.viewports['design-main'].camera.up).not.toBe(
+          storeA.state.viewports['def-preview'].camera.up,
+        );
+        dispose();
+      });
+    });
+
+    it('camera tuples are not aliased with a subsequently-created store even after mutation', () => {
+      createRoot((dispose) => {
+        const storeA = createViewportStore();
+        // Mutate storeA's camera
+        storeA.updateCamera('design-main', { position: [7, 8, 9], target: [1, 2, 3], up: [0, 0, 1], zoom: 4 });
+
+        // Create storeB after mutation — must still have the pristine default camera
+        const storeB = createViewportStore();
+        expect(storeB.state.viewports['design-main'].camera).toEqual({
+          position: [5, 5, 5],
+          target: [0, 0, 0],
+          up: [0, 1, 0],
+          zoom: 1,
+        });
+        dispose();
+      });
+    });
+  });
 });
