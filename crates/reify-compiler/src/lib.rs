@@ -270,37 +270,7 @@ pub(crate) fn compile_with_prelude_refs(
     compile_builder::units_phase::phase_units(&mut ctx, prelude, &decl_refs.unit_refs);
 
     // Compile type alias declarations via DFS resolution with cycle detection.
-    // Build a lookup map of all alias declarations, detecting duplicates.
-    let mut alias_decl_map: HashMap<String, &reify_syntax::TypeAliasDecl> = HashMap::new();
-    for alias_decl in &decl_refs.alias_refs {
-        if let Some(first) = alias_decl_map.get(&alias_decl.name) {
-            ctx.diagnostics.push(
-                Diagnostic::error(format!(
-                    "duplicate type alias declaration '{}'",
-                    alias_decl.name
-                ))
-                .with_label(DiagnosticLabel::new(
-                    alias_decl.span,
-                    "duplicate declared here",
-                ))
-                .with_label(DiagnosticLabel::new(first.span, "first declared here")),
-            );
-        } else {
-            alias_decl_map.insert(alias_decl.name.clone(), alias_decl);
-        }
-    }
-
-    // DFS-resolve each alias with cycle detection via resolving-set.
-    let mut resolving = HashSet::new();
-    for alias_decl in &decl_refs.alias_refs {
-        resolve_alias_dfs(
-            &alias_decl.name,
-            &alias_decl_map,
-            &mut ctx.alias_registry,
-            &mut resolving,
-            &mut ctx.diagnostics,
-        );
-    }
+    compile_builder::aliases_phase::phase_aliases(&mut ctx, &decl_refs.alias_refs);
 
     // Build resolution_enums: prelude enums + module-local enums.
     // resolution_enums is used for type resolution during compilation;
