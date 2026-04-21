@@ -36800,9 +36800,27 @@
             "gui/src/__tests__/viewPersistence.test.ts"
           ],
           "modules": [
-            "gui/src/stores",
-            "gui/src/utils",
-            "gui/src"
+            "gui/src-tauri/src/commands.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/tests",
+            "gui/src/App.tsx",
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/DesignTree.test.tsx",
+            "gui/src/__tests__/ViewSelector.test.tsx",
+            "gui/src/__tests__/bridge.test.ts",
+            "gui/src/__tests__/fuzzyPathMatcher.test.ts",
+            "gui/src/__tests__/sidecarPersistence.test.ts",
+            "gui/src/__tests__/viewPersistence.test.ts",
+            "gui/src/__tests__/viewStateStore.test.ts",
+            "gui/src/bridge.ts",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/panels/ViewSelector.tsx",
+            "gui/src/panels/index.ts",
+            "gui/src/stores/fuzzyPathMatcher.ts",
+            "gui/src/stores/index.ts",
+            "gui/src/stores/sidecarPersistence.ts",
+            "gui/src/stores/viewPersistence.ts",
+            "gui/src/stores/viewStateStore.ts"
           ],
           "memory_hints": {
             "entities": [],
@@ -43773,7 +43791,9 @@
       "completedCount": 1810,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T17:54:07.975Z",
+      "description": "Tasks for master context"
     }
   }
 }
