@@ -43595,7 +43595,14 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T14:16:35.107Z"
+        "updatedAt": "2026-04-21T14:16:35.107Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
+        }
       },
       {
         "id": "2070",
@@ -43617,7 +43624,9 @@
       "completedCount": 1801,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:20:01.260Z",
+      "description": "Tasks for master context"
     }
   }
 }
