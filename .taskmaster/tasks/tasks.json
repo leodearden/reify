@@ -36718,7 +36718,7 @@
         "description": "Decouple viewports from views so that multiple viewports can independently reference different views (or the same view with different cameras). Introduce a viewportStore that manages viewport instances, their view assignments, and camera states. This is the abstraction boundary that enables dual viewports and future split viewports.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 3.2 (New Stores — viewportStore) and 9 (Multi-Viewport Architecture).\n\n### Implementation\n\n1. **New store: `stores/viewportStore.ts`**\n   - `viewports: Map<string, ViewportState>`\n   - `ViewportState`:\n     - `id: string` — stable ID (e.g., \"design-main\", \"def-preview\")\n     - `type: \"design\" | \"def-preview\"`\n     - `viewId: string | null` — which view this viewport shows (design viewports only)\n     - `defPath: string | null` — which definition to preview (def-preview only)\n     - `camera: { position: [x,y,z], target: [x,y,z], up: [x,y,z], zoom: number }`\n     - `active: boolean` — is this the focused viewport?\n   - `setActiveViewport(id)`: focus a viewport\n   - `assignView(viewportId, viewId)`: assign a view to a viewport\n   - `updateCamera(viewportId, cameraState)`: persist camera state\n   - Initialize with two viewports: \"design-main\" and \"def-preview\"\n\n2. **Refactor `viewport/Viewport.tsx`**\n   - Accept a `viewportId: string` prop instead of being a singleton\n   - Read view assignment from `viewportStore` -> `viewStateStore`\n   - Read camera state from `viewportStore`\n   - Each viewport instance manages its own Three.js scene/camera/renderer\n   - Save camera state back to viewportStore on orbit/pan/zoom\n\n3. **Refactor `viewport/meshManager.ts`**\n   - Accept a viewport context (which view to consult for visibility)\n   - Multiple meshManager instances can coexist (one per viewport)\n   - Shared geometry buffers where possible (multiple viewports showing the same mesh data)\n\n4. **Refactor `viewport/selection.ts`**\n   - Selection is global (shared across viewports) — selecting in one viewport highlights in all\n   - Raycasting operates on the active viewport's scene\n\n5. **Design tree panel**\n   - View selector controls the active design viewport's view assignment\n   - Switching views in the tree panel updates `viewportStore.assignView(\"design-main\", newViewId)`\n\n### Requirements covered\nVP-4, VP-8, Section 9 (9.1, 9.2)\n\n### memory_hints\n- search: \"Viewport.tsx Three.js scene\"\n- search: \"meshManager sync scene\"\n- search: \"scene.ts camera renderer\"\n- search: \"OrbitControls camera state\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1746"
         ],
@@ -36756,7 +36756,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-20T20:50:16.631Z"
+        "updatedAt": "2026-04-21T06:30:51.592Z"
       },
       {
         "id": "1748",
@@ -42887,13 +42887,13 @@
         "description": "After task #2033 lands (tests moved out), extract the `MergeContext` struct and `collect_all_requirements` fn (L697-926, ~230 lines) from `crates/reify-compiler/src/conformance.rs` into a new sibling file `crates/reify-compiler/src/trait_requirements.rs`.\n\nThese functions are conceptually distinct from `check_trait_conformance`: they walk the trait refinement hierarchy (handling diamond patterns, depth guards, MAX_TRAIT_DEPTH) to collect all requirements and defaults — an independent responsibility from comparing structure members against a flattened requirement set.\n\nImplementation:\n- Create `crates/reify-compiler/src/trait_requirements.rs` with `MergeContext` struct + `impl MergeContext` + `collect_all_requirements` fn. Add `pub(crate) mod trait_requirements;` and `pub(crate) use trait_requirements::*;` to lib.rs.\n- Update `conformance.rs` — the remaining `check_trait_conformance` call site already uses `collect_all_requirements` as a free fn, so re-export makes the move transparent.\n- Keep `MAX_TRAIT_DEPTH` const with `collect_all_requirements` (it's only used there).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically.\n- `conformance.rs` drops to ~830 lines with only `check_trait_conformance` and `check_trait_arg_conformance`.\n\nWhy: separates the hierarchy-walk responsibility from the conformance-check responsibility, reducing the set of tasks that need to touch conformance.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2033"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-20T21:08:21.078Z",
+        "updatedAt": "2026-04-21T06:30:51.703Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -42959,11 +42959,11 @@
         "description": "Existing tests (`reapply_user_overrides_warns_on_type_kind_mismatch`, `reapply_user_overrides_warns_on_dimension_mismatch`) only verify that the FIRST occurrence of a mismatch emits exactly one WARN. The warn-dedupe feature (downgrade to debug on repeats, clear on success) is not exercised. A regression that breaks the HashSet dedupe (hashing bug, missing insert, spurious clear) would silently re-emit WARNs forever with no test catching it.\n\nAdd at least two tests in `crates/reify-cli/src/mcp_context.rs`:\n1. `reapply_user_overrides_warn_deduped_on_repeat`: call `update_source` with `BRACKET_INT_WIDTH` twice and assert the WARN delta from target `reify_cli::mcp_context` is 1 (second call downgraded to debug).\n2. `reapply_user_overrides_warn_cleared_on_success`: mismatch → compatible → mismatch sequence, assert total WARN count is 2 (dedupe entry cleared on the successful reapply, so the second mismatch warns again).\n\nBoth tests should use the existing `run_reapply_with_source` test harness (or a small extension) to keep the target-filtered counter idiom consistent.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T20:41:59.235Z",
+        "updatedAt": "2026-04-21T06:30:51.823Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43602,7 +43602,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T06:30:51.480Z",
+      "lastModified": "2026-04-21T06:30:51.823Z",
       "taskCount": 2058,
       "completedCount": 1792,
       "tags": [
