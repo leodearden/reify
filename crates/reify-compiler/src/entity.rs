@@ -1258,13 +1258,15 @@ pub(crate) fn compile_entity(
                 // Allocate this instantiation's inst_idx before the per-predicate
                 // loop so all predicates from one `constraint MinWall(...)` share
                 // the same inst_idx — predicates differ only by pred_idx.
-                let inst_idx = {
-                    let entry = constraint_inst_counts
-                        .entry(ci.name.clone())
-                        .or_insert(0);
+                // Uses a get_mut/insert split to avoid cloning `ci.name` on the
+                // common case where the entry already exists.
+                let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
                     let idx = *entry;
                     *entry += 1;
                     idx
+                } else {
+                    constraint_inst_counts.insert(ci.name.clone(), 1);
+                    0
                 };
 
                 // For each predicate in the constraint def, substitute params with args
