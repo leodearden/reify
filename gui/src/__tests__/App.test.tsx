@@ -3060,10 +3060,11 @@ describe('DualViewport wiring', () => {
 
     // Switch to fake timers AFTER App is mounted — the hook's createEffect will
     // schedule its setTimeout using the fake timer from this point on.
-    // NOTE: advanceTimersByTimeAsync(250) will also fire any other outstanding
-    // setTimeouts registered post-mount (e.g. the savePanelLayout debounce at
-    // App.tsx:176). This is acceptable for this smoke-test but is action-at-a-distance
-    // coupling; prefer the isolated hook tests in useDefPreviewActivation.test.ts
+    // `vi.useFakeTimers()` is installed after mount, so only timers created
+    // post-mount — the activation hook's 200ms debounce — are affected by
+    // `advanceTimersByTimeAsync`. The `savePanelLayout` setTimeout at App.tsx:180
+    // is scheduled with real timers during mount and is not owned by the fake
+    // clock; prefer the isolated hook tests in useDefPreviewActivation.test.ts
     // for exhaustive debounce/race-condition coverage.
     vi.useFakeTimers();
     try {
