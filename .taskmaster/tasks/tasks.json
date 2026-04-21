@@ -10573,7 +10573,7 @@
         "description": "The `_distance_f64` binding at `crates/reify-eval/src/lib.rs:3232` computes a value solely for its `?`-operator side effect (finiteness validation), then discards it via underscore prefix. This has multiple issues: (1) it was added out-of-scope by task 481 (LSP-only task), (2) the pattern is fragile — a future cleanup could delete the \"unused\" binding and silently remove the validation guard, (3) no test verifies that non-finite distances are rejected.",
         "details": "## Changes needed\n\n1. Replace `let _distance_f64 = distance.as_f64().filter(|v| v.is_finite())?;` with an explicit validation:\n   ```rust\n   // Validate finiteness — reject NaN/Inf distances\n   if !distance.as_f64().map_or(false, |v| v.is_finite()) {\n       return None;\n   }\n   ```\n   Or use `let _ = distance.as_f64().filter(|v| v.is_finite())?;` with a comment.\n\n2. Add a test that `compile_geometry_op` (or the enclosing function) rejects non-finite distance values.\n\n## memory_hints\n- search: \"extrude distance validation reify-eval\"\n- entity: \"GeometryOp\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10582,7 +10582,7 @@
           "files": [],
           "modules": []
         },
-        "updatedAt": "2026-04-21T09:13:25.633Z"
+        "updatedAt": "2026-04-21T09:13:53.968Z"
       },
       {
         "id": "484",
@@ -43589,7 +43589,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:13:52.649Z",
+      "lastModified": "2026-04-21T09:13:53.968Z",
       "taskCount": 2060,
       "completedCount": 1794,
       "tags": [
