@@ -42520,7 +42520,7 @@
         "description": "Currently Engine::eval (crates/reify-eval/src/lib.rs:827) rebuilds the Snapshot from the CompiledModule from scratch and re-evaluates every Value node on every call. Engine::edit_param (crates/reify-eval/src/lib.rs:1544) already has the incremental machinery (dirty-cone ∩ demand cone, topological eval of affected nodes only) but scoped to param changes.\n\nTask 480 closed part of the LSP gap by adding eval_cached fast-path when the CompiledModule's content_hash is unchanged. The remaining gap, which this task targets, is structural source edits (different content_hash) where most of the module is still the same — the common LSP didChange case.\n\nedit_source would:\n1. Take a fresh CompiledModule (post-recompile of edited source).\n2. Diff against the prior snapshot via stable node identity (source-range or name-path keying, not positional cell IDs, since today cell IDs are assigned positionally within a fresh compile).\n3. Compute changed node set → dirty cone → demand cone intersection.\n4. Re-evaluate only affected Value nodes; preserve unchanged snapshot state for everything else.\n\nPrimary driver: LSP didChange (tasks 479/480) — keystroke-rate structural edits where ~99% of module is unchanged but content_hash differs, so 480's eval_cached path falls through to cold-start Engine::eval. MCP update_source (task 2008, now using ensure_engine() for prelude/function-table reuse) also benefits but less acutely.\n\nKnown complications:\n- Stable identity across recompiles: need a keying scheme that survives compiler internals (source-range + name-path is a candidate; needs a design pass).\n- Additive/deletive edits have no pre-image — need a correctness-preserving fallback (evaluate newly-added nodes; drop deleted ones and anything that depended on them).\n- Compiler changes that break the identity scheme would silently regress incrementality. Needs a test that cross-checks edit_source against a cold eval on the same final source.\n\nCoordinate with: 479/480 (LSP didChange hot path), 2008 (CLI MCP update_source). Caching strategy should stay uniform across entry points.\n\nmemory_hints:\n- search: \"Engine edit_param dirty cone demand cone incremental\"\n- search: \"CompiledModule content_hash stable node identity\"\n- search: \"LSP didChange eval_cached\"\n- entity: \"Engine\"\n- entity: \"EvalState\"\n- entity: \"CompiledModule\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "479",
           "480"
@@ -42537,7 +42537,7 @@
             "crates/reify-eval/tests/edit_source.rs"
           ]
         },
-        "updatedAt": "2026-04-21T19:43:27.555Z"
+        "updatedAt": "2026-04-21T19:43:32.847Z"
       },
       {
         "id": "2017",
@@ -43853,7 +43853,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T19:43:32.344Z",
+      "lastModified": "2026-04-21T19:43:32.848Z",
       "taskCount": 2066,
       "completedCount": 1811,
       "tags": [
