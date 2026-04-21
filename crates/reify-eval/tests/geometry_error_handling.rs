@@ -2413,3 +2413,180 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
         &["missing required geometry argument", "ox", "mirror"],
     );
 }
+
+// ---------------------------------------------------------------------------
+// Modify missing-arg coverage: Shell / Thicken / Draft / Chamfer
+// ---------------------------------------------------------------------------
+
+/// Shell modify op rejects a missing `thickness` arg at compile time.
+#[test]
+fn build_modify_shell_missing_thickness_no_kernel_error() {
+    use reify_compiler::ModifyKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let shell_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Shell,
+        target: GeomRef::Step(0),
+        args: vec![], // thickness deliberately omitted
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, shell_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_shell_missing_thickness"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "thickness", "shell"],
+    );
+}
+
+/// Thicken modify op rejects a missing `offset` arg at compile time.
+#[test]
+fn build_modify_thicken_missing_offset_no_kernel_error() {
+    use reify_compiler::ModifyKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let thicken_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Thicken,
+        target: GeomRef::Step(0),
+        args: vec![], // offset deliberately omitted
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, thicken_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_thicken_missing_offset"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "offset", "thicken"],
+    );
+}
+
+/// Draft modify op rejects a missing `angle` arg at compile time.
+#[test]
+fn build_modify_draft_missing_angle_no_kernel_error() {
+    use reify_compiler::ModifyKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let draft_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Draft,
+        target: GeomRef::Step(0),
+        args: vec![], // angle deliberately omitted
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, draft_op])
+        .build();
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_draft_missing_angle"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "angle", "draft"],
+    );
+}
+
+/// Chamfer modify op rejects a missing `distance` arg at compile time.
+#[test]
+fn build_modify_chamfer_missing_distance_no_kernel_error() {
+    use reify_compiler::ModifyKind;
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let chamfer_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Chamfer,
+        target: GeomRef::Step(0),
+        args: vec![], // distance deliberately omitted
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, chamfer_op])
+        .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_chamfer_missing_distance",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "distance", "chamfer"],
+    );
+}
