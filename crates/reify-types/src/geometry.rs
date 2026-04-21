@@ -60,6 +60,15 @@ pub enum GeometryOp {
     Cylinder { radius: Value, height: Value },
     /// Create a sphere primitive.
     Sphere { radius: Value },
+    /// Create a tube (hollow cylinder) along Z axis.
+    ///
+    /// Composed at the kernel layer as `boolean_cut(make_cylinder(outer_r, h),
+    /// make_cylinder(inner_r, h))`. Requires `inner_r < outer_r`.
+    Tube {
+        outer_r: Value,
+        inner_r: Value,
+        height: Value,
+    },
     /// Boolean union.
     Union {
         left: GeometryHandleId,
@@ -164,6 +173,14 @@ pub enum GeometryOp {
     Sweep {
         profile: GeometryHandleId,
         path: GeometryHandleId,
+    },
+    /// Create a pipe along `path` with circular cross-section of `radius`.
+    ///
+    /// Composed at the kernel layer as `make_pipe(make_circle_face(radius, 0.0),
+    /// path)`. The circle cross-section is a private kernel-internal detail.
+    Pipe {
+        path: GeometryHandleId,
+        radius: Value,
     },
     /// Extrude a 2D profile symmetrically along Z axis — distance/2 each way.
     ///
