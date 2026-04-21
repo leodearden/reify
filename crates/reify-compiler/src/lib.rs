@@ -245,15 +245,14 @@ pub(crate) fn compile_with_prelude_refs(
     parsed: &reify_syntax::ParsedModule,
     prelude: &[&CompiledModule],
 ) -> CompiledModule {
-    let mut imports = Vec::new();
-    let mut functions = Vec::new();
-    let mut fields = Vec::new();
-    let mut templates = Vec::new();
-    let mut diagnostics = Vec::new();
+    // All durable mutable state owned by the phases lives on ctx. Phase-local
+    // ref collections (fn_refs, trait_refs, etc.) stay as locals because they
+    // borrow from `parsed`.
+    let mut ctx = compile_builder::ctx::CompilationCtx::new();
 
     // Forward parse errors as diagnostics
     for err in &parsed.errors {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::warning(format!("parse error: {}", err.message))
                 .with_label(DiagnosticLabel::new(err.span, "parse error")),
         );
@@ -263,7 +262,7 @@ pub(crate) fn compile_with_prelude_refs(
     const KNOWN_MODULE_PRAGMAS: &[&str] = &["no_prelude", "precision", "solver", "kernel", "version"];
     for pragma in &parsed.pragmas {
         if !KNOWN_MODULE_PRAGMAS.contains(&pragma.name.as_str()) {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
                     .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
             );
@@ -279,21 +278,16 @@ pub(crate) fn compile_with_prelude_refs(
     // Consolidated pre-pass: iterate declarations once, collecting references
     // for deferred compilation. This replaces 4 separate loops (enum, function,
     // trait, field) with a single match dispatch.
-    let mut enum_defs: Vec<reify_types::EnumDef> = Vec::new();
     let mut fn_refs: Vec<&reify_syntax::FnDef> = Vec::new();
     let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
     let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
     let mut unit_refs: Vec<&reify_syntax::UnitDecl> = Vec::new();
     let mut alias_refs: Vec<&reify_syntax::TypeAliasDecl> = Vec::new();
-    // Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
-    // constraints, and fields all share the entity name space.
-    // Maps name → (first_span, first_kind_label).
-    let mut seen_entity_names: HashMap<String, (SourceSpan, &'static str)> = HashMap::new();
 
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Enum(e) => {
-                enum_defs.push(reify_types::EnumDef {
+                ctx.enum_defs.push(reify_types::EnumDef {
                     name: e.name.clone(),
                     variants: e.variants.clone(),
                 });
@@ -305,9 +299,9 @@ pub(crate) fn compile_with_prelude_refs(
                 trait_refs.push(trait_decl);
             }
             reify_syntax::Declaration::Field(field_def) => {
-                if let Some((first_span, first_kind)) = seen_entity_names.get(&field_def.name) {
+                if let Some((first_span, first_kind)) = ctx.seen_entity_names.get(&field_def.name) {
                     // Duplicate entity name — emit error and skip
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error(format!(
                             "duplicate entity definition '{}'",
                             field_def.name
@@ -319,14 +313,15 @@ pub(crate) fn compile_with_prelude_refs(
                         )),
                     );
                 } else {
-                    seen_entity_names.insert(field_def.name.clone(), (field_def.span, "field"));
+                    ctx.seen_entity_names
+                        .insert(field_def.name.clone(), (field_def.span, "field"));
                     field_refs.push(field_def);
                 }
             }
             reify_syntax::Declaration::Structure(structure) => {
-                if let Some((first_span, first_kind)) = seen_entity_names.get(&structure.name) {
+                if let Some((first_span, first_kind)) = ctx.seen_entity_names.get(&structure.name) {
                     // Duplicate entity name — emit error; pass 2 will skip compilation.
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error(format!(
                             "duplicate entity definition '{}'",
                             structure.name
@@ -341,13 +336,14 @@ pub(crate) fn compile_with_prelude_refs(
                         )),
                     );
                 } else {
-                    seen_entity_names.insert(structure.name.clone(), (structure.span, "structure"));
+                    ctx.seen_entity_names
+                        .insert(structure.name.clone(), (structure.span, "structure"));
                 }
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
-                if let Some((first_span, first_kind)) = seen_entity_names.get(&occurrence.name) {
+                if let Some((first_span, first_kind)) = ctx.seen_entity_names.get(&occurrence.name) {
                     // Duplicate entity name — emit error; pass 2 will skip compilation.
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error(format!(
                             "duplicate entity definition '{}'",
                             occurrence.name
@@ -362,15 +358,15 @@ pub(crate) fn compile_with_prelude_refs(
                         )),
                     );
                 } else {
-                    seen_entity_names
+                    ctx.seen_entity_names
                         .insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
                 }
             }
             reify_syntax::Declaration::Constraint(constraint) => {
                 // Constraints reserve names in the entity namespace (spec §4.2.1)
                 // even though constraint compilation is not yet implemented.
-                if let Some((first_span, first_kind)) = seen_entity_names.get(&constraint.name) {
-                    diagnostics.push(
+                if let Some((first_span, first_kind)) = ctx.seen_entity_names.get(&constraint.name) {
+                    ctx.diagnostics.push(
                         Diagnostic::error(format!(
                             "duplicate entity definition '{}'",
                             constraint.name
@@ -385,7 +381,7 @@ pub(crate) fn compile_with_prelude_refs(
                         )),
                     );
                 } else {
-                    seen_entity_names
+                    ctx.seen_entity_names
                         .insert(constraint.name.clone(), (constraint.span, "constraint"));
                 }
             }
@@ -402,7 +398,6 @@ pub(crate) fn compile_with_prelude_refs(
 
     // Compile unit declarations in source order (so later units can reference earlier ones).
     // Unit hashes are included in the module content hash.
-    let mut unit_registry = UnitRegistry::new();
 
     // Seed prelude units into the registry so module-local code can reference them.
     // Only pub units are seeded (private units are module-internal).
@@ -412,12 +407,12 @@ pub(crate) fn compile_with_prelude_refs(
             if cu.is_pub {
                 // Detect cross-prelude collision before overwriting: if another
                 // prelude module already seeded this unit name, emit a warning.
-                if let Some(existing) = unit_registry.lookup(&cu.name) {
+                if let Some(existing) = ctx.unit_registry.lookup(&cu.name) {
                     let first_module: &str = existing
                         .source_module
                         .as_deref()
                         .unwrap_or("<unknown>");
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::warning(format!(
                             "prelude unit '{}' declared in both '{}' and '{}'; last-wins",
                             cu.name, first_module, module_display
@@ -428,7 +423,7 @@ pub(crate) fn compile_with_prelude_refs(
                         )),
                     );
                 }
-                unit_registry.seed_prelude_unit(UnitEntry {
+                ctx.unit_registry.seed_prelude_unit(UnitEntry {
                     name: cu.name.clone(),
                     dimension: cu.dimension,
                     factor: cu.factor,
@@ -442,14 +437,13 @@ pub(crate) fn compile_with_prelude_refs(
         }
     }
 
-    let mut compiled_units: Vec<CompiledUnit> = Vec::new();
     for unit_decl in &unit_refs {
-        if let Some(entry) = compile_unit(unit_decl, &unit_registry, &mut diagnostics) {
-            match unit_registry.register(entry) {
+        if let Some(entry) = compile_unit(unit_decl, &ctx.unit_registry, &mut ctx.diagnostics) {
+            match ctx.unit_registry.register(entry) {
                 Ok(()) => {
                     // Entry was registered; retrieve it to build CompiledUnit
-                    let entry = unit_registry.lookup(&unit_decl.name).unwrap();
-                    compiled_units.push(CompiledUnit {
+                    let entry = ctx.unit_registry.lookup(&unit_decl.name).unwrap();
+                    ctx.compiled_units.push(CompiledUnit {
                         name: entry.name.clone(),
                         is_pub: entry.is_pub,
                         dimension: entry.dimension,
@@ -460,14 +454,14 @@ pub(crate) fn compile_with_prelude_refs(
                 }
                 Err(dup_entry) => {
                     // Duplicate unit name — find the original entry to determine provenance.
-                    let original = unit_registry.lookup(&dup_entry.name).unwrap();
+                    let original = ctx.unit_registry.lookup(&dup_entry.name).unwrap();
                     match &original.source_module {
                         Some(m) if m.starts_with("std/") => {
                             // Original is a stdlib prelude unit.
                             // Emit a two-label diagnostic: primary is the user's
                             // duplicate decl; secondary is the prelude sentinel
                             // carrying provenance text.
-                            diagnostics.push(
+                            ctx.diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}' — already defined in stdlib prelude",
                                     dup_entry.name
@@ -487,7 +481,7 @@ pub(crate) fn compile_with_prelude_refs(
                             // Emit a two-label diagnostic: primary is the user's
                             // duplicate decl; secondary is the prelude sentinel
                             // carrying provenance text.
-                            diagnostics.push(
+                            ctx.diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}' — already defined in module '{}'",
                                     dup_entry.name, m
@@ -504,7 +498,7 @@ pub(crate) fn compile_with_prelude_refs(
                         }
                         None => {
                             // Module-local duplicate — show both source locations.
-                            diagnostics.push(
+                            ctx.diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}'",
                                     dup_entry.name
@@ -530,7 +524,7 @@ pub(crate) fn compile_with_prelude_refs(
     let mut alias_decl_map: HashMap<String, &reify_syntax::TypeAliasDecl> = HashMap::new();
     for alias_decl in &alias_refs {
         if let Some(first) = alias_decl_map.get(&alias_decl.name) {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error(format!(
                     "duplicate type alias declaration '{}'",
                     alias_decl.name
@@ -547,38 +541,37 @@ pub(crate) fn compile_with_prelude_refs(
     }
 
     // DFS-resolve each alias with cycle detection via resolving-set.
-    let mut alias_registry = TypeAliasRegistry::new();
     let mut resolving = HashSet::new();
     for alias_decl in &alias_refs {
         resolve_alias_dfs(
             &alias_decl.name,
             &alias_decl_map,
-            &mut alias_registry,
+            &mut ctx.alias_registry,
             &mut resolving,
-            &mut diagnostics,
+            &mut ctx.diagnostics,
         );
     }
 
     // Build resolution_enums: prelude enums + module-local enums.
     // resolution_enums is used for type resolution during compilation;
     // only enum_defs (module-local) goes into the output CompiledModule.
-    let mut resolution_enums: Vec<reify_types::EnumDef> = prelude
+    ctx.resolution_enums = prelude
         .iter()
         .flat_map(|m| m.enum_defs.iter().cloned())
         .collect();
-    resolution_enums.extend(enum_defs.iter().cloned());
+    ctx.resolution_enums.extend(ctx.enum_defs.iter().cloned());
 
     // Compile in dependency order after collecting all references:
     // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
     for fn_def in &fn_refs {
         if let Some(compiled_fn) = compile_function(
             fn_def,
-            &resolution_enums,
-            &functions,
-            &alias_registry,
-            &mut diagnostics,
+            &ctx.resolution_enums,
+            &ctx.functions,
+            &ctx.alias_registry,
+            &mut ctx.diagnostics,
         ) {
-            functions.push(compiled_fn);
+            ctx.functions.push(compiled_fn);
         }
     }
 
@@ -587,12 +580,12 @@ pub(crate) fn compile_with_prelude_refs(
     // distinct (name, arity, param_types) triples are appended. See
     // merge_prelude_functions() for the canonical shadow predicate.
     // `functions` (user-only) remains the output stored in CompiledModule.
-    let resolution_functions: Vec<CompiledFunction> = {
+    ctx.resolution_functions = {
         let prelude_fns: Vec<CompiledFunction> = prelude
             .iter()
             .flat_map(|m| m.functions.iter().cloned())
             .collect();
-        merge_prelude_functions(&functions, &prelude_fns)
+        merge_prelude_functions(&ctx.functions, &prelude_fns)
     };
 
     // Build the set of trait names known at compile time so the type resolver
@@ -614,16 +607,15 @@ pub(crate) fn compile_with_prelude_refs(
         .collect();
 
     // 2. Traits (depend on resolution_enums for enum type resolution in params)
-    let mut trait_defs = Vec::new();
     for trait_decl in &trait_refs {
         let compiled_trait = compile_trait(
             trait_decl,
-            &resolution_enums,
-            &alias_registry,
+            &ctx.resolution_enums,
+            &ctx.alias_registry,
             &trait_names,
-            &mut diagnostics,
+            &mut ctx.diagnostics,
         );
-        trait_defs.push(compiled_trait);
+        ctx.trait_defs.push(compiled_trait);
     }
 
     // Build trait registry for conformance checking.
@@ -637,7 +629,7 @@ pub(crate) fn compile_with_prelude_refs(
         trait_registry.insert(t.name.clone(), t);
     }
     // Module-local traits override prelude on name collision
-    for t in &trait_defs {
+    for t in &ctx.trait_defs {
         trait_registry.insert(t.name.clone(), t);
     }
 
@@ -653,7 +645,7 @@ pub(crate) fn compile_with_prelude_refs(
                     refinement_name,
                     &msg,
                     trait_decl.span,
-                    &mut diagnostics,
+                    &mut ctx.diagnostics,
                 );
             }
         }
@@ -663,37 +655,32 @@ pub(crate) fn compile_with_prelude_refs(
     for field_def in &field_refs {
         let compiled = compile_field(
             field_def,
-            &resolution_enums,
-            &resolution_functions,
-            &alias_registry,
-            &mut diagnostics,
+            &ctx.resolution_enums,
+            &ctx.resolution_functions,
+            &ctx.alias_registry,
+            &mut ctx.diagnostics,
         );
-        fields.push(compiled);
+        ctx.fields.push(compiled);
     }
 
     // Build a field registry so entity scopes can resolve field names.
     let field_registry: HashMap<String, &CompiledField> =
-        fields.iter().map(|f| (f.name.clone(), f)).collect();
+        ctx.fields.iter().map(|f| (f.name.clone(), f)).collect();
 
     // Compile all local constraint defs in a single pass.
     // Results are used both to populate the module output and to seed the registry.
-    let constraint_defs: Vec<CompiledConstraintDef> = parsed
-        .declarations
-        .iter()
-        .filter_map(|d| {
-            if let reify_syntax::Declaration::Constraint(c) = d {
-                Some(compile_constraint_def(
-                    c,
-                    &alias_registry,
-                    &resolution_enums,
-                    &trait_names,
-                    &mut diagnostics,
-                ))
-            } else {
-                None
-            }
-        })
-        .collect();
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Constraint(c) = decl {
+            let compiled = compile_constraint_def(
+                c,
+                &ctx.alias_registry,
+                &ctx.resolution_enums,
+                &trait_names,
+                &mut ctx.diagnostics,
+            );
+            ctx.constraint_defs.push(compiled);
+        }
+    }
 
     // Build a constraint def registry so entity scopes can resolve constraint instantiations.
     // Prelude defs (pub-only, from imported modules) are seeded first; local defs override.
@@ -710,7 +697,7 @@ pub(crate) fn compile_with_prelude_refs(
                     // The first-imported module wins; emit a warning that names the winner
                     // (prev_path) before the loser (module_path_str) so users know which
                     // import is retained and which is silently discarded.
-                    diagnostics.push(Diagnostic::warning(format_shadow_warning(
+                    ctx.diagnostics.push(Diagnostic::warning(format_shadow_warning(
                         &cd.name,
                         prev_path,
                         &module_path_str,
@@ -724,18 +711,17 @@ pub(crate) fn compile_with_prelude_refs(
         }
     }
     // Local defs override prelude defs silently (by design: local always wins).
-    for cd in &constraint_defs {
+    for cd in &ctx.constraint_defs {
         constraint_def_registry.insert(cd.name.clone(), cd);
     }
-
-    let mut pending_bound_checks: Vec<PendingBoundCheck> = Vec::new();
 
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
                 // Only compile the first definition; duplicates have a different
                 // span than the one recorded in seen_entity_names.
-                let is_first_def = seen_entity_names
+                let is_first_def = ctx
+                    .seen_entity_names
                     .get(&structure.name)
                     .is_none_or(|(first_span, _)| *first_span == structure.span);
                 if is_first_def {
@@ -743,32 +729,32 @@ pub(crate) fn compile_with_prelude_refs(
                     let template = compile_entity(
                         &entity_ref,
                         EntityKind::Structure,
-                        &resolution_enums,
-                        &resolution_functions,
+                        &ctx.resolution_enums,
+                        &ctx.resolution_functions,
                         &trait_registry,
                         &trait_names,
                         &field_registry,
                         &constraint_def_registry,
-                        &unit_registry,
-                        &alias_registry,
-                        &mut pending_bound_checks,
-                        &mut diagnostics,
-                        &templates,
+                        &ctx.unit_registry,
+                        &ctx.alias_registry,
+                        &mut ctx.pending_bound_checks,
+                        &mut ctx.diagnostics,
+                        &ctx.templates,
                     );
-                    templates.push(template);
+                    ctx.templates.push(template);
                 }
             }
             reify_syntax::Declaration::Enum(_) => {
                 // Already collected in pre-pass above.
             }
             reify_syntax::Declaration::Import(import) => {
-                imports.push(CompiledImport {
+                ctx.imports.push(CompiledImport {
                     path: import.path.clone(),
                     kind: import.kind.clone(),
                     is_pub: import.is_pub,
                     span: import.span,
                 });
-                diagnostics.push(
+                ctx.diagnostics.push(
                     Diagnostic::warning(format!(
                         "import \"{}\" noted; module resolution not yet implemented",
                         import.path
@@ -785,7 +771,8 @@ pub(crate) fn compile_with_prelude_refs(
             reify_syntax::Declaration::Occurrence(occurrence) => {
                 // Only compile the first definition; duplicates have a different
                 // span than the one recorded in seen_entity_names.
-                let is_first_def = seen_entity_names
+                let is_first_def = ctx
+                    .seen_entity_names
                     .get(&occurrence.name)
                     .is_none_or(|(first_span, _)| *first_span == occurrence.span);
                 if is_first_def {
@@ -793,19 +780,19 @@ pub(crate) fn compile_with_prelude_refs(
                     let template = compile_entity(
                         &entity_ref,
                         EntityKind::Occurrence,
-                        &resolution_enums,
-                        &resolution_functions,
+                        &ctx.resolution_enums,
+                        &ctx.resolution_functions,
                         &trait_registry,
                         &trait_names,
                         &field_registry,
                         &constraint_def_registry,
-                        &unit_registry,
-                        &alias_registry,
-                        &mut pending_bound_checks,
-                        &mut diagnostics,
-                        &templates,
+                        &ctx.unit_registry,
+                        &ctx.alias_registry,
+                        &mut ctx.pending_bound_checks,
+                        &mut ctx.diagnostics,
+                        &ctx.templates,
                     );
-                    templates.push(template);
+                    ctx.templates.push(template);
                 }
             }
             reify_syntax::Declaration::Field(_) => {
@@ -830,11 +817,13 @@ pub(crate) fn compile_with_prelude_refs(
     // Post-compilation pass: run deferred bound checks now that all structures
     // are compiled and available in the template registry.
     {
-        let template_registry: HashMap<String, &TopologyTemplate> = templates
+        let template_registry: HashMap<String, &TopologyTemplate> = ctx
+            .templates
             .iter()
             .map(|t: &TopologyTemplate| (t.name.clone(), t))
             .collect();
 
+        let pending_bound_checks = std::mem::take(&mut ctx.pending_bound_checks);
         for check in pending_bound_checks {
             match check {
                 PendingBoundCheck::SubComponent {
@@ -861,7 +850,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &target_name,
                         &template_registry,
                         &trait_registry,
-                        &mut diagnostics,
+                        &mut ctx.diagnostics,
                         span,
                     );
                 }
@@ -877,7 +866,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &target_name,
                         &template_registry,
                         &trait_registry,
-                        &mut diagnostics,
+                        &mut ctx.diagnostics,
                         span,
                     );
                 }
@@ -896,7 +885,7 @@ pub(crate) fn compile_with_prelude_refs(
                         span,
                         &template_registry,
                         &trait_registry,
-                        &mut diagnostics,
+                        &mut ctx.diagnostics,
                     );
                 }
             }
@@ -906,11 +895,11 @@ pub(crate) fn compile_with_prelude_refs(
     // Post-compilation pass: detect recursive sub-component cycles.
     // Build a directed reference graph from sub_components and run DFS to find cycles.
     // Tag participating templates with is_recursive=true and emit a warning diagnostic.
-    let cyclic_sccs = scc::detect_recursive_structures(&mut templates, &mut diagnostics);
+    let cyclic_sccs = scc::detect_recursive_structures(&mut ctx.templates, &mut ctx.diagnostics);
 
     // Post-compilation pass: verify recursive structures have valid termination conditions.
     // Emits errors for recursive subs without guards or with non-terminating guard heuristics.
-    check_recursive_termination(&templates, &cyclic_sccs, &mut diagnostics);
+    check_recursive_termination(&ctx.templates, &cyclic_sccs, &mut ctx.diagnostics);
 
     // Remix is_recursive into each recursive template's content_hash.
     // detect_recursive_structures() sets is_recursive after each template's initial
@@ -918,7 +907,7 @@ pub(crate) fn compile_with_prelude_refs(
     // content but different recursion status would hash identically — causing incorrect
     // incremental compilation cache hits. Non-recursive templates are untouched so
     // existing cache entries remain valid for them.
-    for template in &mut templates {
+    for template in &mut ctx.templates {
         if template.is_recursive {
             template.content_hash = template.content_hash.combine(ContentHash::of(&[1u8]));
         }
@@ -927,7 +916,7 @@ pub(crate) fn compile_with_prelude_refs(
     // Check for duplicate function signatures: same name + same param types
     {
         let mut seen: HashMap<(String, Vec<Type>), usize> = HashMap::new();
-        for (idx, f) in functions.iter().enumerate() {
+        for (idx, f) in ctx.functions.iter().enumerate() {
             let key = (
                 f.name.clone(),
                 f.params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
@@ -935,7 +924,7 @@ pub(crate) fn compile_with_prelude_refs(
             if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
                 e.insert(idx);
             } else {
-                diagnostics.push(Diagnostic::error(format!(
+                ctx.diagnostics.push(Diagnostic::error(format!(
                     "duplicate function signature: {}({})",
                     f.name,
                     f.params
@@ -953,11 +942,11 @@ pub(crate) fn compile_with_prelude_refs(
     // the codomain of the inner field matches the domain of the outer field.
     {
         let field_registry: HashMap<&str, &CompiledField> =
-            fields.iter().map(|f| (f.name.as_str(), f)).collect();
+            ctx.fields.iter().map(|f| (f.name.as_str(), f)).collect();
 
-        for field in &fields {
+        for field in &ctx.fields {
             if let CompiledFieldSource::Composed { expr } = &field.source {
-                check_field_composition_types(expr, &field_registry, &mut diagnostics);
+                check_field_composition_types(expr, &field_registry, &mut ctx.diagnostics);
             }
         }
     }
@@ -965,7 +954,8 @@ pub(crate) fn compile_with_prelude_refs(
     // Purpose compilation pass: compile after templates so reflective schema queries
     // can resolve against TopologyTemplates.
     let compiled_purposes = {
-        let purpose_template_registry: HashMap<String, &TopologyTemplate> = templates
+        let purpose_template_registry: HashMap<String, &TopologyTemplate> = ctx
+            .templates
             .iter()
             .map(|t: &TopologyTemplate| (t.name.clone(), t))
             .collect();
@@ -975,11 +965,11 @@ pub(crate) fn compile_with_prelude_refs(
             if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
                 let compiled = compile_purpose(
                     purpose_def,
-                    &resolution_enums,
-                    &resolution_functions,
+                    &ctx.resolution_enums,
+                    &ctx.resolution_functions,
                     &purpose_template_registry,
-                    &unit_registry,
-                    &mut diagnostics,
+                    &ctx.unit_registry,
+                    &mut ctx.diagnostics,
                 );
                 purposes.push(compiled);
             }
@@ -992,13 +982,13 @@ pub(crate) fn compile_with_prelude_refs(
         let path_hash = ContentHash::of_str(&format!("{}", parsed.path));
 
         // Template content hashes
-        let template_hashes = templates.iter().map(|t| t.content_hash);
+        let template_hashes = ctx.templates.iter().map(|t| t.content_hash);
 
         // Import path hashes
-        let import_hashes = imports.iter().map(|i| ContentHash::of_str(&i.path));
+        let import_hashes = ctx.imports.iter().map(|i| ContentHash::of_str(&i.path));
 
         // Enum def hashes
-        let enum_hashes = enum_defs.iter().map(|e| {
+        let enum_hashes = ctx.enum_defs.iter().map(|e| {
             let mut h = ContentHash::of_str(&e.name);
             for v in &e.variants {
                 h = h.combine(ContentHash::of_str(v));
@@ -1007,22 +997,23 @@ pub(crate) fn compile_with_prelude_refs(
         });
 
         // Function content hashes
-        let function_hashes = functions.iter().map(|f: &CompiledFunction| f.content_hash);
+        let function_hashes = ctx.functions.iter().map(|f: &CompiledFunction| f.content_hash);
 
         // Trait content hashes
-        let trait_hashes = trait_defs.iter().map(|t| t.content_hash);
+        let trait_hashes = ctx.trait_defs.iter().map(|t| t.content_hash);
 
         // Field content hashes
-        let field_hashes = fields.iter().map(|f| f.content_hash);
+        let field_hashes = ctx.fields.iter().map(|f| f.content_hash);
 
         // Purpose content hashes
         let purpose_hashes = compiled_purposes.iter().map(|p| p.content_hash);
 
         // Unit content hashes
-        let unit_hashes = compiled_units.iter().map(|u| u.content_hash);
+        let unit_hashes = ctx.compiled_units.iter().map(|u| u.content_hash);
 
         // Type alias content hashes (sorted by name for deterministic ordering)
-        let mut alias_hash_pairs: Vec<_> = alias_registry
+        let mut alias_hash_pairs: Vec<_> = ctx
+            .alias_registry
             .iter()
             .map(|a| (a.name.clone(), a.content_hash))
             .collect();
@@ -1043,22 +1034,22 @@ pub(crate) fn compile_with_prelude_refs(
         ContentHash::combine_all(all_hashes)
     };
 
-    let type_aliases = alias_registry.into_compiled();
+    let type_aliases = ctx.alias_registry.into_compiled();
 
     CompiledModule {
         path: parsed.path.clone(),
-        imports,
-        enum_defs,
-        functions,
-        trait_defs,
-        fields,
+        imports: ctx.imports,
+        enum_defs: ctx.enum_defs,
+        functions: ctx.functions,
+        trait_defs: ctx.trait_defs,
+        fields: ctx.fields,
         compiled_purposes,
-        templates,
-        units: compiled_units,
+        templates: ctx.templates,
+        units: ctx.compiled_units,
         type_aliases,
-        constraint_defs,
+        constraint_defs: ctx.constraint_defs,
         pragmas: parsed.pragmas.clone(),
-        diagnostics,
+        diagnostics: ctx.diagnostics,
         content_hash,
     }
 }
