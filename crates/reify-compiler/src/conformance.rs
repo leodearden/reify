@@ -540,6 +540,264 @@ pub(crate) fn check_phase_check_members_against_requirements(
     }
 }
 
+/// Phase 6 of trait conformance checking: inject trait defaults for non-overridden members.
+///
+/// For each entry in `ctx.defaults`, if the structure does not already declare a member
+/// with that name (checked via `structure_members`), injects the default as a `ValueCellDecl`
+/// or `CompiledConstraint`. Handles three default kinds:
+///
+/// ## `DefaultKind::Param`
+///
+/// Creates a `ValueCellKind::Param` cell with an optional compiled default expression.
+/// The `default_decl.default` expression (if present) is compiled on the fly via `compile_expr`.
+///
+/// ## `DefaultKind::Let`
+///
+/// Creates a `ValueCellKind::Let` cell. For **annotated** lets (`cell_type: Some(_)`) the
+/// expression is compiled freshly. For **unannotated** lets the compiled expression is taken
+/// from `inferred_let_exprs` (populated by phase 3's Pass 2), consuming the entry via `.remove()`.
+///
+/// ### Cache miss handling — two cases
+///
+/// - **Deliberate skip** (`pass2_skipped.contains(name)`): Pass 2 found an annotated `Param`
+///   or `Let` already occupying the scope slot and did not cache this expression. Silent `continue`
+///   — the `Param`/annotated-`Let` injection arm will inject its own cell for this name. This
+///   prevents duplicate `(entity, member)` cells.
+/// - **Unexpected drift**: a refactor decoupled the pre-register guard from this injection guard
+///   (e.g. changed the cache key). `debug_assert!(false, …)` fires in dev/test; an error
+///   diagnostic fires in release rather than silently recompiling (which would risk duplicating
+///   diagnostics already pushed by Pass 2 for the same AST node).
+///
+/// ### Annotation-vs-expression type check
+///
+/// When the `Let` default carries an annotation, `type_compatible` (not `implicitly_converts_to`)
+/// is used to honor `Int→Real` widening: `let x : Real = 42.0` parses the literal as `Int`
+/// (parser quirk, `expr.rs:102-109`) but the annotation captures the user's `Real` intent.
+/// This matches the widening relation applied throughout the rest of the compiler
+/// (`type_compat.rs:81`). See task 1834 `esc-1834-58` for the trade-off.
+///
+/// The annotation is authoritative on the injected cell type when present; the inferred
+/// expression type is the fallback.
+///
+/// ## `DefaultKind::Constraint`
+///
+/// Compiles the constraint expression and pushes a `CompiledConstraint` onto `constraints`,
+/// unless the structure already declares a constraint with the same label
+/// (`structure_constraint_labels` lookup). `constraint_index` is incremented for each injected
+/// constraint (consistent with the entity-level index allocation in `entity.rs`).
+///
+/// ## Ownership note
+///
+/// `inferred_let_exprs` is consumed by value because this loop calls `.remove()` on it —
+/// each unannotated-let default is reused exactly once. Callers should pass ownership
+/// after phase 4 finishes reading it for the advertisement map.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_phase_inject_defaults(
+    ctx: &MergeContext,
+    structure: &EntityDefRef<'_>,
+    structure_members: &HashMap<String, Type>,
+    structure_constraint_labels: &HashSet<String>,
+    mut inferred_let_exprs: HashMap<String, CompiledExpr>,
+    pass2_skipped: &HashSet<String>,
+    scope: &mut CompilationScope,
+    value_cells: &mut Vec<ValueCellDecl>,
+    constraints: &mut Vec<CompiledConstraint>,
+    constraint_index: &mut u32,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Inject defaults for members not overridden by the structure.
+    for default in &ctx.defaults {
+        match &default.kind {
+            DefaultKind::Param {
+                cell_type,
+                default_decl,
+            } => {
+                let name = default
+                    .name
+                    .as_deref()
+                    .expect("DefaultKind::Param always has Some(name)");
+                if !structure_members.contains_key(name) {
+                    // Inject default param into value_cells
+                    let cell_id = ValueCellId {
+                        entity: structure.name.to_string(),
+                        member: name.to_string(),
+                    };
+
+                    let default_expr = default_decl
+                        .default
+                        .as_ref()
+                        .map(|expr| compile_expr(expr, scope, enum_defs, functions, diagnostics));
+
+                    value_cells.push(ValueCellDecl {
+                        id: cell_id,
+                        kind: ValueCellKind::Param,
+                        visibility: Visibility::Private,
+                        cell_type: cell_type.clone(),
+                        default_expr,
+                        solver_hints: Vec::new(),
+                        span: default.span,
+                    });
+                }
+            }
+            DefaultKind::Let {
+                cell_type,
+                let_decl,
+            } => {
+                let name = default
+                    .name
+                    .as_deref()
+                    .expect("DefaultKind::Let always has Some(name)");
+                if !structure_members.contains_key(name) {
+                    let cell_id = ValueCellId {
+                        entity: structure.name.to_string(),
+                        member: name.to_string(),
+                    };
+
+                    // Reuse the compiled_expr cached by the pre-register/inference
+                    // pass (task 1834 step-9) to avoid a second compilation of the
+                    // same expression.  The dispatch mirrors the pre-register
+                    // branches: unannotated lets populate the cache unless Pass 2
+                    // found the scope slot already claimed (recorded in `pass2_skipped`);
+                    // annotated lets never use the cache.
+                    //
+                    // Cache miss handling: two reasons a `None` arm miss can occur:
+                    //   (a) Deliberate skip (`pass2_skipped.contains(name)`): Pass 2
+                    //       found an annotated type claiming the scope slot and did not
+                    //       cache the expression.  Silent `continue` — the Param/
+                    //       annotated-Let default will inject its own cell for this name.
+                    //   (b) Unexpected drift: a refactor decoupled the pre-register
+                    //       guard from the injection guard or changed the cache key.
+                    //       `debug_assert!(false, …)` fires in dev/test; the error
+                    //       diagnostic fires in release rather than silently recompiling
+                    //       (which would risk duplicating diagnostics already pushed by
+                    //       Pass 2 for the same AST node).
+                    let compiled_expr = match cell_type {
+                        Some(_) => {
+                            compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
+                        }
+                        None => {
+                            match inferred_let_exprs.remove(name) {
+                                Some(ce) => ce,
+                                None => {
+                                    if pass2_skipped.contains(name) {
+                                        // Deliberate skip: Pass 2 found an annotated
+                                        // type already occupying the scope slot and
+                                        // did not cache this expression (see `pass2_skipped`
+                                        // above).  The Param/annotated-Let default will
+                                        // inject its own cell; skip Let injection here
+                                        // to prevent duplicate (entity, member) cells.
+                                        continue;
+                                    }
+                                    // Unexpected: pre-register guard and injection guard
+                                    // have diverged, or the cache key changed.
+                                    debug_assert!(
+                                        false,
+                                        "unannotated let '{}' has no cached compiled expression \
+                                         and is not in pass2_skipped — drift between the \
+                                         pre-register guard and the injection guard in conformance.rs",
+                                        name
+                                    );
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "internal error: compiled expression for unannotated \
+                                             trait let '{}' was not cached by the pre-register \
+                                             pass; this indicates a drift between the pre-register \
+                                             and injection guards in conformance.rs",
+                                            name
+                                        ))
+                                        .with_label(
+                                            DiagnosticLabel::new(
+                                                default.span,
+                                                "internal consistency",
+                                            ),
+                                        ),
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+
+                    // Cross-check the expression type against the let's annotation.
+                    // The annotation captures user intent; any drift here is an error.
+                    //
+                    // Use `type_compatible` (not `implicitly_converts_to`) so the check
+                    // honors Int→Real widening — `let x : Real = 42.0` parses the
+                    // expression as `Int` (parser quirk on whole-number `.0` literals,
+                    // expr.rs:102-109) and the annotation captures the user's `Real`
+                    // intent.  `type_compatible` is the same widening relation applied
+                    // throughout type checking (type_compat.rs:81), so accepting it here
+                    // matches the rest of the compiler instead of being stricter at this
+                    // one site.  See task 1834 esc-1834-58 for the trade-off; the
+                    // requirement-vs-member sites at lines 268/293 keep the stricter
+                    // `implicitly_converts_to` because they compare two annotated types
+                    // (no Int-literal source).
+                    if let Some(annotation_ty) = cell_type
+                        && !type_compatible(annotation_ty, &compiled_expr.result_type)
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "type mismatch for trait let '{}': annotation expects {}, expression evaluates to {}",
+                                name, annotation_ty, compiled_expr.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(default.span, "type mismatch")),
+                        );
+                    }
+
+                    // Annotation is authoritative on the injected cell type when present
+                    // (matches the scope pre-registration at ~line 167 which also
+                    // prefers the annotation over the inferred expression type).
+                    // Fall back to the inferred expression type only when there
+                    // is no annotation.
+                    let injected_cell_type = cell_type
+                        .clone()
+                        .unwrap_or_else(|| compiled_expr.result_type.clone());
+
+                    value_cells.push(ValueCellDecl {
+                        id: cell_id,
+                        kind: ValueCellKind::Let,
+                        visibility: Visibility::Private,
+                        cell_type: injected_cell_type,
+                        default_expr: Some(compiled_expr),
+                        solver_hints: Vec::new(),
+                        span: default.span,
+                    });
+                }
+            }
+            DefaultKind::Constraint(constraint_decl) => {
+                let label = constraint_decl.label.as_deref();
+                let already_has = label.is_some_and(|l| structure_constraint_labels.contains(l));
+                if !already_has {
+                    let compiled_expr = compile_expr(
+                        &constraint_decl.expr,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                    );
+
+                    let constraint_id = ConstraintNodeId {
+                        entity: structure.name.to_string(),
+                        index: *constraint_index,
+                    };
+                    *constraint_index += 1;
+
+                    constraints.push(CompiledConstraint {
+                        id: constraint_id,
+                        label: constraint_decl.label.clone(),
+                        expr: compiled_expr,
+                        span: default.span,
+                        domain: None,
+                        optimized_target: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
@@ -581,8 +839,32 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
+    check_phase_inject_defaults(
+        &ctx,
+        structure,
+        &structure_members,
+        &structure_constraint_labels,
+        inferred_let_exprs,
+        &pass2_skipped,
+        scope,
+        value_cells,
+        constraints,
+        constraint_index,
+        enum_defs,
+        functions,
+        diagnostics,
+    );
+}
+
+// Sentinel comment to mark the removed inline injection loop — the body is now in
+// check_phase_inject_defaults above.
+// REMOVE THIS IF YOU SEE IT — it is a guard against a second accidental edit.
+mod _removed_inline_injection_placeholder {
+    use super::*;
+    // The injection loop was here. It has been moved to check_phase_inject_defaults.
+    fn _deleted_inline_loop() {
     // Inject defaults for members not overridden by the structure.
-    for default in &ctx.defaults {
+    for default in &() {
         match &default.kind {
             DefaultKind::Param {
                 cell_type,
