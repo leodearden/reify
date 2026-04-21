@@ -43569,23 +43569,20 @@
         "description": "The reify orchestrator scheduler is logging 'ERROR Failed to fetch tasks: [Errno 2] No such file or directory' on a ~15-second loop. This is unrelated to the fd-9 flock leak fix shipped in Task 2064. The error fires continuously and may be causing the double-restart pattern observed on 2026-04-20.",
         "details": "## Investigation\n\n1. Identify where in the orchestrator scheduler the tasks fetch occurs — likely `scheduler.py` or `task_fetcher.py` in dark-factory. The error is \"[Errno 2] No such file or directory\", which means a file path is being opened that doesn't exist.\n\n2. Check whether the error is in the reify-specific path (`/home/leo/src/reify/.taskmaster/tasks/tasks.json`) or a dark-factory path.\n\n3. Common causes:\n   - Stale `project_root` config pointing at wrong path\n   - Missing `.taskmaster/tasks/tasks.json` (verify it exists)\n   - Scheduler reading a config path (e.g., `orchestrator.yaml`) that doesn't exist in the reify project root\n\n4. Verify tasks.json exists: `ls -la /home/leo/src/reify/.taskmaster/tasks/tasks.json`\n\n5. Check orchestrator config in reify for correct `project_root` / `tasks_path` settings.\n\n## memory_hints\n- search: \"orchestrator scheduler task fetch path config\"\n- search: \"tasks.json path project_root configuration\"\n- entity: \"reify orchestrator config\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:00:11.654Z",
+        "updatedAt": "2026-04-21T09:00:52.527Z",
         "metadata": {
           "memory_hints": {
-            "entities": [
-              "reify orchestrator config"
-            ],
+            "entities": [],
             "queries": [
-              "orchestrator scheduler task fetch path config",
-              "tasks.json path project_root configuration"
+              "resolution for: Fix orchestrator scheduler task-fetch ENOENT error"
             ]
           },
           "done_provenance": {
-            "note": "Fix shipped in dark-factory commit 452ce221b2 (merged via cac00003f5 on 2026-04-20). Target files (scheduler.py, mcp_lifecycle.py, task_fetcher.py) live in /home/leo/src/dark-factory, not in reify. Post-restart reify orchestrator logs show zero 'Failed to fetch tasks' occurrences."
+            "note": "Fix shipped in dark-factory repo (commits 452ce221b2 + merge cac00003f5, 2026-04-20). mcp_lifecycle.py widened _RETRYABLE_EXCEPTIONS to include OSError/httpx.NetworkError; scheduler.py switched to logger.exception for tracebacks. Reify config was already correct (orchestrator.yaml project_root absolute, tasks.json present). Post-fix run orchestrator-20260421T084219Z.log shows zero 'Failed to fetch tasks' errors. No reify-side commit warranted; follows cross-repo precedent from tasks 1675/1905/1906."
           },
           "_causation_id": "37be0550-2c1a-4eee-a3d4-810dafacdf64",
           "files": [
@@ -43672,9 +43669,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:00:11.655Z",
+      "lastModified": "2026-04-21T09:00:52.531Z",
       "taskCount": 2060,
-      "completedCount": 1791,
+      "completedCount": 1792,
       "tags": [
         "master"
       ]
