@@ -5,7 +5,7 @@ import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
 import { createSelection } from './selection';
-import type { ViewportStore } from '../stores';
+import type { ViewportStore, CameraState } from '../stores';
 
 export interface ViewportProps {
   /** Stable identifier for this viewport instance (e.g. "design-main"). Required. */
@@ -96,8 +96,26 @@ export function Viewport(props: ViewportProps) {
       requestRender();
     }
 
+    // Snapshot helper — reads current camera/controls state into a plain CameraState.
+    // Guard .zoom with ?? 1 to tolerate mocks that may omit it.
+    function snapshotCamera(): CameraState {
+      return {
+        position: [camera.position.x, camera.position.y, camera.position.z],
+        target: [controls.controls.target.x, controls.controls.target.y, controls.controls.target.z],
+        up: [camera.up.x, camera.up.y, camera.up.z],
+        zoom: camera.zoom ?? 1,
+      };
+    }
+
+    // Camera persistence handler — fires on every OrbitControls 'change' event.
+    // No-op when viewportStore is absent (ephemeral camera mode).
+    function persistCamera() {
+      props.viewportStore?.updateCamera(props.viewportId, snapshotCamera());
+    }
+
     // OrbitControls 'change' event fires during camera movement (including damping)
     controls.controls.addEventListener('change', requestRender);
+    controls.controls.addEventListener('change', persistCamera);
 
     // Sync grid/axes visibility
     createEffect(() => {
@@ -203,6 +221,7 @@ export function Viewport(props: ViewportProps) {
       disposed = true;
       cancelAnimationFrame(animationFrameId);
       controls.controls.removeEventListener('change', requestRender);
+      controls.controls.removeEventListener('change', persistCamera);
       resizeObserver.disconnect();
       selection.dispose();
       controls.dispose();
