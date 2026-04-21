@@ -4090,4 +4090,81 @@ mod tests {
             other => panic!("expected Value::Real, got {:?}", other),
         }
     }
+
+    // --- Tube tests (task-324) ---
+
+    #[test]
+    fn kernel_tube_volume_matches_pi_r2_minus_r2_h() {
+        // Volume formula: π*(R² - r²)*h. With R=0.010, r=0.005, h=0.020 →
+        // π*(1e-4 - 2.5e-5)*0.020 ≈ 4.712e-6 m³.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Tube {
+                outer_r: Value::Real(0.010),
+                inner_r: Value::Real(0.005),
+                height: Value::Real(0.020),
+            })
+            .expect("Tube execute should succeed");
+
+        let vol = kernel
+            .query(&GeometryQuery::Volume(handle.id))
+            .expect("Volume query should succeed");
+        let v = vol.as_f64().expect("Volume should be numeric");
+        let expected =
+            std::f64::consts::PI * (0.010_f64.powi(2) - 0.005_f64.powi(2)) * 0.020;
+        let rel_err = (v - expected).abs() / expected;
+        assert!(
+            rel_err < 0.01,
+            "tube volume should be ≈ {expected:.3e} m³, got {v:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    #[test]
+    fn kernel_tube_inner_ge_outer_returns_error() {
+        // inner_r >= outer_r must be rejected with a message mentioning "inner".
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Tube {
+            outer_r: Value::Real(0.005),
+            inner_r: Value::Real(0.010),
+            height: Value::Real(0.020),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("inner"),
+                    "expected error mentioning 'inner', got: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected error for inner_r > outer_r"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn kernel_tube_non_positive_dimensions_return_error() {
+        // Each of outer_r=0, inner_r=0, height=0, outer_r=-1 must be rejected.
+        let cases: &[(f64, f64, f64, &str)] = &[
+            (0.0, 0.001, 0.010, "outer_r=0"),
+            (0.005, 0.0, 0.010, "inner_r=0"),
+            (0.005, 0.001, 0.0, "height=0"),
+            (-1.0, 0.001, 0.010, "outer_r=-1"),
+        ];
+        for (outer, inner, height, label) in cases {
+            let mut kernel = OcctKernel::new();
+            let result = kernel.execute(&GeometryOp::Tube {
+                outer_r: Value::Real(*outer),
+                inner_r: Value::Real(*inner),
+                height: Value::Real(*height),
+            });
+            match result {
+                Err(GeometryError::OperationFailed(_)) => {}
+                Ok(_) => panic!("expected error for {label}, got Ok"),
+                Err(other) => panic!("expected OperationFailed for {label}, got {:?}", other),
+            }
+        }
+    }
 }
