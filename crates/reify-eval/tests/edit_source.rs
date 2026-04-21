@@ -795,3 +795,118 @@ fn edit_source_guard_expr_change_flips_active_branch() {
         incr_val, cold_val
     );
 }
+
+/// Adding a `let` to the inactive branch of an existing `where ... else`
+/// group must leave the added cell on the inactive branch Undef, matching
+/// cold eval. Without a guard-re-elaboration trigger for added members, the
+/// per-cell eval loop would write the default_expr's value (Determined),
+/// diverging from the cold-eval contract that inactive-branch non-Auto
+/// members are deactivated to `Undef`.
+///
+/// Reviewer comment #3 — correctness_edge_case.
+#[test]
+fn edit_source_added_else_branch_member_is_deactivated() {
+    // Guard is true by default (`use_thick = true`) — the `members` branch
+    // is active, and the `else_members` branch is inactive.
+    let module_a_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let active_cell = thickness * 2.0
+    } else {
+        let inactive_cell = thickness
+    }
+}"#;
+    // Module B: adds a NEW `let` to the inactive else-branch. Guard
+    // expression and structure_controlling cells are unchanged.
+    let module_b_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let active_cell = thickness * 2.0
+    } else {
+        let inactive_cell = thickness
+        let inactive_added = thickness * 3.0
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let added_id = ValueCellId::new("Bracket", "inactive_added");
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check: whatever cold eval says about the added else-branch
+    // cell, incremental edit_source must match.
+    let incr_val = incr.values.get(&added_id);
+    let cold_val = cold_result.values.get(&added_id);
+    assert_eq!(
+        incr_val, cold_val,
+        "added else-branch member diverges from cold eval: \
+         incremental={:?}, cold={:?}",
+        incr_val, cold_val
+    );
+}
+
+/// Adding a `let` to the ACTIVE branch of an existing `where ... else`
+/// group must match cold eval — a symmetrically-added active-branch cell
+/// should be Determined from its default_expr, unlike the inactive
+/// counterpart. This pins the matching trigger for active-branch added
+/// members.
+///
+/// Reviewer comment #3 — correctness_edge_case (symmetric variant).
+#[test]
+fn edit_source_added_active_branch_member_matches_cold_eval() {
+    let module_a_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let active_cell = thickness * 2.0
+    } else {
+        let inactive_cell = thickness
+    }
+}"#;
+    let module_b_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let active_cell = thickness * 2.0
+        let active_added = thickness * 4.0
+    } else {
+        let inactive_cell = thickness
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let added_id = ValueCellId::new("Bracket", "active_added");
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    let incr_val = incr.values.get(&added_id);
+    let cold_val = cold_result.values.get(&added_id);
+    assert_eq!(
+        incr_val, cold_val,
+        "added active-branch member diverges from cold eval: \
+         incremental={:?}, cold={:?}",
+        incr_val, cold_val
+    );
+}

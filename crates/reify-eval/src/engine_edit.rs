@@ -1317,11 +1317,28 @@ impl Engine {
         // activate/deactivate branch members accordingly. This runs
         // BEFORE the resolution phase so guards gated on auto params
         // have the best-available (possibly Undef) inputs.
+        //
+        // We ALSO trigger Phase 1 when any `added` value cell intersects a
+        // guarded group's members or else_members. This covers reviewer
+        // comment #3: when an edit inserts a new `let` into an existing
+        // `where … else` group without touching the guard expression or
+        // any structure_controlling cell, the Step-12 per-cell eval loop
+        // evaluates the new member's default_expr into a Determined value
+        // — but if the new member lands on the *inactive* branch, cold eval
+        // would deactivate it to Undef via `deactivate_if_not_auto`. Forcing
+        // Phase 1 to run re-elaborates every guarded group, which routes
+        // the added member through the correct activation path. This also
+        // covers symmetric cases (added members on the active branch) —
+        // Phase 1 just re-evaluates them, matching cold eval's behavior.
         {
             let graph = &new_snapshot.graph;
+            let has_added_guard_member = graph.guarded_groups.iter().any(|group| {
+                group.members.iter().any(|m| added.contains(m))
+                    || group.else_members.iter().any(|m| added.contains(m))
+            });
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
-            });
+            }) || has_added_guard_member;
 
             if has_dirty_guards {
                 for group in &graph.guarded_groups {
