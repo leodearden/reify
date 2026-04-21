@@ -6773,7 +6773,16 @@
         "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.2",
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-compiler/tests/compile_api_tests.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/tube_pipe_e2e.rs",
+            "crates/reify-kernel-occt/src/lib.rs",
+            "crates/reify-types/src/geometry.rs"
+          ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": []
         },
