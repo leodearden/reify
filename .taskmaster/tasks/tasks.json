@@ -44009,23 +44009,21 @@
         "description": "The drift debug_assert in labeled_diagnostics (crates/reify-eval/src/engine_constraints.rs:230-245) imposes an implicit contract that any Error-severity diagnostic emitted for a labeled constraint must embed `id.to_string()` verbatim so label substitution has something to replace. Third-party `ConstraintChecker` implementations that emit domain-specific error text (e.g. \"wall thickness below minimum\") without the raw ConstraintNodeId will panic in debug builds even though runtime output is correct.\n\nTwo options: (a) add a doc comment on `ConstraintChecker::check` making the embedding requirement an explicit trait invariant, or (b) demote the assert to `tracing::warn!`/`debug!` so it remains observable but non-fatal for external checkers.\n\nMemory hints: search \"labeled_diagnostics drift assert\", search \"ConstraintChecker trait contract\", entities: ConstraintChecker, labeled_diagnostics",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-21T22:05:18.858Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T22:04:46.876Z",
-      "taskCount": 2073,
+      "lastModified": "2026-04-21T22:05:18.858Z",
+      "taskCount": 2074,
       "completedCount": 1818,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T22:05:02.879Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-21T22:05:02.901Z"
+      ]
     }
   }
 }
