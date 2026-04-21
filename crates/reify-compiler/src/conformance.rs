@@ -1985,4 +1985,63 @@ mod tests {
             "Expected Type::Real for key ('x', Param)"
         );
     }
+
+    /// Phase-contract test for `check_phase_check_members_against_requirements`.
+    ///
+    /// Verifies that the helper emits a "missing required member" diagnostic when a
+    /// structure satisfies neither the member directly nor a same-kind default.
+    /// This test fails to compile until the helper exists (TDD compile-tripwire) and
+    /// pins the helper's signature.
+    #[test]
+    fn check_phase_check_members_against_requirements_emits_missing_member_when_unsatisfied() {
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![], // No members — requirement "w" is unsatisfied
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        ctx.requirements = vec![TraitRequirement {
+            name: "w".to_string(),
+            kind: RequirementKind::Param(Type::Real),
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_check_members_against_requirements(
+            &ctx,
+            &entity_ref,
+            &structure_members,
+            &available_defaults,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected 1 diagnostic for missing member 'w'; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0].message.contains("missing required member"),
+            "Expected 'missing required member' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("'w'"),
+            "Expected member name 'w' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+    }
 }
