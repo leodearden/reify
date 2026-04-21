@@ -949,6 +949,97 @@ fn compile_tube_wrong_arg_count() {
     );
 }
 
+#[test]
+fn compile_pipe_produces_sweep_pipe_kind_with_path_ref() {
+    // pipe(path, radius) = 2 args, arg 0 is a geometry ref (path)
+    let source = r#"structure S {
+    let r = pipe(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm), 2mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_pipe"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization for pipe call"
+    );
+    let ops = &template.realizations[0].operations;
+    // Expected: [0]=Curve(LineSegment), [1]=Sweep{Pipe, profiles=[Step(0)], args=[path, radius]}
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 ops (line_segment + pipe sweep), got {}: {:?}",
+        ops.len(),
+        ops
+    );
+    assert!(
+        matches!(
+            &ops[0],
+            CompiledGeometryOp::Curve {
+                kind: reify_compiler::CurveKind::LineSegment,
+                ..
+            }
+        ),
+        "expected ops[0] = Curve(LineSegment), got {:?}",
+        ops[0]
+    );
+    match &ops[1] {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Pipe,
+            profiles,
+            args,
+        } => {
+            assert_eq!(profiles.len(), 1, "pipe should have 1 profile (path)");
+            assert_eq!(profiles[0], GeomRef::Step(0), "path should point to Step(0)");
+            assert_eq!(args.len(), 2, "pipe should have 2 named args");
+            assert_eq!(args[0].0, "path", "arg[0] should be path");
+            assert_eq!(args[1].0, "radius", "arg[1] should be radius");
+        }
+        other => panic!("expected Sweep{{Pipe}} at ops[1], got {:?}", other),
+    }
+}
+
+#[test]
+fn compile_pipe_wrong_arg_count() {
+    // pipe with 1 arg (should need 2)
+    let source = r#"structure S {
+    param p: Scalar = 5mm
+    let r = pipe(p)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_pipe_bad"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "expected diagnostics for wrong arg count"
+    );
+    let msg = compiled
+        .diagnostics
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        msg.contains("pipe()"),
+        "expected diagnostic to mention pipe(), got: {}",
+        msg
+    );
+}
+
 // --- Transform compiler tests (task-377) ---
 
 #[test]
