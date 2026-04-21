@@ -43913,23 +43913,27 @@
         "description": "Make `sequential_embedded_fallback_no_duplicates_in_topo_order` (crates/reify-compiler/tests/module_dag_tests.rs, approximately lines 1410–1486) robust to stdlib growth.\n\nThe test currently hardcodes both the expected stdlib module count (6) and the full name list (\"std.units\", \"std.si_units\", \"std.materials.mechanical\", \"std.structural.physical\", \"std.analysis\", \"std.tolerancing\") at specific positions. The prose comments even reference specific indices (\"stdlib index 2\", \"stdlib index 5\"). Any future reordering or extension of the embedded stdlib in `stdlib_loader::load_stdlib()` will break this test in ways unrelated to the backward-walk short-circuit invariant it actually pins.\n\nFix: derive the expected prefix from `stdlib_loader::load_stdlib()` at test time. Pick two target modules by their index in the loaded stdlib (e.g. position 2 and length-1), call `compile_module` for each, and assert `dag.topo_order` equals the prefix's dotted paths with no duplicates and no gaps. Keeps the actual invariant (insert-prefix + no-dup + no-gap after two overlapping calls) explicit while surviving stdlib reorderings and additions.\n\nUpdate the prose comments to drop the hardcoded index references.\n\nMemory hints: review `crates/reify-compiler/src/stdlib_loader.rs` for the load_stdlib API; the test itself lives in `crates/reify-compiler/tests/module_dag_tests.rs`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T20:18:16.187Z"
+        "updatedAt": "2026-04-21T20:40:44.688Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "36848ddcd45410fbfcfa8194f440e11dc0d891be",
+            "commit_input": "36848ddcd"
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T20:18:22.131Z",
+      "lastModified": "2026-04-21T20:40:44.688Z",
       "taskCount": 2069,
-      "completedCount": 1815,
+      "completedCount": 1816,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T20:25:20.975Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
