@@ -1222,3 +1222,180 @@ fn std_module_fallback_adds_transitive_dependencies_to_dag() {
         "topo_order must contain \"std.materials.mechanical\""
     );
 }
+
+// ── step-1 (task-2073): partial stdlib overlay is detected and errors ─────────
+
+/// Verifies that mixing filesystem and embedded stdlib sources within a single
+/// `ModuleDag` instance produces a clear diagnostic instead of silently mixing
+/// incompatible stdlib versions.
+///
+/// Setup: stdlib dir contains `units.ri` (so `std.units` resolves via filesystem)
+/// but does NOT contain `materials_mechanical.ri` (so `std.materials.mechanical`
+/// would previously fall back to the embedded stdlib silently).
+///
+/// After the all-or-nothing fix:
+/// - `compile_module("std.units")` must succeed (filesystem mode committed).
+/// - `compile_module("std.materials.mechanical")` must fail with a diagnostic
+///   that (a) mentions "std.materials.mechanical", (b) contains "overlay" or
+///   "partial", and (c) references "filesystem" or "embedded".
+///
+/// This test FAILS today because the current code silently falls back to the
+/// embedded stdlib for std.materials.mechanical (no overlay check).
+#[test]
+fn partial_stdlib_overlay_errors_when_fs_missing_later_module() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Create a partial stdlib dir: units.ri present, materials_mechanical.ri absent.
+    let stdlib_dir = dir.join("stdlib");
+    fs::create_dir_all(&stdlib_dir).unwrap();
+    fs::write(
+        stdlib_dir.join("units.ri"),
+        "pub unit myunit : Length = 1.0",
+    )
+    .unwrap();
+    // materials_mechanical.ri intentionally NOT written.
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_dir);
+    let mut dag = ModuleDag::new();
+
+    // First std.* import resolves via filesystem → commits to FileSystem mode.
+    let result_units = dag.compile_module("std.units", &resolver);
+    assert!(
+        result_units.is_ok(),
+        "compile_module(\"std.units\") should succeed via filesystem, got: {:?}",
+        result_units.err()
+    );
+
+    // Second std.* import is not on the filesystem → partial overlay → must error.
+    let result_mech = dag.compile_module("std.materials.mechanical", &resolver);
+    assert!(
+        result_mech.is_err(),
+        "compile_module(\"std.materials.mechanical\") should fail because std.units was \
+         already resolved from the filesystem but materials_mechanical.ri is absent; \
+         the DAG must not silently mix sources"
+    );
+
+    let errors = result_mech.unwrap_err();
+    let msg = errors
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (a) Must name the offending module.
+    assert!(
+        msg.contains("std.materials.mechanical"),
+        "diagnostic must mention the offending module 'std.materials.mechanical', got: {}",
+        msg
+    );
+
+    // (b) Must mention the overlay / partial mix.
+    assert!(
+        msg.to_lowercase().contains("overlay") || msg.to_lowercase().contains("partial"),
+        "diagnostic must mention 'overlay' or 'partial', got: {}",
+        msg
+    );
+
+    // (c) Must reference the stdlib source (filesystem or embedded).
+    assert!(
+        msg.to_lowercase().contains("filesystem") || msg.to_lowercase().contains("embedded"),
+        "diagnostic must reference 'filesystem' or 'embedded', got: {}",
+        msg
+    );
+}
+
+// ── step-3 (task-2073): sequential embedded fallbacks don't duplicate in topo_order ──
+
+/// Regression guard for the backward-walk short-circuit in the embedded stdlib
+/// fallback. Calls `compile_module` twice with overlapping prefix requirements:
+///
+/// 1. `std.materials.mechanical` (stdlib index 2) → inserts indices 0..=2
+///    (std.units, std.si_units, std.materials.mechanical).
+/// 2. `std.tolerancing` (stdlib index 5) → inserts indices 3..=5
+///    (std.structural.physical, std.analysis, std.tolerancing).
+///
+/// After both calls the DAG must contain exactly 6 entries (the full stdlib
+/// prefix up to std.tolerancing) with no duplicates and no gaps.
+///
+/// This test passes under the OLD forward-walk-with-contains_key guard too;
+/// it is a pinning test that will fail if the backward-walk short-circuit
+/// introduced in step-4 has an off-by-one bug (e.g., skips the boundary
+/// module or inserts already-present modules a second time).
+#[test]
+fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
+    use std::collections::HashSet;
+
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Missing stdlib_root so ALL std.* falls back to embedded.
+    let stdlib_root = dir.join("nonexistent_stdlib");
+    assert!(
+        !stdlib_root.exists(),
+        "precondition: stdlib_root must not exist for this test"
+    );
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_root);
+    let mut dag = ModuleDag::new();
+
+    // First call: inserts stdlib[0..=2] (std.units, std.si_units, std.materials.mechanical).
+    let result_mech = dag.compile_module("std.materials.mechanical", &resolver);
+    assert!(
+        result_mech.is_ok(),
+        "first compile_module should succeed, got: {:?}",
+        result_mech.err()
+    );
+
+    // Second call: inserts stdlib[3..=5] (std.structural.physical, std.analysis, std.tolerancing).
+    let result_tol = dag.compile_module("std.tolerancing", &resolver);
+    assert!(
+        result_tol.is_ok(),
+        "second compile_module should succeed, got: {:?}",
+        result_tol.err()
+    );
+
+    // (a) topo_order must have exactly 6 entries.
+    assert_eq!(
+        dag.topo_order.len(),
+        6,
+        "expected 6 entries in topo_order, got {}: {:?}",
+        dag.topo_order.len(),
+        dag.topo_order
+    );
+
+    // (b) No duplicates in topo_order.
+    let unique: HashSet<&String> = dag.topo_order.iter().collect();
+    assert_eq!(
+        unique.len(),
+        dag.topo_order.len(),
+        "topo_order must not contain duplicates, got: {:?}",
+        dag.topo_order
+    );
+
+    // (c) All six expected paths are present.
+    let expected = [
+        "std.units",
+        "std.si_units",
+        "std.materials.mechanical",
+        "std.structural.physical",
+        "std.analysis",
+        "std.tolerancing",
+    ];
+    for path in &expected {
+        assert!(
+            dag.topo_order.contains(&path.to_string()),
+            "topo_order must contain '{}', got: {:?}",
+            path,
+            dag.topo_order
+        );
+    }
+
+    // (d) modules map has exactly 6 entries.
+    assert_eq!(
+        dag.modules.len(),
+        6,
+        "dag.modules must have 6 entries, got {}",
+        dag.modules.len()
+    );
+}
