@@ -61,8 +61,11 @@ pub(crate) fn eval_named_arg(
 /// to [`eval_named_arg`]) or when the argument is present but evaluates to a
 /// non-numeric or non-finite value (NaN, ±Infinity, or a non-`f64` type such
 /// as `String` or `Bool`).  In the latter case a `Warning` diagnostic is
-/// pushed with the message `"argument '{name}' for {kind:?} evaluated to
+/// pushed with the message `"argument '{name}' for {kind} evaluated to
 /// non-numeric/non-finite value"`.
+///
+/// Non-numeric / non-finite path coverage is locked by
+/// `eval_named_arg_f64_{undef,nan,infinity}_value_returns_none_with_warning`.
 pub(crate) fn eval_named_arg_f64(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
