@@ -20608,11 +20608,11 @@
         "description": "In crates/reify-compiler/src/lib.rs, when check_trait_conformance encounters an unresolvable member type, use a sentinel (Type::Error or skip the member) instead of Type::Real fallback, so downstream conformance comparison doesn't emit a second misleading diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T11:11:42.439Z",
+        "updatedAt": "2026-04-21T15:15:16.572Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -20626,6 +20626,9 @@
             "queries": [
               "resolution for: Use Type::Error sentinel for unresolved types to prevent cascading diagnostics"
             ]
+          },
+          "done_provenance": {
+            "commit": "080422afc94498ee340a07ddb5179617dfe9acef"
           }
         }
       },
@@ -43752,9 +43755,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T15:12:29.192Z",
+      "lastModified": "2026-04-21T15:15:16.572Z",
       "taskCount": 2064,
-      "completedCount": 1806,
+      "completedCount": 1807,
       "tags": [
         "master"
       ]
