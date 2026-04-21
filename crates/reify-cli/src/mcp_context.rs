@@ -829,15 +829,18 @@ structure Bracket {
     }
 
     /// Set up a fresh `CliToolContext` with `Bracket.width` overridden to
-    /// `0.12` (a `Scalar[LENGTH]` value), then call `update_source` with the
-    /// given `replacement` source string.  Returns the number of `WARN` events
-    /// emitted by `reify::mcp_context` during `update_source`.
+    /// `0.12` (a `Scalar[LENGTH]` value), then call `update_source` with each
+    /// string in `replacements` in order.  Returns the total number of `WARN`
+    /// events emitted by `reify::mcp_context` across all `update_source` calls.
     ///
     /// Uses `CountingSubscriberBuilder::target_prefix("reify::mcp_context")`
     /// (`reify` is the binary crate name from `[[bin]] name = "reify"`) so
     /// only warns from `reapply_user_overrides` are counted — unrelated warns
     /// from the compiler, engine, or constraint solver do not affect the result.
-    fn run_reapply_with_source(replacement: &str) -> usize {
+    ///
+    /// The subscriber guard is held for the entire slice iteration so the same
+    /// target-filtered counter accumulates all events before being read.
+    fn run_reapply_with_sources(replacements: &[&str]) -> usize {
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -857,15 +860,24 @@ structure Bracket {
 
         let before = counter.load(Ordering::Acquire);
 
-        let result = ctx
-            .update_source(BRACKET_PATH, replacement)
-            .expect("update_source should return Ok even on override mismatch");
-        assert!(
-            result.success,
-            "update_source should succeed (parse/compile passed)"
-        );
+        for replacement in replacements {
+            let result = ctx
+                .update_source(BRACKET_PATH, replacement)
+                .expect("update_source should return Ok even on override mismatch");
+            assert!(
+                result.success,
+                "update_source should succeed (parse/compile passed)"
+            );
+        }
 
         counter.load(Ordering::Acquire) - before
+    }
+
+    /// Convenience wrapper around [`run_reapply_with_sources`] for the common
+    /// single-update case.  Returns the number of `WARN` events emitted by
+    /// `reify::mcp_context` during the single `update_source` call.
+    fn run_reapply_with_source(replacement: &str) -> usize {
+        run_reapply_with_sources(&[replacement])
     }
 
     /// Verify that `update_source` reuses the Engine instance rather than constructing
@@ -1075,6 +1087,46 @@ structure Bracket {
             run_reapply_with_source(BRACKET_NO_WIDTH),
             0,
             "CellNotFound must NOT emit a warn — silent skip"
+        );
+    }
+
+    /// Verify that the second `update_source` call that triggers the same
+    /// `TypeKindMismatch` error for the same `(cell_id, variant)` pair is
+    /// downgraded from WARN to DEBUG.
+    ///
+    /// A total WARN delta of 1 means the first call emits the warn and the
+    /// second is silently demoted — the dedupe set is working.  A delta of 2
+    /// would mean the downgrade path is broken (missing `insert`, wrong hash, …)
+    /// and the caller's log would be flooded with repeated warns.
+    #[test]
+    fn reapply_user_overrides_warn_deduped_on_repeat() {
+        assert_eq!(
+            run_reapply_with_sources(&[BRACKET_INT_WIDTH, BRACKET_INT_WIDTH]),
+            1,
+            "second TypeKindMismatch on the same (cell_id, variant) pair must be \
+             downgraded to debug — warned_overrides.insert() should return false on repeat"
+        );
+    }
+
+    /// Verify that a successful `reapply_user_overrides` call clears the dedupe
+    /// entry for a `(cell_id, variant)` pair, so a subsequent mismatch for the
+    /// same pair emits a fresh WARN rather than a downgraded DEBUG.
+    ///
+    /// The sequence is:
+    /// 1. `BRACKET_INT_WIDTH` — TypeKindMismatch; warns, inserts into `warned_overrides`.
+    /// 2. Original `bracket.ri` — all overrides succeed; `retain` prunes the entry.
+    /// 3. `BRACKET_INT_WIDTH` again — TypeKindMismatch; warns again (entry gone).
+    ///
+    /// A delta of 2 means both mismatch calls warned (correct).  A delta of 1
+    /// would mean the `retain` in the success path was missing or broken.
+    #[test]
+    fn reapply_user_overrides_warn_cleared_on_success() {
+        let original = std::fs::read_to_string(BRACKET_PATH)
+            .expect("bracket.ri fixture must be readable");
+        assert_eq!(
+            run_reapply_with_sources(&[BRACKET_INT_WIDTH, original.as_str(), BRACKET_INT_WIDTH]),
+            2,
+            "successful reapply must clear the dedupe entry so the next mismatch warns again"
         );
     }
 
