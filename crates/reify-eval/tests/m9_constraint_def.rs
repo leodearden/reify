@@ -115,7 +115,7 @@ fn single_predicate_values() {
     );
     assert_eq!(
         wall_constraints[0].label,
-        Some("MinThickness[0]".to_string()),
+        Some("MinThickness#0[0]".to_string()),
         "expected label MinThickness[0], got {:?}",
         wall_constraints[0].label
     );
@@ -160,8 +160,8 @@ fn multi_param_bounded_values() {
             .find(|e| e.id.entity == "Pipe" && e.label == Some(label.to_string()))
             .unwrap_or_else(|| panic!("expected Pipe constraint with label '{label}'"))
     };
-    let bounded0 = find_pipe("Bounded[0]");
-    let bounded1 = find_pipe("Bounded[1]");
+    let bounded0 = find_pipe("Bounded#0[0]");
+    let bounded1 = find_pipe("Bounded#0[1]");
     assert_eq!(
         bounded0.satisfaction,
         Satisfaction::Satisfied,
@@ -197,8 +197,8 @@ fn conjunction_predicate_labels() {
             .find(|e| e.id.entity == "Beam" && e.label == Some(label.to_string()))
             .unwrap_or_else(|| panic!("expected Beam constraint with label '{label}'"))
     };
-    let ratio0 = find_beam("SafeRatio[0]");
-    let ratio1 = find_beam("SafeRatio[1]");
+    let ratio0 = find_beam("SafeRatio#0[0]");
+    let ratio1 = find_beam("SafeRatio#0[1]");
     assert_eq!(
         ratio0.satisfaction,
         Satisfaction::Satisfied,
@@ -235,7 +235,7 @@ fn reused_def_both_structures() {
             .constraint_results
             .iter()
             .find(|e| {
-                &e.id.entity.as_str() == entity && e.label == Some("MinThickness[0]".to_string())
+                &e.id.entity.as_str() == entity && e.label == Some("MinThickness#0[0]".to_string())
             })
             .unwrap_or_else(|| panic!("expected {entity} MinThickness[0]"));
         assert_eq!(

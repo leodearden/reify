@@ -113,8 +113,8 @@ structure S {
     let entry = &result.constraint_results[0];
     assert_eq!(
         entry.label,
-        Some("RequireDetermined[0]".to_string()),
-        "expected label Some(\"RequireDetermined[0]\"), got: {:?}",
+        Some("RequireDetermined#0[0]".to_string()),
+        "expected label Some(\"RequireDetermined#0[0]\"), got: {:?}",
         entry.label
     );
     assert_eq!(
@@ -154,8 +154,8 @@ structure S {
     let entry = &result.constraint_results[0];
     assert_eq!(
         entry.label,
-        Some("RequireDetermined[0]".to_string()),
-        "expected label Some(\"RequireDetermined[0]\"), got: {:?}",
+        Some("RequireDetermined#0[0]".to_string()),
+        "expected label Some(\"RequireDetermined#0[0]\"), got: {:?}",
         entry.label
     );
     // determined(size) evaluates to Bool(false) when size is Undetermined → Violated
@@ -204,7 +204,7 @@ structure S {
     let entry0 = result
         .constraint_results
         .iter()
-        .find(|e| e.label == Some("DeterminedInRange[0]".to_string()))
+        .find(|e| e.label == Some("DeterminedInRange#0[0]".to_string()))
         .expect("expected DeterminedInRange[0]");
     assert_eq!(
         entry0.satisfaction,
@@ -216,7 +216,7 @@ structure S {
     let entry1 = result
         .constraint_results
         .iter()
-        .find(|e| e.label == Some("DeterminedInRange[1]".to_string()))
+        .find(|e| e.label == Some("DeterminedInRange#0[1]".to_string()))
         .expect("expected DeterminedInRange[1]");
     assert_eq!(
         entry1.satisfaction,
@@ -228,7 +228,7 @@ structure S {
     let entry2 = result
         .constraint_results
         .iter()
-        .find(|e| e.label == Some("DeterminedInRange[2]".to_string()))
+        .find(|e| e.label == Some("DeterminedInRange#0[2]".to_string()))
         .expect("expected DeterminedInRange[2]");
     assert_eq!(
         entry2.satisfaction,
@@ -273,7 +273,7 @@ structure Widget : Sized {
     let entry = check_result
         .constraint_results
         .iter()
-        .find(|e| e.id.entity == "Widget" && e.label == Some("Positive[0]".to_string()))
+        .find(|e| e.id.entity == "Widget" && e.label == Some("Positive#0[0]".to_string()))
         .expect("expected Widget to have constraint with label 'Positive[0]'");
     assert_eq!(
         entry.satisfaction,
@@ -637,23 +637,34 @@ fn full_pipeline_cross_feature_values() {
         other => panic!("expected Scalar for Widget.size, got {:?}", other),
     }
 
-    // 2. Bracket has DeterminedInRange[0] label for both size and length invocations.
-    // Both invocations are Satisfied (size=80mm in [10mm,200mm], length=100mm in [50mm,500mm]).
-    let bracket_dir0: Vec<_> = check_result
+    // 2. Bracket invokes DeterminedInRange twice (for size and length).
+    // Under task 845, each invocation has a unique inst_idx so the determined(v)
+    // predicate (pred_idx=0) appears once as DeterminedInRange#0[0] (size
+    // invocation) and once as DeterminedInRange#1[0] (length invocation).
+    // Both are Satisfied (size=80mm in [10mm,200mm], length=100mm in [50mm,500mm]).
+    let bracket_dir_inst0: Vec<_> = check_result
         .constraint_results
         .iter()
-        .filter(|e| e.id.entity == "Bracket" && e.label == Some("DeterminedInRange[0]".to_string()))
+        .filter(|e| e.id.entity == "Bracket" && e.label == Some("DeterminedInRange#0[0]".to_string()))
         .collect();
-    // Exactly two DeterminedInRange invocations on Bracket in the example
-    // (size and length) → exactly two [0] entries. Locking to == 2 catches
-    // accidental drift if a third invocation is added later.
+    let bracket_dir_inst1: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "Bracket" && e.label == Some("DeterminedInRange#1[0]".to_string()))
+        .collect();
     assert_eq!(
-        bracket_dir0.len(),
-        2,
-        "expected exactly 2 DeterminedInRange[0] for Bracket (size and length invocations), got {}",
-        bracket_dir0.len()
+        bracket_dir_inst0.len(),
+        1,
+        "expected exactly 1 DeterminedInRange#0[0] for Bracket (first invocation), got {}",
+        bracket_dir_inst0.len()
     );
-    for e in &bracket_dir0 {
+    assert_eq!(
+        bracket_dir_inst1.len(),
+        1,
+        "expected exactly 1 DeterminedInRange#1[0] for Bracket (second invocation), got {}",
+        bracket_dir_inst1.len()
+    );
+    for e in bracket_dir_inst0.iter().chain(bracket_dir_inst1.iter()) {
         assert_eq!(
             e.satisfaction,
             Satisfaction::Satisfied,
@@ -790,7 +801,7 @@ structure Composite : Verifiable + Ranged {
         .constraint_results
         .iter()
         .find(|e| {
-            e.id.entity == "Composite" && e.label == Some("DeterminedPositive[0]".to_string())
+            e.id.entity == "Composite" && e.label == Some("DeterminedPositive#0[0]".to_string())
         })
         .expect("expected DeterminedPositive[0] for Composite");
     assert_eq!(
@@ -804,7 +815,7 @@ structure Composite : Verifiable + Ranged {
         .constraint_results
         .iter()
         .find(|e| {
-            e.id.entity == "Composite" && e.label == Some("DeterminedPositive[1]".to_string())
+            e.id.entity == "Composite" && e.label == Some("DeterminedPositive#0[1]".to_string())
         })
         .expect("expected DeterminedPositive[1] for Composite");
     assert_eq!(

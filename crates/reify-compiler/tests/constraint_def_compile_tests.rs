@@ -63,7 +63,7 @@ structure S {
     // Label should be MinWall[0]
     assert_eq!(
         tmpl.constraints[0].label,
-        Some("MinWall[0]".to_string()),
+        Some("MinWall#0[0]".to_string()),
         "expected label MinWall[0], got {:?}",
         tmpl.constraints[0].label
     );
@@ -123,7 +123,7 @@ structure S {
     }
 
     // Labels: Triple[0], Triple[1], Triple[2]
-    for (i, expected_label) in ["Triple[0]", "Triple[1]", "Triple[2]"].iter().enumerate() {
+    for (i, expected_label) in ["Triple#0[0]", "Triple#0[1]", "Triple#0[2]"].iter().enumerate() {
         assert_eq!(
             tmpl.constraints[i].label,
             Some(expected_label.to_string()),
@@ -269,11 +269,11 @@ structure S {
     let has_min_a = tmpl
         .constraints
         .iter()
-        .any(|c| c.label == Some("MinA[0]".to_string()));
+        .any(|c| c.label == Some("MinA#0[0]".to_string()));
     let has_min_b = tmpl
         .constraints
         .iter()
-        .any(|c| c.label == Some("MinB[0]".to_string()));
+        .any(|c| c.label == Some("MinB#0[0]".to_string()));
 
     assert!(has_min_a, "expected constraint labeled MinA[0]");
     assert!(has_min_b, "expected constraint labeled MinB[0]");
@@ -309,15 +309,20 @@ structure S {
         tmpl.constraints.len()
     );
 
-    // Both labeled MinWall[0] (each instantiation produces predicate index 0)
-    for (i, cc) in tmpl.constraints.iter().enumerate() {
-        assert_eq!(
-            cc.label,
-            Some("MinWall[0]".to_string()),
-            "constraint[{i}] expected label MinWall[0], got {:?}",
-            cc.label
-        );
-    }
+    // Each instantiation gets a unique inst_idx in the label so labels don't
+    // collide across instantiations of the same def (task 845).
+    assert_eq!(
+        tmpl.constraints[0].label,
+        Some("MinWall#0[0]".to_string()),
+        "constraint[0] expected label MinWall#0[0], got {:?}",
+        tmpl.constraints[0].label
+    );
+    assert_eq!(
+        tmpl.constraints[1].label,
+        Some("MinWall#1[0]".to_string()),
+        "constraint[1] expected label MinWall#1[0], got {:?}",
+        tmpl.constraints[1].label
+    );
 
     // But each references a different param (t1 vs t2)
     let first_param = match &tmpl.constraints[0].expr.kind {
@@ -489,7 +494,7 @@ structure S {
 
     assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
 
-    // The label "MinWall[0]" is the def name + predicate index.
+    // The label "MinWall#0[0]" is the def name + predicate index.
     // When eval detects a violation, it replaces the raw ConstraintNodeId
     // with this label in the diagnostic message, so the message contains "MinWall".
     let label = tmpl.constraints[0].label.as_deref().unwrap_or("");
@@ -499,7 +504,7 @@ structure S {
         tmpl.constraints[0].label
     );
     assert_eq!(
-        label, "MinWall[0]",
+        label, "MinWall#0[0]",
         "expected label 'MinWall[0]', got: {:?}",
         tmpl.constraints[0].label
     );
@@ -570,7 +575,7 @@ fn cross_module_constraint_def_import() {
     );
     assert_eq!(
         tmpl.constraints[0].label,
-        Some("MinWall[0]".to_string()),
+        Some("MinWall#0[0]".to_string()),
         "expected label MinWall[0], got {:?}",
         tmpl.constraints[0].label
     );

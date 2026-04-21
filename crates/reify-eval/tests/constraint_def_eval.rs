@@ -11,8 +11,8 @@ use reify_types::{Satisfaction, Severity};
 // ── step-3: violated constraint def produces labeled diagnostic ───────────────
 
 /// A violated constraint def instantiation should produce:
-/// - A ConstraintCheckEntry with satisfaction==Violated and label==Some("MinWall[0]")
-/// - At least one Error diagnostic containing the string "MinWall[0]"
+/// - A ConstraintCheckEntry with satisfaction==Violated and label==Some("MinWall#0[0]")
+/// - At least one Error diagnostic containing the string "MinWall#0[0]"
 #[test]
 fn violated_constraint_def_produces_labeled_diagnostic() {
     let source = r#"
@@ -44,12 +44,12 @@ structure S {
     );
     assert_eq!(
         entry.label,
-        Some("MinWall[0]".to_string()),
-        "expected label Some(\"MinWall[0]\"), got: {:?}",
+        Some("MinWall#0[0]".to_string()),
+        "expected label Some(\"MinWall#0[0]\"), got: {:?}",
         entry.label
     );
 
-    // At least one Error diagnostic containing "MinWall[0]"
+    // At least one Error diagnostic containing "MinWall#0[0]"
     let error_diags: Vec<_> = result
         .diagnostics
         .iter()
@@ -59,7 +59,7 @@ structure S {
         !error_diags.is_empty(),
         "expected at least one Error diagnostic"
     );
-    let has_label = error_diags.iter().any(|d| d.message.contains("MinWall[0]"));
+    let has_label = error_diags.iter().any(|d| d.message.contains("MinWall#0[0]"));
     assert!(
         has_label,
         "expected at least one Error diagnostic containing 'MinWall[0]', got: {:?}",
@@ -72,7 +72,7 @@ structure S {
 /// Two-predicate Bounded constraint: w=15, lo=1, hi=10.
 /// Bounded[0] (x >= lo: 15 >= 1) is Satisfied.
 /// Bounded[1] (x <= hi: 15 <= 10) is Violated.
-/// The violated diagnostic should mention "Bounded[1]" but not "Bounded[0]".
+/// The violated diagnostic should mention "Bounded#0[1]" but not "Bounded#0[0]".
 #[test]
 fn multi_predicate_individual_violations() {
     let source = r#"
@@ -102,12 +102,12 @@ structure S {
     let bounded0 = result
         .constraint_results
         .iter()
-        .find(|e| e.label == Some("Bounded[0]".to_string()))
+        .find(|e| e.label == Some("Bounded#0[0]".to_string()))
         .expect("expected entry with label Bounded[0]");
     let bounded1 = result
         .constraint_results
         .iter()
-        .find(|e| e.label == Some("Bounded[1]".to_string()))
+        .find(|e| e.label == Some("Bounded#0[1]".to_string()))
         .expect("expected entry with label Bounded[1]");
 
     assert_eq!(
@@ -132,8 +132,8 @@ structure S {
         !error_msgs.is_empty(),
         "expected at least one Error diagnostic"
     );
-    let has_bounded1 = error_msgs.iter().any(|m| m.contains("Bounded[1]"));
-    let has_bounded0 = error_msgs.iter().any(|m| m.contains("Bounded[0]"));
+    let has_bounded1 = error_msgs.iter().any(|m| m.contains("Bounded#0[1]"));
+    let has_bounded0 = error_msgs.iter().any(|m| m.contains("Bounded#0[0]"));
     assert!(
         has_bounded1,
         "expected diagnostic mentioning 'Bounded[1]', got: {:?}",
@@ -149,7 +149,7 @@ structure S {
 // ── step-4: satisfied constraint def has label, no error ─────────────────────
 
 /// A satisfied constraint def instantiation should produce:
-/// - A ConstraintCheckEntry with satisfaction==Satisfied and label==Some("MinWall[0]")
+/// - A ConstraintCheckEntry with satisfaction==Satisfied and label==Some("MinWall#0[0]")
 /// - No Error diagnostics
 #[test]
 fn satisfied_constraint_def_has_label_no_error() {
@@ -181,8 +181,8 @@ structure S {
     );
     assert_eq!(
         entry.label,
-        Some("MinWall[0]".to_string()),
-        "expected label Some(\"MinWall[0]\"), got: {:?}",
+        Some("MinWall#0[0]".to_string()),
+        "expected label Some(\"MinWall#0[0]\"), got: {:?}",
         entry.label
     );
 
@@ -282,9 +282,9 @@ structure S {
             .unwrap_or_else(|| panic!("expected entry with label '{label}'"))
     };
 
-    let t0 = find_entry("Triple[0]");
-    let t1 = find_entry("Triple[1]");
-    let t2 = find_entry("Triple[2]");
+    let t0 = find_entry("Triple#0[0]");
+    let t1 = find_entry("Triple#0[1]");
+    let t2 = find_entry("Triple#0[2]");
 
     assert_eq!(
         t0.satisfaction,

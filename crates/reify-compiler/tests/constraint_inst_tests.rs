@@ -360,7 +360,7 @@ structure S {
 // ── Step 1 (task-198): constraint instantiation labels ───────────────────────
 
 /// Single-predicate constraint def instantiation should produce a CompiledConstraint
-/// with label == Some("MinWall[0]").
+/// with label == Some("MinWall#0[0]").
 #[test]
 fn constraint_inst_label_single_predicate() {
     let source = r#"
@@ -383,14 +383,14 @@ structure S {
     let cc = &tmpl.constraints[0];
     assert_eq!(
         cc.label,
-        Some("MinWall[0]".to_string()),
-        "expected label Some(\"MinWall[0]\"), got: {:?}",
+        Some("MinWall#0[0]".to_string()),
+        "expected label Some(\"MinWall#0[0]\"), got: {:?}",
         cc.label
     );
 }
 
 /// Multi-predicate constraint def instantiation should produce labeled constraints
-/// Some("Bounded[0]") and Some("Bounded[1]") respectively.
+/// Some("Bounded#0[0]") and Some("Bounded#0[1]") respectively.
 #[test]
 fn constraint_inst_label_multi_predicate() {
     let source = r#"
@@ -415,14 +415,14 @@ structure S {
 
     assert_eq!(
         tmpl.constraints[0].label,
-        Some("Bounded[0]".to_string()),
-        "expected first constraint label Some(\"Bounded[0]\"), got: {:?}",
+        Some("Bounded#0[0]".to_string()),
+        "expected first constraint label Some(\"Bounded#0[0]\"), got: {:?}",
         tmpl.constraints[0].label
     );
     assert_eq!(
         tmpl.constraints[1].label,
-        Some("Bounded[1]".to_string()),
-        "expected second constraint label Some(\"Bounded[1]\"), got: {:?}",
+        Some("Bounded#0[1]".to_string()),
+        "expected second constraint label Some(\"Bounded#0[1]\"), got: {:?}",
         tmpl.constraints[1].label
     );
 }

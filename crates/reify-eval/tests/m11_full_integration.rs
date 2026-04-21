@@ -925,7 +925,7 @@ fn full_v01_constraint_def_labels() {
             e.id.entity == "Assembly"
                 && e.label
                     .as_deref()
-                    .is_some_and(|l| l.starts_with("InRange["))
+                    .is_some_and(|l| l.starts_with("InRange#"))
         })
         .collect();
 
@@ -936,6 +936,9 @@ fn full_v01_constraint_def_labels() {
         inrange_constraints.len()
     );
 
+    // Under task 845's label scheme each invocation gets a unique inst_idx, so
+    // the 4 labels are InRange#0[0], InRange#0[1], InRange#1[0], InRange#1[1]
+    // (1 of each).
     let count_label = |label: &str| -> usize {
         inrange_constraints
             .iter()
@@ -943,14 +946,24 @@ fn full_v01_constraint_def_labels() {
             .count()
     };
     assert_eq!(
-        count_label("InRange[0]"),
-        2,
-        "expected 2 constraints with label 'InRange[0]'"
+        count_label("InRange#0[0]"),
+        1,
+        "expected 1 constraint with label 'InRange#0[0]'"
     );
     assert_eq!(
-        count_label("InRange[1]"),
-        2,
-        "expected 2 constraints with label 'InRange[1]'"
+        count_label("InRange#0[1]"),
+        1,
+        "expected 1 constraint with label 'InRange#0[1]'"
+    );
+    assert_eq!(
+        count_label("InRange#1[0]"),
+        1,
+        "expected 1 constraint with label 'InRange#1[0]'"
+    );
+    assert_eq!(
+        count_label("InRange#1[1]"),
+        1,
+        "expected 1 constraint with label 'InRange#1[1]'"
     );
 
     for entry in &inrange_constraints {
