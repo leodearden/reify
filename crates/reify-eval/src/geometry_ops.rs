@@ -683,11 +683,11 @@ pub(crate) fn compile_geometry_op(
                     // the op was dropped instead of only the caller's generic
                     // "failed to compile geometry operation" error.
                     match distance.as_f64() {
-                        Some(v) if v.is_finite() && v.abs() >= 1e-12 => {}
+                        Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
                         Some(v) => {
                             diagnostics.push(Diagnostic::warning(format!(
                                 "extrude dropped: distance={} is degenerate \
-                                 (|distance| must be finite and >= 1e-12 m)",
+                                 (|distance| must be finite and >= DEGENERATE_LENGTH_M = 1e-12 m)",
                                 v
                             )));
                             return Err(format!("extrude distance is degenerate: {}", v));
@@ -723,10 +723,10 @@ pub(crate) fn compile_geometry_op(
                     // zero-length (or effectively zero) rotation axis cannot
                     // define a revolve. Warn so model authors see a specific
                     // explanation instead of only the caller's generic error.
-                    if !mag.is_finite() || mag < 1e-12 {
+                    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
                         diagnostics.push(Diagnostic::warning(format!(
                             "revolve dropped: rotation axis [{}, {}, {}] has \
-                             degenerate magnitude={} (must be finite and >= 1e-12)",
+                             degenerate magnitude={} (must be finite and >= GEOMETRY_EPSILON = 1e-12)",
                             axis_dir[0], axis_dir[1], axis_dir[2], mag
                         )));
                         return Err(format!("revolve axis has degenerate magnitude: {}", mag));
@@ -738,10 +738,10 @@ pub(crate) fn compile_geometry_op(
                     // Reject sub-picoradian angles as degenerate: an angle at
                     // the f64 rounding floor cannot produce a meaningful
                     // revolve. Warn so model authors see a specific explanation.
-                    if angle_rad.abs() < 1e-12 {
+                    if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
                         diagnostics.push(Diagnostic::warning(format!(
                             "revolve dropped: angle={} rad is degenerate \
-                             (|angle| must be >= 1e-12 rad)",
+                             (|angle| must be >= DEGENERATE_ANGLE_RAD = 1e-12 rad)",
                             angle_rad
                         )));
                         return Err(format!("revolve angle is degenerate: {} rad", angle_rad));
@@ -792,11 +792,11 @@ pub(crate) fn compile_geometry_op(
                     // solid. Emit a warning so model authors see a specific
                     // explanation instead of only the caller's generic error.
                     match distance.as_f64() {
-                        Some(v) if v.is_finite() && v.abs() >= 1e-12 => {}
+                        Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
                         Some(v) => {
                             diagnostics.push(Diagnostic::warning(format!(
                                 "extrude_symmetric dropped: distance={} is \
-                                 degenerate (|distance| must be finite and >= 1e-12 m)",
+                                 degenerate (|distance| must be finite and >= DEGENERATE_LENGTH_M = 1e-12 m)",
                                 v
                             )));
                             return Err(format!("extrude distance is degenerate: {}", v));
