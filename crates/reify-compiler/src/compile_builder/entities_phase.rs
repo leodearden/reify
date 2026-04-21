@@ -15,16 +15,19 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_syntax::ParsedModule;
-use reify_types::{Diagnostic, DiagnosticLabel};
+use reify_types::{CompiledFunction, Diagnostic, DiagnosticLabel, EnumDef, SourceSpan};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::check_trait_arg_conformance;
 use crate::entity::{EntityDefRef, PendingBoundCheck, check_type_param_bounds, compile_entity};
+use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
-    CompiledConstraintDef, CompiledField, CompiledImport, EntityKind, TopologyTemplate,
+    CompiledConstraintDef, CompiledField, CompiledImport, CompiledTrait, EntityKind,
+    TopologyTemplate,
 };
+use crate::units::UnitRegistry;
 
 /// Run phase-11 (entity compile) over `parsed.declarations`.
 ///
@@ -50,15 +53,12 @@ pub(crate) fn phase_entities(
 
     // Constraint-def registry: prelude pub defs first (without re-warning;
     // the shadow-warning pass ran in phase-10), then local overrides.
+    // `.entry().or_insert()` encodes the first-imported-wins policy without
+    // a separate sentinel set.
     let mut constraint_def_registry: HashMap<String, &CompiledConstraintDef> = HashMap::new();
-    let mut prelude_source: HashMap<String, ()> = HashMap::new();
     for m in prelude {
         for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
-            if !prelude_source.contains_key(&cd.name) {
-                prelude_source.insert(cd.name.clone(), ());
-                constraint_def_registry.insert(cd.name.clone(), cd);
-            }
-            // First-imported wins; subsequent prelude hits silently drop.
+            constraint_def_registry.entry(cd.name.clone()).or_insert(cd);
         }
     }
     for cd in &ctx.constraint_defs {
@@ -68,31 +68,22 @@ pub(crate) fn phase_entities(
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                // Only compile the first definition; duplicates have a different
-                // span than the one recorded in seen_entity_names.
-                let is_first_def = ctx
-                    .seen_entity_names
-                    .get(&structure.name)
-                    .is_none_or(|(first_span, _)| *first_span == structure.span);
-                if is_first_def {
-                    let entity_ref = EntityDefRef::from(structure);
-                    let template = compile_entity(
-                        &entity_ref,
-                        EntityKind::Structure,
-                        &ctx.resolution_enums,
-                        &ctx.resolution_functions,
-                        &trait_registry,
-                        trait_names,
-                        &field_registry,
-                        &constraint_def_registry,
-                        &ctx.unit_registry,
-                        &ctx.alias_registry,
-                        &mut ctx.pending_bound_checks,
-                        &mut ctx.diagnostics,
-                        &ctx.templates,
-                    );
-                    ctx.templates.push(template);
-                }
+                compile_entity_decl(
+                    EntityDefRef::from(structure),
+                    EntityKind::Structure,
+                    &ctx.seen_entity_names,
+                    &ctx.resolution_enums,
+                    &ctx.resolution_functions,
+                    &trait_registry,
+                    trait_names,
+                    &field_registry,
+                    &constraint_def_registry,
+                    &ctx.unit_registry,
+                    &ctx.alias_registry,
+                    &mut ctx.pending_bound_checks,
+                    &mut ctx.diagnostics,
+                    &mut ctx.templates,
+                );
             }
             reify_syntax::Declaration::Enum(_) => {
                 // Already collected in pre-pass above.
@@ -119,31 +110,22 @@ pub(crate) fn phase_entities(
                 // Already compiled in trait pre-pass above.
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
-                // Only compile the first definition; duplicates have a different
-                // span than the one recorded in seen_entity_names.
-                let is_first_def = ctx
-                    .seen_entity_names
-                    .get(&occurrence.name)
-                    .is_none_or(|(first_span, _)| *first_span == occurrence.span);
-                if is_first_def {
-                    let entity_ref = EntityDefRef::from(occurrence);
-                    let template = compile_entity(
-                        &entity_ref,
-                        EntityKind::Occurrence,
-                        &ctx.resolution_enums,
-                        &ctx.resolution_functions,
-                        &trait_registry,
-                        trait_names,
-                        &field_registry,
-                        &constraint_def_registry,
-                        &ctx.unit_registry,
-                        &ctx.alias_registry,
-                        &mut ctx.pending_bound_checks,
-                        &mut ctx.diagnostics,
-                        &ctx.templates,
-                    );
-                    ctx.templates.push(template);
-                }
+                compile_entity_decl(
+                    EntityDefRef::from(occurrence),
+                    EntityKind::Occurrence,
+                    &ctx.seen_entity_names,
+                    &ctx.resolution_enums,
+                    &ctx.resolution_functions,
+                    &trait_registry,
+                    trait_names,
+                    &field_registry,
+                    &constraint_def_registry,
+                    &ctx.unit_registry,
+                    &ctx.alias_registry,
+                    &mut ctx.pending_bound_checks,
+                    &mut ctx.diagnostics,
+                    &mut ctx.templates,
+                );
             }
             reify_syntax::Declaration::Field(_) => {
                 // Already compiled in field pre-pass above.
@@ -163,6 +145,58 @@ pub(crate) fn phase_entities(
             }
         }
     }
+}
+
+/// Compile a single `structure` or `occurrence` declaration, pushing the
+/// resulting template onto `templates` if this is the first-seen definition
+/// for the entity name. Structure and Occurrence arms are otherwise
+/// byte-for-byte identical; the caller distinguishes them by passing the
+/// appropriate `kind` and `EntityDefRef::from(...)`.
+///
+/// Takes the `ctx` fields as split `&` / `&mut` borrows rather than
+/// `&mut CompilationCtx` because the caller holds shared borrows of
+/// `ctx.trait_defs`, `ctx.fields`, and `ctx.constraint_defs` (via the
+/// phase-local registries) that would conflict with an exclusive borrow of
+/// the whole ctx.
+#[allow(clippy::too_many_arguments)]
+fn compile_entity_decl(
+    entity_ref: EntityDefRef<'_>,
+    kind: EntityKind,
+    seen_entity_names: &HashMap<String, (SourceSpan, &'static str)>,
+    resolution_enums: &[EnumDef],
+    resolution_functions: &[CompiledFunction],
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_names: &HashSet<String>,
+    field_registry: &HashMap<String, &CompiledField>,
+    constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
+    unit_registry: &UnitRegistry,
+    alias_registry: &TypeAliasRegistry,
+    pending_bound_checks: &mut Vec<PendingBoundCheck>,
+    diagnostics: &mut Vec<Diagnostic>,
+    templates: &mut Vec<TopologyTemplate>,
+) {
+    let is_first_def = seen_entity_names
+        .get(entity_ref.name)
+        .is_none_or(|(first_span, _)| *first_span == entity_ref.span);
+    if !is_first_def {
+        return;
+    }
+    let template = compile_entity(
+        &entity_ref,
+        kind,
+        resolution_enums,
+        resolution_functions,
+        trait_registry,
+        trait_names,
+        field_registry,
+        constraint_def_registry,
+        unit_registry,
+        alias_registry,
+        pending_bound_checks,
+        diagnostics,
+        templates,
+    );
+    templates.push(template);
 }
 
 /// Post-compilation pass: drain `ctx.pending_bound_checks` now that all
