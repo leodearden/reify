@@ -42795,13 +42795,13 @@
         "description": "After task #2033 lands (tests moved out), extract the `MergeContext` struct and `collect_all_requirements` fn (L697-926, ~230 lines) from `crates/reify-compiler/src/conformance.rs` into a new sibling file `crates/reify-compiler/src/trait_requirements.rs`.\n\nThese functions are conceptually distinct from `check_trait_conformance`: they walk the trait refinement hierarchy (handling diamond patterns, depth guards, MAX_TRAIT_DEPTH) to collect all requirements and defaults — an independent responsibility from comparing structure members against a flattened requirement set.\n\nImplementation:\n- Create `crates/reify-compiler/src/trait_requirements.rs` with `MergeContext` struct + `impl MergeContext` + `collect_all_requirements` fn. Add `pub(crate) mod trait_requirements;` and `pub(crate) use trait_requirements::*;` to lib.rs.\n- Update `conformance.rs` — the remaining `check_trait_conformance` call site already uses `collect_all_requirements` as a free fn, so re-export makes the move transparent.\n- Keep `MAX_TRAIT_DEPTH` const with `collect_all_requirements` (it's only used there).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically.\n- `conformance.rs` drops to ~830 lines with only `check_trait_conformance` and `check_trait_arg_conformance`.\n\nWhy: separates the hierarchy-walk responsibility from the conformance-check responsibility, reducing the set of tasks that need to touch conformance.rs.",
         "details": "<info added on 2026-04-21T07:01:47.119Z>\nRevised success criterion: The target line count for `conformance.rs` post-extraction is now approximately 1388 lines. This includes `use super::*;`, `check_trait_conformance` (~621 lines), `check_trait_arg_conformance` (~146 lines), and `#[cfg(test)] mod tests` (~609 lines, including rationale documentation and new characterization tests). This reflects a reduction of about 245 lines from the original 1633 lines. The core goal of separating the hierarchy-walk responsibility from the conformance-check responsibility remains fully achieved. Reviewers should accept ~1388 lines as the correct post-refactor size for `conformance.rs`.\n</info added on 2026-04-21T07:01:47.119Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "2033"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:47:34.874Z",
+        "updatedAt": "2026-04-21T09:16:11.286Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -42819,6 +42819,10 @@
               "conformance.rs MergeContext collect_all_requirements refactoring",
               "lib.rs conformance module re-exports"
             ]
+          },
+          "done_provenance": {
+            "commit": "46b27bcc86ee600df2935969d376b226d2f16333",
+            "note": "Extracted 250 lines from conformance.rs into new trait_requirements.rs (MergeContext + collect_all_requirements). Paired with commit 145882f31 adding unit tests. Task exhibits the phantom-done / stale-reviews-dir pattern (reviews/ has stale ERROR while reviews-amend-1/ has the real verdict) — flipping to done with provenance stamp to stop the reconciliation/steward loop."
           }
         }
       },
@@ -43589,9 +43593,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:14:30.399Z",
+      "lastModified": "2026-04-21T09:16:11.286Z",
       "taskCount": 2060,
-      "completedCount": 1795,
+      "completedCount": 1796,
       "tags": [
         "master"
       ]
