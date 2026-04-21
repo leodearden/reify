@@ -23319,7 +23319,7 @@
         "description": "Improve test coverage and eliminate duplication in assert_orientation_approx! tests in crates/reify-stdlib/src/lib.rs.",
         "details": "1. **Consolidate Diagnostic Tests:** Replace the duplicated tests `orient_identity_per_component_diagnostic`, `orient_per_component_diagnostic_x`, `_y`, `_z` with a single table-driven test or a helper closure. This should iterate over components `[('w:', factory_w), ('x:', factory_x), ...]` and use `catch_unwind` to handle each case. Aim for a concise implementation of about 20-30 lines.\n\n2. **Explicit-Tolerance Coverage:** Add tests for the explicit-tolerance arm of `assert_orientation_approx!`. Include a positive test case that fails at the default tolerance but passes with a looser tolerance (e.g., `tol = 1e-2`), and a negative test case that panics with a tighter tolerance (e.g., `tol = 1e-6`).\n\n3. **Robustness with Non-Trivial Quaternion:** Introduce a test using a fully-populated quaternion `(0.5, 0.5, 0.5, 0.5)` and its negation, ensuring they pass with `sign_insensitive = 1e-10`. This ensures comprehensive coverage of all comparison lines.\n<info added on 2026-04-21T14:47:17.798Z>\nRevised deliverable 3: Add a single positive-path test for a fully-populated quaternion `(0.5, 0.5, 0.5, 0.5)` plus its negation `(-0.5, -0.5, -0.5, -0.5)`, asserting both match expected `(0.5, 0.5, 0.5, 0.5)` under `sign_insensitive = 1e-10`. This addresses the remaining gap by exercising all four component comparisons simultaneously on the pass path.\n\nAlso, remove prior dependency `955` as it was a stale copy-paste and unrelated to quaternion assertions.\n</info added on 2026-04-21T14:47:17.798Z>",
         "testStrategy": "Run `cargo test -p reify-stdlib --lib orient` to ensure all existing tests pass and new tests fail if the explicit-tolerance arm or any sign_insensitive comparisons are broken. Verify that the consolidated diagnostic tests execute correctly and cover all components.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -23337,9 +23337,12 @@
               "reify-stdlib assert orientation test coverage table-driven catch_unwind",
               "quaternion comparison sign insensitive fully populated 0.5 0.5 0.5 0.5"
             ]
+          },
+          "done_provenance": {
+            "commit": "4cfc63bd7aa3aeb682bf0bf6a02b8d4ddf226b04"
           }
         },
-        "updatedAt": "2026-04-21T19:43:30.235Z"
+        "updatedAt": "2026-04-21T19:52:32.765Z"
       },
       {
         "id": "1063",
@@ -43864,9 +43867,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T19:48:15.595Z",
+      "lastModified": "2026-04-21T19:52:32.765Z",
       "taskCount": 2066,
-      "completedCount": 1812,
+      "completedCount": 1813,
       "tags": [
         "master"
       ]
