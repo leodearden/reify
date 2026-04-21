@@ -39469,13 +39469,15 @@
         "description": "Two small doc-comment fixes on the four new unit tests in crates/reify-eval/src/lib.rs (tests module, ~lines 3436-3496, added by task 1868): (a) replace hard-coded `lib.rs:124` / `lib.rs:125` arm references with a textual reference to the `matches!` arm (e.g. \"the `Value::Matrix(_) => matches!(ty, Type::Tensor { .. } | Type::Matrix { .. })` arm in `value_type_kind_matches`\"), because line numbers silently drift; (b) clarify in the positive cross-variant test doc comments that they verify kind-match only — shape/rank validation is out of scope and handled by a later pass (cite the covering test if known, or note it as expected-unchecked here). Source: task 1868 reviewer_comprehensive suggestions S1 + S2.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:46.100Z",
+        "updatedAt": "2026-04-21T09:21:53.339Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-eval/src/lib.rs"
+          ],
           "files": []
         }
       },
@@ -43554,7 +43556,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:21:31.312Z",
+      "lastModified": "2026-04-21T09:21:53.340Z",
       "taskCount": 2060,
       "completedCount": 1797,
       "tags": [
