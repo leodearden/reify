@@ -43758,14 +43758,13 @@
       {
         "id": "2069",
         "title": "Polish task 424 follow-ups: is_recursive doc count, depth-limit test name, engine_admin comment",
-        "description": "Three small post-merge polish items from task 424 review:\n\n1. **crates/reify-compiler/src/types.rs:259-279** — `is_recursive` docstring says \"the flag is used in three distinct places\" but then enumerates four bullets (termination.rs, unfold.rs, engine_eval.rs, gui/src-tauri/src/engine.rs). Fix: change \"three distinct places\" to \"four distinct places\", or drop the count and say \"in the following places\" so future additions don't require re-editing the prose.\n\n2. **crates/reify-eval/tests/recursive_unfold.rs:783-785** — `unfold_recursive_depth_limit_boundary_accepts_512` hard-codes \"512\" in the test name while the body uses `Engine::MAX_UNFOLD_DEPTH_LIMIT`. If the constant is ever raised (e.g., to 1024), the test still passes but the name lies. Fix: rename to `unfold_recursive_depth_limit_boundary_accepts_max`, OR add `assert_eq!(Engine::MAX_UNFOLD_DEPTH_LIMIT, 512);` so any change to the constant forces a deliberate update to the name and the canonical-value claim.\n\n3. **crates/reify-eval/src/engine_admin.rs:132-136** — Inline comment block rehashing the panic-vs-Result decision duplicates reasoning already captured in task 205 memory and the `# Panics` rustdoc immediately above. Fix: drop the inline comment block; keep the rustdoc and the two asserts as self-documenting. If rationale must be preserved, move it to the memory store rather than the source file.\n\nAll three are cosmetic / documentation polish; no behavioral change required. Grouped as one task because each is a few-minute edit in modules already touched by task 424.</description>\n<parameter name=\"dependencies\">424",
-        "details": "",
-        "testStrategy": "",
+        "description": "Three small post-merge polish items from task 424 review:\n\n1. **crates/reify-compiler/src/types.rs:259-279** — `is_recursive` docstring says \"the flag is used in three distinct places\" but then enumerates four bullets (termination.rs, unfold.rs, engine_eval.rs, gui/src-tauri/src/engine.rs). Fix: change \"three distinct places\" to \"four distinct places\", or drop the count and say \"in the following places\" so future additions don't require re-editing the prose.\n\n2. **crates/reify-eval/tests/recursive_unfold.rs:783-785** — `unfold_recursive_depth_limit_boundary_accepts_512` hard-codes \"512\" in the test name while the body uses `Engine::MAX_UNFOLD_DEPTH_LIMIT`. If the constant is ever raised (e.g., to 1024), the test still passes but the name lies. Fix: rename to `unfold_recursive_depth_limit_boundary_accepts_max`, OR add `assert_eq!(Engine::MAX_UNFOLD_DEPTH_LIMIT, 512);` so any change to the constant forces a deliberate update to the name and the canonical-value claim.\n\n3. **crates/reify-eval/src/engine_admin.rs:132-136** — Inline comment block rehashing the panic-vs-Result decision duplicates reasoning already captured in task 205 memory and the `# Panics` rustdoc immediately above. Fix: drop the inline comment block; keep the rustdoc and the two asserts as self-documenting. If rationale must be preserved, move it to the memory store rather than the source file.\n\nAll three are cosmetic / documentation polish; no behavioral change required. Grouped as one task because each is a few-minute edit in modules already touched by task 424.",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
+        "details": "",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-21T19:43:27.918Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/types.rs",
@@ -44087,7 +44086,15 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:38:05.565Z"
+        "updatedAt": "2026-04-21T22:38:05.565Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: edit_source Phase 4: invalidate cache for removed collection scoped cells and entirely-removed collection_subs"
+            ]
+          }
+        }
       },
       {
         "id": "2087",
@@ -44151,7 +44158,9 @@
       "completedCount": 1822,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T22:38:06.775Z",
+      "description": "Tasks for master context"
     }
   }
 }
