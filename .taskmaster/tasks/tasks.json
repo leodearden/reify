@@ -8186,14 +8186,8 @@
         "updatedAt": "2026-04-20T12:20:03.252Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/sweep_e2e.rs"
-          ],
-          "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
-          ]
+          "files": [],
+          "modules": []
         }
       },
       {
@@ -43680,7 +43674,9 @@
       "completedCount": 1794,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T09:13:15.772Z",
+      "description": "Tasks for master context"
     }
   }
 }
