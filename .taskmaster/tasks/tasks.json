@@ -43890,23 +43890,21 @@
         "description": "Close a latent overlay-invariant escape in the `StdlibMode` deferred-commit logic (crates/reify-compiler/src/module_dag.rs, approximately lines 189–344 of the current file).\n\nThe issue: in the `Ok(path) if is_std_path` arm, when `stdlib_mode` is still `None`, `commit_fs_mode = true` is set but the actual write to `self.stdlib_mode` is deferred until after the module body (and its transitive imports) successfully compile. During the recursive `compile_module` calls for this module's own `import std.Y` statements, the `Err(fs_err) if is_std_path` arm can legitimately find Y only in the embedded stdlib (if Y is missing from `stdlib_root`) and commit `stdlib_mode = Some(Embedded)`. When the outer call returns, the unconditional `if commit_fs_mode { self.stdlib_mode = Some(FileSystem); }` overwrites the Embedded commit — silently mixing a filesystem-loaded outer module with an embedded-loaded inner dependency. This is the exact partial-overlay scenario the new invariant is meant to reject.\n\nNot reachable through the bundled stdlib today (none of `stdlib/*.ri` have `import` statements), but a user-supplied `stdlib_root` whose `.ri` files import other std.* modules will trip it, defeating the invariant.\n\nTwo viable fixes (pick one or combine):\n(a) Commit `stdlib_mode = Some(FileSystem)` eagerly *before* recursing into imports so the inner embedded-fallback arm sees `Some(FileSystem)` and emits the overlay diagnostic. Trade-off: a parse/compile failure on the outer module would taint mode for subsequent calls; guard this with revert-on-error if that matters.\n(b) After the inner recursion returns, re-check `self.stdlib_mode` and emit the partial-overlay diagnostic when `commit_fs_mode == true` but a descendant already switched mode to `Embedded`. Don't silently overwrite.\n\nAdd a regression test in `crates/reify-compiler/tests/module_dag_tests.rs` that constructs a user-supplied stdlib dir with one `.ri` file that `import`s another std.* module missing from the dir, and asserts the partial-overlay diagnostic fires.\n\nMemory hints: search \"stdlib embedded fallback module_dag StdlibMode partial overlay\"; review the two existing overlay tests `partial_stdlib_overlay_errors_when_fs_missing_later_module` and `partial_stdlib_overlay_errors_when_embedded_first_then_fs` in module_dag_tests.rs for setup patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-21T20:17:45.034Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T20:04:50.316Z",
-      "taskCount": 2067,
+      "lastModified": "2026-04-21T20:17:45.034Z",
+      "taskCount": 2068,
       "completedCount": 1814,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T20:17:30.827Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-21T20:17:30.846Z"
+      ]
     }
   }
 }
