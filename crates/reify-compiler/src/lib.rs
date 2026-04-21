@@ -10,6 +10,7 @@ mod scope;
 mod expr;
 mod traits;
 mod annotations;
+mod compile_builder;
 mod termination;
 mod entity;
 mod connect;
