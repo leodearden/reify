@@ -358,6 +358,27 @@ pub(crate) fn compile_geometry_call(
                 )],
             }])
         }
+        "tube" => {
+            if compiled_args.len() != 3 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "tube() expects 3 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Tube,
+                args: vec![
+                    ("outer_r".to_string(), it.next().unwrap()),
+                    ("inner_r".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         // --- Patterns ---
         // linear_pattern(target, dx, dy, dz, count, spacing)
         "linear_pattern" => {
@@ -856,6 +877,7 @@ mod tests {
         "box",
         "cylinder",
         "sphere",
+        "tube",
         "linear_pattern_2d",
         "arbitrary_pattern",
         "line_segment",
@@ -883,10 +905,10 @@ mod tests {
     /// Breakdown at time of writing:
     /// ```text
     /// GEOM_ARG_FUNCTIONS    18
-    /// NO_GEOM_ARG_FUNCTIONS 11
+    /// NO_GEOM_ARG_FUNCTIONS 12
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 36
+    /// Total                 37
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -898,7 +920,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 36;
+    const EXPECTED_DISPATCH_COUNT: usize = 37;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

@@ -509,6 +509,9 @@ pub enum PrimitiveKind {
     Box,
     Cylinder,
     Sphere,
+    /// Hollow cylinder: `tube(outer_r, inner_r, height)`. Composed at the
+    /// kernel layer as `boolean_cut` between two cylinders.
+    Tube,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -517,6 +520,7 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Box => f.write_str("box"),
             PrimitiveKind::Cylinder => f.write_str("cylinder"),
             PrimitiveKind::Sphere => f.write_str("sphere"),
+            PrimitiveKind::Tube => f.write_str("tube"),
         }
     }
 }
@@ -766,6 +770,7 @@ mod kind_display_tests {
             (PrimitiveKind::Box, "box"),
             (PrimitiveKind::Cylinder, "cylinder"),
             (PrimitiveKind::Sphere, "sphere"),
+            (PrimitiveKind::Tube, "tube"),
         ]);
     }
 
