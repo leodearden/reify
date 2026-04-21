@@ -179,6 +179,22 @@ pub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Return only the `Severity::Error` entries from a diagnostic slice.
+///
+/// Short-named convenience wrapper for use in eval-integration tests where
+/// the filter-collect pattern `.filter(|d| d.severity == Severity::Error)
+/// .collect::<Vec<_>>()` otherwise repeats at every assertion site.
+///
+/// Semantically equivalent to [`collect_errors`]; prefer this name when the
+/// returned value will be bound to a local called `error_diags` so the call
+/// site reads as `let error_diags = error_diags(&diags);`.
+pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
 /// Return only the `Severity::Error` diagnostics from a compiled module.
 ///
 /// Convenience wrapper around [`collect_errors`].

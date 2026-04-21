@@ -5,7 +5,7 @@
 //! - Diagnostic messages that use the label instead of the raw ConstraintNodeId
 //! - Individual satisfaction states per predicate
 
-use reify_test_support::{check_source, parse_and_compile};
+use reify_test_support::{check_source, error_diags, parse_and_compile};
 use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
     DiagnosticLabel, Satisfaction, Severity, SourceSpan,
@@ -53,11 +53,7 @@ structure S {
     );
 
     // At least one Error diagnostic containing "MinWall#0[0]"
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         !error_diags.is_empty(),
         "expected at least one Error diagnostic"
@@ -189,11 +185,7 @@ structure S {
         entry.label
     );
 
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         error_diags.is_empty(),
         "expected no Error diagnostics, got: {:?}",
@@ -229,11 +221,7 @@ structure S {
     );
 
     // No violation diagnostics
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         error_diags.is_empty(),
         "expected no Error diagnostics when guard is false, got: {:?}",
@@ -344,11 +332,7 @@ structure S {
     );
 
     // The diagnostic should use the raw ConstraintNodeId format
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         !error_diags.is_empty(),
         "expected at least one Error diagnostic"
@@ -427,11 +411,7 @@ structure S {
     let mut engine = reify_eval::Engine::new(Box::new(LabelEmittingChecker), None);
     let result = engine.check(&compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         !error_diags.is_empty(),
         "expected at least one Error diagnostic"
