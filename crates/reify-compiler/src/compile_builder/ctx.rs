@@ -85,3 +85,54 @@ impl CompilationCtx {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec
+    /// is empty, the entity-name tracker is empty, and both registries have no
+    /// entries.  Anchors the invariant that construction does no hidden seeding
+    /// (prelude/stdlib content enters via the phase functions, not the ctor).
+    #[test]
+    fn new_produces_empty_state() {
+        let ctx = CompilationCtx::new();
+        assert!(ctx.diagnostics.is_empty(), "diagnostics should be empty");
+        assert!(ctx.imports.is_empty(), "imports should be empty");
+        assert!(ctx.functions.is_empty(), "functions should be empty");
+        assert!(ctx.fields.is_empty(), "fields should be empty");
+        assert!(ctx.templates.is_empty(), "templates should be empty");
+        assert!(ctx.enum_defs.is_empty(), "enum_defs should be empty");
+        assert!(ctx.trait_defs.is_empty(), "trait_defs should be empty");
+        assert!(
+            ctx.constraint_defs.is_empty(),
+            "constraint_defs should be empty"
+        );
+        assert!(
+            ctx.compiled_units.is_empty(),
+            "compiled_units should be empty"
+        );
+        assert!(
+            ctx.pending_bound_checks.is_empty(),
+            "pending_bound_checks should be empty"
+        );
+        assert!(
+            ctx.resolution_enums.is_empty(),
+            "resolution_enums should be empty"
+        );
+        assert!(
+            ctx.resolution_functions.is_empty(),
+            "resolution_functions should be empty"
+        );
+        assert!(
+            ctx.seen_entity_names.is_empty(),
+            "seen_entity_names should be empty"
+        );
+        // A fresh UnitRegistry has no entries — lookup of any common unit
+        // name must return None (no hidden seeding happens in new()).
+        assert!(
+            ctx.unit_registry.lookup("meter").is_none(),
+            "fresh unit_registry should have no 'meter' entry"
+        );
+    }
+}
