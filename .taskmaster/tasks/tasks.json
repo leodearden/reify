@@ -18556,7 +18556,27 @@
         "subtasks": [],
         "updatedAt": "2026-04-21T09:16:55.409Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/constraint_inst_tests.rs",
+            "crates/reify-eval/src/engine_constraints.rs",
+            "crates/reify-eval/tests/constraint_def_eval.rs",
+            "crates/reify-eval/tests/determinacy_predicates.rs",
+            "crates/reify-eval/tests/incremental.rs",
+            "crates/reify-eval/tests/integration_full_v01.rs",
+            "crates/reify-eval/tests/m9_combined.rs",
+            "crates/reify-eval/tests/m9_integration.rs",
+            "crates/reify-expr/src/calculus.rs",
+            "crates/reify-expr/src/complex.rs",
+            "crates/reify-expr/src/sanitize.rs",
+            "crates/reify-expr/tests/complex_eval_tests.rs",
+            "crates/reify-stdlib/src/analysis.rs",
+            "crates/reify-stdlib/src/complex.rs",
+            "crates/reify-stdlib/src/helpers.rs",
+            "crates/reify-stdlib/tests/complex_tests.rs",
+            "crates/reify-test-support/src/helpers.rs",
+            "crates/reify-types/src/value.rs"
+          ],
           "files": [],
           "bundled_from": [
             "843",
@@ -43631,7 +43651,9 @@
       "completedCount": 1801,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:20:47.721Z",
+      "description": "Tasks for master context"
     }
   }
 }
