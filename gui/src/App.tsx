@@ -1,5 +1,5 @@
 import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For } from 'solid-js';
-import { Viewport } from './viewport';
+import { DualViewport } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
 import {
@@ -25,6 +25,8 @@ import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
 import { createViewportStore } from './stores/viewportStore';
+import { createDefPreviewStore } from './stores/defPreviewStore';
+import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
 import {
   getInitialState,
   getEntityTree as bridgeGetEntityTree,
@@ -48,6 +50,8 @@ import {
   isDebugEnabled,
   getKernelStatus,
   onKernelStatus,
+  getContainingDefinition as bridgeGetContainingDefinition,
+  getDefPreview as bridgeGetDefPreview,
 } from './bridge';
 import {
   navigateToSource,
@@ -92,6 +96,17 @@ const App: Component = () => {
 
   const viewStateStore = createViewStateStore();
   const viewportStore = createViewportStore();
+  const defPreviewStore = createDefPreviewStore();
+
+  // Activation hook: watches editor cursor → debounces 200ms → loads def preview
+  const defPreviewActivation = createDefPreviewActivation({
+    editorStore,
+    viewportStore,
+    defPreviewStore,
+    getContainingDefinition: bridgeGetContainingDefinition,
+    getDefPreview: bridgeGetDefPreview,
+    debounceMs: 200,
+  });
 
   // One-way sync: keep viewportStore["design-main"].viewId in step with the
   // active view chosen by the user (via ViewSelector / DesignTree / keyboard shortcuts).
@@ -117,6 +132,10 @@ const App: Component = () => {
     viewStateStore.regenerateAutoViews(entityTree());
     setTreeGeneration((v) => v + 1);
   });
+
+  // True when at least one design mesh is loaded. Memoized so DualViewport's
+  // designViewportActive prop does not allocate a new array on every reactive pulse.
+  const hasMeshes = createMemo(() => Object.keys(engineStore.state.meshes).length > 0);
 
   // Effective visibility memo: re-evaluates whenever explicit overrides or treeGeneration
   // changes.  treeGeneration is incremented by the effect above after setTree runs, which
@@ -750,10 +769,14 @@ const App: Component = () => {
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
-              <Viewport
-                viewportId="design-main"
+              <DualViewport
+                engineStore={engineStore}
+                defPreviewStore={defPreviewStore}
                 viewportStore={viewportStore}
-                meshes={engineStore.state.meshes}
+                defPreviewActive={defPreviewActivation.defPreviewActive}
+                designViewportActive={hasMeshes}
+                defName={() => defPreviewStore.state.defName}
+                onForceExpand={(id) => viewportStore.setForceExpanded(id, true)}
                 onSelect={handleViewportSelect}
                 onHover={(path) => selectionStore.hoverEntity(path)}
                 selectedEntity={selectionStore.state.selectedEntity}

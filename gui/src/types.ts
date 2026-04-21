@@ -162,6 +162,26 @@ export interface SerializationError {
 export type ExplicitVisibility = VisibilityState | null;
 
 /**
+ * Byte-offset span within a source file, as returned by the backend.
+ * Mirrors the Rust `SourceSpanInfo` struct in `gui/src-tauri/src/types.rs`.
+ */
+export interface SourceSpanInfo {
+  start: number;
+  end: number;
+}
+
+/**
+ * Information about a definition resolved from a source position.
+ * `kind` is `"structure"` | `"occurrence"` (typed as `string` for forward-compat).
+ * Mirrors the Rust `DefInfo` struct in `gui/src-tauri/src/types.rs`.
+ */
+export interface DefInfo {
+  name: string;
+  kind: string;
+  span: SourceSpanInfo;
+}
+
+/**
  * A node in the entity tree emitted by the backend's `get_entity_tree` command.
  * Mirrors the Rust `EntityTreeNode` struct in `gui/src-tauri/src/types.rs`.
  */

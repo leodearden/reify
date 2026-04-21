@@ -13,6 +13,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // Capture Viewport props for navigation tests
 let capturedViewportProps: any = {};
+let capturedDualViewportProps: any = {};
 const mockViewportFitToView = vi.fn();
 const mockFlyToEntity = vi.fn();
 vi.mock('../viewport', () => ({
@@ -29,6 +30,21 @@ vi.mock('../viewport', () => ({
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'viewport-container');
     el.textContent = 'Viewport Mock';
+    return el;
+  },
+  DualViewport: (props: any) => {
+    capturedDualViewportProps = props;
+    // Invoke flyToEntityRef with a trackable mock function if provided
+    if (props.flyToEntityRef) {
+      props.flyToEntityRef(mockFlyToEntity);
+    }
+    // Invoke fitToViewRef with a trackable mock function if provided
+    if (props.fitToViewRef) {
+      props.fitToViewRef(mockViewportFitToView);
+    }
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'dual-viewport');
+    el.textContent = 'DualViewport Mock';
     return el;
   },
 }));
@@ -93,6 +109,8 @@ vi.mock('../bridge', () => ({
   isDebugEnabled: vi.fn().mockResolvedValue(false),
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
+  getContainingDefinition: vi.fn().mockResolvedValue(null),
+  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
 }));
 
 import App from '../App';
@@ -102,6 +120,7 @@ import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 beforeEach(() => {
   vi.clearAllMocks();
   capturedViewportProps = {};
+  capturedDualViewportProps = {};
   mockViewportFitToView.mockClear();
   localStorage.clear();
   capturedEditorStore = null;
@@ -161,9 +180,9 @@ describe('App layout wiring', () => {
     expect(screen.getByTestId('status-bar')).toBeTruthy();
   });
 
-  it('renders Viewport', async () => {
+  it('renders DualViewport', async () => {
     await renderAndWaitForReady();
-    expect(screen.getByTestId('viewport-container')).toBeTruthy();
+    expect(screen.getByTestId('dual-viewport')).toBeTruthy();
   });
 
   it('renders Editor', async () => {
@@ -572,11 +591,11 @@ describe('App navigation wiring', () => {
     render(() => <App />);
 
     await waitFor(() => {
-      expect(capturedViewportProps.onSelect).toBeDefined();
+      expect(capturedDualViewportProps.onSelect).toBeDefined();
     });
 
     // Simulate viewport selection
-    capturedViewportProps.onSelect('Bracket');
+    capturedDualViewportProps.onSelect('Bracket');
 
     await waitFor(() => {
       expect(bridge.getSourceLocation).toHaveBeenCalledWith('Bracket');
@@ -627,11 +646,11 @@ describe('App navigation wiring', () => {
     render(() => <App />);
 
     await waitFor(() => {
-      expect(capturedViewportProps.onSelect).toBeDefined();
+      expect(capturedDualViewportProps.onSelect).toBeDefined();
     });
 
     // Simulate viewport selection
-    capturedViewportProps.onSelect('Bracket');
+    capturedDualViewportProps.onSelect('Bracket');
 
     // Wait for getSourceLocation to resolve and selectEntity to be called
     await waitFor(() => {
@@ -670,7 +689,7 @@ describe('App navigation wiring', () => {
       const selectedGroups = container.querySelectorAll('[data-selected]');
       expect(selectedGroups.length).toBe(1);
       // Primary identity check: exact entity path routed through selectionStore to Viewport prop
-      expect(capturedViewportProps.selectedEntity).toBe('Bracket');
+      expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
     });
   });
 
@@ -1849,27 +1868,27 @@ describe('App layout persistence', () => {
 });
 
 describe('App viewport prop wiring', () => {
-  it('capturedViewportProps.onHover is a function that updates selectionStore', async () => {
+  it('capturedDualViewportProps.onHover is a function that updates selectionStore', async () => {
     await renderAndWaitForReady();
 
-    expect(capturedViewportProps.onHover).toBeDefined();
-    expect(typeof capturedViewportProps.onHover).toBe('function');
+    expect(capturedDualViewportProps.onHover).toBeDefined();
+    expect(typeof capturedDualViewportProps.onHover).toBe('function');
 
     // Calling onHover should update selectionStore.hoveredEntity
-    capturedViewportProps.onHover('bracket/hole');
+    capturedDualViewportProps.onHover('bracket/hole');
 
     // The hoveredEntity should now be passed back to Viewport (verified via capturedViewportProps)
     await waitFor(() => {
-      expect(capturedViewportProps.hoveredEntity).toBe('bracket/hole');
+      expect(capturedDualViewportProps.hoveredEntity).toBe('bracket/hole');
     });
   });
 
-  it('capturedViewportProps.evalStatus is defined and reflects engine store state', async () => {
+  it('capturedDualViewportProps.evalStatus is defined and reflects engine store state', async () => {
     await renderAndWaitForReady();
 
-    expect(capturedViewportProps.evalStatus).toBeDefined();
+    expect(capturedDualViewportProps.evalStatus).toBeDefined();
     // Default engine store eval status is idle
-    expect(capturedViewportProps.evalStatus.phase).toBe('idle');
+    expect(capturedDualViewportProps.evalStatus.phase).toBe('idle');
   });
 });
 
@@ -1949,10 +1968,10 @@ describe('App splitter max bounds', () => {
 });
 
 describe('App fit-to-view wiring', () => {
-  it('capturedViewportProps.fitToViewRef is defined', async () => {
+  it('capturedDualViewportProps.fitToViewRef is defined', async () => {
     await renderAndWaitForReady();
-    expect(capturedViewportProps.fitToViewRef).toBeDefined();
-    expect(typeof capturedViewportProps.fitToViewRef).toBe('function');
+    expect(capturedDualViewportProps.fitToViewRef).toBeDefined();
+    expect(typeof capturedDualViewportProps.fitToViewRef).toBe('function');
   });
 
   it('Toolbar Fit to View click triggers viewport fitToView via fitToViewRef', async () => {
@@ -2600,22 +2619,22 @@ describe('App Escape clears multi-selection', () => {
     await renderAndWaitForReady();
 
     await waitFor(() => {
-      expect(capturedViewportProps.onSelect).toBeDefined();
+      expect(capturedDualViewportProps.onSelect).toBeDefined();
     });
 
     // Build up a multi-selection via Ctrl+clicks
-    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
-    capturedViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
+    capturedDualViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+    capturedDualViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
 
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
+      expect(capturedDualViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
     });
 
     // Press Escape — should clear selection
     fireEvent.keyDown(document, { key: 'Escape' });
 
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual([]);
+      expect(capturedDualViewportProps.selectedEntities).toEqual([]);
     });
   });
 
@@ -2623,21 +2642,21 @@ describe('App Escape clears multi-selection', () => {
     await renderAndWaitForReady();
 
     await waitFor(() => {
-      expect(capturedViewportProps.onSelect).toBeDefined();
+      expect(capturedDualViewportProps.onSelect).toBeDefined();
     });
 
-    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+    capturedDualViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
 
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA']);
-      expect(capturedViewportProps.selectedEntity).toBe('EntityA');
+      expect(capturedDualViewportProps.selectedEntities).toEqual(['EntityA']);
+      expect(capturedDualViewportProps.selectedEntity).toBe('EntityA');
     });
 
     fireEvent.keyDown(document, { key: 'Escape' });
 
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual([]);
-      expect(capturedViewportProps.selectedEntity).toBeNull();
+      expect(capturedDualViewportProps.selectedEntities).toEqual([]);
+      expect(capturedDualViewportProps.selectedEntity).toBeNull();
     });
   });
 });
@@ -2647,24 +2666,24 @@ describe('App viewport multi-selection modifier routing', () => {
     await renderAndWaitForReady();
 
     // The prop must exist and be an array (initially empty)
-    expect(Array.isArray(capturedViewportProps.selectedEntities)).toBe(true);
-    expect(capturedViewportProps.selectedEntities).toHaveLength(0);
+    expect(Array.isArray(capturedDualViewportProps.selectedEntities)).toBe(true);
+    expect(capturedDualViewportProps.selectedEntities).toHaveLength(0);
   });
 
   it('Ctrl+click on viewport toggles entity into selectedEntities without calling navigateToSource', async () => {
     await renderAndWaitForReady();
 
     await waitFor(() => {
-      expect(capturedViewportProps.onSelect).toBeDefined();
+      expect(capturedDualViewportProps.onSelect).toBeDefined();
     });
 
     vi.mocked(bridge.getSourceLocation).mockClear();
 
     // Ctrl+click on EntityA: should call toggleSelect, adding it to selectedEntities
-    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+    capturedDualViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
 
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA']);
+      expect(capturedDualViewportProps.selectedEntities).toEqual(['EntityA']);
     });
 
     // getSourceLocation should NOT have been called for Ctrl+click
@@ -2675,17 +2694,17 @@ describe('App viewport multi-selection modifier routing', () => {
     await renderAndWaitForReady();
 
     await waitFor(() => {
-      expect(capturedViewportProps.onSelect).toBeDefined();
+      expect(capturedDualViewportProps.onSelect).toBeDefined();
     });
 
-    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+    capturedDualViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA']);
+      expect(capturedDualViewportProps.selectedEntities).toEqual(['EntityA']);
     });
 
-    capturedViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
+    capturedDualViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
+      expect(capturedDualViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
     });
   });
 
@@ -2693,20 +2712,20 @@ describe('App viewport multi-selection modifier routing', () => {
     await renderAndWaitForReady();
 
     await waitFor(() => {
-      expect(capturedViewportProps.onSelect).toBeDefined();
+      expect(capturedDualViewportProps.onSelect).toBeDefined();
     });
 
     // First, Ctrl+click to build a multi-selection
-    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
-    capturedViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
+    capturedDualViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+    capturedDualViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
+      expect(capturedDualViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
     });
 
     vi.mocked(bridge.getSourceLocation).mockClear();
 
     // Plain click on EntityC: should call navigateToSource → selectSingle → replaces selection
-    capturedViewportProps.onSelect('EntityC', { ctrl: false, shift: false });
+    capturedDualViewportProps.onSelect('EntityC', { ctrl: false, shift: false });
 
     await waitFor(() => {
       expect(bridge.getSourceLocation).toHaveBeenCalledWith('EntityC');
@@ -2714,7 +2733,7 @@ describe('App viewport multi-selection modifier routing', () => {
 
     // After selectSingle, selectedEntities = ['EntityC'] only
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toEqual(['EntityC']);
+      expect(capturedDualViewportProps.selectedEntities).toEqual(['EntityC']);
     });
   });
 
@@ -2722,13 +2741,13 @@ describe('App viewport multi-selection modifier routing', () => {
     await renderAndWaitForReady();
 
     await waitFor(() => {
-      expect(capturedViewportProps.onSelect).toBeDefined();
+      expect(capturedDualViewportProps.onSelect).toBeDefined();
     });
 
     vi.mocked(bridge.getSourceLocation).mockClear();
 
     // Old-style call with no second arg (undefined modifiers)
-    capturedViewportProps.onSelect('EntityD');
+    capturedDualViewportProps.onSelect('EntityD');
 
     await waitFor(() => {
       expect(bridge.getSourceLocation).toHaveBeenCalledWith('EntityD');
@@ -2821,7 +2840,7 @@ describe('App DesignTree wiring', () => {
 
     await waitFor(() => expect(bridge.getSourceLocation).toHaveBeenCalledWith('Root.A'));
     expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-selected')).toBe('true');
-    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+    await waitFor(() => expect(capturedDualViewportProps.selectedEntity).toBe('Root.A'));
   });
 
   it('Ctrl+click on a DesignTree row toggles multi-selection without navigating to source', async () => {
@@ -2830,15 +2849,15 @@ describe('App DesignTree wiring', () => {
 
     // Plain click on Root.A to seed selection and anchor
     fireEvent.click(screen.getByTestId('tree-row-Root.A'));
-    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+    await waitFor(() => expect(capturedDualViewportProps.selectedEntity).toBe('Root.A'));
     vi.mocked(bridge.getSourceLocation).mockClear();
 
     // Ctrl+click on Root.B to add to selection
     fireEvent.click(screen.getByTestId('tree-row-Root.B'), { ctrlKey: true });
 
     await waitFor(() => {
-      expect(capturedViewportProps.selectedEntities).toContain('Root.A');
-      expect(capturedViewportProps.selectedEntities).toContain('Root.B');
+      expect(capturedDualViewportProps.selectedEntities).toContain('Root.A');
+      expect(capturedDualViewportProps.selectedEntities).toContain('Root.B');
     });
     // getSourceLocation should NOT have been called for the Ctrl+click
     expect(bridge.getSourceLocation).not.toHaveBeenCalled();
@@ -2854,14 +2873,14 @@ describe('App DesignTree wiring', () => {
 
     // Plain click Root.A to set anchor
     fireEvent.click(screen.getByTestId('tree-row-Root.A'));
-    await waitFor(() => expect(capturedViewportProps.selectedEntity).toBe('Root.A'));
+    await waitFor(() => expect(capturedDualViewportProps.selectedEntity).toBe('Root.A'));
     vi.mocked(bridge.getSourceLocation).mockClear();
 
     // Shift+click Root.C to range-select A…C
     fireEvent.click(screen.getByTestId('tree-row-Root.C'), { shiftKey: true });
 
     await waitFor(() => {
-      const sel = capturedViewportProps.selectedEntities as string[];
+      const sel = capturedDualViewportProps.selectedEntities as string[];
       expect(sel).toContain('Root.A');
       expect(sel).toContain('Root.B');
       expect(sel).toContain('Root.C');
@@ -2877,7 +2896,7 @@ describe('App DesignTree wiring', () => {
     fireEvent.keyDown(screen.getByTestId('design-tree'), { key: 'a', ctrlKey: true });
 
     await waitFor(() => {
-      const sel = capturedViewportProps.selectedEntities as string[];
+      const sel = capturedDualViewportProps.selectedEntities as string[];
       expect(sel).toContain('Root.A');
       expect(sel).toContain('Root.B');
     });
@@ -2890,15 +2909,15 @@ describe('App DesignTree wiring', () => {
     await renderAndWaitForReady();
 
     // Wait for tree to populate: structure node default is 'show'
-    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('show'));
+    await waitFor(() => expect(capturedDualViewportProps.entityVisibility?.['Root.A']).toBe('show'));
 
     // First eye-icon click: show → ghost
     fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
-    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('ghost'));
+    await waitFor(() => expect(capturedDualViewportProps.entityVisibility?.['Root.A']).toBe('ghost'));
 
     // Second eye-icon click: ghost → hidden
     fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
-    await waitFor(() => expect(capturedViewportProps.entityVisibility?.['Root.A']).toBe('hidden'));
+    await waitFor(() => expect(capturedDualViewportProps.entityVisibility?.['Root.A']).toBe('hidden'));
   });
 });
 
@@ -2975,11 +2994,15 @@ describe('App — view selector and COW integration', () => {
 });
 
 describe('Viewport wiring', () => {
-  it('passes viewportId="design-main" to Viewport', async () => {
+  it('renders DualViewport (replaces bare Viewport)', async () => {
     await renderAndWaitForReady();
-    await waitFor(() => expect(capturedViewportProps.viewportId).toBe('design-main'));
+    expect(screen.getByTestId('dual-viewport')).toBeTruthy();
   });
 
+  it('passes viewportStore to DualViewport', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedDualViewportProps.viewportStore).toBeDefined());
+  });
 });
 
 describe('Viewport view sync', () => {
@@ -2989,7 +3012,7 @@ describe('Viewport view sync', () => {
 
   it('initial viewId tracks viewStateStore.activeViewId ("auto:default")', async () => {
     await renderAndWaitForReady();
-    const store = capturedViewportProps.viewportStore;
+    const store = capturedDualViewportProps.viewportStore;
     // The createEffect should sync the initial activeViewId to the viewport immediately
     await waitFor(() => expect(store.getViewport('design-main').viewId).toBe('auto:default'));
   });
@@ -2997,7 +3020,7 @@ describe('Viewport view sync', () => {
   it('viewId updates when a COW switch changes the active view', async () => {
     vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
     await renderAndWaitForReady();
-    const store = capturedViewportProps.viewportStore;
+    const store = capturedDualViewportProps.viewportStore;
 
     // Initial state: auto:default
     await waitFor(() => expect(store.getViewport('design-main').viewId).toBe('auto:default'));
@@ -3013,5 +3036,48 @@ describe('Viewport view sync', () => {
       expect(viewId).not.toBe('auto:default');
       expect(viewId).toMatch(/^user:/);
     });
+  });
+});
+
+describe('DualViewport wiring', () => {
+  it('App renders a DualViewport container', async () => {
+    await renderAndWaitForReady();
+    expect(screen.getByTestId('dual-viewport')).toBeTruthy();
+  });
+
+  it('App passes engineStore, defPreviewStore, and viewportStore props to DualViewport', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => {
+      expect(capturedDualViewportProps.engineStore).toBeDefined();
+      expect(capturedDualViewportProps.defPreviewStore).toBeDefined();
+      expect(capturedDualViewportProps.viewportStore).toBeDefined();
+    });
+  });
+
+  it('on cursor change, getContainingDefinition is called after 200ms debounce', async () => {
+    // Render with real timers first so App init completes
+    await renderAndWaitForReady();
+
+    // Switch to fake timers AFTER App is mounted — the hook's createEffect will
+    // schedule its setTimeout using the fake timer from this point on.
+    // NOTE: advanceTimersByTimeAsync(250) will also fire any other outstanding
+    // setTimeouts registered post-mount (e.g. the savePanelLayout debounce at
+    // App.tsx:176). This is acceptable for this smoke-test but is action-at-a-distance
+    // coupling; prefer the isolated hook tests in useDefPreviewActivation.test.ts
+    // for exhaustive debounce/race-condition coverage.
+    vi.useFakeTimers();
+    try {
+      capturedEditorStore.setCursorPosition(5, 3);
+
+      // Before debounce fires: bridge function should not be called yet
+      expect(vi.mocked(bridge.getContainingDefinition)).not.toHaveBeenCalled();
+
+      // Advance past the 200ms debounce window
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(vi.mocked(bridge.getContainingDefinition)).toHaveBeenCalledWith(5, 3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

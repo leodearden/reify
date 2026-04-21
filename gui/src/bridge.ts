@@ -18,6 +18,7 @@ import type {
   SerializationError,
   DiagnosticInfo,
   EntityTreeNode,
+  DefInfo,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -430,6 +431,17 @@ export async function onNavigateToSource(
   return listen<{ file: string; line: number; column: number; end_line: number; end_column: number }>('navigate-to-source', (event) => {
     callback(event.payload);
   });
+}
+
+/** Get the containing definition (structure or occurrence) for a source position. Returns null if no definition contains the position. */
+export async function getContainingDefinition(line: number, col: number): Promise<DefInfo | null> {
+  return invoke<DefInfo | null>('get_containing_definition', { line, col });
+}
+
+/** Fetch the tessellated preview meshes for a named definition. Converts mesh wire data to typed arrays. */
+export async function getDefPreview(defName: string): Promise<GuiState> {
+  const raw = await invoke<RawGuiState>('get_def_preview', { defName });
+  return convertRawGuiState(raw);
 }
 
 /** Whether the OCCT geometry kernel is available in this build. */

@@ -9,11 +9,18 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
-// Mock Viewport
+// Mock Viewport + DualViewport
 vi.mock('../viewport', () => ({
   Viewport: (props: any) => {
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'viewport-container');
+    if (props.fitToViewRef) props.fitToViewRef(() => {});
+    if (props.flyToEntityRef) props.flyToEntityRef(() => {});
+    return el;
+  },
+  DualViewport: (props: any) => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'dual-viewport');
     if (props.fitToViewRef) props.fitToViewRef(() => {});
     if (props.flyToEntityRef) props.flyToEntityRef(() => {});
     return el;
@@ -61,6 +68,8 @@ vi.mock('../bridge', () => ({
   isDebugEnabled: vi.fn().mockResolvedValue(false),
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
+  getContainingDefinition: vi.fn().mockResolvedValue(null),
+  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
 }));
 
 import { ChatPanel } from '../panels/ChatPanel';

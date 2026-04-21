@@ -188,6 +188,73 @@ describe('viewportStore', () => {
     });
   });
 
+  describe('setDefPath', () => {
+    it('setDefPath on def-preview returns true and updates defPath', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setDefPath('def-preview', 'BoltFlange');
+        expect(result).toBe(true);
+        expect(store.state.viewports['def-preview'].defPath).toBe('BoltFlange');
+        dispose();
+      });
+    });
+
+    it('setDefPath with null clears defPath back to null', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.setDefPath('def-preview', 'BoltFlange');
+        const result = store.setDefPath('def-preview', null);
+        expect(result).toBe(true);
+        expect(store.state.viewports['def-preview'].defPath).toBeNull();
+        dispose();
+      });
+    });
+
+    it('setDefPath on unknown id returns false and mutates nothing', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setDefPath('unknown', 'X');
+        expect(result).toBe(false);
+        expect(store.state.viewports['design-main'].defPath).toBeNull();
+        expect(store.state.viewports['def-preview'].defPath).toBeNull();
+        dispose();
+      });
+    });
+  });
+
+  describe('forceExpanded', () => {
+    it('initial forceExpanded is false on both viewports', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        expect(store.state.viewports['design-main'].forceExpanded).toBe(false);
+        expect(store.state.viewports['def-preview'].forceExpanded).toBe(false);
+        dispose();
+      });
+    });
+
+    it('setForceExpanded on def-preview returns true and toggles only that viewport flag', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setForceExpanded('def-preview', true);
+        expect(result).toBe(true);
+        expect(store.state.viewports['def-preview'].forceExpanded).toBe(true);
+        expect(store.state.viewports['design-main'].forceExpanded).toBe(false);
+        dispose();
+      });
+    });
+
+    it('setForceExpanded on unknown id returns false and mutates nothing', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setForceExpanded('unknown', true);
+        expect(result).toBe(false);
+        expect(store.state.viewports['design-main'].forceExpanded).toBe(false);
+        expect(store.state.viewports['def-preview'].forceExpanded).toBe(false);
+        dispose();
+      });
+    });
+  });
+
   describe('store isolation', () => {
     it('mutation of store A does not leak to store B', () => {
       createRoot((dispose) => {
