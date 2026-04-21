@@ -15858,7 +15858,7 @@
         "description": "The `is_auto` predicate `graph.value_cells.get(id).is_some_and(|n| n.kind == ValueCellKind::Auto)` is inlined 4 times across two guard handling phases in edit_param (lib.rs ~1693, ~1724, ~1956, ~1991). Extract an `is_auto_cell(&self, id)` method on the graph type and a `deactivate_if_not_auto` helper to consolidate the guard-skip + Undef-insert pattern into one place.\n\nMemory hints: search \"guard re-elaboration\", \"Auto param deactivation\", entity: edit_param",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15866,7 +15866,7 @@
           "files": [],
           "modules": []
         },
-        "updatedAt": "2026-04-21T09:13:25.910Z"
+        "updatedAt": "2026-04-21T09:13:55.475Z"
       },
       {
         "id": "714",
@@ -43589,7 +43589,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:13:54.697Z",
+      "lastModified": "2026-04-21T09:13:55.475Z",
       "taskCount": 2060,
       "completedCount": 1794,
       "tags": [
