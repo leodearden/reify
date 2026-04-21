@@ -13,7 +13,7 @@ use reify_types::{CompiledFunction, Diagnostic, GeometryHandleId, ValueMap};
 /// which also emits a `Warning` when the value is non-numeric or non-finite.
 pub(crate) fn eval_named_arg(
     name: &str,
-    kind_label: impl std::fmt::Debug,
+    kind_label: impl std::fmt::Display,
     args: &[(String, reify_types::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -27,7 +27,7 @@ pub(crate) fn eval_named_arg(
         )),
         None => {
             diagnostics.push(Diagnostic::warning(format!(
-                "missing required geometry argument '{}' for {:?}",
+                "missing required geometry argument '{}' for {}",
                 name, kind_label
             )));
             None
@@ -44,7 +44,7 @@ pub(crate) fn eval_named_arg(
 /// non-numeric/non-finite value"`.
 pub(crate) fn eval_named_arg_f64(
     name: &str,
-    kind_label: impl std::fmt::Debug + Copy,
+    kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_types::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -64,7 +64,7 @@ pub(crate) fn eval_named_arg_f64(
         Some(v) if v.is_finite() => Some(v),
         _ => {
             diagnostics.push(Diagnostic::warning(format!(
-                "argument '{}' for {:?} evaluated to non-numeric/non-finite value",
+                "argument '{}' for {} evaluated to non-numeric/non-finite value",
                 name, kind_label
             )));
             None
@@ -113,26 +113,26 @@ pub(crate) fn eval_all_args_to_f64(
 fn validate_pattern_count(
     raw: f64,
     arg_name: &str,
-    kind_label: impl std::fmt::Debug,
+    kind_label: impl std::fmt::Display,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<usize, String> {
     if raw < 1.0 {
         diagnostics.push(Diagnostic::warning(format!(
-            "pattern {:?} dropped: {}={} is less than 1 (must be a positive integer)",
+            "pattern {} dropped: {}={} is less than 1 (must be a positive integer)",
             kind_label, arg_name, raw
         )));
         return Err("invalid pattern count: less than 1".to_string());
     }
     if raw != raw.floor() {
         diagnostics.push(Diagnostic::warning(format!(
-            "pattern {:?} dropped: {}={} is not an integer",
+            "pattern {} dropped: {}={} is not an integer",
             kind_label, arg_name, raw
         )));
         return Err("invalid pattern count: not an integer".to_string());
     }
     if raw > 100_000.0 {
         diagnostics.push(Diagnostic::warning(format!(
-            "pattern {:?} dropped: {}={} exceeds upper bound of 100000",
+            "pattern {} dropped: {}={} exceeds upper bound of 100000",
             kind_label, arg_name, raw
         )));
         return Err("invalid pattern count: exceeds upper bound".to_string());
@@ -221,7 +221,7 @@ pub(crate) fn compile_geometry_op(
         CompiledGeometryOp::Primitive { kind, args } => {
             let mut eval_arg = |name: &str| -> Result<reify_types::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing required argument '{}' for {:?}", name, kind))
+                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
             };
 
             match kind {
@@ -261,7 +261,7 @@ pub(crate) fn compile_geometry_op(
             let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
             let mut eval_arg = |name: &str| -> Result<reify_types::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing required argument '{}' for {:?}", name, kind))
+                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
             };
             match kind {
                 reify_compiler::ModifyKind::Fillet => Ok(reify_types::GeometryOp::Fillet {
@@ -359,7 +359,7 @@ pub(crate) fn compile_geometry_op(
             let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
             let mut f64_arg = |name: &str| -> Result<f64, String> {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                    .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
@@ -431,7 +431,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
                     let count_raw = f64_arg("count")?;
@@ -445,7 +445,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'spacing' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'spacing' for {}", kind))?;
                     Ok(reify_types::GeometryOp::LinearPattern {
                         target: target_id,
                         direction,
@@ -464,7 +464,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
@@ -479,7 +479,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'angle' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
                     // CAD convention: a bare numeric angle (no unit suffix) is
                     // interpreted as degrees and converted to radians.  Values
                     // that already carry an ANGLE dimension (from `deg`/`rad`
@@ -517,7 +517,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     Ok(reify_types::GeometryOp::Mirror {
                         target: target_id,
@@ -536,7 +536,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
                     let count1_raw = f64_arg("count1")?;
@@ -550,7 +550,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'spacing1' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'spacing1' for {}", kind))?;
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
                         eval_named_arg_f64(
                             name,
@@ -561,7 +561,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
                     let count2_raw = f64_arg("count2")?;
@@ -575,7 +575,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'spacing2' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'spacing2' for {}", kind))?;
                     Ok(reify_types::GeometryOp::LinearPattern2D {
                         target: target_id,
                         direction1,
@@ -606,7 +606,7 @@ pub(crate) fn compile_geometry_op(
                                 meta_map,
                                 diagnostics,
                             )
-                            .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                            .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                         };
                         let dx = f64_arg(&format!("t{}_dx", idx))?;
                         let dy = f64_arg(&format!("t{}_dy", idx))?;
@@ -655,7 +655,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'distance' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
                     // Reject sub-picometer magnitudes as degenerate geometry: a
                     // distance near the f64 rounding floor cannot produce a
                     // meaningful solid. Emit a warning so model authors see why
@@ -694,7 +694,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -764,7 +764,7 @@ pub(crate) fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )
-                    .ok_or_else(|| format!("missing required argument 'distance' for {:?}", kind))?;
+                    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
                     // Reject sub-picometer magnitudes as degenerate geometry,
                     // mirroring the standard Extrude arm above: a distance
                     // near the f64 rounding floor cannot produce a meaningful
@@ -853,7 +853,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     Ok(reify_types::GeometryOp::LineSegment {
                         x1: f64_arg("x1")?,
@@ -875,7 +875,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     Ok(reify_types::GeometryOp::Arc {
                         center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
@@ -896,7 +896,7 @@ pub(crate) fn compile_geometry_op(
                             meta_map,
                             diagnostics,
                         )
-                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {:?}", name, kind))
+                        .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
                     };
                     Ok(reify_types::GeometryOp::Helix {
                         radius: f64_arg("radius")?,
@@ -1759,9 +1759,9 @@ mod tests {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("factor")
-                    && d.message.contains("Scale")
+                    && d.message.contains("scale")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'factor', and 'Scale', got: {:?}",
+            "expected a Warning mentioning 'non-numeric/non-finite', 'factor', and 'scale', got: {:?}",
             diagnostics
         );
     }
