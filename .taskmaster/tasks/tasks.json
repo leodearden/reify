@@ -43962,6 +43962,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-21T21:56:15.962Z"
+      },
+      {
+        "id": "2080",
+        "title": "compile_builder polish: retarget stale comments, factor is_first_def + build_constraint_def_registry",
+        "description": "Post-merge cleanup for task 2035. Three related items in crates/reify-compiler/src/compile_builder/: (1) retarget stale 'above/below' pre-pass comments in entities_phase.rs L88-145 to name the sibling modules (e.g. 'Already compiled by functions_phase::phase_functions'); (2) lift the duplicate-filter in entities_phase::compile_entity_decl L178-183 into an explicit CompilationCtx method fn is_first_entity_def(&self, name: &str, span: SourceSpan) -> bool and share it with pre_pass; (3) extract fn build_constraint_def_registry(local, prelude) to mirror build_trait_registry, replacing the inline rebuild in phase_entities L54-66. No behavior change — cargo test -p reify-compiler must still pass.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -43973,7 +43984,8 @@
         "master"
       ],
       "created": "2026-04-21T21:56:27.324Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-21T21:57:06.358Z"
     }
   }
 }
