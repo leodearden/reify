@@ -47,8 +47,8 @@ struct CliState {
 impl CliState {
     /// Clear both `user_overrides` and `warned_overrides` together, enforcing
     /// the invariant that the two collections are always pruned as a unit.
-    /// Called from `load_file`, `open_file`, and the early-return branch of
-    /// `reapply_user_overrides` (when there is nothing left to dedupe against).
+    /// Called from `load_file` and `open_file` which semantically start over
+    /// with a fresh file and must reset all override tracking state.
     fn clear_overrides(&mut self) {
         self.user_overrides.clear();
         self.warned_overrides.clear();
@@ -203,10 +203,17 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 ///   snapshot.
 fn reapply_user_overrides(state: &mut CliState) {
     if state.user_overrides.is_empty() {
-        // Nothing left to dedupe against — prune both override collections so
-        // stale entries from earlier mismatches don't linger.  user_overrides
-        // is already empty here; clear_overrides() also prunes warned_overrides.
-        state.clear_overrides();
+        // Invariant: warned_overrides must also be empty whenever user_overrides
+        // is empty.  `CliState::clear_overrides()` is called at every public
+        // entry point that resets overrides (load_file, open_file), so this
+        // state is unreachable via the API.  The debug_assert! fires loudly in
+        // debug/test builds if future mutation paths ever drift from the invariant.
+        debug_assert!(
+            state.warned_overrides.is_empty(),
+            "reapply_user_overrides: warned_overrides must be empty when user_overrides is \
+             empty — public mutation paths (load_file, open_file, set_parameter, and the \
+             per-cell retain in the Ok arm) preserve this invariant together"
+        );
         return;
     }
     let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
