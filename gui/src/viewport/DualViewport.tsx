@@ -1,4 +1,4 @@
-import { Show, createMemo } from 'solid-js';
+import { Show, createMemo, onCleanup } from 'solid-js';
 import { Viewport } from './Viewport';
 import type { ViewportProps } from './Viewport';
 import { Splitter } from '../components/Splitter';
@@ -24,12 +24,20 @@ type PassthroughProps = Pick<
   | 'selectedEntity'
   | 'selectedEntities'
   | 'evalStatus'
-  | 'flyToEntityRef'
-  | 'fitToViewRef'
   | 'entityVisibility'
 >;
 
-export interface DualViewportProps extends PassthroughProps {
+/**
+ * Ref-registration callbacks accepted at the DualViewport level.
+ * These are NOT in PassthroughProps — DualViewport intercepts them and
+ * installs stable proxies so they work across Show mount/unmount transitions.
+ */
+interface RefProps {
+  fitToViewRef?: (fn: () => void) => void;
+  flyToEntityRef?: (fn: (entityPath: string) => void) => void;
+}
+
+export interface DualViewportProps extends PassthroughProps, RefProps {
   engineStore: EngineLike;
   defPreviewStore: DefPreviewStore;
   viewportStore: ViewportStore;
@@ -50,7 +58,18 @@ export interface DualViewportProps extends PassthroughProps {
 // ---------------------------------------------------------------------------
 
 export function DualViewport(props: DualViewportProps) {
-  // Effective activation = auto signal OR user forceExpanded override
+  // ── Stable ref proxies ────────────────────────────────────────────────────
+  // These closures capture the inner fn registered by the mounted Viewport.
+  // They are installed unconditionally at setup time so the parent always
+  // receives a stable function reference regardless of Show mount state.
+  // When no inner Viewport is mounted, the proxies are safe no-ops.
+  let innerFitToView: (() => void) | null = null;
+  let innerFlyToEntity: ((entityPath: string) => void) | null = null;
+
+  props.fitToViewRef?.(() => innerFitToView?.());
+  props.flyToEntityRef?.((p) => innerFlyToEntity?.(p));
+
+  // ── Effective activation: auto signal OR user forceExpanded override ───────
   const defPreviewEffective = createMemo(
     () =>
       props.defPreviewActive() ||
@@ -125,22 +144,33 @@ export function DualViewport(props: DualViewportProps) {
             </div>
           }
         >
-          <div class={styles.viewportWrapper}>
-            <Viewport
-              viewportId="design-main"
-              viewportStore={props.viewportStore}
-              meshes={props.engineStore.state.meshes}
-              onSelect={props.onSelect}
-              onHover={props.onHover}
-              hoveredEntity={props.hoveredEntity}
-              selectedEntity={props.selectedEntity}
-              selectedEntities={props.selectedEntities}
-              evalStatus={props.evalStatus}
-              flyToEntityRef={props.flyToEntityRef}
-              fitToViewRef={props.fitToViewRef}
-              entityVisibility={props.entityVisibility}
-            />
-          </div>
+          {() => {
+            // onCleanup registered here binds to the Show's owner scope,
+            // so it fires when designEffective() becomes false (Viewport unmounts).
+            // This clears the capture so the proxy becomes a safe no-op.
+            onCleanup(() => {
+              innerFitToView = null;
+              innerFlyToEntity = null;
+            });
+            return (
+              <div class={styles.viewportWrapper}>
+                <Viewport
+                  viewportId="design-main"
+                  viewportStore={props.viewportStore}
+                  meshes={props.engineStore.state.meshes}
+                  onSelect={props.onSelect}
+                  onHover={props.onHover}
+                  hoveredEntity={props.hoveredEntity}
+                  selectedEntity={props.selectedEntity}
+                  selectedEntities={props.selectedEntities}
+                  evalStatus={props.evalStatus}
+                  fitToViewRef={(fn) => { innerFitToView = fn; }}
+                  flyToEntityRef={(fn) => { innerFlyToEntity = fn; }}
+                  entityVisibility={props.entityVisibility}
+                />
+              </div>
+            );
+          }}
         </Show>
       </Show>
     </div>
