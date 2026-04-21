@@ -910,3 +910,72 @@ fn edit_source_added_active_branch_member_matches_cold_eval() {
         incr_val, cold_val
     );
 }
+
+/// When an existing `let` **moves between branches** of a `where … else` group
+/// without changing its id or expression text, `diff_value_cells` classifies
+/// it as neither `changed` (same `content_hash`) nor `added` (still present).
+/// The Phase 1 trigger therefore does not fire, leaving the old branch value
+/// from before the edit intact — incremental diverges from cold eval.
+///
+/// Scenario: `use_thick = true` (members branch is active).
+/// - Module A: `moving` is in the **active** members branch  → cold eval gives Determined (15mm).
+/// - Module B: `moving` moves to the **inactive** else branch  → cold eval gives Undef.
+///
+/// Before the fix (task 2084): incremental keeps the old Determined value
+/// (Phase 1 never fires). After the fix: `has_role_flipped_guard_member` fires
+/// Phase 1, which calls `deactivate_if_not_auto` for the now-inactive `moving`,
+/// matching cold eval.
+///
+/// Task 2084 — Phase 1 trigger gap: role-flipped guard members.
+#[test]
+fn edit_source_role_flipped_guard_member_matches_cold_eval() {
+    // Module A: `moving` is on the active (where) branch.
+    let module_a_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let moving = thickness * 3.0
+        let active_only = thickness * 2.0
+    } else {
+        let inactive_only = thickness
+    }
+}"#;
+    // Module B: `moving` (same id, same expr → same content_hash) relocates
+    // to the inactive else-branch. `active_only` / `inactive_only` stay put.
+    let module_b_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let active_only = thickness * 2.0
+    } else {
+        let moving = thickness * 3.0
+        let inactive_only = thickness
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let moving_id = ValueCellId::new("Bracket", "moving");
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check: whatever cold eval says about the role-flipped cell,
+    // incremental edit_source must match.
+    let incr_val = incr.values.get(&moving_id);
+    let cold_val = cold_result.values.get(&moving_id);
+    assert_eq!(
+        incr_val, cold_val,
+        "role-flipped guard member diverges from cold eval: \
+         incremental={:?}, cold={:?}",
+        incr_val, cold_val
+    );
+}
