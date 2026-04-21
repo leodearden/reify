@@ -127,6 +127,25 @@ pub struct ResolutionProblem {
 /// implemented in reify-constraints, consumed by reify-eval.
 pub trait ConstraintChecker: Send + Sync {
     /// Check a batch of constraints against current values.
+    ///
+    /// # Labeled-constraint convention
+    ///
+    /// When a [`ConstraintInput`] entry's [`ConstraintNodeId`] corresponds to a
+    /// labeled constraint (i.e. originated from a `constraint def` instantiation),
+    /// implementations **SHOULD** embed `id.to_string()` somewhere in the
+    /// `message` or `labels[i].message` of every [`Severity::Error`] diagnostic
+    /// they emit. The engine's label-rewrite pass (`labeled_diagnostics`) uses
+    /// a substring search to substitute the friendly label
+    /// (e.g. `"MinWall#0[0]"`) for the opaque id, so users see the
+    /// human-readable form in error output.
+    ///
+    /// This is a **soft recommendation**, not a hard invariant. Checkers that
+    /// emit domain-specific error text without embedding the raw id (e.g.
+    /// `"wall thickness below minimum"`) will have that text surface to users
+    /// unmodified — which is still correct. The engine will emit a
+    /// `tracing::warn!` when an Error-severity message is present but the raw
+    /// id is absent, flagging the missed substitution for first-party
+    /// developers without panicking or altering the diagnostic content.
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 }
 
