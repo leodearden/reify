@@ -152,9 +152,7 @@ impl ModuleDag {
             ))]
         })?;
 
-        let module_path_type =
-            reify_types::ModulePath::new(module_path.split('.').map(|s| s.to_string()).collect());
-        let parsed = reify_syntax::parse(&source, module_path_type);
+        let parsed = reify_syntax::parse(&source, reify_types::ModulePath::from_dotted(module_path));
 
         if !parsed.errors.is_empty() {
             return Err(parsed
