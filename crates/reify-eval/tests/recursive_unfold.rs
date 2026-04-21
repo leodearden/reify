@@ -769,6 +769,42 @@ fn unfold_recursive_depth_limit_zero_rejected() {
     engine.set_max_unfold_depth(0); // must panic
 }
 
+// ─── step-29: upper-bound boundary is inclusive (512 accepted) ───────────────
+
+/// `set_max_unfold_depth(Engine::MAX_UNFOLD_DEPTH_LIMIT)` must NOT panic — the
+/// boundary value (currently 512) is inclusive. This test regression-guards
+/// against future off-by-one changes to the assertion: if the assertion were
+/// `depth < MAX_UNFOLD_DEPTH_LIMIT` instead of `<=`, this test would catch it.
+/// Uses the constant by name rather than the numeric literal so the test
+/// documents that `Engine::MAX_UNFOLD_DEPTH_LIMIT` is publicly reachable.
+#[test]
+fn unfold_recursive_depth_limit_boundary_accepts_512() {
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_depth(Engine::MAX_UNFOLD_DEPTH_LIMIT); // must NOT panic
+}
+
+// ─── step-28: depth above upper bound is rejected at the API boundary ─────────
+
+/// `set_max_unfold_depth(MAX_UNFOLD_DEPTH_LIMIT + 1)` must panic because unbounded
+/// high values risk stack overflow in the recursive `unfold_recursive_sub`
+/// implementation (`reify-eval/src/unfold.rs`), which uses real recursion rather
+/// than an iterative worklist. The upper bound (`Engine::MAX_UNFOLD_DEPTH_LIMIT`)
+/// caps the stack depth at a safe level well above any real-world use case
+/// (default is 64). Task 205 review, task 424.
+///
+/// The `should_panic` expected string is a stable prefix — it does not embed the
+/// numeric limit — so this test remains correct if `MAX_UNFOLD_DEPTH_LIMIT` is
+/// ever raised (the sibling `boundary_accepts_512` test is the canonical reference
+/// for the exact numeric value).
+#[test]
+#[should_panic(expected = "max_unfold_depth must be <=")]
+fn unfold_recursive_depth_limit_too_large_rejected() {
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_depth(Engine::MAX_UNFOLD_DEPTH_LIMIT + 1); // must panic
+}
+
 // ─── step-25: cross-level dependency at depth 3 ───────────────────────────────
 
 /// Regression test for leaves-first ordering at greater depth.
