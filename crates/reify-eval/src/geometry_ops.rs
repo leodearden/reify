@@ -797,17 +797,23 @@ pub(crate) fn compile_geometry_op(
                         diagnostics,
                     )
                     .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
-                    // Reject sub-picometer magnitudes as degenerate geometry,
-                    // mirroring the standard Extrude arm above: a distance
-                    // near the f64 rounding floor cannot produce a meaningful
-                    // solid. Emit a warning so model authors see a specific
-                    // explanation instead of only the caller's generic error.
+                    // ExtrudeSymmetric extrudes `distance/2` each way, so the
+                    // per-side magnitude must clear DEGENERATE_LENGTH_M; we
+                    // require |distance| >= 2 * DEGENERATE_LENGTH_M so OCCT
+                    // never receives a sub-picometer per-side length. A
+                    // total-distance threshold would admit values like
+                    // 1.5e-12 whose per-side half is below the floor and
+                    // would still fail at the kernel with a less specific
+                    // diagnostic.
+                    // See: extrude_symmetric_per_side_just_below_threshold_rejected
+                    //      / extrude_symmetric_per_side_at_threshold_accepted.
                     match distance.as_f64() {
-                        Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
+                        Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
                         Some(v) => {
                             diagnostics.push(Diagnostic::warning(format!(
                                 "extrude_symmetric dropped: distance={} is \
-                                 degenerate (|distance| must be finite and >= DEGENERATE_LENGTH_M = 1e-12 m)",
+                                 degenerate (|distance/2| must be finite and >= DEGENERATE_LENGTH_M = 1e-12 m \
+                                 per-side; i.e. |distance| >= 2e-12 m, half-distance floor)",
                                 v
                             )));
                             return Err(format!("extrude distance is degenerate: {}", v));
