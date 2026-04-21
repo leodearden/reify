@@ -1109,3 +1109,53 @@ fn cycle_error_preserves_dfs_traversal_order() {
         "message must reflect DFS insertion order, not alphabetical order"
     );
 }
+
+// ── step-7 (task-512): std.* delegation to embedded stdlib ────────────────────
+
+/// When stdlib_root points at a non-existent directory, compile_module for a
+/// `std.*` path must delegate to the embedded stdlib loader rather than
+/// returning an fs-resolution error.
+///
+/// Today this fails because ModuleDag::compile_module attempts resolver.resolve_import_path
+/// which returns Err when the stdlib_root directory is missing, and the error
+/// propagates without any embedded-stdlib fallback.
+///
+/// After step-8 implements the fallback, this test turns green.
+#[test]
+fn std_module_import_delegates_to_embedded_stdlib_loader_when_stdlib_root_missing() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // nonexistent_stdlib intentionally does NOT exist on disk.
+    let stdlib_root = dir.join("nonexistent_stdlib");
+    assert!(
+        !stdlib_root.exists(),
+        "precondition: stdlib_root must not exist for this test"
+    );
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_root);
+    let mut dag = ModuleDag::new();
+
+    // Attempting to compile std.units must succeed via the embedded stdlib fallback.
+    let result = dag.compile_module("std.units", &resolver);
+    assert!(
+        result.is_ok(),
+        "compile_module(\"std.units\") with missing stdlib_root should succeed via embedded fallback, \
+         but got: {:?}",
+        result.err()
+    );
+
+    // The compiled module must be stored in the DAG under its canonical dotted key.
+    assert!(
+        dag.modules.contains_key("std.units"),
+        "dag.modules must contain \"std.units\" after successful delegation"
+    );
+
+    // The module's path must decode to ["std", "units"].
+    let m = dag.modules.get("std.units").unwrap();
+    assert_eq!(
+        m.path.0,
+        vec!["std".to_string(), "units".to_string()],
+        "embedded std.units module must have path [\"std\", \"units\"]"
+    );
+}
