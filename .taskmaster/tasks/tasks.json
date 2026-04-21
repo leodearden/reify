@@ -42976,11 +42976,11 @@
         "description": "Two small cleanups in `crates/reify-cli/src/mcp_context.rs` `reapply_user_overrides`:\n\n1. (robustness, line ~192) The `warned_overrides` HashSet is only pruned on per-cell success and on `load_file`/`open_file`. Across a long MCP session with many transient mismatches on distinct cells, the set can accumulate entries bounded by |cells| × 3 variants — not a real leak, but harmless to prune. In the early-return branch when `state.user_overrides.is_empty()`, also clear `state.warned_overrides` (nothing left to dedupe against). Alternatively, add a one-line comment acknowledging the session-cells cap.\n\n2. (design/docs, line ~183) The docstring lists `NotInitialized` among the error variants `edit_param` might return. In practice this helper is only invoked after `eval()` has populated the snapshot, so the engine is always initialized at that point. `NotInitialized` is matched only to satisfy exhaustiveness. Tighten the docstring to state that `NotInitialized` is unreachable in this call path and is matched for exhaustiveness only — or fold it into the silent-skip branch alongside `CellNotFound` if a broader engine failure should also be silent here.\n\nKeep both changes in one commit — they are adjacent and editorial.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T06:30:54.880Z",
+        "updatedAt": "2026-04-21T06:44:59.353Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -42990,6 +42990,9 @@
             "queries": [
               "resolution for: reapply_user_overrides: clear warned_overrides when user_overrides empty; tighten NotInitialized doc"
             ]
+          },
+          "done_provenance": {
+            "commit": "3ec1ebbaec8d06c1969ea5e868b1fbf7ef22d9ec"
           }
         }
       },
@@ -43615,9 +43618,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T06:44:55.856Z",
+      "lastModified": "2026-04-21T06:44:59.353Z",
       "taskCount": 2059,
-      "completedCount": 1792,
+      "completedCount": 1793,
       "tags": [
         "master"
       ]
