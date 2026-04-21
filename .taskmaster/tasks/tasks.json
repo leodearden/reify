@@ -42783,7 +42783,7 @@
         "id": "2031",
         "title": "Move reify-compiler lib.rs `mod tests` to integration test file",
         "description": "Move the `mod tests` block from `crates/reify-compiler/src/lib.rs` (L1067-2656, 58 `#[test]` fns, ~1600 lines) into appropriate test files based on the type of API they test.\n\nThe `mod tests` block mixes two categories:\n\n1. **Public-API tests (~48)** — Move these to a new integration test file at `crates/reify-compiler/tests/compile_api_tests.rs`.\n2. **Internal-API tests (~10)** — Relocate each to a `#[cfg(test)] mod tests { ... }` block inside the file that owns the helper under test:\n   - Tests of `compile_curve_op` → `geometry_curve.rs`\n   - Tests of `compile_transform_op` → `geometry_transform.rs`\n   - Tests of `compile_modify_op` → `geometry_modify.rs`\n   - Tests of `compile_geometry_call` + `CompilationScope::new` → `geometry.rs` (or `scope.rs` if that's a cleaner fit — architect to decide)\n   - Tests referencing only `is_geometry_function` → `units.rs`\n\nRemove the now-empty or trimmed `mod tests` block in `lib.rs`.\n\nRevised success criteria:\n- `cargo test -p reify-compiler` runs the same total test count (all 58 + any pre-existing others) and they all pass.\n- `crates/reify-compiler/src/lib.rs` drops from 2656 → ≤ 1500 lines.\n- No visibility changes to `pub(crate)` items; no new `pub` surface; no `#[doc(hidden)]` re-exports.\n\nWhy: lib.rs is the #1 contended file (35 pending tasks serialized behind it). Shedding the test bulk unblocks wide parallelism, and this split keeps unit tests next to the units under test (standard Rust convention) while moving public-API tests out of the crate root.",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "details": "",
@@ -42811,11 +42811,10 @@
           ],
           "done_provenance": {
             "commit": "c6d1aa248570b75cd49781451e7c1559ae73471f",
-            "commit_input": "c6d1aa248",
-            "note": "Split landed as 12 commits 86460859a..c6d1aa248 already on main; lib.rs reduced from 2656 to 1061 lines"
+            "note": "Final capstone commit removes the 1206-line mod tests block from lib.rs. Earlier commits 51376c5be (create compile_api_tests.rs) and d4d013a7f/e7ca0998f/5d0707654/aecdc2ede/8e95c93a0 incrementally migrated the test groups. Task marked done by orchestrator then flipped back to pending multiple times (done→in-progress→blocked→done→pending cycle) despite work being merged — this done_provenance stamp is intended to stop the reconciliation loop."
           }
         },
-        "updatedAt": "2026-04-21T08:47:33.829Z"
+        "updatedAt": "2026-04-21T08:59:10.683Z"
       },
       {
         "id": "2032",
@@ -43673,9 +43672,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T08:52:13.091Z",
+      "lastModified": "2026-04-21T08:59:10.685Z",
       "taskCount": 2060,
-      "completedCount": 1790,
+      "completedCount": 1791,
       "tags": [
         "master"
       ]
