@@ -140,12 +140,33 @@ fn validate_pattern_count(
     Ok(raw as usize)
 }
 
-/// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
-/// Translate a compiled geometry operation into a runtime `GeometryOp`.
+/// Translate a compiled geometry operation into a runtime `GeometryOp` by
+/// evaluating its argument expressions against the current value environment.
 ///
-/// Returns `None` when a required argument is missing, non-finite, or invalid
-/// (e.g. negative scale factor), which signals the caller to skip this op and
-/// emit a diagnostic.
+/// # Failure semantics and the silent-defaults convention
+///
+/// Returns `Err(reason)` — rather than `Ok` with a fabricated default — when
+/// evaluation is incomplete: a required argument is absent, a value is
+/// non-finite, a `GeomRef` cannot be resolved, or an arm-level validation
+/// guard fires (e.g. negative scale factor, degenerate extrude distance,
+/// zero-length revolve axis).
+///
+/// This is the intentional, convention-aligned alternative to silent defaults
+/// (see `review/briefing.yaml` line 9 and project norm
+/// `feedback_silent_defaults_pattern`, which forbids patterns like
+/// `unwrap_or(Value::Undef)` or `unwrap_or(0.0)` that silently fabricate a
+/// plausible-but-wrong value).  An `Err` propagates "evaluation is
+/// incomplete" to the caller without inventing geometry the user never asked for.
+///
+/// ## Warning-then-propagate discipline
+///
+/// The error is never *silent* at its origin point.  Before each `Err`
+/// escapes, a `Warning`-severity `Diagnostic` is pushed (by the helpers
+/// [`eval_named_arg`] / [`eval_named_arg_f64`] for missing or non-finite
+/// args, or by the arm-level validation guards for semantic failures).  The
+/// `Err(String)` is a short *summary* the caller uses for its one
+/// `Error`-severity diagnostic; the `Warning` carries the full, per-argument
+/// explanation.
 ///
 /// # Ordering invariant for `functions`
 ///
