@@ -8,7 +8,7 @@ use super::*;
 ///
 /// See also `DefaultKindTag` (module-level) — this enum intentionally omits
 /// `Constraint` because constraints are never candidates for satisfying requirements.
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AvailableDefaultKind {
     Param,
     Let,
@@ -345,6 +345,76 @@ pub(crate) fn check_phase_collect_trait_bounds(
     ctx
 }
 
+/// Phase 4 of trait conformance checking: build the `available_defaults` advertisement map.
+///
+/// Produces a `HashMap<(String, AvailableDefaultKind), Type>` keyed by `(name, kind)` so that
+/// `Param` and `Let` defaults for the same member name occupy separate slots and can be looked
+/// up independently. A `Param` default can satisfy a `Param` requirement; a `Let` default can
+/// satisfy a `Let` requirement — they do not interfere with each other.
+///
+/// ## Key structure rationale
+///
+/// The composite `(name, AvailableDefaultKind)` key was chosen over a two-level map or a
+/// single-key map with a kind guard on the value for two reasons:
+/// 1. **Pre-filtering**: the requirement-checking loop (phase 5) looks up
+///    `(req.name.clone(), required_kind)` directly, performing kind-filtering inside the
+///    HashMap lookup rather than in the match branch — the key *is* the filter.
+/// 2. **Allocation cost**: `.get(&(req.name.clone(), kind))` allocates a String per lookup
+///    because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`. Requirements
+///    are small in practice so this is acceptable; a two-level map is the escape hatch if
+///    it ever becomes a hot path.
+///
+/// ## `pass2_skipped` exclusion (Option B, task 1951)
+///
+/// Names in `pass2_skipped` are excluded from the `Let` arm: Pass 1 already claimed the scope
+/// slot for those names with an annotated `Param` or `Let`, so the injection loop (phase 6)
+/// will `continue` past them — no `Let` cell is ever injected. Advertising a phantom
+/// `(name, Let)` entry for a skipped name would violate the "one default per `(name, kind)`"
+/// invariant: a `RequirementKind::Let` lookup would kind-match and emit a spurious type-mismatch
+/// diagnostic instead of the clearer "missing required member".
+///
+/// ## Unannotated let defaults
+///
+/// For `DefaultKind::Let { cell_type: None, .. }` entries, the advertised type is the inferred
+/// result type from `inferred_let_exprs` (populated by phase 3's Pass 2). Falls back to
+/// `Type::Real` if the name is absent from the cache — this covers the edge case where Pass 2
+/// itself encountered a compilation error for the let expression.
+pub(crate) fn check_phase_build_available_defaults_map(
+    ctx: &MergeContext,
+    inferred_let_exprs: &HashMap<String, CompiledExpr>,
+    pass2_skipped: &HashSet<String>,
+) -> HashMap<(String, AvailableDefaultKind), Type> {
+    ctx.defaults
+        .iter()
+        .filter_map(|d| {
+            let name = d.name.as_deref()?;
+            let (kind, ty) = match &d.kind {
+                DefaultKind::Param { cell_type, .. } => {
+                    (AvailableDefaultKind::Param, cell_type.clone())
+                }
+                DefaultKind::Let { cell_type, .. } => {
+                    // Do not advertise a phantom Let entry for names that Pass 2
+                    // recorded in pass2_skipped: the injection loop will not emit
+                    // a Let cell for those names, so advertising one here would
+                    // violate the "one default per (name, kind)" invariant.
+                    if pass2_skipped.contains(name) {
+                        return None;
+                    }
+                    let resolved = cell_type.clone().unwrap_or_else(|| {
+                        inferred_let_exprs
+                            .get(name)
+                            .map(|e| e.result_type.clone())
+                            .unwrap_or(Type::Real)
+                    });
+                    (AvailableDefaultKind::Let, resolved)
+                }
+                DefaultKind::Constraint(_) => return None,
+            };
+            Some(((name.to_string(), kind), ty))
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
@@ -375,59 +445,8 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    // Build a map of available default names from ctx.defaults (non-constraint, named).
-    // Used to cross-check requirements: a requirement is satisfied if the structure
-    // provides the member OR if another trait in the bound set provides a matching default
-    // of the SAME kind. Kind mismatches are ignored (treated as absent).
-    //
-    // Keyed by (name, AvailableDefaultKind) so Param and Let defaults for the same
-    // member name occupy separate slots and are looked up independently. A Param default
-    // can satisfy a Param requirement, and a Let default can satisfy a Let requirement,
-    // without interfering with each other.
-    //
-    // For unannotated let defaults (`cell_type: None`), the advertised type comes from
-    // `inferred_let_exprs` populated by the pre-register pass above — see task 1834 step-8.
-    //
-    // Names in `pass2_skipped` are explicitly excluded from the Let arm (Option B,
-    // task 1951): those are names where Pass 1 claimed the scope slot with an annotated
-    // Param or Let, so the injection loop (lines ~520-527) already `continue`s past
-    // them — no Let cell is ever injected for such a name. Advertising a phantom
-    // `(name, Let)` entry would break the invariant "only one default satisfies a
-    // given (name, kind)": a `RequirementKind::Let` lookup against the phantom entry
-    // would kind-match and emit a spurious "requirement expects <T>, available default
-    // has Real" type-mismatch instead of the clearer "missing required member" diagnostic.
-    // Excluding pass2_skipped names makes the advertisement builder symmetric with the
-    // injection loop.
-    let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx
-        .defaults
-        .iter()
-        .filter_map(|d| {
-            let name = d.name.as_deref()?;
-            let (kind, ty) = match &d.kind {
-                DefaultKind::Param { cell_type, .. } => {
-                    (AvailableDefaultKind::Param, cell_type.clone())
-                }
-                DefaultKind::Let { cell_type, .. } => {
-                    // Do not advertise a phantom Let entry for names that Pass 2
-                    // recorded in pass2_skipped: the injection loop will not emit
-                    // a Let cell for those names, so advertising one here would
-                    // violate the "one default per (name, kind)" invariant.
-                    if pass2_skipped.contains(name) {
-                        return None;
-                    }
-                    let resolved = cell_type.clone().unwrap_or_else(|| {
-                        inferred_let_exprs
-                            .get(name)
-                            .map(|e| e.result_type.clone())
-                            .unwrap_or(Type::Real)
-                    });
-                    (AvailableDefaultKind::Let, resolved)
-                }
-                DefaultKind::Constraint(_) => return None,
-            };
-            Some(((name.to_string(), kind), ty))
-        })
-        .collect();
+    let available_defaults =
+        check_phase_build_available_defaults_map(&ctx, &inferred_let_exprs, &pass2_skipped);
 
     // Check each requirement against structure members.
     for req in &ctx.requirements {
@@ -1894,6 +1913,76 @@ mod tests {
         assert!(
             conflict.is_some(),
             "Expected 'x' to be registered in scope (register_if_absent should find it occupied)"
+        );
+    }
+
+    /// Phase-contract test for `check_phase_build_available_defaults_map`.
+    ///
+    /// Verifies that the helper builds a composite-keyed HashMap from ctx.defaults,
+    /// including Param defaults and excluding Constraint defaults. This test fails to
+    /// compile until the helper exists (TDD compile-tripwire) and pins the helper's
+    /// return type signature.
+    #[test]
+    fn check_phase_build_available_defaults_map_uses_composite_key() {
+        let param_decl = reify_syntax::ParamDecl {
+            name: "x".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+        let constraint_decl = reify_syntax::ConstraintDecl {
+            label: Some("bound".to_string()),
+            expr: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::BoolLiteral(true),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Param {
+                    cell_type: Type::Real,
+                    default_decl: param_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+            TraitDefault {
+                name: Some("bound".to_string()),
+                kind: DefaultKind::Constraint(constraint_decl),
+                span: SourceSpan::empty(0),
+            },
+        ];
+
+        let inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+        let pass2_skipped: HashSet<String> = HashSet::new();
+
+        let available_defaults =
+            check_phase_build_available_defaults_map(&ctx, &inferred_let_exprs, &pass2_skipped);
+
+        assert_eq!(
+            available_defaults.len(),
+            1,
+            "Expected exactly 1 entry (Param); Constraint should be filtered. Got: {:?}",
+            available_defaults.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            available_defaults
+                .contains_key(&("x".to_string(), AvailableDefaultKind::Param)),
+            "Expected key ('x', Param) in available_defaults"
+        );
+        assert_eq!(
+            available_defaults[&("x".to_string(), AvailableDefaultKind::Param)],
+            Type::Real,
+            "Expected Type::Real for key ('x', Param)"
         );
     }
 }
