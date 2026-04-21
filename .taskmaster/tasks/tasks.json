@@ -6773,18 +6773,9 @@
         "status": "deferred",
         "metadata": {
           "milestone": "stdlib-M8.2",
-          "modules": [
-            "crates/reify-kernel-occt/src",
-            "crates/reify-eval/src",
-            "crates/reify-compiler/src"
-          ],
+          "modules": [],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-kernel-occt/src/ffi.rs",
-            "crates/reify-kernel-occt/src/lib.rs",
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-compiler/src/geometry.rs"
-          ]
+          "files": []
         },
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:03.138Z"
@@ -10081,16 +10072,8 @@
         "updatedAt": "2026-04-20T12:20:03.839Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-eval/tests/recursive_unfold.rs"
-          ],
-          "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-compiler/src",
-            "crates/reify-eval/tests"
-          ]
+          "files": [],
+          "modules": []
         }
       },
       {
@@ -43598,7 +43581,9 @@
       "completedCount": 1796,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T09:16:18.252Z",
+      "description": "Tasks for master context"
     }
   }
 }
