@@ -11304,16 +11304,19 @@
         "description": "Address architectural and API ergonomics suggestions from task #326 review:\n1. Document or unify ModuleResolver (module_dag.rs) vs stdlib_loader.rs dual dispatch — wire ModuleResolver's std.* to delegate to load_stdlib() or deprecate stdlib_root\n2. Add Engine::with_prelude() or EngineBuilder for opt-out of stdlib loading (Engine::new() keeps default behavior)\n3. Inline include_str!() directly in sources array — remove redundant MATERIALS_MECHANICAL_SRC const\n4. Add compile_with_stdlib() convenience wrapper at reify-compiler crate root\n5. Add ModulePath::from_dotted() to reify-types\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-compiler/src/module_dag.rs, crates/reify-compiler/src/lib.rs, crates/reify-eval/src/lib.rs, crates/reify-types/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [],
+          "done_provenance": {
+            "commit": "0456940704b805419648337b3cf496a93b627524"
+          }
         },
-        "updatedAt": "2026-04-21T09:16:50.569Z"
+        "updatedAt": "2026-04-21T18:09:00.144Z"
       },
       {
         "id": "513",
@@ -43786,14 +43789,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T17:48:58.946Z",
+      "lastModified": "2026-04-21T18:09:00.145Z",
       "taskCount": 2064,
-      "completedCount": 1810,
+      "completedCount": 1811,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-21T17:54:07.975Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
