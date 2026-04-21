@@ -651,3 +651,149 @@ fn edit_source_discards_override_when_param_removed_in_source() {
         "removed width must be absent from snapshot.graph.value_cells"
     );
 }
+
+// ── Cross-check correctness ────────────────────────────────────────────────
+
+/// The primary correctness lock for `Engine::edit_source`.
+///
+/// Builds two engines for the same module_B: one reached via
+/// `eval(A); edit_source(B)`, the other via a fresh `check(B)`. Their
+/// `values` maps and their constraint satisfaction lists must agree
+/// entry-for-entry. Module B is constructed to simultaneously exercise
+/// several diff paths:
+///
+/// - param default change (`width` 80mm → 85mm)
+/// - let expression change (`volume` gains a `* 2.0` factor)
+/// - constraint expression change (`thickness > 2mm` → `thickness > 3mm`)
+/// - added let (`perimeter = 2.0 * (width + height)`)
+///
+/// Any asymmetry between incremental and cold paths surfaces here.
+#[test]
+fn edit_source_matches_cold_eval_on_mixed_bracket_edit() {
+    let module_a_src = r#"structure Bracket {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+
+    let volume = width * height * thickness
+
+    constraint thickness > 2mm
+}"#;
+    let module_b_src = r#"structure Bracket {
+    param width: Scalar = 85mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+
+    let volume = width * height * thickness * 2.0
+    let perimeter = 2.0 * (width + height)
+
+    constraint thickness > 3mm
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental path: eval(A), then edit_source(B), then observe the
+    // snapshot via check_snapshot(B) so constraint evaluation uses module B.
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr_edit = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+    let incr_check = incremental
+        .check_snapshot(&module_b)
+        .expect("check_snapshot must succeed after edit_source");
+
+    // Cold path: fresh engine, check(B) = eval(B) + constraint check.
+    let mut cold = fresh_engine();
+    let cold_check = cold.check(&module_b);
+
+    // The union of keys across both maps must agree.
+    let incr_keys: HashSet<&ValueCellId> = incr_edit.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold_check.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr_edit.values.get(*key);
+        let cold_val = cold_check.values.get(*key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // Constraint check results must match entry-for-entry. Normalise by
+    // `ConstraintNodeId` since ordering is implementation-defined. HashMap
+    // rather than BTreeMap because ConstraintNodeId is not Ord.
+    let incr_by_id: std::collections::HashMap<_, _> = incr_check
+        .constraint_results
+        .iter()
+        .map(|e| (e.id.clone(), e.satisfaction.clone()))
+        .collect();
+    let cold_by_id: std::collections::HashMap<_, _> = cold_check
+        .constraint_results
+        .iter()
+        .map(|e| (e.id.clone(), e.satisfaction.clone()))
+        .collect();
+    assert_eq!(
+        incr_by_id, cold_by_id,
+        "constraint satisfaction diverges between incremental and cold paths"
+    );
+}
+
+/// When a guard expression's *text* changes in the new module (e.g.,
+/// `where use_thick` → `where !use_thick`), the active branch must flip
+/// so the values map matches a fresh cold eval of the new module. This
+/// lock ensures the guard re-elaboration phase runs on edit_source —
+/// the incremental path cannot rely on the old guard truth value.
+#[test]
+fn edit_source_guard_expr_change_flips_active_branch() {
+    let module_a_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let effective = thickness * 2.0
+    } else {
+        let effective = thickness
+    }
+}"#;
+    // Module B: same params, but the guard EXPRESSION is negated.
+    // With use_thick=true (unchanged default), !use_thick = false, so the
+    // else-branch activates and `effective = thickness = 5mm`.
+    let module_b_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where !use_thick {
+        let effective = thickness * 2.0
+    } else {
+        let effective = thickness
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let effective_id = ValueCellId::new("Bracket", "effective");
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Either both maps contain `effective` with the same value, or both omit
+    // it (implementation detail). The cross-check is the invariant.
+    let incr_val = incr.values.get(&effective_id);
+    let cold_val = cold_result.values.get(&effective_id);
+    assert_eq!(
+        incr_val, cold_val,
+        "effective diverges after guard-expression flip: \
+         incremental={:?}, cold={:?}",
+        incr_val, cold_val
+    );
+}
