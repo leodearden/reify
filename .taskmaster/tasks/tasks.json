@@ -10100,11 +10100,11 @@
         "description": "From task 421 review — non-blocking quality improvements to unfold_recursive_sub (crates/reify-eval/src/lib.rs): (1) Rename child_recursive_subs/child_recursive_sub_names to next_recursive_subs/next_recursive_sub_names for clarity. (2) Add inline comment at recursive call site documenting child_template→current_template handoff. (3) Extract find_template() utility (same pattern at lib.rs:1137, lib.rs:3339, graph.rs:155, and test helper at recursive_detection_tests.rs:25). (4) Test: unknown structure_name failure mode — verify diagnostic emitted. (5) Test: n=3 variant for deeper alternation coverage. (6) Test: negative assertion that B is not instantiated as top-level entity. Modules: crates/reify-eval, crates/reify-compiler (find_template reuse). Reviewers: architect, test_analyst, reuse_auditor.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:16:57.021Z",
+        "updatedAt": "2026-04-21T19:43:26.225Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
@@ -10315,7 +10315,7 @@
         "description": "Remove duplicate extract_dependency_trace call and consider pre-computing topological order at compile time",
         "details": "In crates/reify-eval/src/lib.rs:\n1. Replace duplicate extract_dependency_trace call at line ~2950 with let_traces[&node_id].clone() — the identical trace already exists in the let_traces HashMap built at lines 2919-2922\n2. Consider pre-computing let_cells/let_traces/topological order at compile time in TopologyTemplate since the expression graph is static after compilation. Store sorted_let_ids on TopologyTemplate to make evaluate_let_bindings a single linear pass with no per-call allocations.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"evaluate_let_bindings extract_dependency_trace topological sort\"\n  entities: [\"evaluate_let_bindings\", \"TopologyTemplate\", \"extract_dependency_trace\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10327,7 +10327,7 @@
             "crates/reify-eval/tests/boundary5_engine.rs"
           ]
         },
-        "updatedAt": "2026-04-21T09:13:51.946Z"
+        "updatedAt": "2026-04-21T19:43:26.330Z"
       },
       {
         "id": "471",
@@ -10335,7 +10335,7 @@
         "description": "Add explanatory comment on merged Analytical|Composed match arm, document values/snapshot_values invariant, rename/strengthen no_quadratic_clone test, consolidate guard loops",
         "details": "1. crates/reify-eval/src/lib.rs: Add comment on merged Analytical|Composed match arm explaining why they share evaluation path\n2. crates/reify-runtime/src/concurrent_eval.rs: Document values/snapshot_values invariant in edit_check_concurrent\n3. crates/reify-runtime/tests/concurrent_eval.rs: Rename concurrent_eval_large_graph_no_quadratic_clone to concurrent_eval_100_node_chain_correctness (or add allocation/timing guard)\n4. crates/reify-eval/src/lib.rs lines 1561-1594: Consolidate guard member/else_member loops in edit_param re-elaboration to use the same `for (cells, is_active) in [...]` pattern\n\nFrom review of task 397 (esc-397-121).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10349,7 +10349,7 @@
             "crates/reify-runtime/src/concurrent_eval.rs"
           ]
         },
-        "updatedAt": "2026-04-21T09:13:52.649Z"
+        "updatedAt": "2026-04-21T19:43:26.443Z"
       },
       {
         "id": "472",
@@ -43853,7 +43853,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T19:43:26.116Z",
+      "lastModified": "2026-04-21T19:43:26.443Z",
       "taskCount": 2066,
       "completedCount": 1811,
       "tags": [
