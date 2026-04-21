@@ -6,11 +6,14 @@
 //! `CompiledModule` whose `content_hash` differs from the current one and
 //! re-evaluates only the dependency cones touched by the structural diff.
 
+use std::collections::HashSet;
+
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::{Engine, EngineError, EvalResult};
 use reify_test_support::bracket_compiled_module;
 
 use reify_compiler::CompiledModule;
+use reify_types::SnapshotProvenance;
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -54,6 +57,67 @@ fn edit_source_returns_err_not_initialized_before_eval() {
         other => panic!(
             "expected Err(EngineError::NotInitialized) before eval, got: {:?}",
             other.map(|r| r.values.len())
+        ),
+    }
+}
+
+// ── Identity / no-change path ──────────────────────────────────────────────
+
+/// When `edit_source` is handed an identical module (no structural edit),
+/// every cached value must be preserved and no re-evaluation should occur.
+/// Provenance must be `Edit { changed: ∅, parent: <prior snapshot id> }`.
+#[test]
+fn edit_source_with_identical_module_preserves_all_values() {
+    let mut engine = fresh_engine();
+    let module = bracket_compiled_module();
+
+    let eval_result = engine.eval(&module);
+    let parent_id = engine
+        .snapshot()
+        .expect("eval() must populate a snapshot")
+        .id;
+
+    // Clone-equivalent: a second fixture build yields the same graph/content.
+    let module_clone = bracket_compiled_module();
+    let edit_result = engine
+        .edit_source(&module_clone)
+        .expect("edit_source must succeed after eval");
+
+    // Values map equals the pre-edit baseline, entry-for-entry.
+    for (id, val) in eval_result.values.iter() {
+        assert_eq!(
+            edit_result.values.get(id),
+            Some(val),
+            "value for {id} diverged from eval baseline after no-op edit_source"
+        );
+    }
+    assert_eq!(
+        edit_result.values.len(),
+        eval_result.values.len(),
+        "edit_source values map must have the same size as eval baseline"
+    );
+
+    // Provenance: Edit with an empty changed set and the pre-edit parent id.
+    match &engine
+        .snapshot()
+        .expect("edit_source must install a snapshot")
+        .provenance
+    {
+        SnapshotProvenance::Edit { changed, parent } => {
+            assert_eq!(
+                changed,
+                &HashSet::new(),
+                "no-op edit_source must leave changed set empty, got: {:?}",
+                changed
+            );
+            assert_eq!(
+                *parent, parent_id,
+                "no-op edit_source parent must equal the pre-edit snapshot id"
+            );
+        }
+        other => panic!(
+            "expected SnapshotProvenance::Edit after edit_source, got: {:?}",
+            other
         ),
     }
 }
