@@ -42899,7 +42899,19 @@
             "crates/reify-compiler/src/conformance.rs",
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/trait_requirements.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "MergeContext",
+              "conformance.rs",
+              "trait_requirements.rs"
+            ],
+            "queries": [
+              "Task 2034 MergeContext extract trait_requirements.rs conformance",
+              "conformance.rs MergeContext collect_all_requirements refactoring",
+              "lib.rs conformance module re-exports"
+            ]
+          }
         }
       },
       {
