@@ -4,17 +4,35 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use reify_types::{
-    AutoParam, ContentHash, DeterminacyState, Diagnostic, ResolutionProblem, SnapshotId,
-    SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
+    AutoParam, ContentHash, DeterminacyState, Diagnostic, PersistentMap, ResolutionProblem,
+    SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
+use crate::graph::EvaluationGraph;
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
     value_type_kind_matches,
 };
+
+/// Deactivate a guarded-group member by writing `Undef` into both the working
+/// `values` map and the snapshot's `values` map — UNLESS the member is an
+/// `Auto` cell, whose lifecycle is owned by the constraint solver rather than
+/// guard activation/deactivation. Missing cells are treated as non-Auto
+/// (i.e. they get deactivated), preserving the prior `is_some_and` semantics.
+pub(crate) fn deactivate_if_not_auto(
+    graph: &EvaluationGraph,
+    id: &ValueCellId,
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+) {
+    if !graph.is_auto_cell(id) {
+        values.insert(id.clone(), Value::Undef);
+        snapshot_values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
+    }
+}
 
 impl Engine {
     /// Set a parameter override and invalidate cache entries that depend on it.
@@ -297,15 +315,7 @@ impl Engine {
                         } else {
                             // Skip Auto params — their lifecycle is managed by the
                             // solver, not guard activation/deactivation.
-                            let is_auto =
-                                graph.value_cells.get(mid).is_some_and(|n| n.kind.is_auto());
-                            if !is_auto {
-                                values.insert(mid.clone(), Value::Undef);
-                                new_snapshot.values.insert(
-                                    mid.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
+                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
                     }
                     for mid in &group.else_members {
@@ -326,15 +336,7 @@ impl Engine {
                         } else {
                             // Skip Auto params — their lifecycle is managed by the
                             // solver, not guard activation/deactivation.
-                            let is_auto =
-                                graph.value_cells.get(mid).is_some_and(|n| n.kind.is_auto());
-                            if !is_auto {
-                                values.insert(mid.clone(), Value::Undef);
-                                new_snapshot.values.insert(
-                                    mid.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
+                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
                     }
                 }
@@ -564,20 +566,9 @@ impl Engine {
                                     .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Deactivate: set to Undef — but skip Auto params whose
-                            // lifecycle is managed by the solver, not guard activation.
-                            let is_auto = new_snapshot
-                                .graph
-                                .value_cells
-                                .get(member_id)
-                                .is_some_and(|n| n.kind.is_auto());
-                            if !is_auto {
-                                values.insert(member_id.clone(), Value::Undef);
-                                new_snapshot.values.insert(
-                                    member_id.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
+                            // Skip Auto params — their lifecycle is managed by the
+                            // solver, not guard activation/deactivation.
+                            deactivate_if_not_auto(&new_snapshot.graph, member_id, &mut values, &mut new_snapshot.values);
                         }
                     }
 
@@ -599,20 +590,9 @@ impl Engine {
                                     .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Deactivate: set to Undef — but skip Auto params whose
-                            // lifecycle is managed by the solver, not guard activation.
-                            let is_auto = new_snapshot
-                                .graph
-                                .value_cells
-                                .get(member_id)
-                                .is_some_and(|n| n.kind.is_auto());
-                            if !is_auto {
-                                values.insert(member_id.clone(), Value::Undef);
-                                new_snapshot.values.insert(
-                                    member_id.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
+                            // Skip Auto params — their lifecycle is managed by the
+                            // solver, not guard activation/deactivation.
+                            deactivate_if_not_auto(&new_snapshot.graph, member_id, &mut values, &mut new_snapshot.values);
                         }
                     }
                 }
