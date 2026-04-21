@@ -38052,11 +38052,11 @@
         "description": "Three improvements to the optimized registry fallback path from task 1657 review:\n\n1. Add a comment at crates/reify-eval/src/lib.rs:501 explaining why the internal ConstraintChecker assert_eq! is intentionally a panic (internal invariant) while the external OptimizedImpl count mismatch gets graceful fallback.\n2. Extract a helper function assert_has_fallback_diagnostic(diagnostics, expected_target) in crates/reify-eval/tests/optimized_registry_tests.rs to DRY up the identical 18-line diagnostic assertion blocks in tests 6, 8, and 9 (lines ~453-472, ~675-694, ~756-775).\n3. Add a new test for the multi-constraint batch fallback case: register a BrokenCountOptimizedImpl for a target, define a structure with 2 constraints both annotated with that target, have the impl return 1 result (wrong count for 2 constraints), and verify both constraints get correct fallback evaluation results in the correct result slots.\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-eval/tests/optimized_registry_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T09:13:26.110Z",
+        "updatedAt": "2026-04-21T09:13:43.959Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -43589,7 +43589,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T09:13:42.615Z",
+      "lastModified": "2026-04-21T09:13:43.959Z",
       "taskCount": 2060,
       "completedCount": 1794,
       "tags": [
