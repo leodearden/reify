@@ -237,16 +237,11 @@ describe('defPreviewStore', () => {
         createRoot(async (dispose) => {
           const store = createDefPreviewStore();
 
-          let resolveSlowFetch!: (gs: GuiState) => void;
           let rejectSlowFetch!: (err: unknown) => void;
           let resolveFastFetch!: (gs: GuiState) => void;
-          const slowFetchPromise = new Promise<GuiState>((res, rej) => {
-            resolveSlowFetch = res;
-            rejectSlowFetch = rej;
-          });
+          // Only rejectSlowFetch is used — the slow fetch is always rejected in this scenario.
+          const slowFetchPromise = new Promise<GuiState>((_res, rej) => { rejectSlowFetch = rej; });
           const fastFetchPromise = new Promise<GuiState>(r => { resolveFastFetch = r; });
-
-          void resolveSlowFetch; // suppress unused-variable lint
 
           const gsB = makeGuiState('B.body');
 

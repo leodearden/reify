@@ -133,6 +133,10 @@ const App: Component = () => {
     setTreeGeneration((v) => v + 1);
   });
 
+  // True when at least one design mesh is loaded. Memoized so DualViewport's
+  // designViewportActive prop does not allocate a new array on every reactive pulse.
+  const hasMeshes = createMemo(() => Object.keys(engineStore.state.meshes).length > 0);
+
   // Effective visibility memo: re-evaluates whenever explicit overrides or treeGeneration
   // changes.  treeGeneration is incremented by the effect above after setTree runs, which
   // guarantees that getAllEffective() sees the up-to-date nodeByPath on every call.
@@ -770,7 +774,7 @@ const App: Component = () => {
                 defPreviewStore={defPreviewStore}
                 viewportStore={viewportStore}
                 defPreviewActive={defPreviewActivation.defPreviewActive}
-                designViewportActive={() => Object.keys(engineStore.state.meshes).length > 0}
+                designViewportActive={hasMeshes}
                 defName={() => defPreviewStore.state.defName}
                 onForceExpand={(id) => viewportStore.setForceExpanded(id, true)}
                 onSelect={handleViewportSelect}

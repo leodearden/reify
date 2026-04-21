@@ -1,4 +1,4 @@
-import { Show, createEffect, createMemo, onCleanup } from 'solid-js';
+import { Show, createMemo, onCleanup } from 'solid-js';
 import { Viewport } from './Viewport';
 import type { ViewportProps } from './Viewport';
 import { Splitter } from '../components/Splitter';
@@ -81,17 +81,6 @@ export function DualViewport(props: DualViewportProps) {
       (props.viewportStore.state.viewports['design-main']?.forceExpanded ?? false),
   );
 
-  // Clear inner ref captures when the design viewport unmounts.
-  // Equivalent to the onCleanup inside the former function-children pattern,
-  // but compatible with SolidJS's JSX.Element children type for <Show>.
-  createEffect(() => {
-    if (designEffective()) {
-      onCleanup(() => {
-        innerFitToView = null;
-        innerFlyToEntity = null;
-      });
-    }
-  });
 
   // Label for the def-preview strip
   const defPreviewLabel = createMemo(() => {
@@ -167,8 +156,14 @@ export function DualViewport(props: DualViewportProps) {
               selectedEntity={props.selectedEntity}
               selectedEntities={props.selectedEntities}
               evalStatus={props.evalStatus}
-              fitToViewRef={(fn) => { innerFitToView = fn; }}
-              flyToEntityRef={(fn) => { innerFlyToEntity = fn; }}
+              fitToViewRef={(fn) => {
+                innerFitToView = fn;
+                onCleanup(() => { innerFitToView = null; });
+              }}
+              flyToEntityRef={(fn) => {
+                innerFlyToEntity = fn;
+                onCleanup(() => { innerFlyToEntity = null; });
+              }}
               entityVisibility={props.entityVisibility}
             />
           </div>

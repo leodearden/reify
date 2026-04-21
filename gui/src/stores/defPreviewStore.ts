@@ -62,7 +62,11 @@ export function createDefPreviewStore() {
 
   /**
    * Fetch and apply preview meshes for a definition.
-   * Early-returns (no-op) if `defName` matches the currently-loaded `state.defName`.
+   *
+   * De-duplication: early-returns (no-op) if `defName` matches the currently-loaded
+   * `state.defName`. To force a re-fetch of the same definition (e.g. after an upstream
+   * source change), callers must invoke `clearPreview()` first to reset `state.defName`.
+   *
    * Sets `isLoading=true` synchronously, then on resolve calls `applyPreview`,
    * on reject calls `setError`.
    *
@@ -71,6 +75,10 @@ export function createDefPreviewStore() {
    * the result is stale (a newer call has superseded this one) and is silently
    * discarded. `isLoading` is reset inside the guarded finally path so a stale
    * in-flight load cannot flip `isLoading` false and make a fresh load look done.
+   *
+   * The `fetch` callback is always invoked via `Promise.resolve().then(...)` so any
+   * synchronous throw from `fetch` is routed through the catch branch rather than
+   * propagating synchronously and leaking the `setLoading(true)` call.
    */
   async function loadPreview(
     defName: string,
@@ -83,7 +91,9 @@ export function createDefPreviewStore() {
     const token = ++latestLoadToken;
     setLoading(true);
     try {
-      const guiState = await fetch(defName);
+      // Wrap in Promise.resolve().then() so any synchronous throw from `fetch`
+      // is captured by the catch branch rather than escaping past setLoading(true).
+      const guiState = await Promise.resolve().then(() => fetch(defName));
       // Discard stale results: a newer loadPreview call has superseded this one
       if (token !== latestLoadToken) return;
       applyPreview(defName, guiState);
