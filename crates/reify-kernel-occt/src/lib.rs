@@ -4206,4 +4206,73 @@ mod tests {
             }
         }
     }
+
+    // --- Pipe tests (task-324) ---
+
+    #[test]
+    fn kernel_pipe_straight_path_volume_matches_pi_r2_l() {
+        // Path: straight line from (0,0,0) to (0,0,0.020), radius=0.002 →
+        // Volume ≈ π*r²*L = π*(0.002)²*0.020 ≈ 2.513e-7 m³.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let wire_handle = kernel
+            .execute(&GeometryOp::LineSegment {
+                x1: 0.0, y1: 0.0, z1: 0.0,
+                x2: 0.0, y2: 0.0, z2: 0.020,
+            })
+            .expect("LineSegment execute should succeed");
+        let pipe_handle = kernel
+            .execute(&GeometryOp::Pipe {
+                path: wire_handle.id,
+                radius: Value::Real(0.002),
+            })
+            .expect("Pipe execute should succeed");
+
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pipe_handle.id))
+            .expect("Volume query should succeed");
+        let v = vol.as_f64().expect("Volume should be numeric");
+        let expected = std::f64::consts::PI * 0.002_f64.powi(2) * 0.020;
+        let rel_err = (v - expected).abs() / expected;
+        assert!(
+            rel_err < 0.05,
+            "pipe volume should be ≈ {expected:.3e} m³, got {v:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    #[test]
+    fn kernel_pipe_non_positive_radius_returns_error() {
+        // radius=0 and radius=-1 must both be rejected with "pipe radius"
+        // in the error message.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        for r in [0.0, -1.0] {
+            let mut kernel = OcctKernel::new();
+            let wire_handle = kernel
+                .execute(&GeometryOp::LineSegment {
+                    x1: 0.0, y1: 0.0, z1: 0.0,
+                    x2: 0.0, y2: 0.0, z2: 0.020,
+                })
+                .expect("LineSegment execute should succeed");
+            let result = kernel.execute(&GeometryOp::Pipe {
+                path: wire_handle.id,
+                radius: Value::Real(r),
+            });
+            match result {
+                Err(GeometryError::OperationFailed(msg)) => {
+                    assert!(
+                        msg.contains("pipe radius"),
+                        "expected error mentioning 'pipe radius' for r={r}, got: {msg}"
+                    );
+                }
+                Ok(_) => panic!("expected error for radius={r}, got Ok"),
+                Err(other) => panic!("expected OperationFailed for radius={r}, got {:?}", other),
+            }
+        }
+    }
 }
