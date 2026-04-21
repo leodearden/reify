@@ -42946,6 +42946,7 @@
         "status": "pending",
         "dependencies": [
           "934",
+          "936",
           "2034"
         ],
         "priority": "high",
@@ -43678,7 +43679,9 @@
       "completedCount": 1789,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T08:48:35.121Z",
+      "description": "Tasks for master context"
     }
   }
 }
