@@ -656,3 +656,34 @@ fn match_no_arms_emits_diagnostic() {
         "expected a diagnostic for match with no arms, got none"
     );
 }
+
+// ── task-2066 step-1: index into non-collection emits diagnostic ─────────
+
+/// Index access on a non-collection type should emit a diagnostic.
+///
+/// `x` has type `Int` (whole-number literal `5`), so `x[0]` hits the
+/// currently-silent `_ => Type::Real` fallback at expr.rs:1323-1328.
+/// Before the fix (task-2066), no diagnostic is emitted — the fallback
+/// silently returns `Type::Real` for `y`.
+///
+/// Regression guard: guards expr.rs:1323-1328 against silent fallback (task-2066).
+#[test]
+fn index_into_non_collection_emits_diagnostic() {
+    let source = r#"
+        structure S {
+            let x = 5
+            let y = x[0]
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let has_index_error = errors.iter().any(|d| {
+        d.message.contains("cannot index") || d.message.contains("non-collection")
+    });
+    assert!(
+        has_index_error,
+        "expected diagnostic about indexing non-collection type, got: {:?}",
+        errors
+    );
+}
