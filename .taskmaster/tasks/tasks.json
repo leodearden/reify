@@ -43997,11 +43997,16 @@
         "description": "Post-merge cleanup for task 2035, three items in crates/reify-compiler/src/compile_builder/: (1) retarget stale above/below pre-pass comments in entities_phase.rs L88-145 to name sibling modules; (2) lift the duplicate-filter in entities_phase::compile_entity_decl L178-183 into CompilationCtx::is_first_entity_def and share with pre_pass; (3) extract build_constraint_def_registry to mirror build_trait_registry, replacing inline rebuild in phase_entities L54-66. No behavior change — cargo test -p reify-compiler must pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T21:58:00.763Z"
+        "updatedAt": "2026-04-21T22:06:04.173Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder"
+          ]
+        }
       },
       {
         "id": "2082",
@@ -44030,7 +44035,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T22:05:34.742Z",
+      "lastModified": "2026-04-21T22:06:04.173Z",
       "taskCount": 2075,
       "completedCount": 1818,
       "tags": [
