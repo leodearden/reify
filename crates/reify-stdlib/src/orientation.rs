@@ -435,10 +435,24 @@ mod tests {
 
     #[test]
     fn sign_insensitive_macro_fully_populated_quaternion() {
-        // Exercises the neg_ok branch with all four components non-zero.
+        // Exercises both pos_ok and neg_ok branches with all four components non-zero.
         // Unlike sign_insensitive_macro_non_trivial_quaternion (y=z=0), the non-zero y/z here
-        // force the neg_ok y+$ey and z+$ez branches to evaluate a non-trivial sign flip.
-        // The positive-form assertion is omitted — it is dominated by sign_insensitive_macro_positive.
+        // force the pos_ok (y - $ey) and (z - $ez) and the neg_ok (y + $ey) and (z + $ez)
+        // comparisons to run against non-zero expected operands — coverage not reached by
+        // sign_insensitive_macro_positive (expected (1,0,0,0), so $ey=$ez=0).
+        assert_orientation_approx!(
+            Value::Orientation {
+                w: 0.5,
+                x: 0.5,
+                y: 0.5,
+                z: 0.5
+            },
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            sign_insensitive = 1e-10
+        );
         assert_orientation_approx!(
             Value::Orientation {
                 w: -0.5,
