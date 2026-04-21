@@ -214,69 +214,15 @@ pub(crate) fn compile_with_prelude_refs(
     // recursive template's content_hash.
     compile_builder::post_passes::phase_recursion_detection(&mut ctx);
 
-    // Check for duplicate function signatures: same name + same param types
-    {
-        let mut seen: HashMap<(String, Vec<Type>), usize> = HashMap::new();
-        for (idx, f) in ctx.functions.iter().enumerate() {
-            let key = (
-                f.name.clone(),
-                f.params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
-            );
-            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
-                e.insert(idx);
-            } else {
-                ctx.diagnostics.push(Diagnostic::error(format!(
-                    "duplicate function signature: {}({})",
-                    f.name,
-                    f.params
-                        .iter()
-                        .map(|(_, t)| format!("{}", t))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            }
-        }
-    }
+    // Check for duplicate function signatures.
+    compile_builder::post_passes::phase_dup_sig_check(&mut ctx);
 
     // Post-compilation pass: check field composition type compatibility.
-    // For composed fields, if the body references other fields, verify that
-    // the codomain of the inner field matches the domain of the outer field.
-    {
-        let field_registry: HashMap<&str, &CompiledField> =
-            ctx.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+    compile_builder::post_passes::phase_field_composition(&mut ctx);
 
-        for field in &ctx.fields {
-            if let CompiledFieldSource::Composed { expr } = &field.source {
-                check_field_composition_types(expr, &field_registry, &mut ctx.diagnostics);
-            }
-        }
-    }
-
-    // Purpose compilation pass: compile after templates so reflective schema queries
-    // can resolve against TopologyTemplates.
-    let compiled_purposes = {
-        let purpose_template_registry: HashMap<String, &TopologyTemplate> = ctx
-            .templates
-            .iter()
-            .map(|t: &TopologyTemplate| (t.name.clone(), t))
-            .collect();
-
-        let mut purposes = Vec::new();
-        for decl in &parsed.declarations {
-            if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
-                let compiled = compile_purpose(
-                    purpose_def,
-                    &ctx.resolution_enums,
-                    &ctx.resolution_functions,
-                    &purpose_template_registry,
-                    &ctx.unit_registry,
-                    &mut ctx.diagnostics,
-                );
-                purposes.push(compiled);
-            }
-        }
-        purposes
-    };
+    // Purpose compilation pass (runs after templates are populated so
+    // reflective schema queries can resolve against TopologyTemplates).
+    let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut ctx, parsed);
 
     // Build a content-sensitive hash by combining the path with all compiled content.
     let content_hash = {
