@@ -229,6 +229,67 @@ structure S {
     );
 }
 
+// ── step-19 (task 848.3): guarded constraint def active-and-violated case ─────
+
+/// Complement to `guarded_constraint_def_inactive_when_guard_false`: when the
+/// `where` guard evaluates true AND the constraint predicate is violated,
+/// exactly one Violated constraint result must be produced and the error
+/// diagnostic must carry the friendly constraint-instance label.
+///
+/// Covers the active-true, predicate-false branch of the guard machinery —
+/// the only combination the existing test suite did not exercise end-to-end.
+#[test]
+fn guarded_constraint_def_violated_when_guard_true() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param active: Bool = true
+    param t: Length = 1
+    constraint MinWall(wall: t) where active
+}
+"#;
+    let result = check_source(source);
+
+    // Guard is true → the constraint is checked and the predicate (1 > 2) is violated.
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected exactly 1 constraint result when guard is true, got: {:?}",
+        result.constraint_results
+    );
+
+    let entry = &result.constraint_results[0];
+    assert_eq!(
+        entry.satisfaction,
+        Satisfaction::Violated,
+        "expected Violated when guard is true and predicate fails, got: {:?}",
+        entry.satisfaction
+    );
+    assert_eq!(
+        entry.label,
+        Some("MinWall#0[0]".to_string()),
+        "expected label Some(\"MinWall#0[0]\") per task-845 labeling, got: {:?}",
+        entry.label
+    );
+
+    // Exactly one Error-severity diagnostic, and its message carries the label.
+    let error_diags = error_diags(&result.diagnostics);
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly one Error diagnostic, got: {:?}",
+        error_diags
+    );
+    assert!(
+        error_diags[0].message.contains("MinWall#0[0]"),
+        "expected error diagnostic containing 'MinWall#0[0]', got: {:?}",
+        error_diags[0].message
+    );
+}
+
 // ── step-8: predicates checked independently (transparent to solver) ──────────
 
 /// 3-predicate constraint def with individually distinct satisfaction states:
