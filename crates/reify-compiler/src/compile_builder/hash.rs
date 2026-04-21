@@ -19,7 +19,7 @@ pub(crate) fn compute_module_hash(
     parsed: &ParsedModule,
     compiled_purposes: &[CompiledPurpose],
 ) -> ContentHash {
-    let path_hash = ContentHash::of_str(&format!("{}", parsed.path));
+    let path_hash = ContentHash::of_str(&parsed.path.to_string());
 
     // Template content hashes
     let template_hashes = ctx.templates.iter().map(|t| t.content_hash);
