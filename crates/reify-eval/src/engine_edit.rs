@@ -799,15 +799,38 @@ impl Engine {
     /// and demand registry. Returns `Err(EngineError::NotInitialized)` when
     /// called on a fresh Engine before any eval.
     ///
-    /// Current implementation (step-4): the "no-change" code path — builds
-    /// a fresh snapshot, rebuilds reverse index / trace map / demand registry
-    /// from the new graph, refreshes function / purpose / meta / objective
-    /// tables from the new module, and seeds per-cell values by copying the
-    /// prior snapshot's values for every cell that is also present in the
-    /// new graph. This is semantically correct whenever the edit leaves
-    /// every cell's content_hash unchanged; later steps replace the
-    /// "copy all values" shortcut with diff-driven re-evaluation so that
-    /// genuinely structural edits produce the right downstream values.
+    /// Algorithm (step-6 — diff-driven incremental eval):
+    /// 1. Build a fresh `Snapshot`, `ReverseDependencyIndex`, trace map, and
+    ///    `DemandRegistry` from the new module.
+    /// 2. Diff the old and new `EvaluationGraph`s at value-cell granularity
+    ///    via `diff_value_cells` → `(changed, added, removed)`.
+    /// 3. Compute `dirty_cone` via `compute_dirty_cone` over
+    ///    `changed ∪ added`, augment with the changed/added cells themselves
+    ///    (so their own `default_expr` re-evaluates) and with dependents of
+    ///    removed cells via the OLD reverse_index (defensively, gated on
+    ///    presence in the new graph).
+    /// 4. `eval_set = compute_eval_set(dirty_cone, new_demand, new_trace_map)`.
+    /// 5. Seed the working `values` map and `new_snapshot.values`: for every
+    ///    cell present in both graphs with unchanged `content_hash`, copy the
+    ///    prior `(Value, DeterminacyState)`; for changed/added cells keep the
+    ///    `Snapshot::from_compiled_module` default (Undef) — the eval loop
+    ///    below fills these in.
+    /// 6. Invalidate cache entries for removed and changed value cells.
+    /// 7. Refresh `self.functions` / `self.compiled_purposes` / `self.meta_map`
+    ///    / `self.objectives` from the new module (module-level state a pure
+    ///    cell diff cannot detect).
+    /// 8. Per-cell eval loop (shape mirrors `edit_param`): iterate the
+    ///    topologically sorted `eval_set`, evaluate each Value node's
+    ///    `default_expr`, record a cache entry, and propagate the
+    ///    Changed/Unchanged outcome via `has_changed_parent` / `skipped` so
+    ///    unchanged sub-cones short-circuit.
+    /// 9. Install the new snapshot (with `Edit { changed, parent }`
+    ///    provenance), `reverse_index`, `trace_map`, and `demand` into
+    ///    `self`; stash `actual_eval_set` in `self.last_eval_set`.
+    ///
+    /// Constraint / realization diffing and the solver / guard / collection
+    /// re-elaboration phases are deferred to later steps (see `.task/plan.json`
+    /// steps 10 and 14).
     pub fn edit_source(&mut self, module: &CompiledModule) -> Result<EvalResult, EngineError> {
         // Precondition: prior eval() must have populated eval_state. This is
         // the same precondition as edit_param and is validated first so that
@@ -822,7 +845,8 @@ impl Engine {
         // (2) Build the new snapshot from the incoming CompiledModule.
         //     Snapshot::from_compiled_module seeds every value cell to
         //     (Undef, Undetermined) or (Undef, Auto); the seeding loop
-        //     below overwrites those with the preserved prior values.
+        //     below overwrites those with the preserved prior values for
+        //     cells whose content_hash matches the old graph.
         let snapshot_id = self.next_snapshot_id;
         self.next_snapshot_id += 1;
         let version_id = self.next_version_id;
@@ -830,10 +854,6 @@ impl Engine {
         let mut new_snapshot = crate::snapshot::Snapshot::from_compiled_module(module);
         new_snapshot.id = SnapshotId(snapshot_id);
         new_snapshot.version = VersionId(version_id);
-        new_snapshot.provenance = SnapshotProvenance::Edit {
-            changed: HashSet::new(),
-            parent: parent_id,
-        };
 
         // (3) Rebuild dependency structures against the NEW graph. Full
         //     rebuild is O(nodes · avg_trace_size), matching cold eval(); see
@@ -855,44 +875,120 @@ impl Engine {
         }
         new_demand.rebuild_cone(&new_snapshot.graph);
 
-        // (4) Seed values by copying from the OLD snapshot for every cell
-        //     that also exists in the NEW graph. Cells present only in the
-        //     new graph stay at their Snapshot::from_compiled_module default
-        //     (Undef + {Undetermined, Auto}).
-        //
-        //     This implements the plan's "zero-diff code path"; later steps
-        //     layer diff-driven re-evaluation on top.
+        // (4) Diff the old and new graphs at value-cell granularity.
+        let (changed, added, removed) = diff_value_cells(
+            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &new_snapshot.graph,
+        );
+        let mut changed_set: HashSet<ValueCellId> = HashSet::new();
+        for id in &changed {
+            changed_set.insert(id.clone());
+        }
+        for id in &added {
+            changed_set.insert(id.clone());
+        }
+
+        // (5) Compute the dirty cone over changed ∪ added using the NEW
+        //     reverse index (which reflects post-edit dependencies). The
+        //     compute_dirty_cone helper excludes the roots themselves, so
+        //     we also splice in NodeId::Value for each changed/added cell
+        //     — their own default_expr must be re-evaluated.
+        let mut dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &new_reverse_index);
+        for id in &changed_set {
+            dirty_cone.insert(NodeId::Value(id.clone()));
+        }
+
+        // (6) Defensively include dependents of REMOVED cells via the OLD
+        //     reverse index, gated on presence in the new graph. A removed
+        //     cell typically also forces its dependents to be classified as
+        //     `changed` (their expressions lost a ValueRef), but the OLD
+        //     reverse index is the authoritative source for "what used to
+        //     read this cell"; skipping it would miss dependents whose
+        //     expressions happen to remain shape-compatible (e.g., a
+        //     fallback branch). Resolution nodes are intentionally excluded
+        //     here — the resolution-node diff is handled in step-10.
+        {
+            let old_reverse_index = &self.eval_state.as_ref().unwrap().reverse_index;
+            for id in &removed {
+                for dep in old_reverse_index.dependents_of(id) {
+                    let still_present = match dep {
+                        NodeId::Value(vcid) => new_snapshot.graph.value_cells.contains_key(vcid),
+                        NodeId::Constraint(cid) => new_snapshot.graph.constraints.contains_key(cid),
+                        NodeId::Realization(rid) => {
+                            new_snapshot.graph.realizations.contains_key(rid)
+                        }
+                        NodeId::Resolution(_) => false,
+                    };
+                    if still_present {
+                        dirty_cone.insert(dep.clone());
+                    }
+                }
+            }
+        }
+
+        // (7) Compute eval_set (topo-sorted) from dirty ∩ demand.
+        let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
+
+        // (8) Seed values by preserving unchanged-content_hash entries from
+        //     the old snapshot. Changed/added cells retain their Snapshot::
+        //     from_compiled_module default (Undef) so the eval loop fills
+        //     them in; removed cells are simply absent from the new graph.
         let mut values = ValueMap::new();
-        let old_values = {
-            let state = self.eval_state.as_ref().unwrap();
-            state.snapshot.values.clone()
-        };
-        let cell_ids: Vec<ValueCellId> = new_snapshot
+        let old_graph_snapshot_values = self.eval_state.as_ref().unwrap().snapshot.values.clone();
+        let old_graph_cells = self
+            .eval_state
+            .as_ref()
+            .unwrap()
+            .snapshot
             .graph
             .value_cells
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &cell_ids {
-            if let Some((val, det)) = old_values.get(id) {
-                new_snapshot
-                    .values
-                    .insert(id.clone(), (val.clone(), *det));
-                values.insert(id.clone(), val.clone());
-            } else if let Some((val, _)) = new_snapshot.values.get(id) {
-                // New-only cell: keep the Snapshot::from_compiled_module
-                // default (Undef). The diff-driven path (step-6+) will
-                // evaluate it properly.
+            .clone();
+        for (id, new_node) in new_snapshot.graph.value_cells.iter() {
+            let preserved = old_graph_cells
+                .get(id)
+                .map(|old_node| old_node.content_hash == new_node.content_hash)
+                .unwrap_or(false);
+            if preserved {
+                if let Some((val, det)) = old_graph_snapshot_values.get(id) {
+                    new_snapshot
+                        .values
+                        .insert(id.clone(), (val.clone(), *det));
+                    values.insert(id.clone(), val.clone());
+                    continue;
+                }
+            }
+            // Changed/added/no prior entry: read the Undef seed placed by
+            // Snapshot::from_compiled_module so the working values map has
+            // an entry for every present cell (downstream expressions can
+            // fail-stop on missing reads).
+            if let Some((val, _)) = new_snapshot.values.get(id) {
                 values.insert(id.clone(), val.clone());
             }
         }
 
-        // (5) Refresh function / purpose / meta / objective tables from the
-        //     new module, identical to the block at the head of Engine::eval.
-        //     A source edit can add/remove/change a user function body,
-        //     purpose declaration, meta block, or objective — none of these
-        //     are captured by the per-cell content_hash diff, so relying on
-        //     cell-level diffing alone would silently serve stale tables.
+        // (9) Invalidate cache entries for changed and removed cells.
+        //     Dependents' cache entries will be refreshed (or transitioned
+        //     through Pending) by the per-cell eval loop below.
+        for id in &changed {
+            self.cache.invalidate(&NodeId::Value(id.clone()));
+        }
+        for id in &removed {
+            self.cache.invalidate(&NodeId::Value(id.clone()));
+        }
+
+        // (10) Attach provenance: Edit with the value-cell-level changed set
+        //      (constraints / realizations remain implicit in the new graph;
+        //      see plan.json design decision).
+        new_snapshot.provenance = SnapshotProvenance::Edit {
+            changed: changed_set.clone(),
+            parent: parent_id,
+        };
+
+        // (11) Refresh function / purpose / meta / objective tables from the
+        //      new module. A source edit can add/remove/change any of these;
+        //      none are captured by the per-cell content_hash diff, so
+        //      relying on cell-level diffing alone would silently serve
+        //      stale tables (see eval() for the same refresh rationale).
         self.functions = module.functions.clone();
         self.functions
             .extend(self.prelude_functions.iter().cloned());
@@ -911,16 +1007,119 @@ impl Engine {
             }
         }
 
-        // (6) Install the new snapshot + dependency structures, (7) reset
-        //     last_eval_set (no incremental eval performed on this no-change
-        //     path), and (8) return the preserved values.
+        // Snapshot the merged function table for EvalContext; see the
+        // PERFORMANCE NOTE in Engine::eval about Arc<Vec<CompiledFunction>>
+        // (task #1997) — same deferral here.
+        let functions = self.functions.clone();
+
+        // (12) Per-cell eval loop (shape mirrors edit_param's). Transitions
+        //      cache entries in the eval set through Pending, iterates in
+        //      topological order, evaluates each Value node's default_expr,
+        //      and propagates Changed/Unchanged outcomes via
+        //      has_changed_parent / skipped for early cutoff.
+        self.cache.reset_pending_transition_count();
+        for node_id in &eval_set {
+            self.cache.mark_pending(node_id);
+        }
+
+        // Seed has_changed_parent from the dependents of every cell in the
+        // changed_set (via the NEW reverse index) — these start the edit in
+        // the "must not skip" state even before the root itself is evaluated.
+        let mut has_changed_parent: HashSet<NodeId> = HashSet::new();
+        for id in &changed_set {
+            for dep in new_reverse_index.dependents_of(id) {
+                has_changed_parent.insert(dep.clone());
+            }
+        }
+
+        let mut skipped: HashSet<NodeId> = HashSet::new();
+        let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
+
+        for node_id in &eval_set {
+            if skipped.contains(node_id) {
+                continue;
+            }
+            actual_eval_set.push(node_id.clone());
+
+            if let NodeId::Value(vcid) = node_id
+                && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
+                && let Some(ref expr) = node.default_expr
+            {
+                let start = Instant::now();
+                self.journal.record(EvalEvent {
+                    timestamp: start,
+                    node_id: node_id.clone(),
+                    kind: EventKind::Started,
+                    version: VersionId(version_id),
+                    payload: None,
+                });
+
+                let val = reify_expr::eval_expr(
+                    expr,
+                    &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map),
+                );
+                values.insert(vcid.clone(), val.clone());
+                new_snapshot
+                    .values
+                    .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
+
+                let trace = extract_dependency_trace(expr);
+                let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
+                let outcome = self.cache.record_evaluation(
+                    node_id.clone(),
+                    cached_result,
+                    VersionId(version_id),
+                    trace,
+                );
+
+                self.journal.record(EvalEvent {
+                    timestamp: Instant::now(),
+                    node_id: node_id.clone(),
+                    kind: EventKind::Completed { outcome },
+                    version: VersionId(version_id),
+                    payload: Some(EventPayload::Duration(start.elapsed())),
+                });
+
+                // Early-cutoff propagation — identical policy to edit_param:
+                // - Changed: dependents inherit has_changed_parent and are
+                //   unmarked from `skipped` (a Mixed-fan-in dependent may
+                //   have been optimistically added by an Unchanged sibling).
+                // - Unchanged: dependents enter `skipped` only if no Changed
+                //   parent has been seen for them yet.
+                let dependents = new_reverse_index.dependents_of(vcid);
+                if outcome == EvalOutcome::Changed {
+                    for dep in dependents {
+                        has_changed_parent.insert(dep.clone());
+                        skipped.remove(dep);
+                    }
+                } else {
+                    for dep in dependents {
+                        if !has_changed_parent.contains(dep) {
+                            skipped.insert(dep.clone());
+                        }
+                    }
+                }
+            }
+            // Constraint / Realization nodes: tracked in eval_set but not
+            // evaluated here (deferred to check() / build()), same as in
+            // edit_param.
+        }
+
+        // (13) Restore Final freshness for nodes the early-cutoff path
+        //      skipped (they were pre-marked Pending but never re-evaluated).
+        for node_id in &skipped {
+            self.cache.restore_final(node_id);
+        }
+
+        // (14) Install the new snapshot, dep structures, and demand; record
+        //      actual_eval_set (excludes early-cutoff-skipped nodes).
         self.eval_state = Some(crate::EvaluationState {
             snapshot: new_snapshot,
             reverse_index: new_reverse_index,
             trace_map: new_trace_map,
         });
         self.demand = new_demand;
-        self.last_eval_set = Vec::new();
+        self.last_eval_set = actual_eval_set;
 
         Ok(EvalResult {
             values,
