@@ -800,3 +800,89 @@ impl Engine {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use reify_compiler::ValueCellKind;
+    use reify_types::{ContentHash, DeterminacyState, PersistentMap, Type, Value, ValueCellId, ValueMap};
+
+    use crate::graph::{EvaluationGraph, ValueCellNode};
+
+    use super::deactivate_if_not_auto;
+
+    #[test]
+    fn deactivate_if_not_auto_skips_auto_cell() {
+        let id = ValueCellId::new("E", "auto_param");
+        let mut graph = EvaluationGraph::default();
+        graph.value_cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Auto { free: false },
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("auto_param"),
+            },
+        );
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        deactivate_if_not_auto(&graph, &id, &mut values, &mut snapshot_values);
+
+        // Auto cell: helper must NOT insert anything.
+        assert!(values.get(&id).is_none(), "Auto cell must not be deactivated in values");
+        assert!(
+            snapshot_values.get(&id).is_none(),
+            "Auto cell must not be deactivated in snapshot_values"
+        );
+    }
+
+    #[test]
+    fn deactivate_if_not_auto_writes_undef_for_param() {
+        let id = ValueCellId::new("E", "param");
+        let mut graph = EvaluationGraph::default();
+        graph.value_cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("param"),
+            },
+        );
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        deactivate_if_not_auto(&graph, &id, &mut values, &mut snapshot_values);
+
+        assert_eq!(values.get(&id), Some(&Value::Undef));
+        assert_eq!(
+            snapshot_values.get(&id),
+            Some(&(Value::Undef, DeterminacyState::Undetermined))
+        );
+    }
+
+    #[test]
+    fn deactivate_if_not_auto_writes_undef_for_missing_cell() {
+        let id = ValueCellId::new("X", "missing");
+        let graph = EvaluationGraph::default(); // empty — cell not present
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        deactivate_if_not_auto(&graph, &id, &mut values, &mut snapshot_values);
+
+        // Missing cell → treated as non-Auto → must be deactivated.
+        assert_eq!(values.get(&id), Some(&Value::Undef));
+        assert_eq!(
+            snapshot_values.get(&id),
+            Some(&(Value::Undef, DeterminacyState::Undetermined))
+        );
+    }
+}
