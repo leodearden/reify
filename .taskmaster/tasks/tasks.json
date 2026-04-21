@@ -42520,7 +42520,7 @@
         "description": "Currently Engine::eval (crates/reify-eval/src/lib.rs:827) rebuilds the Snapshot from the CompiledModule from scratch and re-evaluates every Value node on every call. Engine::edit_param (crates/reify-eval/src/lib.rs:1544) already has the incremental machinery (dirty-cone ∩ demand cone, topological eval of affected nodes only) but scoped to param changes.\n\nTask 480 closed part of the LSP gap by adding eval_cached fast-path when the CompiledModule's content_hash is unchanged. The remaining gap, which this task targets, is structural source edits (different content_hash) where most of the module is still the same — the common LSP didChange case.\n\nedit_source would:\n1. Take a fresh CompiledModule (post-recompile of edited source).\n2. Diff against the prior snapshot via stable node identity (source-range or name-path keying, not positional cell IDs, since today cell IDs are assigned positionally within a fresh compile).\n3. Compute changed node set → dirty cone → demand cone intersection.\n4. Re-evaluate only affected Value nodes; preserve unchanged snapshot state for everything else.\n\nPrimary driver: LSP didChange (tasks 479/480) — keystroke-rate structural edits where ~99% of module is unchanged but content_hash differs, so 480's eval_cached path falls through to cold-start Engine::eval. MCP update_source (task 2008, now using ensure_engine() for prelude/function-table reuse) also benefits but less acutely.\n\nKnown complications:\n- Stable identity across recompiles: need a keying scheme that survives compiler internals (source-range + name-path is a candidate; needs a design pass).\n- Additive/deletive edits have no pre-image — need a correctness-preserving fallback (evaluate newly-added nodes; drop deleted ones and anything that depended on them).\n- Compiler changes that break the identity scheme would silently regress incrementality. Needs a test that cross-checks edit_source against a cold eval on the same final source.\n\nCoordinate with: 479/480 (LSP didChange hot path), 2008 (CLI MCP update_source). Caching strategy should stay uniform across entry points.\n\nmemory_hints:\n- search: \"Engine edit_param dirty cone demand cone incremental\"\n- search: \"CompiledModule content_hash stable node identity\"\n- search: \"LSP didChange eval_cached\"\n- entity: \"Engine\"\n- entity: \"EvalState\"\n- entity: \"CompiledModule\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "479",
           "480"
@@ -42537,7 +42537,7 @@
             "crates/reify-eval/tests/edit_source.rs"
           ]
         },
-        "updatedAt": "2026-04-21T09:13:41.579Z"
+        "updatedAt": "2026-04-21T19:43:27.555Z"
       },
       {
         "id": "2017",
@@ -42963,13 +42963,13 @@
         "description": "After task #2031 lands (tests moved out), decompose the 820-line `compile_with_prelude_refs` fn in `crates/reify-compiler/src/lib.rs` (L245-1066) into per-phase free functions.\n\nThe function is already sectioned by comment into 13 passes:\n1. parse-errors forwarding\n2. module-pragma validation\n3. pre-pass: collect decl references + entity-name tracker\n4. units compilation (prelude seeding + local units)\n5. type alias DFS resolution\n6. enum collection\n7. functions pass\n8. traits pass\n9. fields pass\n10. constraint-defs pass (with cross-prelude shadow warnings)\n11. post-pass: deferred bound checks\n12. post-pass: recursion detection + termination + hash remix\n13. post-pass: dup-sig check, field-composition, purpose compilation, final hash\n\nDesign:\n- Introduce `CompilationCtx` (probably `pub(crate) struct`) holding the shared mutable state: `diagnostics`, `scope`, registries (`alias_registry`, `trait_registry`, `constraint_def_registry`, `template_registry`, `field_registry`), `enum_defs`, `resolution_enums`, `functions`, `fields`, `templates`, `imports`, `seen_entity_names`, etc.\n- Factor each sectioned pass into a free fn `fn phase_<name>(ctx: &mut CompilationCtx, parsed: &ParsedModule, prelude: &[&CompiledModule])` or similar signature.\n- House them in a submodule tree: `crates/reify-compiler/src/compile_builder/{ctx.rs, pre_pass.rs, units.rs, aliases.rs, enums.rs, functions_pass.rs, traits_pass.rs, fields_pass.rs, defs_pass.rs, post_passes.rs, hash.rs}` (or a single `compile_builder.rs` if the phases feel small enough).\n- `compile_with_prelude_refs` becomes a thin orchestrator: construct `CompilationCtx`, call each phase in order, assemble `CompiledModule` from ctx fields.\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically (no behavioral change).\n- `compile_with_prelude_refs` body shrinks to < 80 lines (orchestrator only).\n- `lib.rs` drops below 300 lines (module decls + public entry points + reexports).\n\nWhy: biggest structural win — ~35 pending tasks target lib.rs but most actually edit one specific pass. After the split, they lock only the relevant phase file and dispatch concurrently.\n\nRisk: `CompilationCtx` field design takes thought (what moves, what stays as call args). Prefer keeping per-pass call args explicit where natural — don't force everything into ctx just for uniformity.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2031"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-21T15:15:18.365Z",
+        "updatedAt": "2026-04-21T19:43:27.668Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
@@ -42990,7 +42990,7 @@
         "description": "After tasks #934 (resolve_enum_type helper + check_trait_conformance optimization) and #2034 (MergeContext + collect_all_requirements extraction) both land, `check_trait_conformance` in `crates/reify-compiler/src/conformance.rs` will still be a large monolithic function (~400+ lines estimated). Decompose it into phase helpers.\n\nFirst read the current state of `check_trait_conformance` and identify natural phase boundaries. Expected candidates:\n- **resolve-structure-members** — build the `structure_members: HashMap<String, Type>` from the EntityDefRef (currently the ~80-line filter_map closure).\n- **walk-requirements** — invoke `collect_all_requirements` (already extracted by #2034) and collect the flattened requirement + default sets.\n- **check-members-vs-requirements** — compare each required member against the structure's members, emit mismatch diagnostics.\n- **emit-missing-member-diagnostics** — report requirements unsatisfied by the structure.\n- **merge-defaults** — inject default value cells + constraints for trait-provided defaults the structure did not override.\n\nExtract each phase into a `fn check_phase_<name>(...)` with a narrow signature. The top-level `check_trait_conformance` becomes a thin orchestrator (< 80 lines) calling each phase.\n\nIf the extracted helpers together grow conformance.rs past ~1000 lines again, move them to a sibling submodule `crates/reify-compiler/src/conformance/checker.rs` (converting conformance.rs into `conformance/mod.rs` or reorganizing as appropriate).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically — no behavioral change intended.\n- `check_trait_conformance` body shrinks to < 80 lines.\n- ~12 pending tasks that currently contend on `conformance.rs` can split their edits across phase helpers and dispatch concurrently.\n\nWhy: task #934 was scoped as an optimization, not a decomposition. Even after it lands, the 700-line function remains the lock bottleneck. Proper decomposition is the durable fix.\n\nNote to executor: if after reading the post-#934 state you conclude check_trait_conformance is already < 250 lines and naturally cohesive (i.e. #934 did more than expected), defer this task with a note explaining — don't manufacture phase boundaries that don't exist.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "934",
           "936",
@@ -43008,7 +43008,7 @@
             "crates/reify-compiler/src"
           ]
         },
-        "updatedAt": "2026-04-21T15:15:18.907Z"
+        "updatedAt": "2026-04-21T19:43:27.788Z"
       },
       {
         "id": "2037",
@@ -43853,7 +43853,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T19:43:27.447Z",
+      "lastModified": "2026-04-21T19:43:27.788Z",
       "taskCount": 2066,
       "completedCount": 1811,
       "tags": [
