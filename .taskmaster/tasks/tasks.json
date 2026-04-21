@@ -12291,7 +12291,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/unfold.rs",
+            "crates/reify-eval/tests/boundary5_engine.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
         },
         "updatedAt": "2026-04-21T09:13:54.697Z"
       },
@@ -43561,7 +43566,9 @@
       "completedCount": 1797,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T09:22:25.276Z",
+      "description": "Tasks for master context"
     }
   }
 }
