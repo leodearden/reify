@@ -368,6 +368,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn orient_per_component_diagnostics() {
+        // Table-driven replacement for the four per-component diagnostic tests.
+        // Each entry: (expected label in panic message, closure that triggers the wrong component).
+        let cases: [(&str, fn()); 4] = [
+            ("w:", || {
+                assert_orientation_approx!(
+                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    0.5, 0.0, 0.0, 0.0  // wrong w
+                );
+            }),
+            ("x:", || {
+                assert_orientation_approx!(
+                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    1.0, 0.5, 0.0, 0.0  // wrong x
+                );
+            }),
+            ("y:", || {
+                assert_orientation_approx!(
+                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    1.0, 0.0, 0.5, 0.0  // wrong y
+                );
+            }),
+            ("z:", || {
+                assert_orientation_approx!(
+                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    1.0, 0.0, 0.0, 0.5  // wrong z
+                );
+            }),
+        ];
+        for (label, case) in cases {
+            let err = std::panic::catch_unwind(case)
+                .expect_err("expected assert_orientation_approx to panic");
+            let msg = err
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| err.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            assert!(msg.contains(label), "expected panic message to contain {label:?}, got: {msg:?}");
+        }
+    }
+
     // ── assert_orientation_approx tol = tests ───────────────────────────────
 
     #[test]
