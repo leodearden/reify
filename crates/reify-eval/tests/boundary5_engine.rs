@@ -1037,11 +1037,17 @@ fn evaluate_let_bindings_skips_let_cell_without_default_expr() {
         good_val,
     );
 
-    // The Let cell with no default_expr must be absent or at most Undef.
+    // The Let cell with no default_expr must be absent from result.values.
+    // The engine only writes to `values` for cells it evaluates; a Let cell
+    // with `default_expr = None` is filtered out by `evaluate_let_bindings`
+    // before the evaluation loop, so it is never inserted — the value is
+    // absent, not Undef.  Asserting exact absence (not an OR) locks this in
+    // as a characterization test: if a future change silently writes stale
+    // data for unevaluated Let cells, this assertion will catch it.
     let bad_val = result.values.get(&ValueCellId::new("S", "bad"));
     assert!(
-        bad_val.is_none() || bad_val == Some(&Value::Undef),
-        "S.bad (Let with no default_expr) should be absent or Undef, got {:?}",
+        bad_val.is_none(),
+        "S.bad (Let with no default_expr) must be absent from result.values, got {:?}",
         bad_val,
     );
 }

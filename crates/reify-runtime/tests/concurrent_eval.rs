@@ -3661,6 +3661,76 @@ async fn adapter_evaluate_returns_unchanged_for_cell_without_default_expr() {
     );
 }
 
+/// Sibling characterization: ConcurrentEvalAdapter returns Changed for a Let
+/// cell whose `default_expr` is `Some(literal)`.  This covers the positive
+/// branch of the `if let Some(expr) = cell_node.default_expr.as_ref()` guard
+/// introduced in step-2, complementing the None-default_expr test above.
+///
+/// The test deliberately uses no `previous_hashes` entry so that the adapter
+/// always reports Changed (no prior hash → first evaluation path).
+#[tokio::test]
+async fn adapter_evaluate_returns_changed_for_let_cell_with_default_expr() {
+    let e = "T";
+
+    // A literal expression — no dependencies on other cells.
+    let lit_expr = reify_types::CompiledExpr::literal(Value::Int(42), Type::Int);
+
+    let template = TopologyTemplateBuilder::new(e)
+        .let_binding(e, "x", Type::Int, lit_expr)
+        .build();
+
+    let graph = EvaluationGraph::from_templates(&[template]);
+    let reverse_index = ReverseDependencyIndex::build_from_graph(&graph);
+
+    let x_id = ValueCellId::new(e, "x");
+    let x_node = NodeId::Value(x_id.clone());
+
+    let setup = ConcurrentEditSetup {
+        eval_set: vec![x_node.clone()],
+        graph,
+        values: ValueMap::new(),
+        snapshot_values: PersistentMap::new(),
+        traces: HashMap::new(),
+        reverse_index,
+        // No previous hash → adapter takes the "first evaluation" path → Changed.
+        previous_hashes: HashMap::new(),
+        version: VersionId(1),
+        snapshot_id: SnapshotId(1),
+        parent_snapshot_id: SnapshotId(0),
+        changed_cells: HashSet::new(),
+        functions: vec![],
+        meta_map: Arc::new(HashMap::new()),
+        objective: None,
+    };
+
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+    // Evaluate x: default_expr = Some(literal(42)) → must evaluate and return Changed.
+    let outcome = adapter.evaluate(x_node).await;
+
+    assert_eq!(
+        outcome,
+        EvalOutcome::Changed,
+        "Let cell with default_expr = Some(literal(42)) must return Changed"
+    );
+
+    // The value must be written.
+    assert_eq!(
+        adapter.values().get(&x_id),
+        Some(&Value::Int(42)),
+        "adapter must write Value::Int(42) for x after evaluation"
+    );
+
+    // A result entry must be recorded.
+    let results = adapter.take_results();
+    assert_eq!(results.len(), 1, "exactly one result entry must be pushed");
+    assert_eq!(
+        results[0].outcome,
+        EvalOutcome::Changed,
+        "result entry outcome must be Changed"
+    );
+}
+
 #[cfg(feature = "test-utils")]
 mod poison_fields_constants {
     use super::*;
