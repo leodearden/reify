@@ -916,6 +916,27 @@ pub(crate) fn compile_geometry_op(
                         guides: vec![resolved_guide],
                     })
                 }
+                reify_compiler::SweepKind::Pipe => {
+                    let path_handle = resolve_geom_ref(
+                        profiles.first().ok_or_else(|| "no path GeomRef supplied".to_string())?,
+                        step_handles,
+                        diagnostics,
+                    )?;
+                    let radius = eval_named_arg(
+                        "radius",
+                        kind,
+                        args,
+                        values,
+                        functions,
+                        meta_map,
+                        diagnostics,
+                    )
+                    .ok_or_else(|| format!("missing required argument 'radius' for {}", kind))?;
+                    Ok(reify_types::GeometryOp::Pipe {
+                        path: path_handle,
+                        radius,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Curve { kind, args } => {
