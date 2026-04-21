@@ -1,11 +1,14 @@
 //! End-to-end tests for the tube() and pipe() geometry operations.
 //!
 //! Tests span from the compiled IR through evaluation to the final GeometryOp
-//! using MockGeometryKernel to capture executed operations without OCCT.
+//! using MockGeometryKernel to capture executed operations without OCCT, plus
+//! OCCT-gated full-pipeline tests (source → parse → compile → Engine → build).
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Type};
+use reify_types::{
+    ExportFormat, GeometryKernel, GeometryOp, GeometryQuery, ModulePath, Severity, Type, Value,
+};
 
 /// Exercises the full compile -> eval path for Tube.
 ///
@@ -156,4 +159,343 @@ fn pipe_through_mock_kernel_emits_geometry_op_pipe() {
         }
         other => panic!("expected GeometryOp::Pipe at op index 1, got {:?}", other),
     }
+}
+
+// ---------------------------------------------------------------------------
+// step-17: full-pipeline OCCT-gated e2e tests for tube() and pipe()
+// ---------------------------------------------------------------------------
+//
+// Each volume test does two things:
+//   (1) Runs the full source → parse → compile → Engine → build pipeline and
+//       asserts the pipeline succeeds end-to-end (no Error diagnostics, a
+//       non-empty tessellated mesh is produced, STEP output is non-empty).
+//   (2) Independently queries volume on a local OcctKernel running the
+//       equivalent GeometryOp, asserting the formula volume within tolerance.
+//
+// Going via Engine::build owns the kernel internally and there is no public
+// query API on the post-build state. Computing volume from the tessellated
+// mesh via the divergence theorem is orientation-sensitive and yielded ~40%
+// error for the hollow tube. Replaying the same op on a parallel kernel is
+// the pattern also used in stress_query_consistency.rs / boundary4_geometry.rs
+// for precise volume checks.
+
+/// Full-pipeline e2e for tube(): source → parse → compile → Engine with
+/// real OcctKernel → build → non-empty geometry output; volume formula
+/// π*(R²-r²)*h verified within 1% relative error via a parallel direct
+/// OcctKernel query.
+#[test]
+fn tube_volume_through_full_pipeline_matches_formula() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let r = tube(10mm, 5mm, 20mm)
+}"#;
+
+    // ---- Pipeline part ----
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_tube_e2e"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // Confirm the realization contains a single Primitive { kind: Tube }.
+    assert_eq!(compiled.templates.len(), 1, "expected 1 template");
+    let realization = &compiled.templates[0].realizations[0];
+    assert_eq!(
+        realization.operations.len(),
+        1,
+        "expected 1 op in realization, got {}",
+        realization.operations.len()
+    );
+    assert!(
+        matches!(
+            &realization.operations[0],
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Tube,
+                ..
+            }
+        ),
+        "expected Primitive(Tube), got {:?}",
+        &realization.operations[0]
+    );
+
+    // Build with a real OCCT kernel via DispatchPlanner (matches
+    // boolean_multi_realization_nested_e2e).
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::DispatchPlanner::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let tess_result = engine.tessellate_realizations(&compiled);
+    let geom_errors: Vec<_> = tess_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+    assert_eq!(
+        tess_result.meshes.len(),
+        1,
+        "expected 1 mesh (single realization), got {}",
+        tess_result.meshes.len()
+    );
+    let (_entity, mesh) = &tess_result.meshes[0];
+    assert!(!mesh.vertices.is_empty(), "tube mesh should have vertices");
+    assert!(!mesh.indices.is_empty(), "tube mesh should have triangles");
+
+    // Also ensure Step export works through the same pipeline (separate
+    // engine; tessellate and build each consume the single registered
+    // kernel handle in DispatchPlanner).
+    let checker2 = reify_constraints::SimpleConstraintChecker;
+    let mut planner2 = reify_geometry::DispatchPlanner::new();
+    planner2.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine2 = reify_eval::Engine::new(Box::new(checker2), Some(Box::new(planner2)));
+    let build_result = engine2.build(&compiled, ExportFormat::Step);
+    let build_errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "unexpected build errors: {:?}",
+        build_errors
+    );
+    let step = build_result
+        .geometry_output
+        .expect("tube should produce STEP geometry output");
+    assert!(!step.is_empty(), "STEP output should be non-empty");
+
+    // ---- Volume verification part (direct OcctKernel query) ----
+    let mut kernel = reify_kernel_occt::OcctKernel::new();
+    let handle = kernel
+        .execute(&GeometryOp::Tube {
+            outer_r: Value::Real(0.010),
+            inner_r: Value::Real(0.005),
+            height: Value::Real(0.020),
+        })
+        .expect("Tube execute should succeed");
+    let vol = kernel
+        .query(&GeometryQuery::Volume(handle.id))
+        .expect("Volume query should succeed");
+    let v = vol.as_f64().expect("volume should be numeric");
+    // outer_r = 10mm = 0.010 m, inner_r = 5mm = 0.005 m, height = 20mm = 0.020 m
+    let expected = std::f64::consts::PI * (0.010_f64.powi(2) - 0.005_f64.powi(2)) * 0.020;
+    let rel_err = (v - expected).abs() / expected;
+    assert!(
+        rel_err < 0.01,
+        "tube volume should be ≈{:.3e} m³, got {:.3e} (rel_err={:.4})",
+        expected,
+        v,
+        rel_err
+    );
+}
+
+/// Full-pipeline e2e for pipe(): source → parse → compile → Engine with
+/// real OcctKernel → build → non-empty geometry output; volume formula
+/// π*r²*L verified within 5% relative error via a parallel direct
+/// OcctKernel query.
+#[test]
+fn pipe_volume_through_full_pipeline_matches_formula() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let r = pipe(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 2mm)
+}"#;
+
+    // ---- Pipeline part ----
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_pipe_e2e"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // Confirm the realization contains the expected op structure:
+    // [Curve(LineSegment), Sweep{kind: Pipe}]
+    assert_eq!(compiled.templates.len(), 1, "expected 1 template");
+    let realization = &compiled.templates[0].realizations[0];
+    assert_eq!(
+        realization.operations.len(),
+        2,
+        "expected 2 ops (line_segment + pipe), got {}",
+        realization.operations.len()
+    );
+    assert!(
+        matches!(
+            &realization.operations[1],
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                ..
+            }
+        ),
+        "expected Sweep(Pipe) at op 1, got {:?}",
+        &realization.operations[1]
+    );
+
+    // Build with real OCCT kernel
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::DispatchPlanner::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let tess_result = engine.tessellate_realizations(&compiled);
+    let geom_errors: Vec<_> = tess_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        geom_errors.is_empty(),
+        "unexpected geometry errors: {:?}",
+        geom_errors
+    );
+    assert_eq!(
+        tess_result.meshes.len(),
+        1,
+        "expected 1 mesh (single realization), got {}",
+        tess_result.meshes.len()
+    );
+    let (_entity, mesh) = &tess_result.meshes[0];
+    assert!(!mesh.vertices.is_empty(), "pipe mesh should have vertices");
+    assert!(!mesh.indices.is_empty(), "pipe mesh should have triangles");
+
+    // Also ensure Step export succeeds.
+    let checker2 = reify_constraints::SimpleConstraintChecker;
+    let mut planner2 = reify_geometry::DispatchPlanner::new();
+    planner2.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine2 = reify_eval::Engine::new(Box::new(checker2), Some(Box::new(planner2)));
+    let build_result = engine2.build(&compiled, ExportFormat::Step);
+    let build_errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "unexpected build errors: {:?}",
+        build_errors
+    );
+    let step = build_result
+        .geometry_output
+        .expect("pipe should produce STEP geometry output");
+    assert!(!step.is_empty(), "STEP output should be non-empty");
+
+    // ---- Volume verification part (direct OcctKernel query) ----
+    let mut kernel = reify_kernel_occt::OcctKernel::new();
+    let wire_h = kernel
+        .execute(&GeometryOp::LineSegment {
+            x1: 0.0,
+            y1: 0.0,
+            z1: 0.0,
+            x2: 0.0,
+            y2: 0.0,
+            z2: 0.020,
+        })
+        .expect("LineSegment execute should succeed");
+    let pipe_h = kernel
+        .execute(&GeometryOp::Pipe {
+            path: wire_h.id,
+            radius: Value::Real(0.002),
+        })
+        .expect("Pipe execute should succeed");
+    let vol = kernel
+        .query(&GeometryQuery::Volume(pipe_h.id))
+        .expect("Volume query should succeed");
+    let v = vol.as_f64().expect("volume should be numeric");
+    // radius = 2mm = 0.002 m, length = 20mm = 0.020 m
+    let expected = std::f64::consts::PI * 0.002_f64.powi(2) * 0.020;
+    let rel_err = (v - expected).abs() / expected;
+    assert!(
+        rel_err < 0.05,
+        "pipe volume should be ≈{:.3e} m³, got {:.3e} (rel_err={:.4})",
+        expected,
+        v,
+        rel_err
+    );
+}
+
+/// Full-pipeline e2e: inner > outer radius should surface as an Error-severity
+/// diagnostic mentioning "inner" and "outer" via the kernel→eval diagnostic
+/// channel.
+#[test]
+fn tube_inner_greater_than_outer_emits_error_diagnostic() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // inner(10mm) > outer(5mm) — kernel should reject and surface as Error
+    // diagnostic routed through Engine::build.
+    let source = r#"structure S {
+    let r = tube(5mm, 10mm, 20mm)
+}"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_tube_inner_gt"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    // Compile side should accept — validation is in the kernel.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile phase should not error (validation happens in the kernel): {:?}",
+        errors
+    );
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::DispatchPlanner::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // Expect at least one Error-severity diagnostic mentioning "inner" and
+    // "outer" — routed from GeometryError::OperationFailed through the
+    // eval layer's geometry-error diagnostic channel.
+    let has_inner_outer_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && d.message.contains("inner")
+            && d.message.contains("outer")
+    });
+    assert!(
+        has_inner_outer_error,
+        "expected an Error diagnostic mentioning 'inner' and 'outer', got: {:?}",
+        result.diagnostics
+    );
 }
