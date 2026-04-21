@@ -265,4 +265,16 @@ mod tests {
     fn is_geometry_function_sweep() {
         assert!(is_geometry_function("sweep"));
     }
+
+    // --- Tube and pipe compound-shape tests (task-324 step-3) ---
+
+    #[test]
+    fn is_geometry_function_tube_recognized() {
+        assert!(is_geometry_function("tube"));
+    }
+
+    #[test]
+    fn is_geometry_function_pipe_recognized() {
+        assert!(is_geometry_function("pipe"));
+    }
 }
