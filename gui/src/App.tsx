@@ -24,6 +24,7 @@ import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
+import { createViewportStore } from './stores/viewportStore';
 import {
   getInitialState,
   getEntityTree as bridgeGetEntityTree,
@@ -90,6 +91,7 @@ const App: Component = () => {
   });
 
   const viewStateStore = createViewStateStore();
+  const viewportStore = createViewportStore();
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
 
   // Reactive counter incremented each time viewStateStore.setTree is called.
@@ -740,6 +742,8 @@ const App: Component = () => {
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
               <Viewport
+                viewportId="design-main"
+                viewportStore={viewportStore}
                 meshes={engineStore.state.meshes}
                 onSelect={handleViewportSelect}
                 onHover={(path) => selectionStore.hoverEntity(path)}
