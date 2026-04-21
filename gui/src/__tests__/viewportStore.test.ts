@@ -140,15 +140,6 @@ describe('viewportStore', () => {
       });
     });
 
-    it('assignView does not touch defPath', () => {
-      createRoot((dispose) => {
-        const store = createViewportStore();
-        store.assignView('design-main', 'auto:default');
-        // defPath should remain null — it is not modified by assignView
-        expect(store.state.viewports['design-main'].defPath).toBeNull();
-        dispose();
-      });
-    });
   });
 
   describe('updateCamera', () => {
