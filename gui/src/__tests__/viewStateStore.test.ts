@@ -2005,6 +2005,30 @@ describe('viewStateStore — deleteView', () => {
       dispose();
     });
   });
+
+  it('(e) after deleteView, every id returned by getOrderedViewIds resolves to a view in state.views (transactional invariant)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const idA = store.createView('A');
+      const idB = store.createView('B');
+      const idC = store.createView('C');
+
+      store.deleteView(idB);
+
+      const ordered = store.getOrderedViewIds();
+      // Deleted id must not appear
+      expect(ordered).not.toContain(idB);
+      // Every remaining id must resolve to a view in state.views
+      for (const id of ordered) {
+        expect(store.state.views[id]).toBeDefined();
+      }
+      // The surviving user views are still present
+      expect(ordered).toContain(idA);
+      expect(ordered).toContain(idC);
+      dispose();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
