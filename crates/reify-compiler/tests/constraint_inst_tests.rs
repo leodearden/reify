@@ -441,6 +441,26 @@ structure S {
                     .collect::<Vec<_>>()
             )
         });
+
+    // Locks in intra-instantiation predicate source order (task 2083).
+    // Prefix filter pins inst_idx=0 so additional instantiations, if any, are ignored.
+    let inst_0_pred_indices: Vec<usize> = tmpl
+        .constraints
+        .iter()
+        .filter_map(|c| c.label.as_deref())
+        .filter_map(|lbl| {
+            lbl.strip_prefix("Bounded#0[")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|n| n.parse::<usize>().ok())
+        })
+        .collect();
+    assert_eq!(
+        inst_0_pred_indices,
+        vec![0, 1],
+        "pred_idx must match source order within a single instantiation \
+         (inst_idx=0); got {:?}",
+        inst_0_pred_indices
+    );
 }
 
 // ── Step 3 (task-1717): substitute_expr recurses into Conditional branches ───
