@@ -36,7 +36,6 @@ function makeMesh(path: string): MeshData {
     vertices: new Float32Array([0, 0, 0]),
     indices: new Uint32Array([0]),
     normals: new Float32Array([0, 1, 0]),
-    ghost: false,
   };
 }
 
@@ -50,25 +49,57 @@ function makeEngineStore(meshPaths: string[] = []) {
 function makeDefPreviewStore(meshPaths: string[] = [], defName: string | null = null) {
   const meshes: Record<string, MeshData> = {};
   for (const p of meshPaths) meshes[p] = makeMesh(p);
-  const [state] = createStore({ defName, meshes, isLoading: false, error: null });
-  return { state };
+  const [state] = createStore({ defName, meshes, isLoading: false, error: null as string | null });
+  return {
+    state,
+    applyPreview: vi.fn(),
+    clearPreview: vi.fn(),
+    setError: vi.fn(),
+    setLoading: vi.fn(),
+    loadPreview: vi.fn(),
+  };
 }
+
+const DEFAULT_TEST_CAMERA = {
+  position: [0, 0, 5] as [number, number, number],
+  target: [0, 0, 0] as [number, number, number],
+  up: [0, 1, 0] as [number, number, number],
+  zoom: 1,
+};
 
 function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-preview'?: Partial<any> }) {
   const viewports = {
     'design-main': {
       id: 'design-main',
+      type: 'design' as const,
+      viewId: null as string | null,
+      defPath: null as string | null,
+      active: true,
       forceExpanded: false,
+      camera: { ...DEFAULT_TEST_CAMERA },
       ...(overrides?.['design-main'] ?? {}),
     },
     'def-preview': {
       id: 'def-preview',
+      type: 'def-preview' as const,
+      viewId: null as string | null,
+      defPath: null as string | null,
+      active: false,
       forceExpanded: false,
+      camera: { ...DEFAULT_TEST_CAMERA },
       ...(overrides?.['def-preview'] ?? {}),
     },
   };
   const [state] = createStore({ viewports });
-  return { state };
+  return {
+    state,
+    getViewport: vi.fn(),
+    setActiveViewport: vi.fn(),
+    assignView: vi.fn(),
+    updateCamera: vi.fn(),
+    setDefPath: vi.fn(),
+    setForceExpanded: vi.fn(),
+  };
 }
 
 // Lazy import so vi.mock hoisting is already in place
