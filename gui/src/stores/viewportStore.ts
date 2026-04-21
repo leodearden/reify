@@ -33,7 +33,7 @@ export interface ViewportStoreState {
 }
 
 // ---------------------------------------------------------------------------
-// Default camera state
+// Default camera state (private — read-only; never mutated directly)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CAMERA: CameraState = {
@@ -43,33 +43,44 @@ const DEFAULT_CAMERA: CameraState = {
   zoom: 1,
 };
 
+/** Return a deep clone of a CameraState so tuple arrays are distinct references. */
+function cloneCamera(c: CameraState): CameraState {
+  return {
+    position: [...c.position] as [number, number, number],
+    target: [...c.target] as [number, number, number],
+    up: [...c.up] as [number, number, number],
+    zoom: c.zoom,
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Default viewport layout
+// Default viewport layout factory
 // ---------------------------------------------------------------------------
 
 /**
- * The default two-viewport layout seeded into a fresh store (design-main +
- * def-preview). Exported so tests and call sites can extend or override it
- * without importing the raw constants.
+ * Build a fresh default two-viewport layout (design-main + def-preview).
+ * Returns a new object every call so stores never share mutable references.
  */
-export const DEFAULT_VIEWPORTS: Record<string, ViewportState> = {
-  'design-main': {
-    id: 'design-main',
-    type: 'design',
-    viewId: null,
-    defPath: null,
-    active: true,
-    camera: { ...DEFAULT_CAMERA },
-  },
-  'def-preview': {
-    id: 'def-preview',
-    type: 'def-preview',
-    viewId: null,
-    defPath: null,
-    active: false,
-    camera: { ...DEFAULT_CAMERA },
-  },
-};
+function defaultViewports(): Record<string, ViewportState> {
+  return {
+    'design-main': {
+      id: 'design-main',
+      type: 'design',
+      viewId: null,
+      defPath: null,
+      active: true,
+      camera: cloneCamera(DEFAULT_CAMERA),
+    },
+    'def-preview': {
+      id: 'def-preview',
+      type: 'def-preview',
+      viewId: null,
+      defPath: null,
+      active: false,
+      camera: cloneCamera(DEFAULT_CAMERA),
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Store factory
@@ -79,15 +90,15 @@ export const DEFAULT_VIEWPORTS: Record<string, ViewportState> = {
  * Create a viewport store.
  *
  * @param initialViewports - Optional override for the initial `viewports` map.
- *   Defaults to `DEFAULT_VIEWPORTS` (design-main + def-preview). Pass a
- *   custom map to construct minimal stores in tests or to support alternative
- *   layouts (single-viewport embedded view, four-up, etc.).
+ *   Defaults to a freshly-cloned two-viewport layout (design-main + def-preview).
+ *   Pass a custom map to construct minimal stores in tests or to support
+ *   alternative layouts (single-viewport embedded view, four-up, etc.).
  */
 export function createViewportStore(
   initialViewports?: Record<string, ViewportState>,
 ) {
   const [state, setState] = createStore<ViewportStoreState>({
-    viewports: initialViewports ?? DEFAULT_VIEWPORTS,
+    viewports: initialViewports ?? defaultViewports(),
   });
 
   // ---------------------------------------------------------------------------
