@@ -321,7 +321,14 @@ impl Value {
     /// `Scalar { si_value: value, dimension }` otherwise.  This is the
     /// shared pattern used by complex component extraction (re, im) and
     /// magnitude computation.
-    pub fn from_component(value: f64, dimension: DimensionVector) -> Self {
+    ///
+    /// **NaN/Inf safety:** This function does NOT sanitize NaN/Inf inputs —
+    /// callers should wrap the result in `sanitize_value()` if the input is
+    /// arithmetically derived. The function preserves the caller's `f64`
+    /// bit-exactly, which is the desired behaviour for accessor-style callers
+    /// (e.g. `re(Complex{NaN, ...})` intentionally surfaces NaN so a later
+    /// `sanitize_value` can convert it to `Undef`).
+    pub fn from_real_scalar(value: f64, dimension: DimensionVector) -> Self {
         if dimension.is_dimensionless() {
             Value::Real(value)
         } else {

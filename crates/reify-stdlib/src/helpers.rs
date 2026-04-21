@@ -118,7 +118,7 @@ pub(crate) fn trig_input(v: &Value) -> Option<f64> {
 /// by [`sanitize_value`].
 pub(crate) fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     let mag = re.hypot(im);
-    sanitize_value(Value::from_component(mag, dimension))
+    sanitize_value(Value::from_real_scalar(mag, dimension))
 }
 
 /// Extract numeric components and consistent dimension from a Tensor value.

@@ -16,7 +16,7 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let mag = re.hypot(*im);
-                    Some(sanitize_value(Value::from_component(mag, *dimension)))
+                    Some(sanitize_value(Value::from_real_scalar(mag, *dimension)))
                 }
                 _ => Some(Value::Undef),
             }
@@ -97,7 +97,7 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let component = if method == "re" { *re } else { *im };
-                    Some(sanitize_value(Value::from_component(component, *dimension)))
+                    Some(sanitize_value(Value::from_real_scalar(component, *dimension)))
                 }
                 _ => Some(Value::Undef),
             }

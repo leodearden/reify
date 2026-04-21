@@ -111,7 +111,7 @@ fn dimensionless_fallback(ty: &Type) -> Type {
 /// already-stamped `Type::vec3(result_component)` (extracted in
 /// `compute_numerical_curl_at_point`), so it is already a scalar-compatible type.
 ///
-/// See also: `Value::from_component` in `reify-types` — the *normalising* counterpart
+/// See also: `Value::from_real_scalar` in `reify-types` — the *normalising* counterpart
 /// that collapses `DIMENSIONLESS` → `Value::Real` at the call site.  That helper is used
 /// for complex-component extraction and magnitude; `wrap_scalar_result` is the
 /// non-normalising variant used by the differential operators.

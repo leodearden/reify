@@ -57,7 +57,7 @@ fn von_mises(args: &[Value]) -> Value {
                 + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
         .sqrt();
 
-        sanitize_value(Value::from_component(vm, dim))
+        sanitize_value(Value::from_real_scalar(vm, dim))
     })
 }
 
@@ -151,7 +151,7 @@ fn principal_stresses(args: &[Value]) -> Value {
             None => return Value::Undef,
         };
 
-        let make_val = |x: f64| sanitize_value(Value::from_component(x, dim));
+        let make_val = |x: f64| sanitize_value(Value::from_real_scalar(x, dim));
         Value::List(eigs.iter().map(|&e| make_val(e)).collect())
     })
 }
@@ -174,7 +174,7 @@ fn max_shear(args: &[Value]) -> Value {
 
         // eigs is sorted ascending: [σ₃, σ₂, σ₁]
         let tau_max = (eigs[2] - eigs[0]) / 2.0;
-        sanitize_value(Value::from_component(tau_max, dim))
+        sanitize_value(Value::from_real_scalar(tau_max, dim))
     })
 }
 

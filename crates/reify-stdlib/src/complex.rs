@@ -37,7 +37,7 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "re" | "real" => unary(args, |v| {
             sanitize_value(match v {
-                Value::Complex { re, dimension, .. } => Value::from_component(*re, *dimension),
+                Value::Complex { re, dimension, .. } => Value::from_real_scalar(*re, *dimension),
                 _ => Value::Undef,
             })
         }),
@@ -45,7 +45,7 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "im" | "imag" => unary(args, |v| {
             sanitize_value(match v {
-                Value::Complex { im, dimension, .. } => Value::from_component(*im, *dimension),
+                Value::Complex { im, dimension, .. } => Value::from_real_scalar(*im, *dimension),
                 _ => Value::Undef,
             })
         }),
