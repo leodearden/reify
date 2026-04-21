@@ -42361,7 +42361,7 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:175-186` — `GeomRef::Sub(name)` resolution currently ignores the name and falls back to `step_handles.last()`, emitting a warning diagnostic. Downstream boolean/modify ops target the wrong shape whenever a model refers to a named sub-geometry.\n\nFix:\n1. Extend the geometry compile phase to record a name→step-index map for named sub-references (or expose it on TopologyTemplate).\n2. Resolve `GeomRef::Sub(name)` by lookup into that map.\n3. Return a proper error (not a warning + fallback) if the name is unknown — follow the \"errors must be noisy\" convention.\n4. Test with a sketch that has multiple named sub-references.\n\nRelated to stdlib geometry work; confirm this isn't already covered by an existing task before duplicating.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42379,7 +42379,7 @@
             "crates/reify-test-support/src/builders"
           ]
         },
-        "updatedAt": "2026-04-21T14:27:08.428Z"
+        "updatedAt": "2026-04-21T15:12:29.192Z"
       },
       {
         "id": "2012",
@@ -43752,7 +43752,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T15:12:27.023Z",
+      "lastModified": "2026-04-21T15:12:29.192Z",
       "taskCount": 2064,
       "completedCount": 1806,
       "tags": [
