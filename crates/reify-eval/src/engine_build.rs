@@ -247,12 +247,12 @@ impl Engine {
     /// `operations`, evaluates it via `compile_geometry_op` and dispatches to
     /// the kernel:
     ///
-    /// - `Some(Ok(handle))` — pushes `handle.id` to `step_handles`.
-    /// - `Some(Err(e))` — emits a geometry-error diagnostic and breaks the loop.
-    ///   Kernel errors break immediately: a geometry engine failure is often
-    ///   unrecoverable (e.g. corrupt state), and subsequent ops that depend on
-    ///   the failed handle would fail too.
-    /// - `None` — pushes `GeometryHandleId::INVALID` sentinel, emits a
+    /// - `Ok(geom_op)` — dispatches to the kernel; on success pushes
+    ///   `handle.id` to `step_handles`; on kernel error emits a geometry-error
+    ///   diagnostic and breaks the loop.  Kernel errors break immediately: a
+    ///   geometry engine failure is often unrecoverable (e.g. corrupt state),
+    ///   and subsequent ops that depend on the failed handle would fail too.
+    /// - `Err(reason)` — pushes `GeometryHandleId::INVALID` sentinel, emits a
     ///   compile-error diagnostic, sets `had_failure = true`, and continues.
     ///   Compile errors are cheaper to continue past because the sentinel lets
     ///   independent ops proceed.
@@ -281,7 +281,7 @@ impl Engine {
                 diagnostics,
             );
             match geom_op {
-                Some(geom_op) => match kernel.execute(&geom_op) {
+                Ok(geom_op) => match kernel.execute(&geom_op) {
                     Ok(handle) => {
                         step_handles.push(handle.id);
                     }
@@ -290,7 +290,7 @@ impl Engine {
                         break;
                     }
                 },
-                None => {
+                Err(_err) => {
                     diagnostics.push(Diagnostic::error("failed to compile geometry operation"));
                     step_handles.push(GeometryHandleId::INVALID);
                     had_failure = true;
