@@ -7,10 +7,18 @@ import type { MeshData } from '../../types';
 // ── Mock Viewport ────────────────────────────────────────────────────────────
 // Capture rendered instances by viewportId so we can assert mesh sources.
 const capturedViewportPropsByid: Record<string, any> = {};
+// Capture inner ref fns by viewportId so ref-forwarding tests can inspect them.
+const capturedInnerFnsByViewportId: Record<string, { fitToView: ReturnType<typeof vi.fn>; flyToEntity: ReturnType<typeof vi.fn> }> = {};
 
 vi.mock('../../viewport/Viewport', () => ({
   Viewport: (props: any) => {
     capturedViewportPropsByid[props.viewportId] = props;
+    // Simulate onMount ref registration (same as real Viewport calling fitToViewRef/flyToEntityRef)
+    const innerFitToView = vi.fn();
+    const innerFlyToEntity = vi.fn();
+    props.fitToViewRef?.(innerFitToView);
+    props.flyToEntityRef?.(innerFlyToEntity);
+    capturedInnerFnsByViewportId[props.viewportId] = { fitToView: innerFitToView, flyToEntity: innerFlyToEntity };
     const el = document.createElement('div');
     el.setAttribute('data-testid', `viewport-${props.viewportId}`);
     el.textContent = `Viewport:${props.viewportId}`;
@@ -112,6 +120,9 @@ afterEach(() => {
   // Clear captured props between tests
   for (const key of Object.keys(capturedViewportPropsByid)) {
     delete capturedViewportPropsByid[key];
+  }
+  for (const key of Object.keys(capturedInnerFnsByViewportId)) {
+    delete capturedInnerFnsByViewportId[key];
   }
   vi.clearAllMocks();
 });
@@ -349,5 +360,143 @@ describe('DualViewport', () => {
     expect(Object.keys(capturedViewportPropsByid['def-preview'].meshes)).toContain('preview/C');
     // Design viewport does NOT get preview meshes
     expect(Object.keys(capturedViewportPropsByid['design-main'].meshes)).not.toContain('preview/C');
+  });
+
+  // ── Ref forwarding tests ─────────────────────────────────────────────────────
+
+  describe('ref forwarding', () => {
+    it('(g) parent fitToViewRef and flyToEntityRef spies are called once at setup even when no Viewport is mounted', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore([]);
+      const defPreviewStore = makeDefPreviewStore([], null);
+      const viewportStore = makeViewportStore();
+      const fitToViewRefSpy = vi.fn();
+      const flyToEntityRefSpy = vi.fn();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => false}
+          designViewportActive={() => false}
+          defName={() => null}
+          onForceExpand={vi.fn()}
+          fitToViewRef={fitToViewRefSpy}
+          flyToEntityRef={flyToEntityRefSpy}
+        />
+      ));
+
+      // Both spies should have been called once at DualViewport setup with a function proxy
+      expect(fitToViewRefSpy).toHaveBeenCalledTimes(1);
+      expect(typeof fitToViewRefSpy.mock.calls[0][0]).toBe('function');
+      expect(flyToEntityRefSpy).toHaveBeenCalledTimes(1);
+      expect(typeof flyToEntityRefSpy.mock.calls[0][0]).toBe('function');
+    });
+
+    it('(h) proxy is a safe no-op when no inner Viewport is mounted', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore([]);
+      const defPreviewStore = makeDefPreviewStore([], null);
+      const viewportStore = makeViewportStore();
+      const fitToViewRefSpy = vi.fn();
+      const flyToEntityRefSpy = vi.fn();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => false}
+          designViewportActive={() => false}
+          defName={() => null}
+          onForceExpand={vi.fn()}
+          fitToViewRef={fitToViewRefSpy}
+          flyToEntityRef={flyToEntityRefSpy}
+        />
+      ));
+
+      // Invoke the proxy — should not throw even without an inner Viewport
+      const fitProxy = fitToViewRefSpy.mock.calls[0]?.[0] as (() => void) | undefined;
+      const flyProxy = flyToEntityRefSpy.mock.calls[0]?.[0] as ((p: string) => void) | undefined;
+      expect(() => fitProxy?.()).not.toThrow();
+      expect(() => flyProxy?.('some/entity')).not.toThrow();
+    });
+
+    it('(i) after design Viewport mounts, proxy delegates to the inner fn', async () => {
+      const { DualViewport } = await importDualViewport();
+      const [designActive, setDesignActive] = createSignal(false);
+      const engineStore = makeEngineStore([]);
+      const defPreviewStore = makeDefPreviewStore([], null);
+      const viewportStore = makeViewportStore();
+      const fitToViewRefSpy = vi.fn();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => false}
+          designViewportActive={designActive}
+          defName={() => null}
+          onForceExpand={vi.fn()}
+          fitToViewRef={fitToViewRefSpy}
+        />
+      ));
+
+      // Spy was called once at setup with the proxy
+      expect(fitToViewRefSpy).toHaveBeenCalledTimes(1);
+      const parentProxy = fitToViewRefSpy.mock.calls[0][0] as () => void;
+
+      // Flip design active → inner Viewport mounts → capture-callback called
+      setDesignActive(true);
+
+      // SolidJS reactivity is synchronous; inner Viewport mock is now mounted
+      const innerFitSpy = capturedInnerFnsByViewportId['design-main']?.fitToView;
+      expect(innerFitSpy).toBeDefined();
+
+      // Invoking parent proxy now delegates to the inner fn
+      parentProxy();
+      expect(innerFitSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('(j) after design Viewport unmounts, proxy becomes a no-op (inner fn not called again)', async () => {
+      const { DualViewport } = await importDualViewport();
+      const [designActive, setDesignActive] = createSignal(true);
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore([], null);
+      const viewportStore = makeViewportStore();
+      const fitToViewRefSpy = vi.fn();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => false}
+          designViewportActive={designActive}
+          defName={() => null}
+          onForceExpand={vi.fn()}
+          fitToViewRef={fitToViewRefSpy}
+        />
+      ));
+
+      // Inner Viewport is mounted; capture its inner fn
+      const innerFitSpy = capturedInnerFnsByViewportId['design-main']?.fitToView;
+      expect(innerFitSpy).toBeDefined();
+
+      // Parent proxy should delegate to inner fn
+      const parentProxy = fitToViewRefSpy.mock.calls[0][0] as () => void;
+      parentProxy();
+      expect(innerFitSpy).toHaveBeenCalledTimes(1);
+
+      // Unmount design Viewport (toggle to inactive)
+      setDesignActive(false);
+
+      // After unmount, proxy must be a no-op (inner capture cleared)
+      parentProxy();
+      // Inner fn should NOT have been called again
+      expect(innerFitSpy).toHaveBeenCalledTimes(1);
+    });
   });
 });
