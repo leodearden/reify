@@ -86,6 +86,19 @@ impl CompilationCtx {
         }
     }
 
+    /// Returns `true` when `name` is either absent from `seen_entity_names` or
+    /// its stored first-seen span equals `span` (i.e. this is the first-seen
+    /// definition for this name). Returns `false` when a prior entry exists with
+    /// a *different* span — a genuine duplicate definition in the entity namespace.
+    ///
+    /// Centralises the `(name, span) → "first def?"` contract so a future
+    /// change to the tracker's value shape only needs to update this predicate.
+    pub(crate) fn is_first_entity_def(&self, name: &str, span: SourceSpan) -> bool {
+        self.seen_entity_names
+            .get(name)
+            .is_none_or(|(first_span, _)| *first_span == span)
+    }
+
     /// Consume this ctx and assemble the final [`CompiledModule`].
     ///
     /// Combines the owned state accumulated across all phases with the external
