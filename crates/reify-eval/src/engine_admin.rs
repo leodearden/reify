@@ -12,11 +12,20 @@ use reify_types::{
 use std::collections::HashMap;
 
 impl Engine {
-    pub fn new(
+    /// Construct an Engine with a caller-supplied prelude slice.
+    ///
+    /// Use this when you need to:
+    /// - Opt out of the stdlib entirely: pass `&[]`.
+    /// - Inject a custom isolated prelude for unit tests.
+    /// - Supply a prelude that differs from the embedded stdlib.
+    ///
+    /// `Engine::new` is the ergonomic shorthand for the common case and
+    /// delegates to this constructor with `stdlib_loader::load_stdlib()`.
+    pub fn with_prelude(
         constraint_checker: Box<dyn ConstraintChecker>,
         geometry_kernel: Option<Box<dyn GeometryKernel>>,
+        prelude: &'static [CompiledModule],
     ) -> Self {
-        let prelude = reify_compiler::stdlib_loader::load_stdlib();
         let prelude_functions: Vec<CompiledFunction> = prelude
             .iter()
             .flat_map(|pm| pm.functions.iter().cloned())
@@ -45,6 +54,21 @@ impl Engine {
             max_unfold_nodes: 10_000,
             optimization_registry: HashMap::new(),
         }
+    }
+
+    /// Construct an Engine with the embedded stdlib as its prelude.
+    ///
+    /// This is the standard constructor for production use. For tests that
+    /// require an isolated or empty prelude, use `Engine::with_prelude`.
+    pub fn new(
+        constraint_checker: Box<dyn ConstraintChecker>,
+        geometry_kernel: Option<Box<dyn GeometryKernel>>,
+    ) -> Self {
+        Self::with_prelude(
+            constraint_checker,
+            geometry_kernel,
+            reify_compiler::stdlib_loader::load_stdlib(),
+        )
     }
 
     /// Register an optimized implementation for constraints annotated with
