@@ -584,3 +584,58 @@ describe('Viewport viewportId and camera restore', () => {
     expect(mockCamera.zoom).toBe(4);
   });
 });
+
+describe('Viewport camera persistence on change', () => {
+  it('calls viewportStore.updateCamera with current camera state when controls fire change', () => {
+    const mockUpdateCamera = vi.fn();
+    const fakeStore = {
+      state: {} as any,
+      getViewport: vi.fn((_id: string) => undefined),
+      setActiveViewport: vi.fn(),
+      assignView: vi.fn(),
+      updateCamera: mockUpdateCamera,
+    };
+
+    render(() => <Viewport meshes={{}} viewportId="design-main" viewportStore={fakeStore as any} />);
+
+    // Set the camera/controls stubs to a known state before firing change
+    mockCamera.position.x = 10;
+    mockCamera.position.y = 20;
+    mockCamera.position.z = 30;
+    mockCamera.up.x = 0;
+    mockCamera.up.y = 1;
+    mockCamera.up.z = 0;
+    mockCamera.zoom = 2;
+    mockControlsTarget.x = 5;
+    mockControlsTarget.y = 6;
+    mockControlsTarget.z = 7;
+
+    // Fire the captured 'change' listener synchronously
+    expect(controlsListeners['change']).toBeDefined();
+    expect(controlsListeners['change'].length).toBeGreaterThan(0);
+    // The change listener list may include requestRender AND the camera snapshot handler;
+    // fire all of them (as OrbitControls would).
+    for (const cb of controlsListeners['change']) {
+      cb();
+    }
+
+    // viewportStore.updateCamera should have been called with the current camera state
+    expect(mockUpdateCamera).toHaveBeenCalledWith('design-main', {
+      position: [10, 20, 30],
+      target: [5, 6, 7],
+      up: [0, 1, 0],
+      zoom: 2,
+    });
+  });
+
+  it('does not throw and does not call updateCamera when viewportStore is absent', () => {
+    render(() => <Viewport meshes={{}} viewportId="design-main" />);
+
+    // Fire all captured 'change' listeners — must not throw
+    expect(() => {
+      for (const cb of controlsListeners['change'] ?? []) {
+        cb();
+      }
+    }).not.toThrow();
+  });
+});
