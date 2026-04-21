@@ -16661,12 +16661,12 @@
       {
         "id": "750",
         "title": "Guard eval test improvements and DRY cleanup for task 492 fix",
-        "description": "Review suggestions deferred from task 492 (edit_param guard re-elaboration fix). All in reify-eval module.\n\n**Code quality (S3):** Fix stale \"BUG:\" comment in guard_eval.rs:519-520 — should be past-tense regression documentation, not present-tense bug description.\n\n**Test coverage (S4-S6):**\n- Add test for Block-A-only path: structure_controlling cell fires Block A but guard value unchanged (Block B doesn't fire). Verifies Auto-skip in Block A works independently.\n- Add else_members regular Param regression test: symmetric to existing edit_param_guard_false_still_deactivates_regular_params but for else branch (guard false→true).\n- Add round-trip toggle test (true→false→true): verify Auto param values survive multiple edit_param guard transitions and solver re-resolves on re-activation.\n\n**Robustness (S7):** Add comment in guard_is_true/is_false activation branches documenting that Auto params (no default_expr) rely on solver dirty-tracking for re-activation. Consider test for deactivation→constraint change→re-activation path.\n\n**DRY (S8-S9):** Extract make_auto_decl() test helper (analogous to make_param_decl). Parameterize the two nearly-identical solver-auto-param tests to reduce ~80 lines of duplicated setup.\n\nNote: S1-S2 (extract is_auto_cell helper in lib.rs) already tracked as task #713.\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-eval/tests/guard_eval.rs",
-        "details": "",
-        "testStrategy": "",
+        "description": "Consolidates guard eval test quality improvements deferred from task 492 (edit_param guard re-elaboration fix), plus a follow-up from task 713: fix a stale BUG comment in guard_eval.rs, add missing Block-A and else_members test coverage (S3–S6), and replace the shallow `deactivate_if_not_auto_guard_group_mixed_members` unit test with a real integration-level test that drives `edit_param`. All changes are in the reify-eval module.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "**S3 (comment fix):** Fix stale \"BUG:\" comment in `crates/reify-eval/src/guard_eval.rs:519-520` — should be past-tense regression documentation, not a present-tense bug description.\n\n**S4 (Block-A-only path):** Add test for the Block-A-only path: a structure_controlling cell fires Block A but the guard value is unchanged (Block B does not fire). Verifies that Auto-skip in Block A works independently.\n\n**S5–S6 (else_members coverage):** Add else_members regular Param test coverage per the original task 750 S5–S6 specifications (see task 492 review notes for full detail).\n\n**Integration test replacement (from task 713 follow-up):** In `crates/reify-eval/src/engine_edit.rs ~872`, replace `deactivate_if_not_auto_guard_group_mixed_members` — which iterates the helper over a 2-element slice rather than driving a real guard group through `edit_param` — with an integration-style test that constructs a guarded group containing mixed Auto/Param members and drives `edit_param` (toggling the guard condition). This exercises the four `deactivate_if_not_auto` caller sites in `edit_param` rather than just the helper in isolation, locking in the contract that a dropped call site will be caught.",
+        "testStrategy": "",
         "subtasks": [],
         "metadata": {
           "files": [
@@ -16676,9 +16676,11 @@
           "modules": [
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
-          ]
-        },
-        "updatedAt": "2026-04-21T09:13:25.972Z"
+          ],
+          "curator_action": "combine",
+          "curator_justification": "The candidate is a small guard-eval test replacement (one file, one test) that shares the same module lock (crates/reify-eval/src, crates/reify-eval/tests) and the same concern domain (guard eval test quality) as Task 750, which already holds S3–S6 guard test improvements deferred from task 492. Both are low priority, neither is on a critical path, and serializing on the same module lock means combining loses zero parallelism. All four combine rules hold: coherent single concern (\"guard eval tes",
+          "combined_at": "2026-04-21T14:45:37.341860+00:00"
+        }
       },
       {
         "id": "751",
@@ -43719,6 +43721,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-21T14:44:41.362Z"
+      },
+      {
+        "id": "2072",
+        "title": "Narrow EvaluationGraph::is_auto_cell visibility to pub(crate)",
+        "description": "`EvaluationGraph::is_auto_cell` in crates/reify-eval/src/graph.rs:383-389 is currently `pub`, but its only consumer is the in-crate helper `deactivate_if_not_auto` (engine_edit.rs). Change visibility to `pub(crate) fn is_auto_cell` to stop leaking an internal predicate out of the crate's API surface. Trivial one-line change; ensure the test module (same crate) still compiles.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -43728,7 +43741,10 @@
       "completedCount": 1802,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:45:37.412Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-21T14:45:49.828Z"
     }
   }
 }
