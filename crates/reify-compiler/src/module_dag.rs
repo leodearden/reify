@@ -126,6 +126,25 @@ impl ModuleDag {
     /// Compile a module and all its transitive dependencies.
     ///
     /// Performs DFS with cycle detection. Returns diagnostics on error.
+    ///
+    /// **Stdlib resolution precedence for `std.*` paths:**
+    ///
+    /// 1. The filesystem resolver is always tried first. If `stdlib_root` contains
+    ///    the module (e.g. a user-supplied override), the filesystem version wins.
+    /// 2. If the filesystem lookup fails, the DAG falls back to the pre-compiled
+    ///    modules returned by `stdlib_loader::load_stdlib()` (embedded copy). This
+    ///    ensures `import std.units` resolves correctly even when no local stdlib
+    ///    directory exists.
+    ///
+    /// **All-or-nothing invariant (enforced by `stdlib_mode`):**
+    ///
+    /// On the first `std.*` resolution, the DAG commits to one source (filesystem
+    /// or embedded). Any subsequent `std.*` import that would resolve via the other
+    /// source emits a `"partial stdlib overlay"` diagnostic naming the offending
+    /// module and the stdlib_root path. Users must either populate the stdlib dir
+    /// fully or remove it to use the embedded stdlib exclusively. This prevents
+    /// silent type/trait mismatches that arise when the embedded stdlib modules are
+    /// mixed with a partial filesystem overlay.
     pub fn compile_module(
         &mut self,
         module_path: &str,
