@@ -2086,4 +2086,97 @@ mod tests {
             diagnostics[0].message
         );
     }
+
+    /// Phase-contract test for `check_phase_inject_defaults`.
+    ///
+    /// Verifies that the helper injects a Param value cell when the structure does not
+    /// override the default. The injected cell should have kind=Param, member="x",
+    /// no constraints, and no diagnostics. This test fails to compile until the helper
+    /// exists (TDD compile-tripwire) and pins the helper's signature.
+    #[test]
+    fn check_phase_inject_defaults_injects_param_cell_for_non_overridden_default() {
+        let param_decl = reify_syntax::ParamDecl {
+            name: "x".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None, // No default expression
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Param {
+                cell_type: Type::Real,
+                default_decl: param_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_constraint_labels: HashSet<String> = HashSet::new();
+        let inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+        let pass2_skipped: HashSet<String> = HashSet::new();
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index: u32 = 0;
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_inject_defaults(
+            &ctx,
+            &entity_ref,
+            &structure_members,
+            &structure_constraint_labels,
+            inferred_let_exprs,
+            &pass2_skipped,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            value_cells.len(),
+            1,
+            "Expected 1 value cell for injected param 'x'; got: {:?}",
+            value_cells
+        );
+        assert_eq!(
+            value_cells[0].id.member, "x",
+            "Expected cell member='x'; got: {}",
+            value_cells[0].id.member
+        );
+        assert_eq!(
+            value_cells[0].kind,
+            ValueCellKind::Param,
+            "Expected ValueCellKind::Param"
+        );
+        assert!(constraints.is_empty(), "Expected no constraints; got: {:?}", constraints);
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
 }
