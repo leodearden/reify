@@ -3,6 +3,7 @@
 pub(crate) mod aliases_phase;
 pub(crate) mod ctx;
 pub(crate) mod enums_phase;
+pub(crate) mod fields_phase;
 pub(crate) mod functions_phase;
 pub(crate) mod pre_pass;
 pub(crate) mod traits_phase;
