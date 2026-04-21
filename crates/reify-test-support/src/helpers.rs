@@ -179,6 +179,22 @@ pub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Return only the `Severity::Error` entries from a diagnostic slice.
+///
+/// Short-named convenience wrapper for use in eval-integration tests where
+/// the filter-collect pattern `.filter(|d| d.severity == Severity::Error)
+/// .collect::<Vec<_>>()` otherwise repeats at every assertion site.
+///
+/// Semantically equivalent to [`collect_errors`]; prefer this name when the
+/// returned value will be bound to a local called `error_diags` so the call
+/// site reads as `let error_diags = error_diags(&diags);`.
+pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
 /// Return only the `Severity::Error` diagnostics from a compiled module.
 ///
 /// Convenience wrapper around [`collect_errors`].
@@ -833,6 +849,47 @@ mod tests {
             !errors.is_empty(),
             "errors_only should return error diagnostics for invalid source"
         );
+    }
+
+    /// error_diags should return only the `Severity::Error` entries from a
+    /// mixed-severity slice, preserving referential identity.
+    #[test]
+    fn error_diags_filters_errors_from_mixed_severities() {
+        let diags = vec![
+            Diagnostic::error("first error"),
+            Diagnostic::warning("a warning"),
+            Diagnostic::info("an info note"),
+        ];
+        let errors = super::error_diags(&diags);
+        assert_eq!(
+            errors.len(),
+            1,
+            "error_diags should return exactly one entry for this fixture"
+        );
+        assert_eq!(
+            errors[0].severity,
+            Severity::Error,
+            "the single returned diagnostic must have Severity::Error"
+        );
+        assert_eq!(
+            errors[0].message, "first error",
+            "returned diagnostic message should match the original Error entry"
+        );
+    }
+
+    /// error_diags should return an empty Vec for an empty input slice.
+    #[test]
+    fn error_diags_empty_slice_returns_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        assert!(super::error_diags(&diags).is_empty());
+    }
+
+    /// error_diags should return an empty Vec when the input contains only
+    /// non-Error diagnostics (warning-only input).
+    #[test]
+    fn error_diags_warning_only_returns_empty() {
+        let diags = vec![Diagnostic::warning("just a warning")];
+        assert!(super::error_diags(&diags).is_empty());
     }
 
     #[test]

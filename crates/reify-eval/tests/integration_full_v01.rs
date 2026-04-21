@@ -12,7 +12,9 @@
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    check_source_with_stdlib as check_source, make_simple_engine, parse_and_compile_with_stdlib,
+};
 use reify_types::{Diagnostic, ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -59,13 +61,6 @@ fn check_canonical() -> &'static reify_eval::CheckResult {
         let mut engine = make_simple_engine();
         engine.check(compiled())
     })
-}
-
-/// Parse, compile (with stdlib), check a mutated source string.
-fn check_source(src: &str) -> reify_eval::CheckResult {
-    let compiled = parse_and_compile_with_stdlib(src);
-    let mut engine = make_simple_engine();
-    engine.check(&compiled)
 }
 
 /// Assert that a diagnostics slice contains no entries with [`Severity::Error`].
@@ -882,7 +877,7 @@ fn constraint_def_labels() {
             e.id.entity == "Assembly"
                 && e.label
                     .as_deref()
-                    .is_some_and(|l| l.starts_with("InRange["))
+                    .is_some_and(|l| l.starts_with("InRange#"))
         })
         .collect();
 
@@ -894,7 +889,9 @@ fn constraint_def_labels() {
         inrange_constraints.len()
     );
 
-    // Each invocation resets pred_idx to 0 → 2×InRange[0], 2×InRange[1]
+    // Under task 845's label scheme each invocation gets a unique inst_idx, so
+    // the 4 labels are InRange#0[0], InRange#0[1], InRange#1[0], InRange#1[1]
+    // (1 of each, not 2× per pred_idx).
     let count_label = |label: &str| -> usize {
         inrange_constraints
             .iter()
@@ -902,14 +899,24 @@ fn constraint_def_labels() {
             .count()
     };
     assert_eq!(
-        count_label("InRange[0]"),
-        2,
-        "expected 2 constraints with label 'InRange[0]'"
+        count_label("InRange#0[0]"),
+        1,
+        "expected 1 constraint with label 'InRange#0[0]'"
     );
     assert_eq!(
-        count_label("InRange[1]"),
-        2,
-        "expected 2 constraints with label 'InRange[1]'"
+        count_label("InRange#0[1]"),
+        1,
+        "expected 1 constraint with label 'InRange#0[1]'"
+    );
+    assert_eq!(
+        count_label("InRange#1[0]"),
+        1,
+        "expected 1 constraint with label 'InRange#1[0]'"
+    );
+    assert_eq!(
+        count_label("InRange#1[1]"),
+        1,
+        "expected 1 constraint with label 'InRange#1[1]'"
     );
 
     // All 4 must be Satisfied

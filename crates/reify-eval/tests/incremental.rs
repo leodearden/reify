@@ -1654,6 +1654,36 @@ fn edit_check_preserves_constraint_labels() {
         Satisfaction::Satisfied,
         "C1 should be Satisfied when width=mm(2.0) < mm(100.0)"
     );
+
+    // Task 848.1: diagnostics for the labeled constraint must use the friendly
+    // label ("min_width") — not the raw ConstraintNodeId ("S#constraint[0]").
+    // Only C0 is violated, so exactly its label should appear in the post-edit
+    // diagnostics; C1 is satisfied and contributes nothing.
+    use reify_types::Severity;
+    let error_msgs: Vec<&str> = result2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        !error_msgs.is_empty(),
+        "edit_check: expected at least one Error diagnostic for violated C0, got: {:?}",
+        result2.diagnostics
+    );
+    let has_friendly = error_msgs.iter().any(|m| m.contains("min_width"));
+    assert!(
+        has_friendly,
+        "edit_check: expected an error diagnostic containing 'min_width' (the C0 label), got: {:?}",
+        error_msgs
+    );
+    let leaks_raw_id = error_msgs.iter().any(|m| m.contains("S#constraint[0]"));
+    assert!(
+        !leaks_raw_id,
+        "edit_check: labeled diagnostics must not leak the raw ConstraintNodeId \
+         'S#constraint[0]' for a constraint that carries a label, got: {:?}",
+        error_msgs
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::Value;
 
 use super::sanitize::sanitize_value;
 
@@ -16,7 +16,7 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let mag = re.hypot(*im);
-                    Some(sanitize_value(Value::from_component(mag, *dimension)))
+                    Some(sanitize_value(Value::from_real_scalar(mag, *dimension)))
                 }
                 _ => Some(Value::Undef),
             }
@@ -26,40 +26,11 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                 return Some(Value::Undef);
             }
             match obj {
-                Value::Complex { re, im, .. } => {
-                    if !re.is_finite() || !im.is_finite() {
-                        return Some(Value::Undef);
-                    }
-                    if *re == 0.0 && *im == 0.0 {
-                        return Some(Value::Undef);
-                    }
-                    // Both pre-guards above are essential — they catch finite-output
-                    // cases that would otherwise slip past sanitize_value:
-                    //
-                    //   • is_finite guard: atan2(y, ±Inf) = 0.0 or ±π, and
-                    //     atan2(±Inf, x) = ±π/2 — all finite. sanitize_value cannot
-                    //     detect Inf inputs from these outputs alone. NaN inputs would
-                    //     propagate through atan2 to a NaN output, which a hypothetical
-                    //     sanitize_value wrap on the result would catch — but phase()
-                    //     does not currently wrap its output, so the pre-guard is the
-                    //     sole NaN guard. We use the pre-guard for both NaN and Inf so
-                    //     a single check handles both, matching the conjugate/re/im
-                    //     pattern.
-                    //
-                    //   • zero-vector guard: atan2(0.0, 0.0) = 0.0 which is
-                    //     also finite, so sanitize_value cannot distinguish the
-                    //     mathematically-undefined zero-vector case from a legitimate
-                    //     zero-angle result.
-                    //
-                    // After both guards, atan2(finite, finite) with at least one
-                    // non-zero argument always returns a value in [-π, π], so no
-                    // output sanitization is needed here.
-                    let angle = im.atan2(*re);
-                    Some(Value::Scalar {
-                        si_value: angle,
-                        dimension: DimensionVector::ANGLE,
-                    })
-                }
+                // Delegate to the shared helper in reify-stdlib so this method path
+                // and the builtin path (stdlib::eval_complex "phase" arm) use the
+                // exact same pre-guards (is_finite + zero-vector) and output shape.
+                // See `reify_stdlib::complex_phase` for the guard rationale.
+                Value::Complex { re, im, .. } => Some(reify_stdlib::complex_phase(*re, *im)),
                 _ => Some(Value::Undef),
             }
         }
@@ -97,7 +68,7 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let component = if method == "re" { *re } else { *im };
-                    Some(sanitize_value(Value::from_component(component, *dimension)))
+                    Some(sanitize_value(Value::from_real_scalar(component, *dimension)))
                 }
                 _ => Some(Value::Undef),
             }
@@ -330,6 +301,34 @@ mod tests {
             call_complex_method(1.0, f64::INFINITY, DimensionVector::LENGTH, Type::length(), "magnitude", Type::length()).is_undef(),
             "z.magnitude with +Inf imaginary part (dimensioned) should return Undef"
         );
+    }
+
+    #[test]
+    fn magnitude_zero_dimensioned_complex_returns_scalar_zero() {
+        // Complex{re:0.0, im:0.0, LENGTH}.magnitude → Scalar{0.0, LENGTH}
+        //
+        // Unlike phase (which returns Undef for a zero vector), magnitude of a
+        // zero complex is well-defined at zero. This test locks that zero
+        // dimensioned complexes return a zero Scalar with the ORIGINAL dimension,
+        // not Real(0.0) — mirrors the stdlib builtin-path test on the method path.
+        match call_complex_method(
+            0.0,
+            0.0,
+            DimensionVector::LENGTH,
+            Type::length(),
+            "magnitude",
+            Type::length(),
+        ) {
+            Value::Scalar { si_value, dimension } => {
+                assert!(
+                    si_value.abs() < 1e-15,
+                    "expected si_value=0.0, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{0.0, LENGTH}}, got {:?}", other),
+        }
     }
 
     // ── method regressions: finite values still work ──────────────────────────
@@ -582,6 +581,21 @@ mod tests {
             call_complex_method(-0.0, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with mixed-sign zero vector (-0.0,0.0) should return Undef \
              (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
+        );
+    }
+
+    #[test]
+    fn phase_zero_dimensioned_complex_returns_undef() {
+        // Complex{re:0.0, im:0.0, LENGTH}.phase → Undef (dimensioned zero-vector)
+        //
+        // phase() is dimension-invariant by contract — the zero-vector guard fires
+        // before dimension is ever consulted. This test mirrors
+        // phase_zero_complex_returns_undef but with LENGTH dimension, locking the
+        // invariant that a future refactor which added a dimension-aware fast path
+        // cannot silently drop the zero-vector guard on one branch.
+        assert!(
+            call_complex_method(0.0, 0.0, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            "z.phase with dimensioned zero vector (LENGTH) should return Undef"
         );
     }
 

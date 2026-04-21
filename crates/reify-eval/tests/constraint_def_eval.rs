@@ -5,14 +5,17 @@
 //! - Diagnostic messages that use the label instead of the raw ConstraintNodeId
 //! - Individual satisfaction states per predicate
 
-use reify_test_support::check_source;
-use reify_types::{Satisfaction, Severity};
+use reify_test_support::{check_source, error_diags, parse_and_compile};
+use reify_types::{
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
+    DiagnosticLabel, Satisfaction, Severity, SourceSpan,
+};
 
 // ── step-3: violated constraint def produces labeled diagnostic ───────────────
 
 /// A violated constraint def instantiation should produce:
-/// - A ConstraintCheckEntry with satisfaction==Violated and label==Some("MinWall[0]")
-/// - At least one Error diagnostic containing the string "MinWall[0]"
+/// - A ConstraintCheckEntry with satisfaction==Violated and label==Some("MinWall#0[0]")
+/// - At least one Error diagnostic containing the string "MinWall#0[0]"
 #[test]
 fn violated_constraint_def_produces_labeled_diagnostic() {
     let source = r#"
@@ -44,22 +47,18 @@ structure S {
     );
     assert_eq!(
         entry.label,
-        Some("MinWall[0]".to_string()),
-        "expected label Some(\"MinWall[0]\"), got: {:?}",
+        Some("MinWall#0[0]".to_string()),
+        "expected label Some(\"MinWall#0[0]\"), got: {:?}",
         entry.label
     );
 
-    // At least one Error diagnostic containing "MinWall[0]"
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    // At least one Error diagnostic containing "MinWall#0[0]"
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         !error_diags.is_empty(),
         "expected at least one Error diagnostic"
     );
-    let has_label = error_diags.iter().any(|d| d.message.contains("MinWall[0]"));
+    let has_label = error_diags.iter().any(|d| d.message.contains("MinWall#0[0]"));
     assert!(
         has_label,
         "expected at least one Error diagnostic containing 'MinWall[0]', got: {:?}",
@@ -72,7 +71,7 @@ structure S {
 /// Two-predicate Bounded constraint: w=15, lo=1, hi=10.
 /// Bounded[0] (x >= lo: 15 >= 1) is Satisfied.
 /// Bounded[1] (x <= hi: 15 <= 10) is Violated.
-/// The violated diagnostic should mention "Bounded[1]" but not "Bounded[0]".
+/// The violated diagnostic should mention "Bounded#0[1]" but not "Bounded#0[0]".
 #[test]
 fn multi_predicate_individual_violations() {
     let source = r#"
@@ -102,12 +101,12 @@ structure S {
     let bounded0 = result
         .constraint_results
         .iter()
-        .find(|e| e.label == Some("Bounded[0]".to_string()))
+        .find(|e| e.label == Some("Bounded#0[0]".to_string()))
         .expect("expected entry with label Bounded[0]");
     let bounded1 = result
         .constraint_results
         .iter()
-        .find(|e| e.label == Some("Bounded[1]".to_string()))
+        .find(|e| e.label == Some("Bounded#0[1]".to_string()))
         .expect("expected entry with label Bounded[1]");
 
     assert_eq!(
@@ -132,8 +131,8 @@ structure S {
         !error_msgs.is_empty(),
         "expected at least one Error diagnostic"
     );
-    let has_bounded1 = error_msgs.iter().any(|m| m.contains("Bounded[1]"));
-    let has_bounded0 = error_msgs.iter().any(|m| m.contains("Bounded[0]"));
+    let has_bounded1 = error_msgs.iter().any(|m| m.contains("Bounded#0[1]"));
+    let has_bounded0 = error_msgs.iter().any(|m| m.contains("Bounded#0[0]"));
     assert!(
         has_bounded1,
         "expected diagnostic mentioning 'Bounded[1]', got: {:?}",
@@ -149,7 +148,7 @@ structure S {
 // ── step-4: satisfied constraint def has label, no error ─────────────────────
 
 /// A satisfied constraint def instantiation should produce:
-/// - A ConstraintCheckEntry with satisfaction==Satisfied and label==Some("MinWall[0]")
+/// - A ConstraintCheckEntry with satisfaction==Satisfied and label==Some("MinWall#0[0]")
 /// - No Error diagnostics
 #[test]
 fn satisfied_constraint_def_has_label_no_error() {
@@ -181,16 +180,12 @@ structure S {
     );
     assert_eq!(
         entry.label,
-        Some("MinWall[0]".to_string()),
-        "expected label Some(\"MinWall[0]\"), got: {:?}",
+        Some("MinWall#0[0]".to_string()),
+        "expected label Some(\"MinWall#0[0]\"), got: {:?}",
         entry.label
     );
 
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         error_diags.is_empty(),
         "expected no Error diagnostics, got: {:?}",
@@ -226,15 +221,72 @@ structure S {
     );
 
     // No violation diagnostics
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         error_diags.is_empty(),
         "expected no Error diagnostics when guard is false, got: {:?}",
         error_diags
+    );
+}
+
+// ── step-19 (task 848.3): guarded constraint def active-and-violated case ─────
+
+/// Complement to `guarded_constraint_def_inactive_when_guard_false`: when the
+/// `where` guard evaluates true AND the constraint predicate is violated,
+/// exactly one Violated constraint result must be produced and the error
+/// diagnostic must carry the friendly constraint-instance label.
+///
+/// Covers the active-true, predicate-false branch of the guard machinery —
+/// the only combination the existing test suite did not exercise end-to-end.
+#[test]
+fn guarded_constraint_def_violated_when_guard_true() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param active: Bool = true
+    param t: Length = 1
+    constraint MinWall(wall: t) where active
+}
+"#;
+    let result = check_source(source);
+
+    // Guard is true → the constraint is checked and the predicate (1 > 2) is violated.
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected exactly 1 constraint result when guard is true, got: {:?}",
+        result.constraint_results
+    );
+
+    let entry = &result.constraint_results[0];
+    assert_eq!(
+        entry.satisfaction,
+        Satisfaction::Violated,
+        "expected Violated when guard is true and predicate fails, got: {:?}",
+        entry.satisfaction
+    );
+    assert_eq!(
+        entry.label,
+        Some("MinWall#0[0]".to_string()),
+        "expected label Some(\"MinWall#0[0]\") per task-845 labeling, got: {:?}",
+        entry.label
+    );
+
+    // Exactly one Error-severity diagnostic, and its message carries the label.
+    let error_diags = error_diags(&result.diagnostics);
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly one Error diagnostic, got: {:?}",
+        error_diags
+    );
+    assert!(
+        error_diags[0].message.contains("MinWall#0[0]"),
+        "expected error diagnostic containing 'MinWall#0[0]', got: {:?}",
+        error_diags[0].message
     );
 }
 
@@ -282,9 +334,9 @@ structure S {
             .unwrap_or_else(|| panic!("expected entry with label '{label}'"))
     };
 
-    let t0 = find_entry("Triple[0]");
-    let t1 = find_entry("Triple[1]");
-    let t2 = find_entry("Triple[2]");
+    let t0 = find_entry("Triple#0[0]");
+    let t1 = find_entry("Triple#0[1]");
+    let t2 = find_entry("Triple#0[2]");
 
     assert_eq!(
         t0.satisfaction,
@@ -341,11 +393,7 @@ structure S {
     );
 
     // The diagnostic should use the raw ConstraintNodeId format
-    let error_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let error_diags = error_diags(&result.diagnostics);
     assert!(
         !error_diags.is_empty(),
         "expected at least one Error diagnostic"
@@ -358,4 +406,108 @@ structure S {
         "expected inline diagnostic containing 'S#constraint[0]' (raw ConstraintNodeId), got: {:?}",
         error_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+}
+
+// ── step-12: labeled_diagnostics replaces id_str in d.labels[i].message ───────
+
+/// A `ConstraintChecker` that always reports `Violated` and emits a Diagnostic
+/// with BOTH `message` and a `labels[0].message` that contain the raw
+/// ConstraintNodeId string.
+///
+/// Used to verify that `Engine::labeled_diagnostics` replaces the id_str in
+/// every per-label message — not only in the top-level `.message` field.
+/// Prior to task 846.1, the helper only rewrote `d.message` and left
+/// `d.labels[i].message` carrying the opaque "S#constraint[0]" style id.
+struct LabelEmittingChecker;
+
+impl ConstraintChecker for LabelEmittingChecker {
+    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        input
+            .constraints
+            .iter()
+            .map(|(id, _)| {
+                let id_str = id.to_string();
+                let label = DiagnosticLabel::new(
+                    SourceSpan::empty(0),
+                    format!("near {}", id_str),
+                );
+                let diagnostic = Diagnostic {
+                    severity: Severity::Error,
+                    message: format!("constraint {} violated", id_str),
+                    labels: vec![label],
+                };
+                ConstraintResult {
+                    id: id.clone(),
+                    satisfaction: Satisfaction::Violated,
+                    diagnostics: ConstraintDiagnostics {
+                        messages: vec![diagnostic],
+                    },
+                }
+            })
+            .collect()
+    }
+}
+
+/// When a labeled constraint (from a constraint def instantiation) produces a
+/// Diagnostic with a non-empty `labels: Vec<DiagnosticLabel>`, both `d.message`
+/// AND every `d.labels[i].message` must have the raw ConstraintNodeId string
+/// replaced by the friendly label (e.g. "MinWall#0[0]").
+///
+/// This test uses a custom checker that deliberately seeds both fields with
+/// the id_str, then asserts neither carries the opaque "S#constraint[" form
+/// after engine-level post-processing.
+#[test]
+fn labeled_diagnostics_replaces_id_in_labels_messages() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param thickness: Length = 1
+    constraint MinWall(wall: thickness)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = reify_eval::Engine::new(Box::new(LabelEmittingChecker), None);
+    let result = engine.check(&compiled);
+
+    let error_diags = error_diags(&result.diagnostics);
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic"
+    );
+
+    for d in &error_diags {
+        // d.message must be rewritten — already covered today but we assert
+        // it here so the test locks the full contract, not just the labels case.
+        assert!(
+            d.message.contains("MinWall#0[0]"),
+            "expected main message containing 'MinWall#0[0]', got: {:?}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("S#constraint["),
+            "main message should NOT contain raw ConstraintNodeId 'S#constraint[', got: {:?}",
+            d.message
+        );
+
+        // Every label's message must also be rewritten.
+        assert!(
+            !d.labels.is_empty(),
+            "test setup expected non-empty labels on each diagnostic"
+        );
+        for lbl in &d.labels {
+            assert!(
+                lbl.message.contains("MinWall#0[0]"),
+                "expected label message containing 'MinWall#0[0]', got: {:?}",
+                lbl.message
+            );
+            assert!(
+                !lbl.message.contains("S#constraint["),
+                "label message should NOT contain raw ConstraintNodeId 'S#constraint[', got: {:?}",
+                lbl.message
+            );
+        }
+    }
 }

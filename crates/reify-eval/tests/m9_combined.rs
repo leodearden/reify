@@ -5,7 +5,7 @@
 //! recursive structures, custom unit declarations, meta block access, and doc comments.
 //! Uses examples/m9_combined.ri as the source file.
 
-use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
+use reify_test_support::{check_source, eval_source, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -22,14 +22,6 @@ fn source() -> &'static str {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_combined.ri should exist")
     })
     .as_str()
-}
-
-/// Parse, compile, eval with SimpleConstraintChecker, return EvalResult.
-/// Use when asserting on values (SI scalars, strings, booleans).
-fn eval_source(src: &str) -> reify_eval::EvalResult {
-    let compiled = parse_and_compile(src);
-    let mut engine = make_simple_engine();
-    engine.eval(&compiled)
 }
 
 // ── Test 1: file parses without errors ──────────────────────────────────────
@@ -188,7 +180,7 @@ fn constraint_def_labels() {
             e.id.entity == "Bracket"
                 && e.label
                     .as_deref()
-                    .is_some_and(|l| l.starts_with("InRange["))
+                    .is_some_and(|l| l.starts_with("InRange#"))
         })
         .collect();
 
@@ -200,7 +192,8 @@ fn constraint_def_labels() {
         inrange_constraints.len()
     );
 
-    // Each invocation resets pred_idx to 0, so both emit InRange[0] and InRange[1]
+    // Under task 845 each invocation has a unique inst_idx, so the 4 labels are
+    // InRange#0[0], InRange#0[1], InRange#1[0], InRange#1[1] (1 of each).
     let count_label = |label: &str| -> usize {
         inrange_constraints
             .iter()
@@ -209,14 +202,24 @@ fn constraint_def_labels() {
     };
 
     assert_eq!(
-        count_label("InRange[0]"),
-        2,
-        "expected exactly 2 Bracket constraints with label 'InRange[0]' (one per invocation)"
+        count_label("InRange#0[0]"),
+        1,
+        "expected exactly 1 Bracket constraint with label 'InRange#0[0]'"
     );
     assert_eq!(
-        count_label("InRange[1]"),
-        2,
-        "expected exactly 2 Bracket constraints with label 'InRange[1]' (one per invocation)"
+        count_label("InRange#0[1]"),
+        1,
+        "expected exactly 1 Bracket constraint with label 'InRange#0[1]'"
+    );
+    assert_eq!(
+        count_label("InRange#1[0]"),
+        1,
+        "expected exactly 1 Bracket constraint with label 'InRange#1[0]'"
+    );
+    assert_eq!(
+        count_label("InRange#1[1]"),
+        1,
+        "expected exactly 1 Bracket constraint with label 'InRange#1[1]'"
     );
 
     // All 4 must be Satisfied

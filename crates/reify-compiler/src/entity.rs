@@ -581,6 +581,11 @@ pub(crate) fn compile_entity(
     }
 
     // Second pass: compile all members.
+    // Track per-constraint-def instantiation counts within this entity so each
+    // instantiation gets a unique inst_idx in the label (e.g. `MinWall#0[0]`
+    // and `MinWall#1[0]` for two distinct instantiations of MinWall). Scoped
+    // per-entity so labels are stable and locally-interpretable (see task 845).
+    let mut constraint_inst_counts: HashMap<String, usize> = HashMap::new();
     for member in structure.members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
@@ -1250,6 +1255,20 @@ pub(crate) fn compile_entity(
                     continue;
                 }
 
+                // Allocate this instantiation's inst_idx before the per-predicate
+                // loop so all predicates from one `constraint MinWall(...)` share
+                // the same inst_idx — predicates differ only by pred_idx.
+                // Uses a get_mut/insert split to avoid cloning `ci.name` on the
+                // common case where the entry already exists.
+                let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
+                    let idx = *entry;
+                    *entry += 1;
+                    idx
+                } else {
+                    constraint_inst_counts.insert(ci.name.clone(), 1);
+                    0
+                };
+
                 // For each predicate in the constraint def, substitute params with args
                 // and compile the resulting expression in the calling entity's scope.
                 // `annotations_optimized_target` was cached at def-compile time; clone it
@@ -1262,7 +1281,7 @@ pub(crate) fn compile_entity(
                     let id = ConstraintNodeId::new(entity_name, constraint_index);
                     let cc = CompiledConstraint {
                         id,
-                        label: Some(format!("{}[{}]", ci.name, pred_idx)),
+                        label: Some(format!("{}#{}[{}]", ci.name, inst_idx, pred_idx)),
                         expr: compiled_expr,
                         span: ci.span,
                         domain: None,

@@ -2,7 +2,7 @@ use reify_types::{Value, quaternion_is_finite};
 
 /// Convert a Value that carries NaN or Inf to Undef.
 ///
-/// All callers pass either a `Value::from_component(...)` result — which
+/// All callers pass either a `Value::from_real_scalar(...)` result — which
 /// returns only `Value::Real` (dimensionless) or `Value::Scalar` (dimensioned)
 /// — or a directly-constructed `Value::Scalar`.  Consequently only the
 /// `Value::Real` and `Value::Scalar` arms are reachable from current call

@@ -360,7 +360,7 @@ structure S {
 // ── Step 1 (task-198): constraint instantiation labels ───────────────────────
 
 /// Single-predicate constraint def instantiation should produce a CompiledConstraint
-/// with label == Some("MinWall[0]").
+/// with label == Some("MinWall#0[0]").
 #[test]
 fn constraint_inst_label_single_predicate() {
     let source = r#"
@@ -383,14 +383,14 @@ structure S {
     let cc = &tmpl.constraints[0];
     assert_eq!(
         cc.label,
-        Some("MinWall[0]".to_string()),
-        "expected label Some(\"MinWall[0]\"), got: {:?}",
+        Some("MinWall#0[0]".to_string()),
+        "expected label Some(\"MinWall#0[0]\"), got: {:?}",
         cc.label
     );
 }
 
 /// Multi-predicate constraint def instantiation should produce labeled constraints
-/// Some("Bounded[0]") and Some("Bounded[1]") respectively.
+/// Some("Bounded#0[0]") and Some("Bounded#0[1]") respectively.
 #[test]
 fn constraint_inst_label_multi_predicate() {
     let source = r#"
@@ -413,18 +413,34 @@ structure S {
 
     assert_eq!(tmpl.constraints.len(), 2, "expected exactly 2 constraints");
 
-    assert_eq!(
-        tmpl.constraints[0].label,
-        Some("Bounded[0]".to_string()),
-        "expected first constraint label Some(\"Bounded[0]\"), got: {:?}",
-        tmpl.constraints[0].label
-    );
-    assert_eq!(
-        tmpl.constraints[1].label,
-        Some("Bounded[1]".to_string()),
-        "expected second constraint label Some(\"Bounded[1]\"), got: {:?}",
-        tmpl.constraints[1].label
-    );
+    // Use label-based lookup rather than positional access (task 848.2) —
+    // robust against future changes to constraint ordering in the template.
+    // Presence of each label is the only assertion; the `.find()` calls
+    // panic with a clear message if either is missing.
+    tmpl.constraints
+        .iter()
+        .find(|c| c.label.as_deref() == Some("Bounded#0[0]"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected constraint with label Some(\"Bounded#0[0]\"), got labels: {:?}",
+                tmpl.constraints
+                    .iter()
+                    .map(|c| c.label.as_deref())
+                    .collect::<Vec<_>>()
+            )
+        });
+    tmpl.constraints
+        .iter()
+        .find(|c| c.label.as_deref() == Some("Bounded#0[1]"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected constraint with label Some(\"Bounded#0[1]\"), got labels: {:?}",
+                tmpl.constraints
+                    .iter()
+                    .map(|c| c.label.as_deref())
+                    .collect::<Vec<_>>()
+            )
+        });
 }
 
 // ── Step 3 (task-1717): substitute_expr recurses into Conditional branches ───
@@ -640,4 +656,55 @@ structure S {
         }
         other => panic!("expected Match constraint expr, got {:?}", other),
     }
+}
+
+// ── Task 845: unique labels across multi-instantiation ───────────────────────
+
+/// Two distinct instantiations of the same constraint def inside one entity
+/// must produce distinct labels (else they collide in diagnostic output).
+/// The label format is `{def_name}#{inst_idx}[{pred_idx}]`; each instantiation
+/// gets its own inst_idx so two single-predicate instantiations become
+/// `MinWall#0[0]` and `MinWall#1[0]`.
+#[test]
+fn multi_instantiation_labels_are_unique() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param wall_a: Length
+    param wall_b: Length
+    constraint MinWall(wall: wall_a)
+    constraint MinWall(wall: wall_b)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 2, "expected exactly 2 constraints");
+
+    let labels: Vec<_> = tmpl
+        .constraints
+        .iter()
+        .map(|c| c.label.clone())
+        .collect();
+
+    assert_ne!(
+        labels[0], labels[1],
+        "labels from two instantiations must differ, got {:?}",
+        labels
+    );
+    assert!(
+        labels.contains(&Some("MinWall#0[0]".to_string())),
+        "expected MinWall#0[0] among labels, got {:?}",
+        labels
+    );
+    assert!(
+        labels.contains(&Some("MinWall#1[0]".to_string())),
+        "expected MinWall#1[0] among labels, got {:?}",
+        labels
+    );
 }

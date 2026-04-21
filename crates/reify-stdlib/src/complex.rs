@@ -1,6 +1,6 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::Value;
 
-use crate::helpers::{binary, complex_abs, sanitize_value, unary};
+use crate::helpers::{binary, complex_abs, complex_phase, sanitize_value, unary};
 
 pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
@@ -37,7 +37,7 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "re" | "real" => unary(args, |v| {
             sanitize_value(match v {
-                Value::Complex { re, dimension, .. } => Value::from_component(*re, *dimension),
+                Value::Complex { re, dimension, .. } => Value::from_real_scalar(*re, *dimension),
                 _ => Value::Undef,
             })
         }),
@@ -45,7 +45,7 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "im" | "imag" => unary(args, |v| {
             sanitize_value(match v {
-                Value::Complex { im, dimension, .. } => Value::from_component(*im, *dimension),
+                Value::Complex { im, dimension, .. } => Value::from_real_scalar(*im, *dimension),
                 _ => Value::Undef,
             })
         }),
@@ -62,17 +62,10 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
 
         // phase(z): compute atan2(im, re), return Scalar with ANGLE dimension.
         // phase(0+0i) is undefined — zero vector has no direction.
+        // Delegates to the shared helper so the method path (reify-expr) and
+        // builtin path share identical pre-guards and output construction.
         "phase" => unary(args, |v| match v {
-            Value::Complex { re, im, .. } => {
-                if *re == 0.0 && *im == 0.0 {
-                    return Value::Undef;
-                }
-                let angle = im.atan2(*re);
-                sanitize_value(Value::Scalar {
-                    si_value: angle,
-                    dimension: DimensionVector::ANGLE,
-                })
-            }
+            Value::Complex { re, im, .. } => complex_phase(*re, *im),
             _ => Value::Undef,
         }),
 
@@ -540,14 +533,25 @@ mod tests {
     }
 
     #[test]
-    fn complex_magnitude_zero_complex_returns_zero() {
-        // complex_magnitude(0+0i) = 0.0
+    fn magnitude_zero_dimensioned_complex_returns_scalar_zero() {
+        // magnitude(Complex{0,0,LENGTH}) → Scalar{0.0, LENGTH}.
+        //
+        // Unlike phase (which returns Undef for a zero vector since direction is
+        // mathematically undefined), magnitude of a zero complex is well-defined at
+        // zero. This test locks the contract that a zero dimensioned complex returns
+        // a zero Scalar carrying the original dimension — the builtin path through
+        // complex_abs → sanitize_value → from_real_scalar dispatches on LENGTH and
+        // produces Scalar{0.0, LENGTH}, NOT Real(0.0).
         let z = Value::Complex {
             re: 0.0,
             im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
+            dimension: DimensionVector::LENGTH,
         };
-        assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 0.0);
+        assert_scalar_approx!(
+            eval_builtin("complex_magnitude", &[z]),
+            0.0,
+            DimensionVector::LENGTH
+        );
     }
 
     // ── phase() tests (step-13) ───────────────────────────────────────────────
@@ -609,6 +613,26 @@ mod tests {
         assert!(
             eval_builtin("phase", &[z]).is_undef(),
             "phase(0+0i) should be Undef, not Scalar{{0.0, ANGLE}}"
+        );
+    }
+
+    #[test]
+    fn phase_zero_dimensioned_complex_returns_undef() {
+        // phase(Complex{0,0,LENGTH}) → Undef (dimensioned zero-vector).
+        //
+        // phase() is dimension-invariant by contract — the zero-vector guard fires
+        // before dimension is ever consulted. Mirrors phase_zero_complex_returns_undef
+        // but for the dimensioned (Scalar) branch, locking the invariant that a future
+        // refactor which added a dimension-aware fast path cannot silently drop the
+        // zero-vector guard on one branch.
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("phase", &[z]).is_undef(),
+            "phase(Complex{{0,0,LENGTH}}) should be Undef regardless of dimension"
         );
     }
 

@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
 use reify_types::{
     CompiledExpr, CompiledFunction, ConstraintInput, ConstraintNodeId, ConstraintResult,
-    DeterminacyState, Diagnostic, OptimizedImplInput, PersistentMap, Value, ValueCellId, ValueMap,
+    DeterminacyState, Diagnostic, OptimizedImplInput, PersistentMap, Severity, Value, ValueCellId,
+    ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
@@ -189,25 +190,85 @@ impl Engine {
     /// messages with a human-readable label, when a label is present.
     ///
     /// This enriches engine-level diagnostics for constraint def instantiations
-    /// so that messages read "constraint MinWall[0] violated" instead of
-    /// "constraint S#constraint[0] violated". When `label` is `None` (inline
+    /// so that messages read "constraint MinWall#0[0] violated" instead of
+    /// "constraint S#constraint[0] violated". Replacement covers BOTH the
+    /// top-level `Diagnostic::message` AND every `DiagnosticLabel::message`
+    /// inside `Diagnostic::labels` — downstream presenters may render either
+    /// field, so either carrying the raw id would leak the opaque form.
+    ///
+    /// In-place mutation (`&mut [Diagnostic]`) avoids the `.collect()`
+    /// round-trip used before task 847.2 and enables a `contains`-guarded
+    /// debug-assert: when a label is supplied, at least one Error-severity
+    /// message references the ConstraintNodeId, yet none was rewritten,
+    /// the id format has drifted from what the engine emits and future
+    /// callers should investigate. The assert is scoped to Error-severity
+    /// because Info/Warning diagnostics attached to a labeled constraint
+    /// (e.g. "inputs still undetermined") may be natural-language only
+    /// and need not embed the raw id. When `label` is `None` (inline
     /// constraints without a label), the messages are returned unchanged.
+    /// A slice (not `&mut Vec`) is taken because the rewrite never adds
+    /// or removes entries — only mutates existing ones.
     pub(crate) fn labeled_diagnostics(
-        messages: Vec<Diagnostic>,
+        messages: &mut [Diagnostic],
         id: &reify_types::ConstraintNodeId,
         label: Option<&str>,
-    ) -> Vec<Diagnostic> {
+    ) {
         let Some(lbl) = label else {
-            return messages;
+            return;
         };
         let id_str = id.to_string();
-        messages
-            .into_iter()
-            .map(|mut d| {
+        let mut replaced_any = false;
+        let mut has_error = false;
+        for d in messages.iter_mut() {
+            if d.severity == Severity::Error {
+                has_error = true;
+            }
+            if d.message.contains(&id_str) {
                 d.message = d.message.replace(&id_str, lbl);
-                d
-            })
-            .collect()
+                replaced_any = true;
+            }
+            for lbl_obj in d.labels.iter_mut() {
+                if lbl_obj.message.contains(&id_str) {
+                    lbl_obj.message = lbl_obj.message.replace(&id_str, lbl);
+                    replaced_any = true;
+                }
+            }
+        }
+        // Only assert on drift when at least one Error-severity diagnostic
+        // is present — informational/warning diagnostics on labeled
+        // constraints may legitimately omit the raw id string.
+        debug_assert!(
+            replaced_any || !has_error,
+            "labeled_diagnostics: label={:?} provided with Error-severity messages, but \
+             ConstraintNodeId {} did not appear in any message — id format drift?",
+            label,
+            id_str,
+        );
+    }
+
+    /// Consume a `ConstraintResult`, run the label-rewrite over its diagnostic
+    /// messages, extend them into `diagnostics`, and push a matching
+    /// `ConstraintCheckEntry` onto `constraint_results`.
+    ///
+    /// Extracted from the two zip-loops in `check_constraints_with_values` and
+    /// `check_constraints_against_templates` (task 847.1). Both sites ran the
+    /// same three-step "take-messages / rewrite / extend / push entry" pattern;
+    /// centralising it keeps the rewrite invariants (see `labeled_diagnostics`)
+    /// in one place.
+    fn push_constraint_result(
+        diagnostics: &mut Vec<Diagnostic>,
+        constraint_results: &mut Vec<ConstraintCheckEntry>,
+        result: ConstraintResult,
+        label: Option<&str>,
+    ) {
+        let mut msgs = result.diagnostics.messages;
+        Self::labeled_diagnostics(&mut msgs, &result.id, label);
+        diagnostics.extend(msgs);
+        constraint_results.push(ConstraintCheckEntry {
+            id: result.id,
+            label: label.map(|s| s.to_string()),
+            satisfaction: result.satisfaction,
+        });
     }
 
     /// Incrementally re-evaluate and check constraints after changing a parameter.
@@ -262,17 +323,28 @@ impl Engine {
                 Some(&state.snapshot.values),
             );
             diagnostics.extend(dispatch_diags);
+            // Task 846.3: `zip` silently truncates to the shorter iterator, so
+            // a length mismatch must be caught BEFORE the loop runs. These are
+            // debug-only checks — the invariants already hold today, but future
+            // refactors of `dispatch_constraints` could desync the two sequences.
+            debug_assert_eq!(
+                results.len(),
+                constraint_nodes.len(),
+                "check_constraints_with_values: results/constraint_nodes length mismatch",
+            );
             for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
-                diagnostics.extend(Self::labeled_diagnostics(
-                    result.diagnostics.messages,
-                    &result.id,
+                debug_assert_eq!(
+                    result.id,
+                    cnode.id,
+                    "check_constraints_with_values: result.id must match cnode.id \
+                     — dispatch_constraints reordered results or constraint_nodes changed",
+                );
+                Self::push_constraint_result(
+                    &mut diagnostics,
+                    &mut constraint_results,
+                    result,
                     cnode.label.as_deref(),
-                ));
-                constraint_results.push(ConstraintCheckEntry {
-                    id: result.id,
-                    label: cnode.label.clone(),
-                    satisfaction: result.satisfaction,
-                });
+                );
             }
         }
 
@@ -380,18 +452,28 @@ impl Engine {
             let (results, dispatch_diags) =
                 self.dispatch_constraints(entries, values, &self.functions, determinacy);
             diagnostics.extend(dispatch_diags);
+            // Task 846.3: see rationale in `check_constraints_with_values` —
+            // `zip` truncates silently, so guard the length invariant BEFORE
+            // the loop, and the per-result id-match invariant INSIDE it.
+            debug_assert_eq!(
+                results.len(),
+                active_constraints.len(),
+                "check_constraints_against_templates: results/active_constraints length mismatch",
+            );
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                diagnostics.extend(Self::labeled_diagnostics(
-                    result.diagnostics.messages,
-                    &result.id,
+                debug_assert_eq!(
+                    result.id,
+                    compiled.id,
+                    "check_constraints_against_templates: result.id must match compiled.id \
+                     — dispatch_constraints reordered results or active_constraints changed",
+                );
+                Self::push_constraint_result(
+                    &mut diagnostics,
+                    &mut constraint_results,
+                    result,
                     compiled.label.as_deref(),
-                ));
-                constraint_results.push(ConstraintCheckEntry {
-                    id: result.id,
-                    label: compiled.label.clone(),
-                    satisfaction: result.satisfaction,
-                });
+                );
             }
         }
 

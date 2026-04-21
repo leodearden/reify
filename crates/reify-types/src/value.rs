@@ -321,7 +321,14 @@ impl Value {
     /// `Scalar { si_value: value, dimension }` otherwise.  This is the
     /// shared pattern used by complex component extraction (re, im) and
     /// magnitude computation.
-    pub fn from_component(value: f64, dimension: DimensionVector) -> Self {
+    ///
+    /// **NaN/Inf safety:** This function does NOT sanitize NaN/Inf inputs —
+    /// callers should wrap the result in `sanitize_value()` if the input is
+    /// arithmetically derived. The function preserves the caller's `f64`
+    /// bit-exactly, which is the desired behaviour for accessor-style callers
+    /// (e.g. `re(Complex{NaN, ...})` intentionally surfaces NaN so a later
+    /// `sanitize_value` can convert it to `Undef`).
+    pub fn from_real_scalar(value: f64, dimension: DimensionVector) -> Self {
         if dimension.is_dimensionless() {
             Value::Real(value)
         } else {
@@ -2130,6 +2137,48 @@ mod tests {
         assert_eq!(
             normalize_range_flags(&Some(1), &Some(2), false, false),
             (false, false)
+        );
+    }
+
+    // ── from_real_scalar unit tests (task 843) ───────────────────────────────
+
+    #[test]
+    fn from_real_scalar_dimensionless_returns_real() {
+        // from_real_scalar(v, DIMENSIONLESS) should return Value::Real(v).
+        // (Avoid 3.14-style literals — clippy::approx_constant flags them as PI.)
+        let v = Value::from_real_scalar(2.5, DimensionVector::DIMENSIONLESS);
+        assert_eq!(
+            v,
+            Value::Real(2.5),
+            "from_real_scalar with DIMENSIONLESS must return Value::Real"
+        );
+    }
+
+    #[test]
+    fn from_real_scalar_length_returns_scalar() {
+        // from_real_scalar(v, LENGTH) should return Value::Scalar { si_value: v, dimension: LENGTH }.
+        let v = Value::from_real_scalar(1.0, DimensionVector::LENGTH);
+        assert_eq!(
+            v,
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            "from_real_scalar with LENGTH must return Value::Scalar"
+        );
+    }
+
+    #[test]
+    fn from_real_scalar_preserves_nan() {
+        // NaN-safety contract: from_real_scalar does NOT sanitize — NaN is preserved,
+        // NOT converted to Undef. Callers are responsible for wrapping in sanitize_value()
+        // if the input is arithmetically derived. Value::PartialEq uses to_bits(),
+        // so `Real(NaN) == Real(NaN)` holds in tests.
+        let v = Value::from_real_scalar(f64::NAN, DimensionVector::DIMENSIONLESS);
+        assert_eq!(
+            v,
+            Value::Real(f64::NAN),
+            "from_real_scalar(NaN, DIMENSIONLESS) must preserve NaN (not convert to Undef)"
         );
     }
 
