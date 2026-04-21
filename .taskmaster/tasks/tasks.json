@@ -43661,7 +43661,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:40:12.193Z"
+        "updatedAt": "2026-04-21T08:40:12.193Z",
+        "metadata": {
+          "files": [
+            "crates/reify-expr/tests/field_calculus_tests.rs",
+            "crates/reify-types/tests/field_lambda_arc_sharing.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/tests",
+            "crates/reify-types/tests"
+          ]
+        }
       }
     ],
     "metadata": {
