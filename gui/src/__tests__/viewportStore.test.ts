@@ -69,4 +69,41 @@ describe('viewportStore', () => {
       });
     });
   });
+
+  describe('setActiveViewport', () => {
+    it('flips design-main to inactive and def-preview to active', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setActiveViewport('def-preview');
+        expect(result).toBe(true);
+        expect(store.state.viewports['design-main'].active).toBe(false);
+        expect(store.state.viewports['def-preview'].active).toBe(true);
+        dispose();
+      });
+    });
+
+    it('restores initial arrangement when switching back to design-main', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        store.setActiveViewport('def-preview');
+        const result = store.setActiveViewport('design-main');
+        expect(result).toBe(true);
+        expect(store.state.viewports['design-main'].active).toBe(true);
+        expect(store.state.viewports['def-preview'].active).toBe(false);
+        dispose();
+      });
+    });
+
+    it('returns false and mutates nothing when id is unknown', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setActiveViewport('unknown-id');
+        expect(result).toBe(false);
+        // Active flags should be unchanged
+        expect(store.state.viewports['design-main'].active).toBe(true);
+        expect(store.state.viewports['def-preview'].active).toBe(false);
+        dispose();
+      });
+    });
+  });
 });
