@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use reify_syntax::ParsedModule;
-use reify_types::{ContentHash, Diagnostic, SourceSpan};
+use reify_types::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
 use crate::entity::PendingBoundCheck;
 use crate::type_resolution::TypeAliasRegistry;
@@ -99,6 +99,40 @@ impl CompilationCtx {
             .is_none_or(|(first_span, _)| *first_span == span)
     }
 
+    /// Attempt to record `name` (kind `kind`) at `span` in the unified entity
+    /// namespace.  Returns `true` if this is the first definition (entry
+    /// inserted); returns `false` if a prior entry with a *different* span
+    /// already exists, in which case a `duplicate entity definition` diagnostic
+    /// is pushed to `self.diagnostics`.
+    ///
+    /// Callers that receive `true` should proceed with compilation of the
+    /// declaration.  Callers that receive `false` should skip it.
+    pub(crate) fn record_or_report_duplicate(
+        &mut self,
+        name: &str,
+        span: SourceSpan,
+        kind: &'static str,
+    ) -> bool {
+        if self.is_first_entity_def(name, span) {
+            self.seen_entity_names.insert(name.to_string(), (span, kind));
+            true
+        } else {
+            let (first_span, first_kind) = *self
+                .seen_entity_names
+                .get(name)
+                .expect("duplicate path implies prior entry");
+            self.diagnostics.push(
+                Diagnostic::error(format!("duplicate entity definition '{}'", name))
+                    .with_label(DiagnosticLabel::new(span, format!("{} defined here", kind)))
+                    .with_label(DiagnosticLabel::new(
+                        first_span,
+                        format!("first defined as {} here", first_kind),
+                    )),
+            );
+            false
+        }
+    }
+
     /// Consume this ctx and assemble the final [`CompiledModule`].
     ///
     /// Combines the owned state accumulated across all phases with the external
@@ -169,6 +203,41 @@ mod tests {
             !ctx.is_first_entity_def("Widget", span_b),
             "different span should not be treated as first def"
         );
+    }
+
+    /// `record_or_report_duplicate` inserts on first call, is idempotent for
+    /// same-span revisits, and emits a duplicate diagnostic on a different span.
+    #[test]
+    fn record_or_report_duplicate_inserts_and_deduplicates() {
+        let mut ctx = CompilationCtx::new();
+        let span_a = SourceSpan::new(0, 10);
+        let span_b = SourceSpan::new(20, 30);
+
+        // First insertion: new name → true, entry stored, no diagnostic.
+        assert!(
+            ctx.record_or_report_duplicate("Widget", span_a, "structure"),
+            "first insertion should succeed"
+        );
+        assert_eq!(
+            ctx.seen_entity_names.get("Widget"),
+            Some(&(span_a, "structure")),
+            "entry should be present after insertion"
+        );
+        assert!(ctx.diagnostics.is_empty(), "no diagnostic on first insertion");
+
+        // Same name + same span is idempotent → true, still no diagnostic.
+        assert!(
+            ctx.record_or_report_duplicate("Widget", span_a, "structure"),
+            "re-inserting with same span should return true"
+        );
+        assert!(ctx.diagnostics.is_empty(), "no diagnostic on same-span revisit");
+
+        // Same name + different span → false, duplicate diagnostic emitted.
+        assert!(
+            !ctx.record_or_report_duplicate("Widget", span_b, "structure"),
+            "duplicate span should return false"
+        );
+        assert_eq!(ctx.diagnostics.len(), 1, "exactly one diagnostic on duplicate");
     }
 
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec

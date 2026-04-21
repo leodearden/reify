@@ -98,6 +98,8 @@ pub(crate) fn collect_decl_refs<'a>(
     };
 
     for decl in &parsed.declarations {
+        // Parsed decls have unique spans within one module, so `is_first_entity_def`
+        // is equivalent to "name absent" here — the span-equality branch is unreachable.
         match decl {
             Declaration::Enum(e) => {
                 ctx.enum_defs.push(reify_types::EnumDef {
@@ -112,107 +114,24 @@ pub(crate) fn collect_decl_refs<'a>(
                 refs.trait_refs.push(trait_decl);
             }
             Declaration::Field(field_def) => {
-                if ctx.is_first_entity_def(&field_def.name, field_def.span) {
-                    ctx.seen_entity_names
-                        .insert(field_def.name.clone(), (field_def.span, "field"));
+                if ctx.record_or_report_duplicate(&field_def.name, field_def.span, "field") {
                     refs.field_refs.push(field_def);
-                } else {
-                    let (first_span, first_kind) = *ctx
-                        .seen_entity_names
-                        .get(&field_def.name)
-                        .expect("duplicate path implies prior entry");
-                    // Duplicate entity name — emit error and skip
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate entity definition '{}'",
-                            field_def.name
-                        ))
-                        .with_label(DiagnosticLabel::new(field_def.span, "field defined here"))
-                        .with_label(DiagnosticLabel::new(
-                            first_span,
-                            format!("first defined as {} here", first_kind),
-                        )),
-                    );
                 }
             }
             Declaration::Structure(structure) => {
-                if ctx.is_first_entity_def(&structure.name, structure.span) {
-                    ctx.seen_entity_names
-                        .insert(structure.name.clone(), (structure.span, "structure"));
-                } else {
-                    let (first_span, first_kind) = *ctx
-                        .seen_entity_names
-                        .get(&structure.name)
-                        .expect("duplicate path implies prior entry");
-                    // Duplicate entity name — emit error; pass 2 will skip compilation.
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate entity definition '{}'",
-                            structure.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            structure.span,
-                            "structure defined here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            first_span,
-                            format!("first defined as {} here", first_kind),
-                        )),
-                    );
-                }
+                ctx.record_or_report_duplicate(&structure.name, structure.span, "structure");
             }
             Declaration::Occurrence(occurrence) => {
-                if ctx.is_first_entity_def(&occurrence.name, occurrence.span) {
-                    ctx.seen_entity_names
-                        .insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
-                } else {
-                    let (first_span, first_kind) = *ctx
-                        .seen_entity_names
-                        .get(&occurrence.name)
-                        .expect("duplicate path implies prior entry");
-                    // Duplicate entity name — emit error; pass 2 will skip compilation.
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate entity definition '{}'",
-                            occurrence.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            occurrence.span,
-                            "occurrence defined here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            first_span,
-                            format!("first defined as {} here", first_kind),
-                        )),
-                    );
-                }
+                ctx.record_or_report_duplicate(&occurrence.name, occurrence.span, "occurrence");
             }
             Declaration::Constraint(constraint) => {
                 // Constraints reserve names in the entity namespace (spec §4.2.1)
                 // even though constraint compilation is not yet implemented.
-                if ctx.is_first_entity_def(&constraint.name, constraint.span) {
-                    ctx.seen_entity_names
-                        .insert(constraint.name.clone(), (constraint.span, "constraint"));
-                } else {
-                    let (first_span, first_kind) = *ctx
-                        .seen_entity_names
-                        .get(&constraint.name)
-                        .expect("duplicate path implies prior entry");
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate entity definition '{}'",
-                            constraint.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            constraint.span,
-                            "constraint defined here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            first_span,
-                            format!("first defined as {} here", first_kind),
-                        )),
-                    );
-                }
+                ctx.record_or_report_duplicate(
+                    &constraint.name,
+                    constraint.span,
+                    "constraint",
+                );
             }
             Declaration::Unit(unit_decl) => {
                 refs.unit_refs.push(unit_decl);
