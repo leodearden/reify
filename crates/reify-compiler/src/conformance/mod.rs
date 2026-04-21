@@ -24,7 +24,7 @@ pub(crate) fn check_trait_conformance(
     let ctx =
         check_phase_collect_trait_bounds(structure, trait_registry, &structure_members, diagnostics);
 
-    let (mut inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+    let (inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
         &ctx,
         &structure_members,
         structure.name,
