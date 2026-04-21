@@ -14,20 +14,31 @@ pub(crate) enum AvailableDefaultKind {
     Let,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn check_trait_conformance(
+/// Phase 1 of trait conformance checking: resolve structure member types and collect
+/// constraint labels.
+///
+/// Builds two outputs from the structure's member list:
+/// - `structure_members`: a `HashMap<String, Type>` mapping each param/let member name
+///   to its resolved type. Let bindings are only included when they carry an explicit
+///   type annotation; unannotated lets are omitted here and handled by the pre-register
+///   pass (phase 3).
+/// - `structure_constraint_labels`: a `HashSet<String>` of constraint label names, used
+///   by phase 6 to detect member overrides before injecting trait defaults.
+///
+/// # Type resolution order
+///
+/// For each Named type annotation the closure calls `resolve_type_with_aliases` (builtin →
+/// alias registry → trait-name fallback) and then checks `enum_defs` for a matching enum.
+/// Unresolved names and dimensional-op annotations emit a root-cause diagnostic and return
+/// `Type::Error` (poison sentinel) to suppress cascade "type mismatch" errors downstream
+/// via the asymmetric producer-side wildcard in `type_compat.rs:3–26`.
+pub(crate) fn check_phase_resolve_structure_members(
     structure: &EntityDefRef<'_>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
     trait_names: &HashSet<String>,
-    scope: &mut CompilationScope,
-    value_cells: &mut Vec<ValueCellDecl>,
-    constraints: &mut Vec<CompiledConstraint>,
-    constraint_index: &mut u32,
     enum_defs: &[reify_types::EnumDef],
-    functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> (HashMap<String, Type>, HashSet<String>) {
     // Collect all structure member names for conformance checking.
     let empty_params: HashSet<String> = HashSet::new();
     // Build a HashSet of enum names once (O(E)) so the filter_map below performs
@@ -158,6 +169,26 @@ pub(crate) fn check_trait_conformance(
             }
         })
         .collect();
+
+    (structure_members, structure_constraint_labels)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_trait_conformance(
+    structure: &EntityDefRef<'_>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_names: &HashSet<String>,
+    scope: &mut CompilationScope,
+    value_cells: &mut Vec<ValueCellDecl>,
+    constraints: &mut Vec<CompiledConstraint>,
+    constraint_index: &mut u32,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (structure_members, structure_constraint_labels) =
+        check_phase_resolve_structure_members(structure, trait_names, enum_defs, alias_registry, diagnostics);
 
     // Collect all requirements and defaults from all trait bounds,
     // handling refinement chains and deduplication.
