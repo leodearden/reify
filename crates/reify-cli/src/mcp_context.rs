@@ -214,6 +214,13 @@ fn reapply_user_overrides(state: &mut CliState) {
              empty — public mutation paths (load_file, open_file, set_parameter, and the \
              per-cell retain in the Ok arm) preserve this invariant together"
         );
+        // Self-heal in release builds: if the invariant above is ever violated by
+        // a future mutation path, stale `warned_overrides` entries would otherwise
+        // persist silently and downgrade legitimate future warnings to debug.  The
+        // debug_assert! already fires loudly in debug/test builds; this clear()
+        // keeps release builds self-correcting with no behavior change in the
+        // invariant-holding fast path (the HashMap is already empty).
+        state.warned_overrides.clear();
         return;
     }
     let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
@@ -1204,8 +1211,12 @@ structure Bracket {
     fn reapply_user_overrides_debug_asserts_on_not_initialized_variant() {
         let ctx = fresh_ctx();
 
-        // Inject a never-eval'd engine: mirrors ensure_engine construction but
-        // skips the eval() call, so edit_param will return NotInitialized.
+        // Inject a never-eval'd engine: mirrors ensure_engine construction (see
+        // `ensure_engine`, line ~177: `Engine::new(Box::new(SimpleConstraintChecker), None)`)
+        // but skips the eval() call, so edit_param will return NotInitialized.
+        // NOTE: if ensure_engine ever changes its Engine::new arguments, update
+        // this test to stay in sync — otherwise the test will still catch the
+        // NotInitialized variant but may exercise a slightly different engine state.
         {
             let mut state = ctx.lock_state();
             state.engine = Some(reify_eval::Engine::new(
