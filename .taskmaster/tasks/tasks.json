@@ -23308,9 +23308,7 @@
         "details": "1. **Consolidate Diagnostic Tests:** Replace the duplicated tests `orient_identity_per_component_diagnostic`, `orient_per_component_diagnostic_x`, `_y`, `_z` with a single table-driven test or a helper closure. This should iterate over components `[('w:', factory_w), ('x:', factory_x), ...]` and use `catch_unwind` to handle each case. Aim for a concise implementation of about 20-30 lines.\n\n2. **Explicit-Tolerance Coverage:** Add tests for the explicit-tolerance arm of `assert_orientation_approx!`. Include a positive test case that fails at the default tolerance but passes with a looser tolerance (e.g., `tol = 1e-2`), and a negative test case that panics with a tighter tolerance (e.g., `tol = 1e-6`).\n\n3. **Robustness with Non-Trivial Quaternion:** Introduce a test using a fully-populated quaternion `(0.5, 0.5, 0.5, 0.5)` and its negation, ensuring they pass with `sign_insensitive = 1e-10`. This ensures comprehensive coverage of all comparison lines.",
         "testStrategy": "Run `cargo test -p reify-stdlib --lib orient` to ensure all existing tests pass and new tests fail if the explicit-tolerance arm or any sign_insensitive comparisons are broken. Verify that the consolidated diagnostic tests execute correctly and cover all components.",
         "status": "pending",
-        "dependencies": [
-          "955"
-        ],
+        "dependencies": [],
         "priority": "medium",
         "subtasks": [],
         "metadata": {
@@ -43745,7 +43743,9 @@
       "completedCount": 1803,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-21T14:47:04.801Z",
+      "description": "Tasks for master context"
     }
   }
 }
