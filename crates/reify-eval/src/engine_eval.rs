@@ -1155,7 +1155,10 @@ impl Engine {
                 .values
                 .insert(cell_id.clone(), (val.clone(), DeterminacyState::Determined));
 
-            let trace = extract_dependency_trace(expr);
+            // Reuse the trace already computed in `let_traces` above; every node
+            // in `sorted_lets` is guaranteed to be a key in `let_traces` because
+            // both are derived from the same `let_cells` key set.
+            let trace = let_traces[&node_id].clone();
             let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
             let outcome = self.cache.record_evaluation(
                 node_id.clone(),
