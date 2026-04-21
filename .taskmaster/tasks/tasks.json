@@ -42970,11 +42970,11 @@
         "description": "Existing tests (`reapply_user_overrides_warns_on_type_kind_mismatch`, `reapply_user_overrides_warns_on_dimension_mismatch`) only verify that the FIRST occurrence of a mismatch emits exactly one WARN. The warn-dedupe feature (downgrade to debug on repeats, clear on success) is not exercised. A regression that breaks the HashSet dedupe (hashing bug, missing insert, spurious clear) would silently re-emit WARNs forever with no test catching it.\n\nAdd at least two tests in `crates/reify-cli/src/mcp_context.rs`:\n1. `reapply_user_overrides_warn_deduped_on_repeat`: call `update_source` with `BRACKET_INT_WIDTH` twice and assert the WARN delta from target `reify_cli::mcp_context` is 1 (second call downgraded to debug).\n2. `reapply_user_overrides_warn_cleared_on_success`: mismatch → compatible → mismatch sequence, assert total WARN count is 2 (dedupe entry cleared on the successful reapply, so the second mismatch warns again).\n\nBoth tests should use the existing `run_reapply_with_source` test harness (or a small extension) to keep the target-filtered counter idiom consistent.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T08:40:11.925Z",
+        "updatedAt": "2026-04-21T08:46:38.014Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src/mcp_context.rs"
@@ -43676,7 +43676,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T08:46:36.844Z",
+      "lastModified": "2026-04-21T08:46:38.014Z",
       "taskCount": 2060,
       "completedCount": 1788,
       "tags": [
