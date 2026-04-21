@@ -394,9 +394,8 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
         if let NodeId::Value(ref vcid) = node
             && let Some(cell_node) = self.graph.value_cells.get(vcid)
             && (cell_node.kind == ValueCellKind::Let || cell_node.kind.is_auto())
-            && cell_node.default_expr.is_some()
+            && let Some(expr) = cell_node.default_expr.as_ref()
         {
-            let expr = cell_node.default_expr.as_ref().unwrap();
 
             // Read current values (brief read lock)
             let current_values = { self.read_values().clone() };
