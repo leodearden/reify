@@ -1803,6 +1803,35 @@ describe('viewStateStore — reorderUserViews', () => {
       dispose();
     });
   });
+
+  it('(f) after reorderUserViews, every id returned by getOrderedViewIds resolves to a view in state.views (transactional invariant)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root' })]);
+      const id1 = store.createView('First');
+      const id2 = store.createView('Second');
+      const id3 = store.createView('Third');
+
+      const result = store.reorderUserViews([id3, id1, id2]);
+      expect(result).toBe(true);
+
+      const ordered = store.getOrderedViewIds();
+      // Every id must resolve to a view in state.views
+      for (const id of ordered) {
+        expect(store.state.views[id]).toBeDefined();
+      }
+      // User-view suffix should reflect the new order
+      const userSuffix = ordered.filter((id) => !id.startsWith('auto:'));
+      expect(userSuffix).toEqual([id3, id1, id2]);
+      // Auto views still precede user views
+      const autoCount = ordered.filter((id) => id.startsWith('auto:')).length;
+      expect(autoCount).toBeGreaterThan(0);
+      expect(ordered.indexOf(ordered.find((id) => id.startsWith('auto:'))!)).toBeLessThan(
+        ordered.indexOf(id3),
+      );
+      dispose();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
