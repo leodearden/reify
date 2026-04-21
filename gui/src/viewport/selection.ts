@@ -1,3 +1,14 @@
+/**
+ * Per-viewport selection system. Each viewport (`<Viewport>`) constructs its own
+ * `createSelection` instance bound to its own scene, camera, and domElement.
+ *
+ * Cross-viewport selection synchronisation is handled externally through the shared
+ * `selectionStore` (not through this module) — `createSelection` only manages the
+ * Three.js raycasting, hover highlight, and wireframe overlay for one scene.
+ *
+ * `raycaster.firstHitOnly = true` keeps per-viewport raycasting O(log n) via the
+ * BVH acceleration patch applied to `Mesh.prototype.raycast` below.
+ */
 import {
   Raycaster,
   Vector2,
