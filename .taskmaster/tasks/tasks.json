@@ -44259,11 +44259,16 @@
         "description": "Three review follow-ups for `crates/reify-eval/tests/constraint_def_eval.rs` from task 2082:\n\n1. **Dedupe shared source fixture (code_reuse).** The `constraint def MinWall { param wall: Length; wall > 2 } structure S { param thickness: Length = 1; constraint MinWall(wall: thickness) }` source literal is now copy-pasted in three tests (lines 20–30 `violated_constraint_def_produces_labeled_diagnostic`, 547–560 `non_embedding_checker_does_not_panic_on_labeled_constraint`, 604–613 `drift_signal_fires_for_non_embedding_checker`). Hoist to a module-level `const MIN_WALL_SOURCE: &str = ...` (or `fn min_wall_source() -> &'static str`) and consume from all three tests so the structure name / params can't desync.\n\n2. **Tighten drift test target filter (test_robustness).** `drift_signal_fires_for_non_embedding_checker` (line 596–598) uses `.target_prefix(\"reify_eval\")`, which would start counting spuriously if any unrelated `tracing::debug!` is added elsewhere in the `reify-eval` crate. Replace with the more specific `.target_prefix(\"reify_eval::engine_constraints\")` so the assertion pins the drift branch specifically.\n\n3. **Add positive-case asserts in non-panic test (test_coverage).** `non_embedding_checker_does_not_panic_on_labeled_constraint` (lines 568–579) verifies the domain message pass-through but doesn't assert the ConstraintCheckEntry itself. Add: `assert_eq!(result.constraint_results.len(), 1)`, `assert_eq!(entry.satisfaction, Satisfaction::Violated)`, and `assert_eq!(entry.label, Some(\"MinWall#0[0]\".to_string()))`. This directly asserts the trait-docstring guarantee that third-party checkers still get the friendly label attached even when their message omits the raw id.\n\nMemory hints: search \"labeled_diagnostics drift signal\", search \"ConstraintChecker trait contract\", search \"CountingSubscriberBuilder target_prefix\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:26:47.791Z"
+        "updatedAt": "2026-04-22T00:58:08.396Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "18a1bd6f999bd011b19a3c00f74258873d5891d2"
+          }
+        }
       },
       {
         "id": "2091",
@@ -44388,9 +44393,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T00:56:15.774Z",
+      "lastModified": "2026-04-22T00:58:08.396Z",
       "taskCount": 2087,
-      "completedCount": 1829,
+      "completedCount": 1830,
       "tags": [
         "master"
       ]
