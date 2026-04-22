@@ -96,6 +96,35 @@ fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError
 }
 
 #[cfg(has_occt)]
+/// Tolerance for the pipe start-tangent +Z check.
+///
+/// The tangent is a unit vector, so checking `t.z > 1 - PIPE_START_TANGENT_Z_EPSILON`
+/// is sufficient: the per-axis residual satisfies x²+y² < 2ε, so |x|,|y| < √(2ε).
+const PIPE_START_TANGENT_Z_EPSILON: f64 = 1e-6;
+
+#[cfg(has_occt)]
+/// Validate that a pipe start-tangent is approximately +Z and all-finite.
+///
+/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity),
+/// or if `t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON` (tangent not close enough to +Z).
+fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError> {
+    if !t.x.is_finite() || !t.y.is_finite() || !t.z.is_finite() {
+        return Err(GeometryError::OperationFailed(format!(
+            "pipe start-tangent has non-finite component (got ({:.3}, {:.3}, {:.3}))",
+            t.x, t.y, t.z
+        )));
+    }
+    if t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON {
+        return Err(GeometryError::OperationFailed(format!(
+            "pipe currently only supports paths whose start-tangent is +Z \
+             (got tangent ({:.3}, {:.3}, {:.3}))",
+            t.x, t.y, t.z
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(has_occt)]
 /// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
 ///
 /// Contains `cxx::UniquePtr<OcctShape>` handles which are `!Send`, so the
@@ -581,19 +610,7 @@ impl OcctKernel {
                 let path_shape = self.get_shape(*path)?;
                 let t = ffi::ffi::wire_start_tangent(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                // `wire_start_tangent` returns a unit vector, so checking
-                // t.z > 1 - 1e-6 alone is sufficient: by the unit-vector
-                // constraint x² + y² < 2e-6, so |x|,|y| < ~1.4e-3. A
-                // per-axis 1e-6 bound would be the binding constraint and
-                // could produce false positives under benign FP noise from
-                // BRepAdaptor_CompCurve on composite wires.
-                if t.z < 1.0 - 1e-6 {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "pipe currently only supports paths whose start-tangent is +Z \
-                         (got tangent ({:.3}, {:.3}, {:.3}))",
-                        t.x, t.y, t.z
-                    )));
-                }
+                validate_pipe_start_tangent(t)?;
                 let circle_shape = ffi::ffi::make_circle_face(r, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 ffi::ffi::make_pipe(&circle_shape, path_shape)
@@ -4393,22 +4410,20 @@ mod tests {
             ffi::ffi::Point3 { x: 0.0,            y: 0.0,            z: f64::NEG_INFINITY },
         ];
         for t in non_finite_cases {
+            let coords = (t.x, t.y, t.z);
             let result = super::validate_pipe_start_tangent(t);
             match result {
                 Err(GeometryError::OperationFailed(msg)) => {
                     assert!(
                         msg.contains("non-finite"),
-                        "expected error containing 'non-finite' for {:?}, got: {msg}",
-                        (t.x, t.y, t.z)
+                        "expected error containing 'non-finite' for {coords:?}, got: {msg}"
                     );
                 }
                 Ok(()) => panic!(
-                    "expected Err for non-finite tangent ({:?}), got Ok",
-                    (t.x, t.y, t.z)
+                    "expected Err for non-finite tangent ({coords:?}), got Ok"
                 ),
                 Err(other) => panic!(
-                    "expected OperationFailed for non-finite tangent ({:?}), got {:?}",
-                    (t.x, t.y, t.z),
+                    "expected OperationFailed for non-finite tangent ({coords:?}), got {:?}",
                     other
                 ),
             }
