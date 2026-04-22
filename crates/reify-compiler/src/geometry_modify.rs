@@ -157,6 +157,68 @@ mod tests {
     }
 
     #[test]
+    fn compile_modify_2arg_chamfer_builds_correct_args() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(5);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_2arg(
+            "chamfer",
+            ModifyKind::Chamfer,
+            "distance",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_modify_2arg should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify { kind: ModifyKind::Chamfer, target: op_target, args: op_args } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "distance"]);
+            }
+            other => panic!("expected Modify(Chamfer), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_modify_2arg_rejects_wrong_arg_count_with_label() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)]; // only 1 arg, need 2
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(5);
+        let span = SourceSpan::new(10, 20);
+        let result = compile_modify_2arg(
+            "chamfer",
+            ModifyKind::Chamfer,
+            "distance",
+            args,
+            target,
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(result.is_none(), "expected None for wrong arg count");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert!(
+            diagnostics[0].message.contains("chamfer() expects 2 arguments, got 1"),
+            "unexpected message: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected at least one label on arg-count diagnostic"
+        );
+        assert!(
+            !diagnostics[0].labels[0].span.is_empty(),
+            "expected non-empty span on arg-count label"
+        );
+    }
+
+    #[test]
     fn compile_modify_op_shell_direct() {
         // shell(target, thickness, face_0) — 3 args, target = GeomRef::Step(5)
         let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
