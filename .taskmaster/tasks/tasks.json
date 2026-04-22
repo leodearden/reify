@@ -11224,7 +11224,7 @@
         "description": "The prelude_trait_defs Vec at lib.rs:2123 exists for lifetime anchoring but is unnecessary since prelude is a borrowed slice.",
         "details": "Remove the intermediate Vec and iterate directly: for t in prelude.iter().flat_map(|m| m.trait_defs.iter()) { trait_registry.insert(t.name.clone(), t); }. This eliminates the heap allocation without any lifetime issues.\n\nFiles: crates/reify-compiler/src/lib.rs\n\nmemory_hints: search \"compile_with_prelude trait_registry\" | entities: compile_with_prelude",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11237,9 +11237,14 @@
             "queries": [
               "resolution for: Eliminate unnecessary intermediate Vec in compile_with_prelude"
             ]
+          },
+          "done_provenance": {
+            "commit": "68c21549d5f03b3b8eb1e21f453959d95fbd2f22",
+            "commit_input": "68c21549d",
+            "note": "Optimization already implemented in commit 68c21549d ('amend: extract build_trait_registry helper, suggestion 2'), which explicitly drops the intermediate prelude_trait_defs Vec and iterates prelude modules directly into the trait registry. Commit is on main. Current build_trait_registry helper in crates/reify-compiler/src/compile_builder/traits_phase.rs:30-44 implements exactly the pattern task 508 prescribes."
           }
         },
-        "updatedAt": "2026-04-22T10:04:07.718Z"
+        "updatedAt": "2026-04-22T10:04:43.413Z"
       },
       {
         "id": "509",
@@ -45394,9 +45399,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:04:33.516Z",
+      "lastModified": "2026-04-22T10:04:43.413Z",
       "taskCount": 2140,
-      "completedCount": 1873,
+      "completedCount": 1874,
       "tags": [
         "master"
       ]
