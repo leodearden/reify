@@ -8183,7 +8183,7 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "details": "## S1: Redundant Build() in make_pipe\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_pipe()\n- BRepOffsetAPI_MakePipe constructor already calls Build() internally\n- Remove explicit maker.Build() call\n\n## S2: make_line_wire degenerate threshold too small\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_line_wire()\n- Threshold 1e-30 is far below OCCT's Precision::Confusion (~1e-7)\n- Change to 1e-10 (length < 1e-5 mm)\n\n## S3: GeomRef::Sub fallback in Sweep eval dispatch\n- `crates/reify-eval/src/lib.rs` SweepKind::Sweep arm\n- Sub fallback silently maps both profile and path to step_handles.last()\n- Replace with None return or debug_assert\n\n## S4: Test quality improvements\n- Compiler test uses same scalar for both sweep args (should use distinct geometry vars)\n- sweep_e2e.rs carries dummy args that eval ignores (should be vec[])\n- loft_four_circles test only asserts volume > 0 (should use meaningful bound)\n- Missing over-count arg test for sweep (3 args)\n\n## S5: shape_vec_len unused\n- `crates/reify-kernel-occt/src/ffi.rs`, `cpp/occt_wrapper.cpp`, `cpp/occt_wrapper.h`\n- Declared/bridged but never called from Rust\n- Remove or add #[allow(dead_code)] with comment\n\n## S6: Eliminate inert geom-ref placeholder in CompiledGeometryOp::Sweep args\n`CompiledGeometryOp::Sweep`'s `args` field stores the raw compiled `path` expression as a positional placeholder under `args[\"path\"]` that is never read at eval time. The code comment explicitly warns: \"A future refactor that tries to…\"\n\n## S7: Pipe start-tangent guard hardening (lib.rs:588-600, 4343-4368)\nThree co-located fixes to the start-tangent guard introduced in task 2095, all in `crates/reify-kernel-occt/src/lib.rs`:\n\n- **NaN rejection (lib.rs:588-591).** The guard `if t.z < 1.0 - 1e-6` silently accepts NaN because any comparison with NaN is false. `wire_start_tangent` already errors on zero magnitude, but for defense-in-depth flip to `!(t.z >= 1.0 - 1e-6)` (which rejects NaN) or add an explicit `t.x.is_finite() && t.y.is_finite() && t.z.is_finite()` precheck before the tangent comparison.\n\n- **Error message includes tolerance (lib.rs:593-597).** The docstring states \"+Z (within 1e-6)\" but the runtime error string omits the tolerance. Extend the error message with the tolerance so callers hitting FP noise can distinguish close-but-rejected from far-off, e.g. \"expected tangent.z > 0.999999\" or reuse the docstring phrasing verbatim.\n\n- **Add -Z case to kernel_pipe_non_z_start_tangent_returns_error (lib.rs:4343-4368).** The test covers +X, +Y, and an XY-plane arc. Add a start-tangent ≈ (0,0,-1) case: -Z also fails the `t.z > 1-1e-6` check and is the single case where a user might reasonably expect pipe() to \"just work\" (profile plane still aligned, direction flipped). Pinning makes the contract explicit; if -Z is ever accepted in a future orientation-generalization pass, this test becomes the forcing function.",
+        "details": "## S1: Redundant Build() in make_pipe\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_pipe()\n- BRepOffsetAPI_MakePipe constructor already calls Build() internally\n- Remove explicit maker.Build() call\n\n## S2: make_line_wire degenerate threshold too small\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_line_wire()\n- Threshold 1e-30 is far below OCCT's Precision::Confusion (~1e-7)\n- Change to 1e-10 (length < 1e-5 mm)\n\n## S3: GeomRef::Sub fallback in Sweep eval dispatch\n- `crates/reify-eval/src/lib.rs` SweepKind::Sweep arm\n- Sub fallback silently maps both profile and path to step_handles.last()\n- Replace with None return or debug_assert\n\n## S4: Test quality improvements\n- Compiler test uses same scalar for both sweep args (should use distinct geometry vars)\n- sweep_e2e.rs carries dummy args that eval ignores (should be vec[])\n- loft_four_circles test only asserts volume > 0 (should use meaningful bound)\n- Missing over-count arg test for sweep (3 args)\n\n## S5: shape_vec_len unused\n- `crates/reify-kernel-occt/src/ffi.rs`, `cpp/occt_wrapper.cpp`, `cpp/occt_wrapper.h`\n- Declared/bridged but never called from Rust\n- Remove or add #[allow(dead_code)] with comment\n\n## S6: Eliminate inert geom-ref placeholder in CompiledGeometryOp::Sweep args\n- `crates/reify-compiler/src/types.rs`, `crates/reify-compiler/tests/compile_api_tests.rs`, `crates/reify-eval/src/geometry_ops.rs`, `crates/reify-eval/tests/sweep_e2e.rs`\n- `CompiledGeometryOp::Sweep`'s `args` field stores the raw compiled `path` expression as a positional placeholder under `args[\"path\"]` that is never read at eval time\n- The code comment explicitly warns this placeholder is inert; remove it and update callers/tests accordingly\n\n## S7: Pipe start-tangent guard robustness\n- `crates/reify-kernel-occt/src/lib.rs`\n- Guard at ~line 590 uses `t.z >= 1.0 - 1e-6` which silently accepts NaN (NaN comparisons return false, so `!(t.z >= …)` would correctly reject, but the current positive form `t.z >= …` accepts NaN as passing). Fix: flip to `!(t.z >= 1.0 - 1e-6)` or add an explicit `t.z.is_finite()` check so NaN is rejected\n- Runtime error at ~line 594 omits the tolerance value — update message to include it, e.g. \"expected tangent.z > 0.999999, got {t.z}\"\n- Test `kernel_pipe_non_z_start_tangent_returns_error` at ~line 4343 covers +X and +Y tangent cases; add a -Z (i.e. `(0.0, 0.0, -1.0)`) line case alongside the existing +X/+Y/arc cases to ensure the guard rejects downward tangents",
         "testStrategy": null,
         "subtasks": [],
         "metadata": {
@@ -8198,8 +8198,8 @@
             "crates/reify-kernel-occt/src/lib.rs"
           ],
           "curator_action": "combine",
-          "curator_justification": "The candidate is a tiny task (3 co-located fixes in lib.rs:588-600 and 4343-4368) targeting the same file already locked by Task 383 (crates/reify-kernel-occt/src/lib.rs). Both are non-behavioral polish/robustness improvements to sweep/pipe kernel operations; the implementer loads OCCT kernel context once. The candidate's three items group cleanly as a single \"S7: Pipe start-tangent guard hardening\" bullet, preserving all verbatim line/symbol references. Same module-lock key means zero paralleli",
-          "combined_at": "2026-04-22T01:57:00.776287+00:00"
+          "curator_justification": "Task 383 is pending, combine_eligible, and its description explicitly lists \"pipe start-tangent guard robustness\" from task 2095 post-merge review as S7. The candidate is exactly that S7 item — spawned_from 2095, same file (crates/reify-kernel-occt/src/lib.rs already in 383's files_to_modify). The details block appears truncated and lacks S7's concrete line numbers/specifics; combining adds those without expanding the module-lock set. All four combine rules hold: coherent sweep/loft/pipe polish ",
+          "combined_at": "2026-04-22T02:00:44.091397+00:00"
         }
       },
       {
@@ -37093,11 +37093,11 @@
         "description": "Two small robustness improvements for the INVALID sentinel pattern introduced in task 612:\n\n1. **INVALID handle hash guard** (crates/reify-types/src/geometry.rs:17): The INVALID sentinel (u64::MAX) has no compile-time enforcement. If it accidentally reaches content_hash() or the caching layer, it produces a valid-looking hash causing subtle cache corruption. Add: `debug_assert_ne!(self.0, u64::MAX, \"INVALID handle must not be hashed\");` in content_hash().\n\n2. **Saturating subtraction in rollback** (crates/reify-eval/src/lib.rs ~line 3128): The rollback condition `step_handles.len() - handle_start < realization.operations.len()` performs unsigned subtraction. If a bug causes step_handles to be truncated below handle_start, this would underflow. Rewrite defensively: `if had_failure || (step_handles.len().saturating_sub(handle_start)) < realization.operations.len()`\n\nmemory_hints: search \"INVALID sentinel GeometryHandle content_hash\", search \"step_handles rollback saturating_sub\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:50:15.186Z",
+        "updatedAt": "2026-04-22T02:01:19.182Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -44575,14 +44575,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:59:55.619Z",
+      "lastModified": "2026-04-22T02:01:19.183Z",
       "taskCount": 2097,
       "completedCount": 1836,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T02:00:34.552Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
