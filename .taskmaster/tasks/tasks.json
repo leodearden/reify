@@ -44328,11 +44328,11 @@
         "description": "Two post-merge polish follow-ups from task 2079 review (compile_builder extraction).\n\n1. **Anchor duplicate-diagnostic wire format** — `crates/reify-compiler/src/compile_builder/ctx.rs` test `record_or_report_duplicate_inserts_and_deduplicates` asserts `diagnostics.len() == 1` on the duplicate branch but does not verify the diagnostic's message text or label ordering. This helper is now the single source of truth for the `duplicate entity definition '<name>'` wire format (previously replicated verbatim across four pre_pass branches), so a silent message regression would only be caught by distant integration tests. Extend the test to assert:\n   - `diagnostics[0].message` contains `duplicate entity definition 'Widget'`\n   - Two labels present in order: first label span == `span_b` with kind `\"structure\"` (second def), second label span == `span_a` with kind referencing `\"first defined as structure here\"` (or the exact format).\n   This anchors behaviour that was previously enforced by duplication.\n\n2. **Clarify `build_constraint_def_registry` doc comment** — `crates/reify-compiler/src/compile_builder/entities_phase.rs:32-40`. Current doc says local defs \"override on name collision\" but does not call out that *all* local defs (pub or not) are inserted, only that prelude defs are filtered to pub. Extend the comment: e.g. \"All local constraint defs (pub or not) are inserted; non-pub local defs are only reachable within the current module but still shadow prelude defs of the same name.\" No behaviour change.\n\nCold-path micro-opt in `record_or_report_duplicate` (the redundant `.get().expect()` after `is_first_entity_def`) was also suggested but dismissed — not hot, and readability cost of `entry()` API rewrite outweighs the saved lookup.\n\n`cargo test -p reify-compiler` must pass.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:32.011Z",
+        "updatedAt": "2026-04-22T11:55:39.805Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder"
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:39.064Z",
+      "lastModified": "2026-04-22T11:55:39.805Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
