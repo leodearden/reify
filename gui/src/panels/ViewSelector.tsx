@@ -16,6 +16,8 @@ import styles from './ViewSelector.module.css';
 export interface ViewSelectorProps {
   store: ViewStateStore;
   onOpenManage: () => void;
+  /** Optional callback for "Save views" action. When omitted the item is not rendered. */
+  onSaveViews?: () => void;
 }
 
 export const ViewSelector: Component<ViewSelectorProps> = (props) => {
@@ -92,6 +94,11 @@ export const ViewSelector: Component<ViewSelectorProps> = (props) => {
     props.onOpenManage();
   }
 
+  function handleSaveViews() {
+    close();
+    props.onSaveViews?.();
+  }
+
   return (
     <div ref={containerRef} class={styles.container}>
       <button
@@ -141,6 +148,15 @@ export const ViewSelector: Component<ViewSelectorProps> = (props) => {
             </For>
           </Show>
           <hr class={styles.separator} />
+          <Show when={props.onSaveViews !== undefined}>
+            <button
+              class={`${styles.item} ${styles.footer}`}
+              role="menuitem"
+              onClick={handleSaveViews}
+            >
+              Save views
+            </button>
+          </Show>
           <button
             class={`${styles.item} ${styles.footer}`}
             role="menuitem"
