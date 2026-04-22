@@ -4256,4 +4256,55 @@ mod tests {
             warnings
         );
     }
+
+    /// Unknown-name error path: compile_geometry_op with GeomRef::Sub("unknown")
+    /// and an empty named_steps map must return Err whose message contains
+    /// "unresolvable GeomRef::Sub('unknown')", and MUST NOT push any
+    /// Warning-severity diagnostics (regression guard against the old
+    /// warning+last()-fallback behavior).
+    #[test]
+    fn compile_geometry_op_sub_ref_unknown_name_returns_err_no_warning() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+
+        let op = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Sub("unknown".into()),
+            right: GeomRef::Step(0),
+        };
+
+        let step_handles = vec![GeometryHandleId(5)];
+        let named_steps: HashMap<String, GeometryHandleId> = HashMap::new(); // empty — "unknown" not present
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &ValueMap::new(),
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &named_steps,
+            &mut diagnostics,
+        );
+
+        // Must return Err (not Ok with a fabricated default)
+        let err_msg = result.expect_err("Sub ref with unknown name should return Err");
+        assert!(
+            err_msg.contains("unresolvable GeomRef::Sub('unknown')"),
+            "error message should contain \"unresolvable GeomRef::Sub('unknown')\", got: {:?}",
+            err_msg
+        );
+
+        // Must NOT emit any Warning-severity diagnostic — the old fallback
+        // emitted a Warning before returning the last handle; that pattern is
+        // explicitly forbidden by the feedback_silent_defaults_pattern norm.
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_types::Severity::Warning)
+            .collect();
+        assert!(
+            warnings.is_empty(),
+            "no Warning diagnostics expected on unknown-name Sub resolution, got: {:?}",
+            warnings
+        );
+    }
 }
