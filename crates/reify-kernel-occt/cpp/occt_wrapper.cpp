@@ -138,10 +138,6 @@ constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
 /// The layered invariant RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ
 /// is enforced at compile time by `const _: () = assert!(...)` in lib.rs.
 
-// --- Internal floor accessors (drift-guard test support — to be removed in step-6) ---
-
-double cpp_line_wire_min_length_sq() { return CPP_LINE_WIRE_MIN_LENGTH_SQ; }
-
 // --- Primitive construction ---
 
 std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
