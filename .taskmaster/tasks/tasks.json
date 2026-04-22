@@ -37097,11 +37097,11 @@
         "description": "Two small robustness improvements for the INVALID sentinel pattern introduced in task 612:\n\n1. **INVALID handle hash guard** (crates/reify-types/src/geometry.rs:17): The INVALID sentinel (u64::MAX) has no compile-time enforcement. If it accidentally reaches content_hash() or the caching layer, it produces a valid-looking hash causing subtle cache corruption. Add: `debug_assert_ne!(self.0, u64::MAX, \"INVALID handle must not be hashed\");` in content_hash().\n\n2. **Saturating subtraction in rollback** (crates/reify-eval/src/lib.rs ~line 3128): The rollback condition `step_handles.len() - handle_start < realization.operations.len()` performs unsigned subtraction. If a bug causes step_handles to be truncated below handle_start, this would underflow. Rewrite defensively: `if had_failure || (step_handles.len().saturating_sub(handle_start)) < realization.operations.len()`\n\nmemory_hints: search \"INVALID sentinel GeometryHandle content_hash\", search \"step_handles rollback saturating_sub\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:06:24.236Z",
+        "updatedAt": "2026-04-22T03:01:12.613Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -44839,7 +44839,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T03:01:12.175Z",
+      "lastModified": "2026-04-22T03:01:12.614Z",
       "taskCount": 2108,
       "completedCount": 1842,
       "tags": [
