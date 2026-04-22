@@ -33,6 +33,39 @@
 #[allow(dead_code)]
 pub(crate) const RUST_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-12;
 
+/// Stable marker prefix included in every `OperationFailed` message emitted by
+/// [`line_segment_rust_guard`]. Tests assert on this token rather than on
+/// C++-layer phrasing, isolating Rust-guard assertions from C++ rewording.
+// `build.rs` includes this file via `#[path]` and sees this as dead; allow that.
+#[allow(dead_code)]
+pub(crate) const RUST_GUARD_MARKER: &str = "[rust-guard]";
+
+/// Rust-layer length guard for `make_line_wire`.
+///
+/// Returns `Err(message)` prefixed with [`RUST_GUARD_MARKER`] when
+/// `dx²+dy²+dz² < RUST_LINE_WIRE_MIN_LENGTH_SQ`, otherwise `Ok(())`.
+///
+/// The `String` error is wrapped into `GeometryError::OperationFailed` by the
+/// caller in `lib.rs`. Returning `String` here keeps this file free of external
+/// crate references so that `build.rs` (which includes this file via `#[path]`)
+/// can compile it without `reify_types` as a build-dependency.
+///
+/// Called by the `GeometryOp::LineSegment` arm in `lib.rs` before the FFI call.
+/// Factored out here so non-OCCT unit tests can exercise the guard directly
+/// without constructing an `OcctKernel`.
+// `build.rs` includes this file via `#[path]` and does not call this fn;
+// allow dead_code so the build-script path compiles cleanly.
+#[allow(dead_code)]
+pub(crate) fn line_segment_rust_guard(dx: f64, dy: f64, dz: f64) -> Result<(), String> {
+    let dist_sq = dx * dx + dy * dy + dz * dz;
+    if dist_sq < RUST_LINE_WIRE_MIN_LENGTH_SQ {
+        return Err(format!(
+            "{RUST_GUARD_MARKER} line_segment endpoints are coincident (zero length)"
+        ));
+    }
+    Ok(())
+}
+
 /// Minimum squared length (m²) for `make_line_wire` endpoints — C++ defense-in-depth floor.
 ///
 /// Rejects degenerate wires whose squared length is below this threshold.
@@ -63,7 +96,7 @@ mod tests {
 
         let result = line_segment_rust_guard(below_dx, 0.0, 0.0);
         match result {
-            Err(reify_types::GeometryError::OperationFailed(msg)) => {
+            Err(msg) => {
                 assert!(
                     msg.contains(RUST_GUARD_MARKER),
                     "below-floor rejection must contain the '[rust-guard]' marker, got: {msg:?}"

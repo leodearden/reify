@@ -22,7 +22,6 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 #[cfg(has_occt)]
 #[allow(dead_code)]
 mod ffi;
-#[cfg(has_occt)]
 mod floor_constants;
 #[cfg(has_occt)]
 mod handle;
@@ -686,15 +685,8 @@ impl OcctKernel {
             GeometryOp::LineSegment {
                 x1, y1, z1, x2, y2, z2,
             } => {
-                let dx = x2 - x1;
-                let dy = y2 - y1;
-                let dz = z2 - z1;
-                let dist_sq = dx * dx + dy * dy + dz * dz;
-                if dist_sq < RUST_LINE_WIRE_MIN_LENGTH_SQ {
-                    return Err(GeometryError::OperationFailed(
-                        "[rust-guard] line_segment endpoints are coincident (zero length)".into(),
-                    ));
-                }
+                crate::floor_constants::line_segment_rust_guard(x2 - x1, y2 - y1, z2 - z1)
+                    .map_err(GeometryError::OperationFailed)?;
                 let shape = ffi::ffi::make_line_wire(*x1, *y1, *z1, *x2, *y2, *z2)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, ReprKind::Wire));
