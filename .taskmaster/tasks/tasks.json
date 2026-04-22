@@ -8547,7 +8547,7 @@
         "id": "397",
         "title": "Review: Eval meta_map performance and refactoring (17 suggestions from task 212)",
         "description": "Triage and address 17 code review suggestions from the task-212 review. Key themes: hot-path clones, code duplication, eager cloning, async safety, test gaps.",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "details": "<info added on 2026-04-21T14:28:33.374Z>\nMemory hints have been updated to include entities: [\"evaluate_let_bindings\", \"meta_map\", \"TopologyTemplate\"] and queries: [\"evaluate_let_bindings extract_dependency_trace topological sort\", \"meta_map performance review suggestions task 212\", \"task 470 eliminate redundant computation let_bindings\"]. Note: Task 470 (Eliminate redundant computation in evaluate_let_bindings) was created directly from this review's findings and completed via commit 2ab85ba6578c (2026-04-22). Task 397 is now unblocked and pending.\n</info added on 2026-04-21T14:28:33.374Z>",
@@ -8577,7 +8577,7 @@
           "files": [],
           "_causation_id": "e4f619eb-8acf-4a83-a696-3b1cd5162acb"
         },
-        "updatedAt": "2026-04-22T03:54:40.351Z"
+        "updatedAt": "2026-04-22T04:02:47.558Z"
       },
       {
         "id": "398",
@@ -44956,7 +44956,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T04:01:25.603Z",
+      "lastModified": "2026-04-22T04:02:47.558Z",
       "taskCount": 2113,
       "completedCount": 1850,
       "tags": [
