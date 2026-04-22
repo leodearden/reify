@@ -231,7 +231,8 @@ impl ModuleDag {
                 // confirming the module exists there — an unknown std.* path (e.g. a
                 // typo like "std.unknonwn") must not taint the mode for subsequent
                 // valid imports.
-                let target = reify_types::ModulePath::from_dotted(module_path);
+                let target = reify_types::ModulePath::from_dotted(module_path)
+                    .map_err(|e| vec![Diagnostic::error(e.to_string())])?;
                 let stdlib = crate::stdlib_loader::load_stdlib();
                 if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
                     // Commit embedded mode now that we know the module is present.
@@ -282,7 +283,11 @@ impl ModuleDag {
             ))]
         })?;
 
-        let parsed = reify_syntax::parse(&source, reify_types::ModulePath::from_dotted(module_path));
+        let parsed = reify_syntax::parse(
+            &source,
+            reify_types::ModulePath::from_dotted(module_path)
+                .map_err(|e| vec![Diagnostic::error(e.to_string())])?,
+        );
 
         if !parsed.errors.is_empty() {
             return Err(parsed

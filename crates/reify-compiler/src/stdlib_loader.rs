@@ -59,7 +59,11 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
         // types declared in earlier modules (e.g. std.materials.mechanical).
         let mut modules = Vec::with_capacity(sources.len());
         for (module_name, source) in &sources {
-            let parsed = reify_syntax::parse(source, ModulePath::from_dotted(module_name));
+            let parsed = reify_syntax::parse(
+                source,
+                ModulePath::from_dotted(module_name)
+                    .expect("stdlib module name must be a valid dotted path"),
+            );
 
             // Fail fast: parse errors in embedded stdlib are always programming errors.
             assert!(
