@@ -953,9 +953,10 @@ impl Engine {
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
+        let eval_state = self.eval_state.as_ref().unwrap();
 
         // (1) Capture the parent snapshot id before we mutate any state.
-        let parent_id = self.eval_state.as_ref().unwrap().snapshot.id;
+        let parent_id = eval_state.snapshot.id;
 
         // (2) Build the new snapshot from the incoming CompiledModule.
         //     Snapshot::from_compiled_module seeds every value cell to
@@ -984,7 +985,7 @@ impl Engine {
 
         // (4) Diff the old and new graphs at value-cell granularity.
         let (changed, added, removed) = diff_value_cells(
-            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &eval_state.snapshot.graph,
             &new_snapshot.graph,
         );
         let changed_set: HashSet<ValueCellId> =
@@ -1000,11 +1001,11 @@ impl Engine {
         //      or added, so callers can observe the diff, and we want their
         //      stale cache entries invalidated when removed.
         let (changed_constraints, added_constraints, removed_constraints) = diff_constraints(
-            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &eval_state.snapshot.graph,
             &new_snapshot.graph,
         );
         let (changed_realizations, added_realizations, removed_realizations) = diff_realizations(
-            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &eval_state.snapshot.graph,
             &new_snapshot.graph,
         );
 
@@ -1041,7 +1042,7 @@ impl Engine {
         //     check, symmetric with the other arms, once Resolution nodes
         //     participate in the demand set.
         {
-            let old_reverse_index = &self.eval_state.as_ref().unwrap().reverse_index;
+            let old_reverse_index = &eval_state.reverse_index;
             for id in &removed {
                 for dep in old_reverse_index.dependents_of(id) {
                     let still_present = match dep {
@@ -1095,15 +1096,13 @@ impl Engine {
         //     are simply absent from the new graph, and their override entries
         //     are purged from `self.param_overrides` below.
         let mut values = ValueMap::new();
-        // Read-only references into the old snapshot: avoids the full
-        // PersistentMap clones that previously existed solely to placate the
-        // borrow checker against the later `param_overrides.retain` call.
-        // The immutable borrow on `self.eval_state` is held only for the
-        // seeding loop (below); once the loop scope ends, Rust's NLL drops
-        // the borrow so the retain can take its mutable borrow on
-        // `self.param_overrides`.
+        // Alias `eval_state` (bound above after the None guard) as `old_state`
+        // for local readability inside this seeding block. The immutable borrow
+        // on `self.eval_state` is governed by Rust's NLL: it expires after the
+        // closing `}` of this block, allowing `param_overrides.retain` below to
+        // take a mutable borrow on `self.param_overrides` without conflict.
         {
-            let old_state = self.eval_state.as_ref().unwrap();
+            let old_state = eval_state;
             let old_graph_snapshot_values = &old_state.snapshot.values;
             let old_graph_cells = &old_state.snapshot.graph.value_cells;
             for (id, new_node) in new_snapshot.graph.value_cells.iter() {
@@ -1398,13 +1397,8 @@ impl Engine {
             // any mismatch is found. Skip entirely when both sides are empty so
             // the common no-guarded-group case is free. branch_tag 0 = members,
             // 1 = else_members.
-            let old_groups = &self
-                .eval_state
-                .as_ref()
-                .unwrap()
-                .snapshot
-                .graph
-                .guarded_groups;
+            let eval_state = self.eval_state.as_ref().unwrap();
+            let old_groups = &eval_state.snapshot.graph.guarded_groups;
             let new_groups = &graph.guarded_groups;
             let has_role_flipped_guard_member = if old_groups.is_empty() && new_groups.is_empty() {
                 false
