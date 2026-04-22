@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::{TopologyTemplate, ValueCellKind};
+use reify_compiler::{find_template, TopologyTemplate, ValueCellKind};
 use reify_types::{
     CompiledFunction, DeterminacyState, Diagnostic, Value, ValueCellId, ValueMap, VersionId,
 };
@@ -169,8 +169,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         // Look up the target template for next_sub from the module's template list.
         // For self-recursion, this finds the same template. For mutual recursion (A→B→A),
         // this alternates: B's sub "a" targets A, A's sub "b" targets B.
-        let next_child_template = match templates.iter().find(|t| t.name == next_sub.structure_name)
-        {
+        let next_child_template = match find_template(templates, &next_sub.structure_name) {
             Some(t) => t,
             None => {
                 diagnostics.push(Diagnostic::error(format!(
@@ -407,7 +406,7 @@ fn elaborate_child_lets_only<'t>(
             .filter_map(|name| {
                 // Look up the sub declaration to find its target template.
                 let sub_decl = child_template.sub_components.iter().find(|s| s.name == *name)?;
-                let target_tmpl = templates.iter().find(|t| t.name == sub_decl.structure_name).or_else(|| {
+                let target_tmpl = find_template(templates, &sub_decl.structure_name).or_else(|| {
                     diagnostics.push(Diagnostic::error(format!(
                         "BFS seed: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping",
                         name, scoped_entity, sub_decl.structure_name
@@ -455,7 +454,7 @@ fn elaborate_child_lets_only<'t>(
                 for sub_decl in &entity_template.sub_components {
                     if sub_decl.guard_expr.is_some() {
                         if let Some(target_tmpl) =
-                            templates.iter().find(|t| t.name == sub_decl.structure_name)
+                            find_template(templates, &sub_decl.structure_name)
                         {
                             queue.push_back((
                                 format!("{}.{}", depth_entity, sub_decl.name),
