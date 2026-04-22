@@ -1928,11 +1928,34 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use reify_compiler::ValueCellKind;
-    use reify_types::{ContentHash, DeterminacyState, PersistentMap, Type, Value, ValueCellId, ValueMap};
+    use reify_types::{
+        CompiledExpr, ContentHash, DeterminacyState, PersistentMap, Type, Value, ValueCellId,
+        ValueMap,
+    };
 
     use crate::graph::{EvaluationGraph, ValueCellNode};
 
     use super::deactivate_if_not_auto;
+
+    /// Construct a [`ValueCellNode`] for use in unit tests.
+    ///
+    /// The `content_hash` is derived deterministically from `id.to_string()`
+    /// (`"entity.member"` format), so every unique `ValueCellId` produces a
+    /// distinct hash without requiring callers to supply one explicitly.
+    fn make_cell(
+        id: &ValueCellId,
+        kind: ValueCellKind,
+        cell_type: Type,
+        default_expr: Option<CompiledExpr>,
+    ) -> ValueCellNode {
+        ValueCellNode {
+            id: id.clone(),
+            kind,
+            cell_type,
+            default_expr,
+            content_hash: ContentHash::of_str(&id.to_string()),
+        }
+    }
 
     #[test]
     fn deactivate_if_not_auto_skips_auto_cell() {
@@ -2137,8 +2160,6 @@ mod tests {
     fn reelaborate_guarded_group_activates_members_when_guard_true() {
         use std::collections::HashMap;
 
-        use reify_types::{CompiledExpr, Type};
-
         use crate::graph::GuardedGroupInfo;
 
         use super::reelaborate_guarded_group;
@@ -2149,46 +2170,10 @@ mod tests {
         let auto_else_id = ValueCellId::new("E", "auto_else");
 
         let mut graph = EvaluationGraph::default();
-        graph.value_cells.insert(
-            guard_id.clone(),
-            ValueCellNode {
-                id: guard_id.clone(),
-                kind: reify_compiler::ValueCellKind::Param,
-                cell_type: Type::Bool,
-                default_expr: None,
-                content_hash: ContentHash::of_str("guard"),
-            },
-        );
-        graph.value_cells.insert(
-            member_id.clone(),
-            ValueCellNode {
-                id: member_id.clone(),
-                kind: reify_compiler::ValueCellKind::Param,
-                cell_type: Type::Int,
-                default_expr: Some(CompiledExpr::literal(Value::Int(42), Type::Int)),
-                content_hash: ContentHash::of_str("member"),
-            },
-        );
-        graph.value_cells.insert(
-            else_member_id.clone(),
-            ValueCellNode {
-                id: else_member_id.clone(),
-                kind: reify_compiler::ValueCellKind::Param,
-                cell_type: Type::Int,
-                default_expr: None,
-                content_hash: ContentHash::of_str("else_member"),
-            },
-        );
-        graph.value_cells.insert(
-            auto_else_id.clone(),
-            ValueCellNode {
-                id: auto_else_id.clone(),
-                kind: reify_compiler::ValueCellKind::Auto { free: false },
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("auto_else"),
-            },
-        );
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        graph.value_cells.insert(member_id.clone(), make_cell(&member_id, ValueCellKind::Param, Type::Int, Some(CompiledExpr::literal(Value::Int(42), Type::Int))));
+        graph.value_cells.insert(else_member_id.clone(), make_cell(&else_member_id, ValueCellKind::Param, Type::Int, None));
+        graph.value_cells.insert(auto_else_id.clone(), make_cell(&auto_else_id, ValueCellKind::Auto { free: false }, Type::Real, None));
 
         let group = GuardedGroupInfo {
             guard_cell: guard_id.clone(),
@@ -2244,8 +2229,6 @@ mod tests {
     fn reelaborate_guarded_group_activates_else_members_when_guard_false() {
         use std::collections::HashMap;
 
-        use reify_types::{CompiledExpr, Type};
-
         use crate::graph::GuardedGroupInfo;
 
         use super::reelaborate_guarded_group;
@@ -2257,46 +2240,10 @@ mod tests {
         let else_member_id = ValueCellId::new("E", "else_member");
 
         let mut graph = EvaluationGraph::default();
-        graph.value_cells.insert(
-            guard_id.clone(),
-            ValueCellNode {
-                id: guard_id.clone(),
-                kind: reify_compiler::ValueCellKind::Param,
-                cell_type: Type::Bool,
-                default_expr: None,
-                content_hash: ContentHash::of_str("guard"),
-            },
-        );
-        graph.value_cells.insert(
-            member_id.clone(),
-            ValueCellNode {
-                id: member_id.clone(),
-                kind: reify_compiler::ValueCellKind::Param,
-                cell_type: Type::Int,
-                default_expr: None,
-                content_hash: ContentHash::of_str("member"),
-            },
-        );
-        graph.value_cells.insert(
-            auto_member_id.clone(),
-            ValueCellNode {
-                id: auto_member_id.clone(),
-                kind: reify_compiler::ValueCellKind::Auto { free: false },
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("auto_member"),
-            },
-        );
-        graph.value_cells.insert(
-            else_member_id.clone(),
-            ValueCellNode {
-                id: else_member_id.clone(),
-                kind: reify_compiler::ValueCellKind::Param,
-                cell_type: Type::Int,
-                default_expr: Some(CompiledExpr::literal(Value::Int(7), Type::Int)),
-                content_hash: ContentHash::of_str("else_member"),
-            },
-        );
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        graph.value_cells.insert(member_id.clone(), make_cell(&member_id, ValueCellKind::Param, Type::Int, None));
+        graph.value_cells.insert(auto_member_id.clone(), make_cell(&auto_member_id, ValueCellKind::Auto { free: false }, Type::Real, None));
+        graph.value_cells.insert(else_member_id.clone(), make_cell(&else_member_id, ValueCellKind::Param, Type::Int, Some(CompiledExpr::literal(Value::Int(7), Type::Int))));
 
         let group = GuardedGroupInfo {
             guard_cell: guard_id.clone(),
