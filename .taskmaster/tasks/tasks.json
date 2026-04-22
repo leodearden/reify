@@ -45364,7 +45364,20 @@
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/guard_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "deactivate_if_not_auto",
+              "engine_eval.rs",
+              "engine_edit.rs"
+            ],
+            "queries": [
+              "inactive-branch Auto cell deactivation semantics eval() vs edit_param() asymmetry",
+              "deactivate_if_not_auto helper preserves solver values Auto cell inactive branch",
+              "post-solver guard re-evaluation pass engine_eval.rs Auto cell Undef override",
+              "Auto cell deactivation rule canonical semantics eval edit_param reconcile"
+            ]
+          }
         }
       },
       {
@@ -45440,7 +45453,9 @@
       "completedCount": 1874,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T10:09:37.487Z",
+      "description": "Tasks for master context"
     }
   }
 }
