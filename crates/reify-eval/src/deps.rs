@@ -9,7 +9,9 @@
 //! is a superset of the runtime-read set. There is no benefit to runtime
 //! (Adapton-style) tracing in a pure language.
 
+use crate::cache::NodeId;
 use reify_types::{CompiledExpr, ValueCellId};
+use std::collections::{HashMap, HashSet};
 
 /// Statically extracted value cell dependencies for a node.
 ///
@@ -28,8 +30,17 @@ pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
     }
 }
 
-use crate::cache::NodeId;
-use std::collections::{HashMap, HashSet};
+/// Remove and return the trace for `node_id`; panics with a message naming
+/// `sorted_set_name` if the key is absent.
+pub(crate) fn take_trace(
+    traces: &mut HashMap<NodeId, DependencyTrace>,
+    node_id: &NodeId,
+    sorted_set_name: &'static str,
+) -> DependencyTrace {
+    traces
+        .remove(node_id)
+        .unwrap_or_else(|| panic!("{sorted_set_name} entries are always keys in the trace map"))
+}
 
 /// Reverse dependency index: maps ValueCellId → set of NodeIds that depend on it.
 ///
@@ -587,6 +598,42 @@ mod tests {
             trace.reads.is_empty(),
             "DependencyTrace::default() should have no reads — root/param nodes are dependency roots"
         );
+    }
+
+    /// Verify `take_trace` panics when the key is absent.
+    #[test]
+    #[should_panic]
+    fn take_trace_missing_key_panics() {
+        let node_id = NodeId::Value(ValueCellId::new("E", "missing"));
+        let mut map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        take_trace(&mut map, &node_id, "sorted_child_lets");
+    }
+
+    /// Verify `take_trace` removes the key from the map and returns its trace.
+    ///
+    /// Constructs a two-entry map, calls `take_trace` for one key, and asserts:
+    /// - The returned trace's `reads` match the originally-inserted value.
+    /// - The consumed key is no longer in the map.
+    /// - The second key is unaffected.
+    #[test]
+    fn take_trace_removes_present_key_and_returns_its_trace() {
+        let node_id_a = NodeId::Value(ValueCellId::new("E", "a"));
+        let node_id_b = NodeId::Value(ValueCellId::new("E", "b"));
+        let cell_x = ValueCellId::new("E", "x");
+        let cell_y = ValueCellId::new("E", "y");
+
+        let trace_a = DependencyTrace { reads: vec![cell_x.clone()] };
+        let trace_b = DependencyTrace { reads: vec![cell_y.clone()] };
+
+        let mut map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        map.insert(node_id_a.clone(), trace_a);
+        map.insert(node_id_b.clone(), trace_b);
+
+        let returned = take_trace(&mut map, &node_id_a, "sorted_lets");
+
+        assert_eq!(returned.reads, vec![cell_x], "returned trace should match the inserted reads for node_id_a");
+        assert!(!map.contains_key(&node_id_a), "node_id_a should be removed from the map");
+        assert!(map.contains_key(&node_id_b), "node_id_b should remain in the map");
     }
 
     /// Step 5: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored
