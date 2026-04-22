@@ -23,9 +23,17 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 #[allow(dead_code)]
 mod ffi;
 #[cfg(has_occt)]
+mod floor_constants;
+#[cfg(has_occt)]
 mod handle;
 #[cfg(has_occt)]
 pub use handle::OcctKernelHandle;
+#[cfg(has_occt)]
+use floor_constants::{CPP_LINE_WIRE_MIN_LENGTH_SQ, RUST_LINE_WIRE_MIN_LENGTH_SQ};
+/// Compile-time invariant: the Rust primary floor must stay strictly below the C++ floor.
+/// Changing either constant in `src/floor_constants.rs` re-evaluates this at `cargo check`.
+#[cfg(has_occt)]
+const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ);
 
 #[cfg(not(has_occt))]
 mod stubs;
@@ -63,21 +71,6 @@ struct OcctWarmState {
 ///
 /// Value: 1e-12 → minimum magnitude ~1e-6 → ~1 micrometer.
 const AXIS_MAG_SQ_MIN: f64 = 1e-12;
-
-#[cfg(has_occt)]
-/// Minimum squared length (m²) for `make_line_wire` endpoints — primary Rust-layer floor.
-///
-/// Line segments with squared point-to-point distance below this threshold are rejected
-/// before the FFI call, catching sub-micrometer degenerate wires early.
-///
-/// This guard is the primary/early check; the C++ layer keeps a looser defense-in-depth
-/// floor (`CPP_LINE_WIRE_MIN_LENGTH_SQ` = 1e-10, defined in `cpp/occt_wrapper.cpp`) so
-/// that any input that bypasses Rust still gets rejected at the FFI boundary. The invariant
-/// `RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ` is enforced by the test
-/// `rust_line_wire_floor_strictly_below_cpp_floor`.
-///
-/// Value: 1e-12 m² → minimum segment length ~1 µm.
-const RUST_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-12;
 
 /// Minimum absolute angle (radians) for revolve operations.
 /// Angles below this are treated as effectively zero.
@@ -4647,10 +4640,6 @@ mod tests {
         // CPP_AXIS_MAG_SQ_MIN (1e-30) but below the new CPP_LINE_WIRE_MIN_LENGTH_SQ
         // (1e-10). Confirms that make_line_wire now rejects degenerate lengths
         // < 1e-5 m (= √(1e-10) m ≈ 10 µm).
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 5e-6, 0.0, 0.0);
         // Use .err().expect(...) instead of unwrap_err() because UniquePtr<OcctShape>
         // doesn't implement Debug, so unwrap_err()'s panic message can't format the Ok arm.
@@ -4663,25 +4652,22 @@ mod tests {
     }
 
     #[test]
-    fn rust_line_wire_floor_strictly_below_cpp_floor() {
-        // Drift-guard: asserts that the Rust-layer primary floor
-        // (RUST_LINE_WIRE_MIN_LENGTH_SQ) stays strictly below the C++-layer
-        // defense-in-depth floor (CPP_LINE_WIRE_MIN_LENGTH_SQ in
-        // cpp/occt_wrapper.cpp:~132). If this test fails, either the Rust floor
-        // was raised above the C++ floor, or the C++ floor was lowered below the
-        // Rust floor — fix by adjusting the offending constant so the layered
-        // invariant Rust < C++ < Precision::Confusion is restored. Do NOT simply
-        // delete this test.
-        let cpp_floor = ffi::ffi::cpp_line_wire_min_length_sq();
-        assert!(
-            crate::RUST_LINE_WIRE_MIN_LENGTH_SQ < cpp_floor,
-            "Rust-layer floor must stay strictly below C++-layer floor; \
-             see CPP_LINE_WIRE_MIN_LENGTH_SQ in cpp/occt_wrapper.cpp. \
-             If this fails, either loosen C++ floor or tighten Rust floor \
-             — do not widen Rust above C++. \
-             (rust={}, cpp={})",
-            crate::RUST_LINE_WIRE_MIN_LENGTH_SQ,
-            cpp_floor,
-        );
+    fn cpp_line_wire_floor_matches_rust_const() {
+        // Behavioral anchor: verifies the C++ layer honours the Rust-defined
+        // CPP_LINE_WIRE_MIN_LENGTH_SQ constant by bracketing the floor tightly.
+        // Inputs are derived from the Rust const so this test auto-tracks any
+        // future change to the canonical value in src/floor_constants.rs.
+        // Multipliers 0.99× / 1.01× give squared distances 0.9801× / 1.0201× of
+        // the floor — tight enough that drift >~2% in the C++ floor will fail.
+        let floor_len = crate::CPP_LINE_WIRE_MIN_LENGTH_SQ.sqrt();
+        // Just below the C++ floor — must be rejected.
+        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, floor_len * 0.99, 0.0, 0.0);
+        result
+            .err()
+            .expect("make_line_wire just below CPP floor should return Err, got Ok");
+        // Just above the C++ floor — must succeed.
+        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, floor_len * 1.01, 0.0, 0.0);
+        result.expect("make_line_wire just above CPP floor should succeed");
     }
+
 }

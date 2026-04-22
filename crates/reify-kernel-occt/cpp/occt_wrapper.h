@@ -28,15 +28,6 @@ struct Point3;
 struct BBox;
 struct TessResult;
 
-// --- Internal floor accessors (drift-guard test support) ---
-// TEST-ONLY: these functions are called only by the Rust unit test
-// `rust_line_wire_floor_strictly_below_cpp_floor`. Do not call from production code.
-
-/// Return the C++ defense-in-depth floor for make_line_wire squared length (m²).
-/// Exposed via FFI to allow the Rust-side drift-guard test to assert
-/// RUST_LINE_WIRE_MIN_LENGTH_SQ < cpp_line_wire_min_length_sq().
-double cpp_line_wire_min_length_sq();
-
 // --- Primitive construction ---
 
 /// Create a box centered at origin with given dimensions (in meters).
