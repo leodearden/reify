@@ -44948,7 +44948,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T03:54:33.542Z"
+        "updatedAt": "2026-04-22T03:54:33.542Z",
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/engine_edit.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": "2122",
