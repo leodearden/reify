@@ -44459,6 +44459,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T01:51:50.057Z"
+      },
+      {
+        "id": "2099",
+        "title": "engine_edit: fix role-flip probe count mismatch with intra-group duplicates",
+        "description": "In `Engine::edit_source` role-flip probe (crates/reify-eval/src/engine_edit.rs ~L1435): `flipped || new_total != old_roles.len()`. `new_total` is raw iter count, `old_roles.len()` is deduped. Identical intra-group duplicates on both sides (supported per build_old_role_map docstring) cause false role-flip reports.\n\nFix: dedupe new-side via HashSet, or return pre-dedup count from build_old_role_map. Add regression test with identical intra-group duplicate in both graphs asserting no false flip.\n\nSpotted by reviewer_comprehensive on task 2092 review.\n\nmemory_hints:\n- search: \"build_old_role_map intra-group duplicate\"\n- entity: \"Engine\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44468,7 +44479,10 @@
       "completedCount": 1835,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:52:19.999Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T01:52:20.022Z"
     }
   }
 }
