@@ -2586,6 +2586,55 @@ mod tests {
         );
     }
 
+    /// Pins the behavior of `reelaborate_guarded_group` on the **inactive branch**
+    /// for `members` when a `member` is wholly absent from `graph.value_cells`.
+    ///
+    /// With `guard_val = Bool(false)`, `members` are on the **inactive branch**
+    /// and are passed to `deactivate_if_not_auto`. That helper treats a missing cell
+    /// as non-Auto (preserving the prior `is_some_and` semantics documented in its
+    /// docstring) and writes `Value::Undef / DeterminacyState::Undetermined`.
+    ///
+    /// Mirrors `_inactive_else_member_absent_from_graph_is_deactivated`; pins
+    /// the `members` side of the symmetric loop at engine_edit.rs:68.
+    ///
+    /// A regression that skipped absent cells on the inactive branch (e.g. by
+    /// wrapping the `deactivate_if_not_auto` call in a
+    /// `graph.value_cells.get(mid).is_some()` guard) would be caught here on
+    /// the inactive branch under guard=false.
+    #[test]
+    fn reelaborate_guarded_group_inactive_member_absent_from_graph_is_deactivated() {
+        let guard_id = ValueCellId::new("E", "guard");
+        // member_id is included in the group but NOT inserted into graph.
+        let member_id = ValueCellId::new("E", "member");
+
+        let mut graph = EvaluationGraph::default();
+        // Only the guard cell is in the graph.
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+
+        // guard=false → else_members active, members INACTIVE → deactivate_if_not_auto.
+        let group = GuardedGroupInfo {
+            guard_cell: guard_id.clone(),
+            members: vec![member_id.clone()],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let (values, snapshot_values) = run_with_guard_false(graph, group);
+
+        // Missing cell → non-Auto treatment → Undef/Undetermined.
+        assert_eq!(
+            values.get(&member_id),
+            Some(&Value::Undef),
+            "Absent member must be deactivated to Undef on the inactive branch under guard=false"
+        );
+        assert_eq!(
+            snapshot_values.get(&member_id),
+            Some(&(Value::Undef, DeterminacyState::Undetermined)),
+            "Absent member must be Undetermined in snapshot_values on the inactive branch under guard=false"
+        );
+    }
+
     /// When `guard_val = Bool(false)`, `reelaborate_guarded_group` must
     /// activate `else_members` and deactivate `members`.
     ///
