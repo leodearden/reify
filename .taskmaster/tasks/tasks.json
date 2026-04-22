@@ -44478,23 +44478,21 @@
         "description": "engine_edit.rs L1435: `new_total != old_roles.len()` compares raw count vs deduped map len. Identical intra-group duplicates in both old/new graphs cause false role-flip. Fix via HashSet dedup on new-side walk, or return pre-dedup count from build_old_role_map. Add regression test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T01:53:11.529Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:52:23.146Z",
-      "taskCount": 2091,
+      "lastModified": "2026-04-22T01:53:11.532Z",
+      "taskCount": 2092,
       "completedCount": 1835,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T01:52:59.495Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T01:52:59.513Z"
+      ]
     }
   }
 }
