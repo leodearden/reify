@@ -1239,6 +1239,126 @@ structure Bracket {
         }
     }
 
+    /// Regression guard: `reapply_user_overrides` must preserve **all** active
+    /// overrides when there are multiple overrides and the `update_source` call
+    /// is topology-preserving (only whitespace added, so all params survive).
+    ///
+    /// This test locks the multi-override path before the refactor that removes
+    /// the `Vec` clone from `reapply_user_overrides`.  It passes against the
+    /// pre-refactor code deliberately — its purpose is to fail loudly if a
+    /// future "re-optimization" short-circuits on the first error, changes
+    /// iteration order in a way that loses overrides, or reintroduces the clone
+    /// in a broken way.
+    ///
+    /// Three distinct `Scalar[LENGTH]` overrides are set on width / height /
+    /// thickness.  After a topology-preserving `update_source` (trailing
+    /// whitespace), all three must read back at their overridden values, not
+    /// the module defaults.
+    #[test]
+    fn reapply_user_overrides_preserves_multiple_overrides_across_topology_preserving_update() {
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
+
+        // Record module-default values so we can assert overrides differ.
+        let params_default = ctx.get_parameters().expect("get_parameters should succeed");
+        let default_width = params_default
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("bracket.ri should have a 'width' param")
+            .value
+            .clone();
+        let default_height = params_default
+            .iter()
+            .find(|p| p.name == "height")
+            .expect("bracket.ri should have a 'height' param")
+            .value
+            .clone();
+        let default_thickness = params_default
+            .iter()
+            .find(|p| p.name == "thickness")
+            .expect("bracket.ri should have a 'thickness' param")
+            .value
+            .clone();
+
+        // Set distinct non-default Scalar[LENGTH] overrides on all three params.
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter width should succeed");
+        ctx.set_parameter("Bracket.height", "0.15")
+            .expect("set_parameter height should succeed");
+        ctx.set_parameter("Bracket.thickness", "0.004")
+            .expect("set_parameter thickness should succeed");
+
+        // Capture the overridden values as strings (avoids format-string brittleness).
+        let params_overridden = ctx.get_parameters().expect("get_parameters should succeed");
+        let overridden_width = params_overridden
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("width should exist after override")
+            .value
+            .clone();
+        let overridden_height = params_overridden
+            .iter()
+            .find(|p| p.name == "height")
+            .expect("height should exist after override")
+            .value
+            .clone();
+        let overridden_thickness = params_overridden
+            .iter()
+            .find(|p| p.name == "thickness")
+            .expect("thickness should exist after override")
+            .value
+            .clone();
+
+        // Sanity: overrides must differ from module defaults.
+        assert_ne!(overridden_width, default_width, "width override must differ from default");
+        assert_ne!(overridden_height, default_height, "height override must differ from default");
+        assert_ne!(overridden_thickness, default_thickness, "thickness override must differ from default");
+
+        // Topology-preserving update: append trailing whitespace.  This drives
+        // `reapply_user_overrides` over all three entries without removing any param.
+        let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let modified = format!("{source} ");
+        let result = ctx
+            .update_source(BRACKET_PATH, &modified)
+            .expect("topology-preserving update_source should succeed");
+        assert!(result.success, "update_source should succeed");
+
+        // All three overrides must survive reapply_user_overrides.
+        let params_after = ctx.get_parameters().expect("get_parameters should succeed");
+        let width_after = params_after
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("width should exist after topology-preserving update")
+            .value
+            .clone();
+        let height_after = params_after
+            .iter()
+            .find(|p| p.name == "height")
+            .expect("height should exist after topology-preserving update")
+            .value
+            .clone();
+        let thickness_after = params_after
+            .iter()
+            .find(|p| p.name == "thickness")
+            .expect("thickness should exist after topology-preserving update")
+            .value
+            .clone();
+
+        assert_eq!(
+            width_after, overridden_width,
+            "width override must survive topology-preserving update_source"
+        );
+        assert_eq!(
+            height_after, overridden_height,
+            "height override must survive topology-preserving update_source"
+        );
+        assert_eq!(
+            thickness_after, overridden_thickness,
+            "thickness override must survive topology-preserving update_source"
+        );
+    }
+
     /// Verify that `load_file` clears prior parameter overrides.  Because
     /// `load_file` semantically starts over with a fresh file, overrides
     /// set before it must not leak into the re-evaluated snapshot.
