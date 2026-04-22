@@ -8179,11 +8179,11 @@
       {
         "id": "383",
         "title": "Sweep/loft polish: dead code, robustness, test quality",
-        "description": "Follow-up from task 310 code review (S1–S5) and task 324 review (S6). All items are non-blocking quality improvements to sweep/loft code spanning dead-code removal, threshold correction, fallback hardening, test accuracy, and elimination of the inert geom-ref placeholder in CompiledGeometryOp::Sweep args.",
+        "description": "Follow-up from task 310 code review (S1–S5), task 324 review (S6), and task 2095 post-merge review (S7). All items are non-blocking quality improvements to sweep/loft/pipe kernel code spanning dead-code removal, threshold correction, fallback hardening, test accuracy, pipe start-tangent guard robustness, and elimination of the inert geom-ref placeholder in CompiledGeometryOp::Sweep args.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "details": "## S1: Redundant Build() in make_pipe\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_pipe()\n- BRepOffsetAPI_MakePipe constructor already calls Build() internally\n- Remove explicit maker.Build() call\n\n## S2: make_line_wire degenerate threshold too small\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_line_wire()\n- Threshold 1e-30 is far below OCCT's Precision::Confusion (~1e-7)\n- Change to 1e-10 (length < 1e-5 mm)\n\n## S3: GeomRef::Sub fallback in Sweep eval dispatch\n- `crates/reify-eval/src/lib.rs` SweepKind::Sweep arm\n- Sub fallback silently maps both profile and path to step_handles.last()\n- Replace with None return or debug_assert\n\n## S4: Test quality improvements\n- Compiler test uses same scalar for both sweep args (should use distinct geometry vars)\n- sweep_e2e.rs carries dummy args that eval ignores (should be vec[])\n- loft_four_circles test only asserts volume > 0 (should use meaningful bound)\n- Missing over-count arg test for sweep (3 args)\n\n## S5: shape_vec_len unused\n- `crates/reify-kernel-occt/src/ffi.rs`, `cpp/occt_wrapper.cpp`, `cpp/occt_wrapper.h`\n- Declared/bridged but never called from Rust\n- Remove or add #[allow(dead_code)] with comment\n\n## S6: Eliminate inert geom-ref placeholder in CompiledGeometryOp::Sweep args\n`CompiledGeometryOp::Sweep`'s `args` field stores the raw compiled `path` expression as a positional placeholder under `args[\"path\"]` that is never read at eval time. The code comment explicitly warns: \"A future refactor that tries to evaluate `args[\"path\"]` as a scalar would silently mis-type.\" The mock-kernel test passes `mm_literal(0.0)` as the placeholder, confirming the data is load-bearing only for its vec position. This goes beyond a doc comment — restructure to eliminate or make the placeholder unmistakable.\n\n**Fix options (choose one):**\n\n(a) **Preferred**: Change `CompiledGeometryOp::Sweep`'s `args` representation to exclude geometry-ref positional placeholders — store only true scalar/string args. Route everything geometry-shaped through `profiles`.\n\n(b) **Minimum**: Replace the placeholder with a clearly inert sentinel (e.g. `CompiledExpr::literal(Value::Real(0.0), Type::unit())` with a comment, or a dedicated `CompiledExpr::GeomRefPlaceholder` variant) so mis-evaluation surfaces loudly.\n\n**Call sites:**\n- `crates/reify-compiler/src/geometry.rs:779-793` (pipe compile arm)\n- Sweep and SweepGuided compile arms in same file (same convention)\n- `crates/reify-compiler/src/lib.rs` CompiledGeometryOp::Sweep (args field definition/semantics)\n- `crates/reify-eval/src/geometry_ops.rs` SweepKind::Pipe/Sweep/SweepGuided arms (consumers)\n\nThis replaces the original S6 doc-comment-only suggestion with a structural fix. Whichever option is chosen, the end state must make silent mis-evaluation impossible or immediately loud.",
+        "details": "## S1: Redundant Build() in make_pipe\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_pipe()\n- BRepOffsetAPI_MakePipe constructor already calls Build() internally\n- Remove explicit maker.Build() call\n\n## S2: make_line_wire degenerate threshold too small\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_line_wire()\n- Threshold 1e-30 is far below OCCT's Precision::Confusion (~1e-7)\n- Change to 1e-10 (length < 1e-5 mm)\n\n## S3: GeomRef::Sub fallback in Sweep eval dispatch\n- `crates/reify-eval/src/lib.rs` SweepKind::Sweep arm\n- Sub fallback silently maps both profile and path to step_handles.last()\n- Replace with None return or debug_assert\n\n## S4: Test quality improvements\n- Compiler test uses same scalar for both sweep args (should use distinct geometry vars)\n- sweep_e2e.rs carries dummy args that eval ignores (should be vec[])\n- loft_four_circles test only asserts volume > 0 (should use meaningful bound)\n- Missing over-count arg test for sweep (3 args)\n\n## S5: shape_vec_len unused\n- `crates/reify-kernel-occt/src/ffi.rs`, `cpp/occt_wrapper.cpp`, `cpp/occt_wrapper.h`\n- Declared/bridged but never called from Rust\n- Remove or add #[allow(dead_code)] with comment\n\n## S6: Eliminate inert geom-ref placeholder in CompiledGeometryOp::Sweep args\n`CompiledGeometryOp::Sweep`'s `args` field stores the raw compiled `path` expression as a positional placeholder under `args[\"path\"]` that is never read at eval time. The code comment explicitly warns: \"A future refactor that tries to…\"\n\n## S7: Pipe start-tangent guard hardening (lib.rs:588-600, 4343-4368)\nThree co-located fixes to the start-tangent guard introduced in task 2095, all in `crates/reify-kernel-occt/src/lib.rs`:\n\n- **NaN rejection (lib.rs:588-591).** The guard `if t.z < 1.0 - 1e-6` silently accepts NaN because any comparison with NaN is false. `wire_start_tangent` already errors on zero magnitude, but for defense-in-depth flip to `!(t.z >= 1.0 - 1e-6)` (which rejects NaN) or add an explicit `t.x.is_finite() && t.y.is_finite() && t.z.is_finite()` precheck before the tangent comparison.\n\n- **Error message includes tolerance (lib.rs:593-597).** The docstring states \"+Z (within 1e-6)\" but the runtime error string omits the tolerance. Extend the error message with the tolerance so callers hitting FP noise can distinguish close-but-rejected from far-off, e.g. \"expected tangent.z > 0.999999\" or reuse the docstring phrasing verbatim.\n\n- **Add -Z case to kernel_pipe_non_z_start_tangent_returns_error (lib.rs:4343-4368).** The test covers +X, +Y, and an XY-plane arc. Add a start-tangent ≈ (0,0,-1) case: -Z also fails the `t.z > 1-1e-6` check and is the single case where a user might reasonably expect pipe() to \"just work\" (profile plane still aligned, direction flipped). Pinning makes the contract explicit; if -Z is ever accepted in a future orientation-generalization pass, this test becomes the forcing function.",
         "testStrategy": null,
         "subtasks": [],
         "metadata": {
@@ -8198,8 +8198,8 @@
             "crates/reify-kernel-occt/src/lib.rs"
           ],
           "curator_action": "combine",
-          "curator_justification": "The candidate is a direct superset of task 383 S6 (which calls only for a doc comment on per-SweepKind args semantics; the candidate goes further and eliminates or sentinels the placeholder). Both are low-priority sweep/loft quality work; `crates/reify-eval/src/geometry_ops.rs` is already in 383's file list; the new files (geometry.rs, lib.rs) stay within the reify-compiler module-lock key that 383 already holds. The candidate explicitly requests coordination with 383. Combining means the implem",
-          "combined_at": "2026-04-22T00:54:07.651520+00:00"
+          "curator_justification": "The candidate is a tiny task (3 co-located fixes in lib.rs:588-600 and 4343-4368) targeting the same file already locked by Task 383 (crates/reify-kernel-occt/src/lib.rs). Both are non-behavioral polish/robustness improvements to sweep/pipe kernel operations; the implementer loads OCCT kernel context once. The candidate's three items group cleanly as a single \"S7: Pipe start-tangent guard hardening\" bullet, preserving all verbatim line/symbol references. Same module-lock key means zero paralleli",
+          "combined_at": "2026-04-22T01:57:00.776287+00:00"
         }
       },
       {
@@ -44533,6 +44533,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T01:55:42.323Z"
+      },
+      {
+        "id": "2105",
+        "title": "Scope make_polyline_wire FFI: test-only gate or explicit stable-surface doc",
+        "description": "Decide whether make_polyline_wire (added in task 2095 for composite-wire tangent tests) belongs in the production FFI surface or should be gated to test-only builds.",
+        "details": "Post-merge review of task 2095 (reviewer_comprehensive) noted that `make_polyline_wire` (crates/reify-kernel-occt/cpp/occt_wrapper.cpp:897-934, plus its exports in the C++ header and cxx bridge) is consumed only by two FFI tests — the composite-wire start-tangent tests. Because it is public in the bridge, it becomes part of the kernel FFI surface indefinitely purely for test scaffolding.\n\nTwo acceptable resolutions:\n\n(a) **Gate behind a test-only cfg/feature.** Move the function (C++ side, header, and cxx bridge declaration) behind a `#[cfg(any(test, feature = \"test-helpers\"))]`-equivalent so production builds do not expose it. If the C++ side cannot easily be conditionally compiled, build the two-segment composite wire in C++ by wiring two `make_line_wire` outputs via a small test-only helper, keeping the production FFI lean.\n\n(b) **Document as intentional stable FFI.** Update the header comment on `make_polyline_wire` to state explicitly that it is part of the stable FFI surface for future polyline use cases, not just CompCurve testing — the current comment only justifies it for the tests.\n\nChoose based on whether polyline construction is a likely near-term production need. Touches:\n- crates/reify-kernel-occt/cpp/occt_wrapper.cpp\n- crates/reify-kernel-occt/cpp/occt_wrapper.h (header export)\n- crates/reify-kernel-occt/src/ffi*.rs (cxx bridge)\n- the two tests that consume it (no functional change expected).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44542,7 +44553,10 @@
       "completedCount": 1835,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:57:00.798Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T01:58:29.395Z"
     }
   }
 }
