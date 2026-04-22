@@ -38807,8 +38807,15 @@
         "subtasks": [],
         "updatedAt": "2026-04-22T10:01:28.267Z",
         "metadata": {
-          "modules": [],
-          "files": []
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/src/geometry_curve.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-eval/tests/curve_constructors_e2e.rs"
+          ]
         }
       },
       {
@@ -38823,8 +38830,12 @@
         "subtasks": [],
         "updatedAt": "2026-04-22T10:01:29.053Z",
         "metadata": {
-          "modules": [],
-          "files": []
+          "modules": [
+            "crates/reify-compiler/src"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ]
         }
       },
       {
