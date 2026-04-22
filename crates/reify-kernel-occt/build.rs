@@ -1,6 +1,13 @@
 use std::env;
 use std::path::PathBuf;
 
+// Pull in the shared constants so build.rs can emit the generated C++ header
+// with the authoritative CPP_LINE_WIRE_MIN_LENGTH_SQ value. Using #[path] here
+// avoids duplicating the literal value in build.rs — duplicating would reintroduce
+// the exact drift class this task eliminates.
+#[path = "src/floor_constants.rs"]
+mod floor_constants;
+
 fn find_include_dir() -> Option<PathBuf> {
     if let Ok(dir) = env::var("OCCT_INCLUDE_DIR") {
         return Some(PathBuf::from(dir));
@@ -88,6 +95,20 @@ fn main() {
     // OCCT found — enable the has_occt cfg flag.
     println!("cargo:rustc-cfg=has_occt");
 
+    // Emit the generated C++ header so occt_wrapper.cpp can include it.
+    println!("cargo:rerun-if-changed=src/floor_constants.rs");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let cpp_floor_value = format!("{:e}", floor_constants::CPP_LINE_WIRE_MIN_LENGTH_SQ);
+    let header_content = format!(
+        "#pragma once\n\
+         // Auto-generated from src/floor_constants.rs by build.rs. Do not edit.\n\
+         namespace occt {{\n\
+         constexpr double CPP_LINE_WIRE_MIN_LENGTH_SQ = {cpp_floor_value};\n\
+         }}\n"
+    );
+    std::fs::write(out_dir.join("line_wire_floors.h"), header_content)
+        .expect("failed to write line_wire_floors.h");
+
     println!("cargo:rerun-if-changed=cpp/occt_wrapper.h");
     println!("cargo:rerun-if-changed=cpp/occt_wrapper.cpp");
     println!("cargo:rerun-if-changed=src/ffi.rs");
@@ -99,6 +120,7 @@ fn main() {
         .file("cpp/occt_wrapper.cpp")
         .include(&include_dir)
         .include(crate_dir.join("cpp"))
+        .include(&out_dir)
         .std("c++17")
         .flag_if_supported("-Wno-unused-parameter")
         .flag_if_supported("-Wno-deprecated-declarations");
