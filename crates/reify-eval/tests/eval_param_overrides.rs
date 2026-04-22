@@ -10,7 +10,7 @@ use reify_compiler::CompiledModule;
 use reify_eval::Engine;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_types::{DimensionVector, Value, ValueCellId};
+use reify_types::{DimensionVector, Severity, Value, ValueCellId};
 
 /// Build an Engine with an empty prelude for self-contained param-override tests.
 /// Uses `Engine::with_prelude(…, &[])` so the tests do not depend on stdlib state.
@@ -119,5 +119,73 @@ fn eval_purges_override_for_cell_absent_from_new_graph() {
         result_c.values.get(&width_id),
         Some(&length_scalar(0.1)),
         "re-added cell must resolve to module default, not zombie override"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// step-5: type-kind mismatch skips the override with a Warning diagnostic
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// When the user source is edited so that a Param's type-kind no longer
+/// matches the override value (here: Scalar[LENGTH] override against an Int
+/// cell), eval() must:
+/// - fall back to the module default,
+/// - emit a Warning diagnostic naming the cell + the mismatch,
+/// - RETAIN the override in `param_overrides` so that reverting the edit
+///   resurrects the override.
+///
+/// Currently FAILS because step-2's override path has no validation — the
+/// Scalar value would be wrongly inserted into an Int-typed cell.
+#[test]
+fn eval_skips_type_kind_mismatched_override_and_emits_warning_diagnostic() {
+    let mut engine = fresh_engine();
+    let width_id = ValueCellId::new("S", "width");
+
+    // Module A: width is Scalar[LENGTH]. Set a matching override.
+    let module_a = compile_source("structure S { param width: Scalar = 100mm }");
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&width_id, length_scalar(0.12));
+
+    // Module B: width is now an Int. The Scalar override is type-kind
+    // incompatible.
+    let module_b = compile_source("structure S { param width: Int = 80 }");
+    let result_b = engine.eval(&module_b);
+
+    // (a) The default wins, not the (now-mismatched) override.
+    assert_eq!(
+        result_b.values.get(&width_id),
+        Some(&Value::Int(80)),
+        "type-kind mismatched override must be skipped in favour of Int default"
+    );
+
+    // (b) Exactly one Warning diagnostic calls out the mismatched cell.
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.width"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.width, got: {:?}",
+        result_b.diagnostics
+    );
+    let wmsg = warnings[0].message.as_str();
+    assert!(
+        wmsg.contains("override")
+            || wmsg.contains("mismatch")
+            || wmsg.contains("type-kind"),
+        "warning should mention override/mismatch/type-kind, got: {wmsg:?}"
+    );
+
+    // (c) The override is RETAINED (behavioural check: re-compile module A
+    //     and eval; the Scalar override must reappear because the mismatch
+    //     eval did not remove it from param_overrides).
+    let module_a_again = compile_source("structure S { param width: Scalar = 100mm }");
+    let result_a2 = engine.eval(&module_a_again);
+    assert_eq!(
+        result_a2.values.get(&width_id),
+        Some(&length_scalar(0.12)),
+        "override must survive a transient type-kind mismatch eval"
     );
 }
