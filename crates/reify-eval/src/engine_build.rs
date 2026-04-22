@@ -641,4 +641,112 @@ mod tests {
             compile_err_diag.message
         );
     }
+
+    // ── named_steps plumbing tests (step-7) ───────────────────────────────────
+
+    /// Happy-path naming: a successful named realization populates `named_steps`
+    /// with the kernel-returned handle after execution completes.
+    ///
+    /// Fails to compile until step-8 adds `named_steps: &mut HashMap<String,
+    /// GeometryHandleId>` and `realization_name: Option<&str>` to
+    /// `execute_realization_ops`.
+    #[test]
+    fn execute_realization_ops_named_realization_populates_named_steps() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CompiledExpr, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+            &mut named_steps,
+            Some("body"),
+        );
+
+        assert!(diagnostics.is_empty(), "expected no diagnostics");
+        assert_eq!(step_handles.len(), 1, "expected one handle appended");
+        let body_handle = named_steps.get("body").copied();
+        assert!(
+            body_handle.is_some(),
+            "named_steps should contain 'body' after successful named realization"
+        );
+        assert_eq!(
+            body_handle.unwrap(),
+            step_handles[0],
+            "named_steps['body'] should equal the handle returned by the kernel"
+        );
+    }
+
+    /// Rollback-must-not-leak: a named realization that fails (Boolean op with
+    /// out-of-bounds GeomRef::Step triggers compile failure + rollback) must NOT
+    /// leave any entry in `named_steps` — stale entries would let later
+    /// realizations resolve a name that never actually produced valid geometry.
+    ///
+    /// Fails to compile until step-8 adds the `named_steps` parameter.
+    #[test]
+    fn execute_realization_ops_rollback_does_not_leak_into_named_steps() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // A realization named "bad" whose only op is an OOB Boolean → compile
+        // failure → rollback path; named_steps must not contain "bad" afterwards.
+        let ops = vec![CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(99),
+            right: GeomRef::Step(99),
+        }];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+            &mut named_steps,
+            Some("bad"),
+        );
+
+        assert!(
+            !named_steps.contains_key("bad"),
+            "named_steps must NOT contain 'bad' after rollback; stale entries \
+             would let later realizations resolve a name whose geometry was never \
+             successfully produced"
+        );
+        // Verify rollback did happen (existing invariant)
+        assert!(step_handles.is_empty(), "handles should be truncated on failure");
+    }
 }
