@@ -44111,11 +44111,11 @@
         "description": "Two post-merge polish items from task 1188 review: (a) tighten fragile substring assertions in geometry diagnostic tests; (b) guard the kind_display_tests table against silently-missing variants.",
         "details": "Follow-up to task 1188 (bundle landing ExtrudeSymmetric per-side threshold + Display impls for geometry op kinds). Two independent test-quality items:\n\n### Item A — Tighten diagnostic substring assertions\nLocation: `crates/reify-eval/tests/geometry_error_handling.rs` and any tests added in the 1188 bundle that use `diagnostics[0].message.contains(\"linear\")`, `contains(\"extrude\")`, etc.\n\nProblem: short lowercase tokens like `linear` and `extrude` are prefixes of longer op names (`linear_2d`, `extrude_symmetric`). A future refactor that emits the wrong-but-similar op name in the diagnostic would not be caught — the assertion would still pass.\n\nFix: assert on the full op token with a delimiter. Use `contains(\"for linear \")` (trailing space), `contains(\"for extrude \")`, `contains(\"for extrude_symmetric\")`, etc. — or anchor on the full Display output from `PrimitiveKind`/`ModifyKind` to pin the exact op name.\n\n### Item B — Pin Display-variant table against new variants\nLocation: `crates/reify-compiler/src/types.rs` around the `kind_display_tests` block (roughly lines 745-838 as of task 1188 landing).\n\nProblem: the table-driven Display round-trip tests pin a real contract but do not flag a new enum variant that lacks a Display arm. Rust's match exhaustiveness catches a missing arm in the `impl Display`, but the test table will silently skip any new variant added without updating both sides.\n\nFix (pick one):\n1. Add a `// NOTE: extend this table when adding a new variant to PrimitiveKind/ModifyKind/...` comment above each `check(&[...])` array. Cheap, no new deps.\n2. (Preferred if dep cost is acceptable) Thread the variant list through `strum::EnumIter` / `strum::IntoEnumIterator` so the test iterates all variants automatically and fails at compile time when a new one is added.\n\nCheck `Cargo.toml` for existing `strum` usage before adding a new dep; if already depended on transitively, option 2 is nearly free.\n\n### Verification\n- `cargo test -p reify-eval --test geometry_error_handling`\n- `cargo test -p reify-compiler --lib kind_display`\n- Add a negative test (feature-gated or doc-test) that would fail if a new variant is added without a Display arm — optional but demonstrates the guard works.\n\nMemory hints:\n- search: \"diagnostic substring assertion op token delimiter\"\n- search: \"Display variant table strum EnumIter\"\n- entities: PrimitiveKind, ModifyKind, kind_display_tests, geometry_error_handling.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:31.778Z",
+        "updatedAt": "2026-04-22T15:11:50.798Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/types.rs",
@@ -45590,14 +45590,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T15:06:28.592Z",
+      "lastModified": "2026-04-22T15:11:50.798Z",
       "taskCount": 2139,
       "completedCount": 1877,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T15:06:58.240Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
