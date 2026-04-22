@@ -4660,4 +4660,31 @@ mod tests {
             "error message should mention 'distinct', got: {msg}"
         );
     }
+
+    #[test]
+    fn rust_line_wire_floor_strictly_below_cpp_floor() {
+        // Drift-guard: asserts that the Rust-layer primary floor
+        // (RUST_LINE_WIRE_MIN_LENGTH_SQ) stays strictly below the C++-layer
+        // defense-in-depth floor (CPP_LINE_WIRE_MIN_LENGTH_SQ in
+        // cpp/occt_wrapper.cpp:~132). If this test fails, either the Rust floor
+        // was raised above the C++ floor, or the C++ floor was lowered below the
+        // Rust floor — fix by adjusting the offending constant so the layered
+        // invariant Rust < C++ < Precision::Confusion is restored. Do NOT simply
+        // delete this test.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let cpp_floor = ffi::ffi::cpp_line_wire_min_length_sq();
+        assert!(
+            crate::RUST_LINE_WIRE_MIN_LENGTH_SQ < cpp_floor,
+            "Rust-layer floor must stay strictly below C++-layer floor; \
+             see CPP_LINE_WIRE_MIN_LENGTH_SQ in cpp/occt_wrapper.cpp. \
+             If this fails, either loosen C++ floor or tighten Rust floor \
+             — do not widen Rust above C++. \
+             (rust={}, cpp={})",
+            crate::RUST_LINE_WIRE_MIN_LENGTH_SQ,
+            cpp_floor,
+        );
+    }
 }
