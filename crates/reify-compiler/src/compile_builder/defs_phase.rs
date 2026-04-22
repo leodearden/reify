@@ -25,6 +25,7 @@ use crate::type_resolution::{
     TypeAliasRegistry, convert_type_params, resolve_enum_type, resolve_type_expr_with_aliases,
 };
 use crate::types::{CompiledConstraintDef, CompiledConstraintParam};
+use crate::CompiledModule;
 
 /// Format a constraint-def shadow-warning message for a name collision between two prelude modules.
 ///
@@ -182,6 +183,39 @@ fn emit_constraint_def_shadow_warnings(
             }
         }
     }
+}
+
+/// Build a combined constraint-def registry: prelude pub defs first
+/// (first-imported wins on cross-prelude name collisions), then local defs
+/// override on name collision with prelude.
+///
+/// Borrows from `local` (module-local constraint defs in ctx) and every prelude
+/// module's `constraint_defs`. Non-pub prelude defs are excluded — only pub
+/// constraint defs are exported.
+///
+/// Shadow warnings for cross-prelude name collisions are NOT emitted here —
+/// they were already emitted once in [`phase_constraint_defs`] via
+/// [`emit_constraint_def_shadow_warnings`]. The downstream entity-phase
+/// rebuild must not re-emit them to avoid duplicate diagnostics.
+///
+/// Asymmetry with `build_trait_registry` (design decision #2 task 2080):
+/// uses `.entry().or_insert()` for prelude (preserving first-imported-wins
+/// policy pinned by `cross_module_constraint_def_name_collision_emits_shadow_warning`)
+/// and `.insert()` for local (allowing local override of any prelude def).
+pub(crate) fn build_constraint_def_registry<'a>(
+    local: &'a [CompiledConstraintDef],
+    prelude: &[&'a CompiledModule],
+) -> HashMap<String, &'a CompiledConstraintDef> {
+    let mut registry: HashMap<String, &'a CompiledConstraintDef> = HashMap::new();
+    for m in prelude {
+        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
+            registry.entry(cd.name.clone()).or_insert(cd);
+        }
+    }
+    for cd in local {
+        registry.insert(cd.name.clone(), cd);
+    }
+    registry
 }
 
 #[cfg(test)]
