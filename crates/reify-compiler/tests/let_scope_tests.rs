@@ -1764,3 +1764,47 @@ fn extrude_non_geometry_target_uses_fallback() {
         &[ExpectedOp::Sweep(SweepKind::Extrude, vec![0])],
     );
 }
+
+// ── RealizationDecl.name tests ────────────────────────────────────────────────
+
+/// Verifies that each geometry-let binding in a structure compiles to a
+/// `RealizationDecl` whose `name` field is `Some(let_binding_name)`.
+///
+/// This test fails to compile until step-6 adds `pub name: Option<String>`
+/// to `RealizationDecl` and populates it from the let-binding name in
+/// entity.rs.
+#[test]
+fn realization_decl_name_matches_let_binding_name() {
+    // SRC_DIFFERENCE_LET_BOUND has:
+    //   let body = cylinder(r, h)
+    //   let hole = cylinder(r2, h)
+    //   let result = difference(body, hole)
+    let compiled = compile_no_errors(SRC_DIFFERENCE_LET_BOUND);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 realizations (body, hole, result)"
+    );
+
+    let body_real = realization_named(template, &["body", "hole", "result"], "body");
+    assert_eq!(
+        body_real.name,
+        Some("body".to_string()),
+        "body realization should have name Some(\"body\")"
+    );
+
+    let hole_real = realization_named(template, &["body", "hole", "result"], "hole");
+    assert_eq!(
+        hole_real.name,
+        Some("hole".to_string()),
+        "hole realization should have name Some(\"hole\")"
+    );
+
+    let result_real = realization_named(template, &["body", "hole", "result"], "result");
+    assert_eq!(
+        result_real.name,
+        Some("result".to_string()),
+        "result realization should have name Some(\"result\")"
+    );
+}
