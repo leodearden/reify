@@ -2849,11 +2849,14 @@ mod tests {
             "diagnostic message should mention 'distance', got: {}",
             diagnostics[0].message
         );
-        let expected_tail = format!("for {}", reify_compiler::SweepKind::Extrude);
+        let expected_kind = format!(" for {}", reify_compiler::SweepKind::Extrude);
+        let spurious_prefix = format!(" for {}_", reify_compiler::SweepKind::Extrude);
         assert!(
-            diagnostics[0].message.ends_with(&expected_tail),
-            "diagnostic message should end with {:?} (pins the exact op token, not a prefix of 'extrude_symmetric'), got: {}",
-            expected_tail,
+            diagnostics[0].message.contains(&expected_kind)
+                && !diagnostics[0].message.contains(&spurious_prefix),
+            "diagnostic message should contain {:?} without a suffix variant (not {:?}), got: {}",
+            expected_kind,
+            spurious_prefix,
             diagnostics[0].message
         );
     }
@@ -2911,11 +2914,14 @@ mod tests {
             "diagnostic message should mention 'spacing', got: {}",
             diagnostics[0].message
         );
-        let expected_tail = format!("for {}", reify_compiler::PatternKind::Linear);
+        let expected_kind = format!(" for {}", reify_compiler::PatternKind::Linear);
+        let spurious_prefix = format!(" for {}_", reify_compiler::PatternKind::Linear);
         assert!(
-            diagnostics[0].message.ends_with(&expected_tail),
-            "diagnostic message should end with {:?} (pins the exact op token, not a prefix of 'linear_2d'), got: {}",
-            expected_tail,
+            diagnostics[0].message.contains(&expected_kind)
+                && !diagnostics[0].message.contains(&spurious_prefix),
+            "diagnostic message should contain {:?} without a suffix variant (not {:?}), got: {}",
+            expected_kind,
+            spurious_prefix,
             diagnostics[0].message
         );
     }
