@@ -45625,6 +45625,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T16:23:33.694Z"
+      },
+      {
+        "id": "2149",
+        "title": "Add dimensioned-scalar coverage for Rule 2c (Tensor&lt;0,M,Q&gt;↔Tensor&lt;0,N,Q&gt;)",
+        "description": "Review suggestion from task-395. Rule 2c is only exercised with Type::Real as Q; the spec rationale is about trait conformance with dimensioned scalars. Add two tests in crates/reify-compiler/tests/implicit_conversion_tests.rs: (1) allow Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[m]&gt; (same dimension), (2) reject Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[angle]&gt; (quantity mismatch). Without the negative case a regression that accidentally drops the q1 == q2 check would still pass existing Real tests.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45634,7 +45645,10 @@
       "completedCount": 1883,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T16:24:03.322Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T16:24:03.476Z"
     }
   }
 }
