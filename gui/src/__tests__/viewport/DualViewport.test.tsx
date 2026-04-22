@@ -112,7 +112,9 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
     setDefPath: vi.fn(),
     setForceExpanded: vi.fn(),
     // Real setState side-effect so sequential-drag tests can read the updated ratio.
+    // Matches real-store fidelity: Number.isFinite guard mirrors viewportStore.ts:188.
     setSplitRatio: vi.fn((ratio: number) => {
+      if (!Number.isFinite(ratio)) return false;
       const clamped = Math.min(0.9, Math.max(0.1, ratio));
       setState('splitRatio', clamped);
       return true;
