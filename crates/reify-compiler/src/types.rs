@@ -861,3 +861,16 @@ mod kind_display_tests {
     }
 }
 
+#[cfg(test)]
+mod find_template_tests {
+    use super::find_template;
+
+    /// The None branch: passing an empty slice (or a slice where no name matches)
+    /// must return None, not panic. This pins the contract that `find_template` is
+    /// safe to call on any slice regardless of contents.
+    #[test]
+    fn missing_name_returns_none() {
+        assert!(find_template(&[], "absent").is_none());
+    }
+}
+
