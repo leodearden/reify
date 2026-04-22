@@ -78,6 +78,13 @@ pub(crate) fn line_segment_rust_guard(dx: f64, dy: f64, dz: f64) -> Result<(), S
 ///
 /// This value is emitted into `$OUT_DIR/line_wire_floors.h` by `build.rs` and
 /// consumed by `cpp/occt_wrapper.cpp` via `#include "line_wire_floors.h"`.
+// `build.rs` includes this file via `#[path]` and only uses this constant there;
+// when `mod floor_constants` is compiled unconditionally into the lib crate on
+// non-OCCT builds, `lib.rs` never imports this symbol (the `use floor_constants::{...}`
+// is `#[cfg(has_occt)]`-gated), so it appears dead. Allow here to match the pattern
+// on `RUST_LINE_WIRE_MIN_LENGTH_SQ` and suppress the `dead_code` clippy lint on
+// OCCT-less developer machines where `hooks/project-checks` runs `-D warnings`.
+#[allow(dead_code)]
 pub(crate) const CPP_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-10;
 
 #[cfg(test)]

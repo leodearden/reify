@@ -1075,6 +1075,7 @@ impl OcctKernel {
 #[cfg(all(test, has_occt))]
 mod tests {
     use super::*;
+    use crate::floor_constants::RUST_GUARD_MARKER;
 
     /// Create a circle face of given `radius`, rotate it into the XZ plane, translate
     /// it `offset_r` along X, and store into `kernel`. Returns a GeometryHandleId
@@ -4670,7 +4671,13 @@ mod tests {
         // (which brackets the *C++* floor, not the Rust one).
         //
         // The below-floor invariant (Rust guard fires and emits the '[rust-guard]' marker)
-        // is covered by the non-OCCT-gated unit test in `floor_constants::tests`.
+        // is covered by two complementary tests:
+        //   • `floor_constants::tests::below_floor_rejects_with_rust_guard_marker` — unit test,
+        //     runs unconditionally (no OCCT required), exercises the guard helper directly.
+        //   • `tests/curve_constructors_integration.rs::line_segment_coincident_points_returns_error`
+        //     — end-to-end integration test that drives the below-floor path through
+        //     `OcctKernel::execute` and asserts the '[rust-guard]' marker appears in the error.
+        //     This catches regressions where the guard helper is no longer wired into the kernel arm.
         //
         // This test covers the above-floor case via `OcctKernel::execute`:
         //   dist_sq = 1.1 × RUST_LINE_WIRE_MIN_LENGTH_SQ — the Rust guard must NOT fire.
@@ -4696,7 +4703,7 @@ mod tests {
         match above_result {
             Err(GeometryError::OperationFailed(msg)) => {
                 assert!(
-                    !msg.contains(crate::floor_constants::RUST_GUARD_MARKER),
+                    !msg.contains(RUST_GUARD_MARKER),
                     "above-floor case must not fire the Rust guard; marker '[rust-guard]' must \
                      be absent in error (C++ rejection expected here), got: {msg:?}. This \
                      indicates the Rust guard was widened to fire above RUST_LINE_WIRE_MIN_LENGTH_SQ."
