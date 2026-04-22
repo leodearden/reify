@@ -45113,23 +45113,26 @@
         "description": "Add a test that exercises the externally observable rejection boundary at the Rust-layer `RUST_LINE_WIRE_MIN_LENGTH_SQ` floor, not just the private constant invariant.",
         "details": "Context: Task 2123 added `rust_line_wire_floor_strictly_below_cpp_floor`, which only validates the constant relationship. Reviewer noted (lib.rs:4664) that raising `RUST_LINE_WIRE_MIN_LENGTH_SQ` from 1e-12 to e.g. 1e-11 would still satisfy the drift-guard but silently change the rejection boundary callers observe.\n\nWork:\n- Add a test that calls `make_line_wire` (via the public Rust API path, exercising the Rust-layer guard, not the FFI path) with dist_sq values just below and just above `RUST_LINE_WIRE_MIN_LENGTH_SQ` (e.g. 0.9 * floor and 1.1 * floor).\n- Assert: the below-floor case returns Err with the expected \"distinct\"/degenerate error message; the above-floor case returns Ok.\n- Place the test near `ffi_make_line_wire_rejects_sub_epsilon_length` in `crates/reify-kernel-occt/src/lib.rs` (~line 4645). Gate on `OCCT_AVAILABLE` if needed.\n- Add a comment referencing that this anchors the observable threshold to complement the constant-relationship drift-guard test.\n\nmemory_hints: search \"task 2123 RUST_LINE_WIRE_MIN_LENGTH_SQ drift guard\", search \"make_line_wire degeneracy threshold ffi_make_line_wire_rejects_sub_epsilon_length\".",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T04:47:30.785Z"
+        "updatedAt": "2026-04-22T04:57:48.948Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-kernel-occt/src/lib.rs"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T04:56:08.365Z",
+      "lastModified": "2026-04-22T04:57:48.949Z",
       "taskCount": 2121,
       "completedCount": 1857,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T04:56:37.758Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
