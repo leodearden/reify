@@ -8547,11 +8547,12 @@
         "id": "397",
         "title": "Review: Eval meta_map performance and refactoring (17 suggestions from task 212)",
         "description": "Triage and address 17 code review suggestions from the task-212 review. Key themes: hot-path clones, code duplication, eager cloning, async safety, test gaps.",
-        "details": "<info added on 2026-04-21T14:28:33.374Z>\nMemory hints have been updated to include entities: [\"evaluate_let_bindings\", \"meta_map\", \"TopologyTemplate\"] and queries: [\"evaluate_let_bindings extract_dependency_trace topological sort\", \"meta_map performance review suggestions task 212\", \"task 470 eliminate redundant computation let_bindings\"]. Note: Task 470 (Eliminate redundant computation in evaluate_let_bindings) was created directly from this review's findings and is currently in-progress. Task 397 was blocked on 2026-04-21T14:20:45Z without a formal dependency recorded; unblocking should be considered once task 470 and other derived implementation tasks complete.\n</info added on 2026-04-21T14:28:33.374Z>",
-        "testStrategy": "",
-        "priority": "low",
-        "dependencies": [],
         "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "details": "<info added on 2026-04-21T14:28:33.374Z>\nMemory hints have been updated to include entities: [\"evaluate_let_bindings\", \"meta_map\", \"TopologyTemplate\"] and queries: [\"evaluate_let_bindings extract_dependency_trace topological sort\", \"meta_map performance review suggestions task 212\", \"task 470 eliminate redundant computation let_bindings\"]. Note: Task 470 (Eliminate redundant computation in evaluate_let_bindings) was created directly from this review's findings and completed via commit 2ab85ba6578c (2026-04-22). Task 397 is now unblocked and pending.\n</info added on 2026-04-21T14:28:33.374Z>",
+        "testStrategy": "",
+        "subtasks": [],
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -8574,10 +8575,8 @@
             ]
           },
           "files": [],
-          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
-        },
-        "subtasks": [],
-        "updatedAt": "2026-04-22T00:55:52.207Z"
+          "_causation_id": "e4f619eb-8acf-4a83-a696-3b1cd5162acb"
+        }
       },
       {
         "id": "398",
@@ -44398,7 +44397,9 @@
       "completedCount": 1830,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:01:49.317Z",
+      "description": "Tasks for master context"
     }
   }
 }
