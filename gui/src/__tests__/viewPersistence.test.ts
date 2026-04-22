@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import type { PersistentViewState } from '../types';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { CameraState } from '../stores/viewportStore';
@@ -8,6 +8,7 @@ import {
   loadViewPersistence,
   saveViewPersistence,
   STORAGE_KEY_PREFIX,
+  createDebouncedSaver,
 } from '../stores/viewPersistence';
 
 /**
@@ -270,5 +271,112 @@ describe('loadViewPersistence', () => {
 
     expect(loadViewPersistence(TEST_PATH)).toBeNull();
     expect(loadViewPersistence(TEST_PATH_B)!.activeViewId).toBe('user:beta');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step-5: createDebouncedSaver tests
+// ---------------------------------------------------------------------------
+
+describe('createDebouncedSaver', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('(a) 3 rapid calls within delayMs produce only 1 localStorage write after delay', () => {
+    const saver = createDebouncedSaver(100);
+    const stateA = makeState({ activeViewId: 'user:a' });
+    const stateB = makeState({ activeViewId: 'user:b' });
+    const stateC = makeState({ activeViewId: 'user:c' });
+
+    saver.schedule(TEST_PATH, stateA);
+    saver.schedule(TEST_PATH, stateB);
+    saver.schedule(TEST_PATH, stateC);
+
+    // No write yet (debounce window still open)
+    expect(localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`)).toBeNull();
+
+    vi.advanceTimersByTime(100);
+
+    // Exactly one write should have happened — with the LAST state
+    const raw = localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw!).activeViewId).toBe('user:c');
+  });
+
+  it('(b) timestamp in the written state reflects the last call time', () => {
+    const saver = createDebouncedSaver(100);
+    // Inject a custom timestamp by using a state with known timestamp
+    const state = makeState({ timestamp: '2026-04-22T12:00:00.000Z' });
+
+    saver.schedule(TEST_PATH, state);
+    vi.advanceTimersByTime(100);
+
+    const raw = localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`);
+    expect(JSON.parse(raw!).timestamp).toBe('2026-04-22T12:00:00.000Z');
+  });
+
+  it('(c) calls after delay write again (each schedule+advance produces a write)', () => {
+    const saver = createDebouncedSaver(100);
+    const state1 = makeState({ activeViewId: 'user:first' });
+    const state2 = makeState({ activeViewId: 'user:second' });
+
+    saver.schedule(TEST_PATH, state1);
+    vi.advanceTimersByTime(100);
+
+    const raw1 = localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`);
+    expect(JSON.parse(raw1!).activeViewId).toBe('user:first');
+
+    saver.schedule(TEST_PATH, state2);
+    vi.advanceTimersByTime(100);
+
+    const raw2 = localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`);
+    expect(JSON.parse(raw2!).activeViewId).toBe('user:second');
+  });
+
+  it('(d) flush() writes immediately without waiting for delay', () => {
+    const saver = createDebouncedSaver(100);
+    const state = makeState({ activeViewId: 'user:flush-test' });
+
+    saver.schedule(TEST_PATH, state);
+
+    // Do NOT advance timers — flush should write immediately
+    expect(localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`)).toBeNull();
+    saver.flush();
+
+    const raw = localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw!).activeViewId).toBe('user:flush-test');
+  });
+
+  it('(d2) after flush, advancing timers does NOT write again', () => {
+    const saver = createDebouncedSaver(100);
+    const state = makeState({ activeViewId: 'user:after-flush' });
+
+    saver.schedule(TEST_PATH, state);
+    saver.flush();
+
+    // Clear to detect any spurious second write
+    localStorage.clear();
+    vi.advanceTimersByTime(200);
+
+    // No second write should have occurred
+    expect(localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`)).toBeNull();
+  });
+
+  it('cancel() prevents the write from happening', () => {
+    const saver = createDebouncedSaver(100);
+    const state = makeState({ activeViewId: 'user:cancelled' });
+
+    saver.schedule(TEST_PATH, state);
+    saver.cancel();
+    vi.advanceTimersByTime(200);
+
+    expect(localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`)).toBeNull();
   });
 });
