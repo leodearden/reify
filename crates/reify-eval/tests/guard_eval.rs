@@ -522,8 +522,9 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
         .edit_param(active_id.clone(), Value::Bool(false))
         .expect("edit_param should succeed");
 
-    // BUG: Block B in edit_param overwrites solver-resolved Auto param with Undef.
-    // After fix, thickness should retain its solver-resolved value.
+    // Regression guard (task 492): Block B in edit_param previously overwrote the
+    // solver-resolved Auto param with Undef. With the Auto-skip fix in place,
+    // thickness must retain its solver-resolved value through guard deactivation.
     let thickness_after = edit_result.values.get(&thickness_id);
     assert!(
         matches!(thickness_after, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
