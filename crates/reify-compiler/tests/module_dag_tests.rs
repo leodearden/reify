@@ -1435,8 +1435,9 @@ fn partial_stdlib_overlay_errors_when_embedded_first_then_fs() {
 /// - On return, deferred commit tries to overwrite Embedded with FileSystem.
 /// - Fixed code must detect the mismatch and return an overlay error.
 ///
-/// Under current (unfixed) code this test FAILS because the deferred write silently
-/// overwrites `Some(Embedded)` and `compile_module` returns `Ok`.
+/// Before the fix, this test would have failed: the deferred write silently
+/// overwrote `Some(Embedded)` and `compile_module` returned `Ok`. The guarded
+/// write now correctly returns `Err`.
 #[test]
 fn partial_stdlib_overlay_errors_when_outer_fs_and_inner_embedded() {
     let _tmp = tempfile::tempdir().unwrap();
@@ -1484,6 +1485,13 @@ fn partial_stdlib_overlay_errors_when_outer_fs_and_inner_embedded() {
     assert!(
         msg.to_lowercase().contains("filesystem") || msg.to_lowercase().contains("embedded"),
         "diagnostic must reference 'filesystem' or 'embedded', got: {}",
+        msg
+    );
+
+    // (c) Must name the offending module (mirrors sibling test assertion shape).
+    assert!(
+        msg.contains("std.foo"),
+        "diagnostic must name the offending module 'std.foo', got: {}",
         msg
     );
 }
