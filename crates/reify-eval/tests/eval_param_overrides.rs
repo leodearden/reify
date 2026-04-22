@@ -189,3 +189,72 @@ fn eval_skips_type_kind_mismatched_override_and_emits_warning_diagnostic() {
         "override must survive a transient type-kind mismatch eval"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// step-7: dimension mismatch skips the override with a Warning diagnostic
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A Scalar-typed cell whose override carries a different SI dimension (here:
+/// a LENGTH override against a MASS cell) is still type-kind compatible —
+/// both sides are `Value::Scalar`/`Type::Scalar` — so this path is distinct
+/// from the type-kind mismatch of step-5. eval() must detect the dimension
+/// drift, skip the override, emit a Warning mentioning "dimension", retain
+/// the override, and fall back to the module default.
+///
+/// Currently FAILS because step-6 only validates type-kind; the Scalar[LENGTH]
+/// override would be accepted into a Scalar[MASS] cell, silently corrupting
+/// the snapshot.
+#[test]
+fn eval_skips_dimension_mismatched_override_and_emits_warning_diagnostic() {
+    let mut engine = fresh_engine();
+    let width_id = ValueCellId::new("S", "width");
+
+    // Module A: width is Scalar[LENGTH]. Set a LENGTH-dimensioned override.
+    let module_a = compile_source("structure S { param width: Scalar = 100mm }");
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&width_id, length_scalar(0.12));
+
+    // Module B: width is now a Mass (still Scalar kind, so the type-kind
+    // guard passes — this is the dimension-mismatch path).
+    let module_b = compile_source("structure S { param width: Mass = 5kg }");
+    let result_b = engine.eval(&module_b);
+
+    // (a) The Mass default wins, not the LENGTH override.
+    let expected_mass_default = Value::Scalar {
+        si_value: 5.0,
+        dimension: DimensionVector::MASS,
+    };
+    assert_eq!(
+        result_b.values.get(&width_id),
+        Some(&expected_mass_default),
+        "dimension-mismatched override must be skipped in favour of the Mass default"
+    );
+
+    // (b) Exactly one Warning mentions the cell + the word "dimension".
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.width"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.width, got: {:?}",
+        result_b.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("dimension"),
+        "dimension-mismatch warning should mention 'dimension', got: {:?}",
+        warnings[0].message
+    );
+
+    // (c) The override is RETAINED — recompile module A, eval, the LENGTH
+    //     override reappears on a matching cell.
+    let module_a_again = compile_source("structure S { param width: Scalar = 100mm }");
+    let result_a2 = engine.eval(&module_a_again);
+    assert_eq!(
+        result_a2.values.get(&width_id),
+        Some(&length_scalar(0.12)),
+        "override must survive a transient dimension-mismatch eval"
+    );
+}
