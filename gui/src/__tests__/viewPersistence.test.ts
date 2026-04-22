@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import type { PersistentViewState } from '../types';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { CameraState } from '../stores/viewportStore';
 import type { VisibilityState } from '../types';
+import {
+  loadViewPersistence,
+  saveViewPersistence,
+  STORAGE_KEY_PREFIX,
+} from '../stores/viewPersistence';
 
 /**
  * Type-level shape test: construct a full PersistentViewState literal and
@@ -138,5 +143,132 @@ describe('PersistentViewState — runtime constructor shape', () => {
 
     expect(state.viewportCameras['vp-left'].position).toEqual([1, 0, 0]);
     expect(state.viewportCameras['vp-right'].zoom).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step-3: loadViewPersistence / saveViewPersistence / STORAGE_KEY_PREFIX tests
+// ---------------------------------------------------------------------------
+
+/** Minimal valid PersistentViewState for testing. */
+function makeState(overrides?: Partial<PersistentViewState>): PersistentViewState {
+  return {
+    version: '1',
+    activeViewId: 'auto:default',
+    userViews: [],
+    explicit: {},
+    viewportCameras: {},
+    timestamp: '2026-04-22T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+const TEST_PATH = '/home/user/project/bracket.ri';
+const TEST_PATH_B = '/home/user/project/other.ri';
+
+describe('STORAGE_KEY_PREFIX', () => {
+  it('is the expected prefix string', () => {
+    expect(STORAGE_KEY_PREFIX).toBe('reify:views:');
+  });
+});
+
+describe('loadViewPersistence', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('(a) returns null when no entry for that path', () => {
+    const result = loadViewPersistence(TEST_PATH);
+    expect(result).toBeNull();
+  });
+
+  it('(b) saveViewPersistence writes JSON under `reify:views:{absPath}`', () => {
+    const state = makeState();
+    saveViewPersistence(TEST_PATH, state);
+    const key = `${STORAGE_KEY_PREFIX}${TEST_PATH}`;
+    const raw = localStorage.getItem(key);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw!).version).toBe('1');
+  });
+
+  it('(c) load parses a valid stored entry round-trip', () => {
+    const state = makeState({
+      activeViewId: 'user:my-view',
+      userViews: [
+        { id: 'user:my-view', name: 'My View', auto: false, visibility: {} },
+      ],
+      explicit: { 'Root.geometry': 'hidden' as VisibilityState },
+    });
+    saveViewPersistence(TEST_PATH, state);
+    const loaded = loadViewPersistence(TEST_PATH);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.version).toBe('1');
+    expect(loaded!.activeViewId).toBe('user:my-view');
+    expect(loaded!.userViews).toHaveLength(1);
+    expect(loaded!.explicit['Root.geometry']).toBe('hidden');
+  });
+
+  it('(d) returns null on corrupt JSON', () => {
+    localStorage.setItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`, '{not valid json!!!');
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+  });
+
+  it('(e) returns null when required field is missing (type-guard)', () => {
+    // version field missing
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({
+        activeViewId: 'auto:default',
+        userViews: [],
+        explicit: {},
+        viewportCameras: {},
+        timestamp: '2026-04-22T00:00:00.000Z',
+        // no version
+      }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+  });
+
+  it('(e2) returns null when userViews is not an array', () => {
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({
+        version: '1',
+        activeViewId: 'auto:default',
+        userViews: 'wrong',
+        explicit: {},
+        viewportCameras: {},
+        timestamp: '2026-04-22T00:00:00.000Z',
+      }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+  });
+
+  it('(f) multi-path isolation — save on path A does not affect path B', () => {
+    const stateA = makeState({ activeViewId: 'user:alpha' });
+    const stateB = makeState({ activeViewId: 'user:beta' });
+
+    saveViewPersistence(TEST_PATH, stateA);
+    saveViewPersistence(TEST_PATH_B, stateB);
+
+    const loadedA = loadViewPersistence(TEST_PATH);
+    const loadedB = loadViewPersistence(TEST_PATH_B);
+
+    expect(loadedA!.activeViewId).toBe('user:alpha');
+    expect(loadedB!.activeViewId).toBe('user:beta');
+  });
+
+  it('(f2) clear path A does not affect path B', () => {
+    const stateA = makeState({ activeViewId: 'user:alpha' });
+    const stateB = makeState({ activeViewId: 'user:beta' });
+
+    saveViewPersistence(TEST_PATH, stateA);
+    saveViewPersistence(TEST_PATH_B, stateB);
+
+    // Remove path A entry
+    localStorage.removeItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`);
+
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+    expect(loadViewPersistence(TEST_PATH_B)!.activeViewId).toBe('user:beta');
   });
 });
