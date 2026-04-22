@@ -24298,8 +24298,14 @@
         "subtasks": [],
         "updatedAt": "2026-04-22T10:01:20.976Z",
         "metadata": {
-          "modules": [],
-          "files": []
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ]
         }
       },
       {
@@ -28049,8 +28055,16 @@
         "subtasks": [],
         "updatedAt": "2026-04-22T10:01:23.445Z",
         "metadata": {
-          "modules": [],
-          "files": []
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/termination.rs",
+            "crates/reify-compiler/tests/guard_compilation.rs",
+            "crates/reify-compiler/tests/termination_check_tests.rs"
+          ]
         }
       },
       {
