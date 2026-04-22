@@ -1918,10 +1918,12 @@ fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
 ///   However, only group 3 actually changed its guard value — groups 0,1,2,4..9
 ///   all have `uN = true` unchanged — so only group 3 needs re-elaboration.
 ///
-/// Without the fix: counter = 10 (Phase 1) + 10 (Phase 3) = 20.
-/// With the fix:    counter = 1  (Phase 1) + 1  (Phase 3) = 2.
+/// Without per-group skip (pre-task-2088):          counter = 10 (Phase 1) + 10 (Phase 3) = 20.
+/// With per-group skip, no cross-phase dedup:       counter =  1 (Phase 1) +  1 (Phase 3) =  2.
+/// With cross-phase dedup via phase1_reelaborated:  counter =  1 (Phase 1) +  0 (Phase 3) =  1.
 ///
 /// Task 2088 — edit_source Phase 1 & 3 per-group skip.
+/// Task 2142 — cross-phase dedup via `phase1_reelaborated` set.
 #[test]
 fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
     let module_a_src = r#"structure S {
@@ -2001,21 +2003,21 @@ fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
         cold_result.values.get(&x3_id)
     );
 
-    // (c) Performance lock: only group 3 must be re-elaborated in Phase 1 and
-    // Phase 3. The other 9 groups have unchanged guard values (uN=true in both
-    // modules) and must be skipped. The guard-expression flip (`u3` → `!u3`)
-    // makes the guard cell content_hash-dirty → Phase 1 fires; the boolean
-    // result flips (true→false with u3=true) → Phase 3 fires. Both phases run
-    // and each skips 9 groups, processing only group 3. Expected total:
-    // 1 (Phase 1) + 1 (Phase 3) = exactly 2.
-    // Without the skip optimization, this counter would be 10 + 10 = 20.
+    // (c) Performance lock: only group 3 must be re-elaborated — in Phase 1
+    // (guard expression content_hash changed) but NOT in Phase 3 (cross-phase
+    // dedup skips it via phase1_reelaborated). The other 9 groups have
+    // unchanged guard values (uN=true in both modules) and must be skipped by
+    // the per-group skip. Expected total: 1 (Phase 1) + 0 (Phase 3) = exactly 1.
+    // Without the cross-phase dedup, this counter would be 1 + 1 = 2.
+    // Without the per-group skip, this counter would be 10 + 10 = 20.
     let counter = incremental.last_guard_phase_group_evals();
     assert_eq!(
-        counter, 2,
-        "expected exactly 2 non-skipped guard-phase group iterations \
-         (1 in Phase 1 + 1 in Phase 3 for the one affected group, \
-         9 per phase skipped); got {} — if 0, the counter increment is \
-         missing from edit_source (instrumentation dropped); \
+        counter, 1,
+        "expected exactly 1 non-skipped guard-phase group iteration \
+         (Phase 1 processes group 3; Phase 3 skips it via phase1_reelaborated); \
+         got {} — if 0, the counter increment is missing from edit_source \
+         (instrumentation dropped); if 2, the cross-phase dedup is broken \
+         (phase1_reelaborated set not populated or not consulted in Phase 3); \
          if > 2, the per-group skip is broken",
         counter
     );
