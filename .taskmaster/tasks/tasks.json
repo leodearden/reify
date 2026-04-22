@@ -45249,6 +45249,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T06:16:19.833Z"
+      },
+      {
+        "id": "2136",
+        "title": "Refine Rust-guard marker exposure and boundary test coverage",
+        "description": "Three post-merge reviewer refinements to the line_wire Rust-guard marker work landed in task 2135: expose RUST_GUARD_MARKER beyond pub(crate) so the integration test can import it, add a positive above-floor unit test that runs without OCCT, and trim an outdated doc block on rust_guard_above_floor_does_not_fire.",
+        "details": "## Context\nTask 2135 introduced a `[rust-guard]` marker in `line_segment_rust_guard`'s error message to decouple boundary tests from C++ error wording. Reviewer (reviewer_comprehensive) flagged three follow-ups after merge:\n\n## Work\n\n1. **Expose `RUST_GUARD_MARKER` as `pub`** (code_reuse).\n   - File: `crates/reify-kernel-occt/src/floor_constants.rs:41`.\n   - Currently `pub(crate) const RUST_GUARD_MARKER: &str = \"[rust-guard]\"`. The integration test `crates/reify-kernel-occt/tests/curve_constructors_integration.rs:31` lives in an external test crate and therefore can't see `pub(crate)` items, so it hardcodes the literal `\"[rust-guard]\"`. The constant is now duplicated in three places (definition, in-crate tests via `use`, and the integration test literal).\n   - Change the visibility to `pub` (and re-export it via the crate root as needed — note `mod floor_constants;` in `lib.rs` — so that `reify_kernel_occt::RUST_GUARD_MARKER` or `reify_kernel_occt::floor_constants::RUST_GUARD_MARKER` resolves from the integration test).\n   - Update `curve_constructors_integration.rs:31` to `import` and use the constant in the `contains(...)` assertion and the error message string.\n   - Confirm the `#[allow(dead_code)]` annotation is still appropriate once visibility widens.\n\n2. **Add an `above_floor_passes` unit test** in `floor_constants.rs` (test_coverage).\n   - Symmetric to the existing `below_floor_rejects_with_rust_guard_marker` (floor_constants.rs:94–117) and to the OCCT-gated `rust_guard_above_floor_does_not_fire` (lib.rs:4667).\n   - Assert `line_segment_rust_guard((1.1 * RUST_LINE_WIRE_MIN_LENGTH_SQ).sqrt(), 0.0, 0.0).is_ok()`.\n   - Runs unconditionally (no OCCT required); catches an inverted predicate (`>` swapped for `<`) regression.\n\n3. **Trim the doc block** on `rust_guard_above_floor_does_not_fire` (test_coverage/style).\n   - File: `crates/reify-kernel-occt/src/lib.rs:4667`.\n   - The comment (lib.rs:4668–4689) spends more lines re-describing the below-floor coverage (now in the other two tests) than describing what *this* test asserts. Trim to ~4–6 lines focusing on: (a) the above-floor assertion and why Ok isn't *required* (CPP floor is 100× above Rust floor, so C++ still rejects), (b) a single-line pointer to the two below-floor tests.\n\n## Acceptance\n- `RUST_GUARD_MARKER` has a single source of truth; integration test imports it rather than duplicating the literal.\n- `cargo test -p reify-kernel-occt --lib` (no OCCT) runs both `below_floor_rejects_with_rust_guard_marker` and the new `above_floor_passes`.\n- `cargo test -p reify-kernel-occt` (with OCCT) continues to pass.\n- The `rust_guard_above_floor_does_not_fire` doc block is concise and matches the test's scope.\n\n## Dismissed\nNone — all three suggestions accepted.\n\nmemory_hints: search \"task 2135 RUST_GUARD_MARKER\", search \"line_segment_rust_guard floor_constants\", search \"rust_guard_above_floor_does_not_fire test coverage\".",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45258,7 +45269,10 @@
       "completedCount": 1866,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T06:49:12.217Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T06:49:12.239Z"
     }
   }
 }
