@@ -6,9 +6,7 @@
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{
-    ExportFormat, GeometryKernel, GeometryOp, GeometryQuery, ModulePath, Severity, Type, Value,
-};
+use reify_types::{ExportFormat, GeometryOp, GeometryQuery, ModulePath, Severity, Type, Value};
 
 /// Exercises the full compile -> eval path for Tube.
 ///
