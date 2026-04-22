@@ -38725,11 +38725,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:06.220Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src/geometry.rs",
-            "crates/reify-compiler/src/geometry_curve.rs",
-            "crates/reify-compiler/src/lib.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
@@ -38744,9 +38741,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:06.284Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src/lib.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
