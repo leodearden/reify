@@ -44576,6 +44576,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T01:58:43.495Z"
+      },
+      {
+        "id": "2106",
+        "title": "Pipe start-tangent guard: reject NaN, include tolerance in error, add -Z test",
+        "description": "Three polish fixes in crates/reify-kernel-occt/src/lib.rs (task-2095 follow-up): NaN guard, error-message tolerance, and -Z test coverage.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44585,7 +44596,10 @@
       "completedCount": 1836,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T02:01:22.926Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T02:01:22.981Z"
     }
   }
 }
