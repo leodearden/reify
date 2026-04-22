@@ -383,4 +383,31 @@ mod tests {
             other => panic!("expected Modify(Chamfer), got {:?}", other),
         }
     }
+
+    #[test]
+    fn compile_modify_op_fillet_preserves_step0() {
+        // fillet is registered in geometry_arg_indices() — so geom_ref(0) is used.
+        // When the first arg is a scalar param (not a geometry let), the resolution
+        // block finds no ops for it, so geom_ref(0) falls back to GeomRef::Step(step_offset).
+        // With no sub-ops, step_offset == 0, so the target is GeomRef::Step(0).
+        let source = r#"structure S {
+    param target: Scalar = 5mm
+    param r: Scalar = 2mm
+    let result = fillet(target, r)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fillet_step0"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = crate::compile(&parsed);
+        assert!(compiled.diagnostics.is_empty(), "unexpected diagnostics: {:?}", compiled.diagnostics);
+        let ops = &compiled.templates[0].realizations[0].operations;
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify { kind: ModifyKind::Fillet, target: op_target, .. } => {
+                // Non-geometry target → geom_ref(0) falls back to GeomRef::Step(0)
+                assert_eq!(*op_target, GeomRef::Step(0),
+                    "fillet with non-geometry target should fall back to GeomRef::Step(0), got {:?}", op_target);
+            }
+            other => panic!("expected Modify(Fillet), got {:?}", other),
+        }
+    }
 }
