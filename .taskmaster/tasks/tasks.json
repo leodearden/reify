@@ -45483,6 +45483,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-22T09:54:13.836Z"
+      },
+      {
+        "id": "2148",
+        "title": "Test coverage: role-flip/added-member + edit_source cross-phase dedup",
+        "description": "edit_source Phase 1 (engine_edit.rs:1583-1590) inserts into phase1_reelaborated AFTER the guard-unchanged skip that also checks !has_added_in_group && !has_role_flipped_guard_member. Groups reached via role-flip or added-member triggers with unchanged guard value still land in the dedup set, so Phase 3 will skip them. Task 2142's new test only exercises the guard-value-changed path; role-flip/added-member interaction with the dedup and post-wave2 cleanup is uncovered.\n\nFix: Add a regression test combining role-flipped guard member + resolver re-evaluation (wave2) + Phase 3 trigger, asserting cold-eval-equivalent results and expected last_guard_phase_group_evals count. Alternative: extend existing edit_source_role_flipped_guard_member_matches_cold_eval to run under a source edit that triggers wave2.\n\nSource: esc-2142-102, reviewer_comprehensive.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45492,7 +45503,10 @@
       "completedCount": 1873,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T09:57:30.921Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T09:57:30.942Z"
     }
   }
 }
