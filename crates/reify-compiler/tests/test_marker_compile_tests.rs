@@ -3,6 +3,7 @@
 //!
 //! Task 267: @test compiler support.
 
+use reify_compiler::find_template;
 use reify_test_support::{compile_source, errors_only, warnings_only};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -325,8 +326,8 @@ fn topology_template_is_test_method_matches_annotation() {
     let module = compile_source(source);
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
-    let test_tmpl = module.templates.iter().find(|t| t.name == "TestS").unwrap();
-    let normal_tmpl = module.templates.iter().find(|t| t.name == "NormalS").unwrap();
+    let test_tmpl = find_template(&module.templates, "TestS").unwrap();
+    let normal_tmpl = find_template(&module.templates, "NormalS").unwrap();
 
     assert!(test_tmpl.is_test(), "expected is_test() == true for @test structure");
     assert!(!normal_tmpl.is_test(), "expected is_test() == false for normal structure");
