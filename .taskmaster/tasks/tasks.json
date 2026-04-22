@@ -24671,10 +24671,13 @@
             ]
           },
           "done_provenance": {
-            "commit": "e2de46274573a4a6bb1ebc0dde6fd3126342f0c8",
-            "commit_input": "e2de46274",
-            "note": "Superseded by Task 1570 step-2 which collapsed the duplicate compiled_templates lookup in entity.rs Sub handler and unified sub_member_types with collection_sub_member_types in scope.rs. The file:line coordinates in the original description are obsolete; the named fields no longer exist in the current tree."
-          }
+            "commit": null,
+            "note": "Superseded by Task 1570 step-2 which collapsed the duplicate compiled_templates lookup in entity.rs Sub handler and unified sub_member_types with collection_sub_member_types in scope.rs. The file:line coordinates in the original description are obsolete; the named fields no longer exist in the current tree.",
+            "superseded_by": "1570",
+            "stale_commit_cleared_at": "2026-04-22",
+            "cleared_by": "recon-stage-task_knowledge_sync"
+          },
+          "_causation_id": "d483d5f6-cc64-4374-b7d1-d595a864247b"
         },
         "updatedAt": "2026-04-22T10:04:56.334Z"
       },
@@ -45619,7 +45622,9 @@
       "completedCount": 1883,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T16:10:11.109Z",
+      "description": "Tasks for master context"
     }
   }
 }
