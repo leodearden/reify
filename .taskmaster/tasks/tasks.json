@@ -12390,7 +12390,7 @@
         "id": "555",
         "title": "Replace fragile unwrap and unreachable patterns in eval let-binding code",
         "description": "Four code-quality improvements to the evaluate_let_bindings path in reify-eval: fix a misleading inline comment, lock in duplicate-read semantics in the characterization test, replace fragile filter+unwrap chains with filter_map, and replace unreachable!() panics with graceful diagnostics.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "1. **Comment accuracy** (`crates/reify-eval/src/engine_eval.rs:1158-1160`): The inline comment currently says \"Using remove() avoids a Vec clone compared to indexing+clone.\" That captures the micro-choice but misses the bigger win from task 470 (eliminating a redundant second `extract_dependency_trace(expr)` walk). Reword to: \"Using remove() avoids a second walk of the expression tree — extract_dependency_trace was already called above for every let cell — and also avoids the Vec clone you'd get with indexing+clone.\"\n\n2. **Test robustness** (`crates/reify-eval/tests/boundary5_engine.rs:1118-1141`): The test converts `dependency_trace.reads` (Vec<ValueCellId>) into a HashSet for comparison. `collect_value_refs` is documented to preserve duplicates (see `extract_dependency_trace_preserves_duplicate_reads_for_same_cell_in_binop`); a HashSet comparison silently tolerates regressions that drop or add duplicates. Replace with a sorted Vec comparison (or multiset equality + length assertion) so duplicate-handling semantics are locked in.\n\n3. **filter+unwrap → filter_map** (`crates/reify-eval/src/engine_eval.rs ~lines 2916-2917 and ~3715-3719`): The pattern `.filter(|c| c.default_expr.is_some()).map(|c| c.default_expr.as_ref().unwrap())` is safe today but fragile under refactor. Replace with `.filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))`.\n\n4. **unreachable!() → graceful diagnostic** (`crates/reify-eval/src/engine_eval.rs ~lines 2930-2932` and `crates/reify-eval/src/unfold.rs`): In `evaluate_let_bindings` and `elaborate_child_lets_only`, replace `_ => unreachable!()` with a proper diagnostic or error return so unexpected node kinds do not panic in production.",
@@ -12407,9 +12407,12 @@
           ],
           "curator_action": "combine",
           "curator_justification": "The candidate (comment fix in engine_eval.rs:1158-1160 + test robustness fix in boundary5_engine.rs:1118-1141) touches exactly the same two files already in Task 555's file set, both tasks are low-priority code-quality improvements to the evaluate_let_bindings path, and they will serialize on the same module lock. Combining adds zero new files to the lock set, the union stays at 4 files with 4 distinct concerns (well within budget), and splitting boundary5_engine.rs changes across two tasks invi",
-          "combined_at": "2026-04-22T00:39:05.161303+00:00"
+          "combined_at": "2026-04-22T00:39:05.161303+00:00",
+          "done_provenance": {
+            "commit": "e2f9ae68f9a11b198b6a422cf9fa5afe36d325af"
+          }
         },
-        "updatedAt": "2026-04-22T00:40:05.239Z"
+        "updatedAt": "2026-04-22T01:18:16.876Z"
       },
       {
         "id": "556",
@@ -44418,15 +44421,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:10:01.579Z",
-      "taskCount": 2087,
-      "completedCount": 1831,
+      "lastModified": "2026-04-22T01:18:16.876Z",
+      "taskCount": 2088,
+      "completedCount": 1832,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T01:18:08.991Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T01:18:09.009Z"
+      ]
     }
   }
 }
