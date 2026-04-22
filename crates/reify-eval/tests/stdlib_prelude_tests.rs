@@ -374,10 +374,9 @@ structure S {
 /// independent claim: if shadowing silently broke and eval() resolved to the
 /// prelude's `+`, v1/v2 would be 0.007 — this test would fail.
 ///
-/// The `functions_count()` assertion (`count1 == count2`) directly detects
-/// accumulation bugs: if `eval()` appended prelude functions rather than
-/// replacing, the count would grow on every call even though first-match-wins
-/// lookup would still return the same value.
+/// The accumulation-regression guard (eval() must replace, not extend,
+/// `self.functions`) is covered by the unit test
+/// `reify_eval::tests::eval_does_not_accumulate_functions` in `src/lib.rs`.
 #[test]
 fn eval_is_idempotent_for_prelude_functions() {
     let source = r#"
@@ -418,7 +417,6 @@ structure S {
         .get(&cell_id)
         .and_then(|v| v.as_f64())
         .unwrap_or_else(|| panic!("S.v missing or non-numeric on first eval"));
-    let count1 = engine.functions_count();
 
     // Second eval on same engine
     let result2 = engine.eval(&compiled);
@@ -433,14 +431,7 @@ structure S {
         .get(&cell_id)
         .and_then(|v| v.as_f64())
         .unwrap_or_else(|| panic!("S.v missing or non-numeric on second eval"));
-    let count2 = engine.functions_count();
 
-    // Accumulation guard: if eval() appended instead of replaced, count2 > count1.
-    assert_eq!(
-        count1, count2,
-        "eval() must not accumulate functions: count after first eval={} after second={}",
-        count1, count2
-    );
     assert!(
         (v1 - v2).abs() < 1e-9,
         "eval() must be idempotent: first={} second={} (differ by {})",

@@ -131,14 +131,6 @@ impl Engine {
         self.prelude
     }
 
-    /// Returns the number of functions currently loaded in the engine's
-    /// combined function table (user + prelude). Used by integration tests
-    /// to assert that repeated `eval()` calls do not accumulate entries.
-    #[doc(hidden)]
-    pub fn functions_count(&self) -> usize {
-        self.functions.len()
-    }
-
     /// Set the maximum depth for recursive sub-component unfolding.
     /// The default is 64. Lower values are useful for tests to keep execution fast.
     ///
