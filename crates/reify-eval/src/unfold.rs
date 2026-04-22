@@ -179,6 +179,18 @@ pub(crate) fn unfold_recursive_sub<'t>(
                 continue;
             }
         };
+        // Template-role handoff across recursion levels:
+        //
+        // CURRENT level:  scope_template = (caller's child_template)
+        //                 child_template  = this level's child_template (owns next_sub)
+        //
+        // NEXT level:     scope_template  ← this level's child_template
+        //   because child_template owns next_sub, so its value_cells namespace is the
+        //   right key-space for next_sub's guard_expr / arg expressions.
+        //
+        //                 child_template  ← next_child_template
+        //   (the template named by next_sub.structure_name — the target instantiated
+        //   by next_sub at the next depth).
         unfold_recursive_sub(
             values,
             snapshot,
@@ -186,8 +198,8 @@ pub(crate) fn unfold_recursive_sub<'t>(
             journal,
             cache,
             version_id,
-            child_template, // child_template owns next_sub → becomes scope_template
-            next_child_template, // target template for next_sub's structure
+            child_template,      // this level's child_template → next level's scope_template
+            next_child_template, // target of next_sub → next level's child_template
             next_sub,
             &next_entity,
             depth + 1,
