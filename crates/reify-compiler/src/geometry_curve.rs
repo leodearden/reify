@@ -171,4 +171,26 @@ mod tests {
         assert!(result.is_none(), "expected None for wrong arg count");
         assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
     }
+
+    #[test]
+    fn compile_curve_op_prepends_sub_ops() {
+        let marker_sub_ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Sphere,
+            args: vec![("radius".to_string(), scalar_literal(1.0))],
+        }];
+        let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_curve_op("line_segment", args, &mut diagnostics, marker_sub_ops);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_curve_op line_segment should return Some");
+        assert_eq!(ops.len(), 2);
+        match &ops[0] {
+            CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. } => {}
+            other => panic!("expected Primitive(Sphere) at index 0, got {:?}", other),
+        }
+        match &ops[1] {
+            CompiledGeometryOp::Curve { kind: CurveKind::LineSegment, .. } => {}
+            other => panic!("expected Curve(LineSegment) at index 1, got {:?}", other),
+        }
+    }
 }
