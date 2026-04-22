@@ -131,6 +131,10 @@ constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
 /// CPP_AXIS_MAG_SQ_MIN sites in make_prism / make_revolve.
 constexpr double CPP_LINE_WIRE_MIN_LENGTH_SQ = 1e-10;
 
+// --- Internal floor accessors (drift-guard test support) ---
+
+double cpp_line_wire_min_length_sq() { return CPP_LINE_WIRE_MIN_LENGTH_SQ; }
+
 // --- Primitive construction ---
 
 std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
