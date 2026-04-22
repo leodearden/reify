@@ -54,10 +54,20 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
     let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
     for group in groups.iter() {
         for mid in &group.members {
-            old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
+            let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
+            debug_assert!(
+                prev.map_or(true, |(prev_guard, _)| prev_guard == group.guard_cell),
+                "ValueCellId {:?} appeared in multiple guarded-group roles",
+                mid
+            );
         }
         for mid in &group.else_members {
-            old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
+            let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
+            debug_assert!(
+                prev.map_or(true, |(prev_guard, _)| prev_guard == group.guard_cell),
+                "ValueCellId {:?} appeared in multiple guarded-group roles",
+                mid
+            );
         }
     }
     old_roles
