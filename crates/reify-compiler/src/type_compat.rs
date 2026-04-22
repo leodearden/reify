@@ -146,9 +146,6 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     if param_ty.is_error() || arg_ty.is_error() {
         return true;
     }
-    if param_ty == arg_ty {
-        return true;
-    }
     // Allow Int→Real widening coercion
     if matches!((param_ty, arg_ty), (Type::Real, Type::Int)) {
         return true;
