@@ -13,7 +13,7 @@ use reify_types::{
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
-use crate::graph::EvaluationGraph;
+use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
@@ -35,6 +35,32 @@ pub(crate) fn deactivate_if_not_auto(
         values.insert(id.clone(), Value::Undef);
         snapshot_values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
     }
+}
+
+/// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
+/// probe in `Engine::edit_source`.
+///
+/// The returned map is keyed by `ValueCellId` and maps to
+/// `(guard_cell, branch_tag)` where `branch_tag` is `0u8` for `members`
+/// (guard = true) and `1u8` for `else_members` (guard = false).
+///
+/// # Panics (debug builds only)
+///
+/// In debug builds the function panics if any `ValueCellId` appears in more
+/// than one `(group, branch)` position, enforcing the invariant that every
+/// cell belongs to at most one guarded-group role.
+fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (ValueCellId, u8)> {
+    let capacity: usize = groups.iter().map(|g| g.members.len() + g.else_members.len()).sum();
+    let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
+    for group in groups.iter() {
+        for mid in &group.members {
+            old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
+        }
+        for mid in &group.else_members {
+            old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
+        }
+    }
+    old_roles
 }
 
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
@@ -1368,16 +1394,7 @@ impl Engine {
                 false
             } else {
                 // Build old role map once.
-                let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> =
-                    HashMap::with_capacity(old_groups.iter().map(|g| g.members.len() + g.else_members.len()).sum());
-                for group in old_groups.iter() {
-                    for mid in &group.members {
-                        old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
-                    }
-                    for mid in &group.else_members {
-                        old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
-                    }
-                }
+                let old_roles = build_old_role_map(old_groups);
                 // Walk new groups, short-circuit on first mismatch.
                 let mut new_total = 0usize;
                 let mut flipped = false;
