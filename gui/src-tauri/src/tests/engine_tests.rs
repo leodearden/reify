@@ -5,6 +5,7 @@ use reify_test_support::{
     FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_with_width,
     warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
+use reify_compiler::find_template;
 use reify_types::ExportFormat;
 
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
@@ -2393,7 +2394,7 @@ fn get_entity_tree_collection_sub_has_list_type_name() {
         .build();
 
     // Verify the compiled module sub is marked as collection
-    let assembly = compiled.templates.iter().find(|t| t.name == "Assembly").unwrap();
+    let assembly = find_template(&compiled.templates, "Assembly").unwrap();
     let bolts_sub = assembly.sub_components.iter().find(|s| s.name == "bolts").unwrap();
     assert!(bolts_sub.is_collection, "collection sub should have is_collection=true");
     assert_eq!(bolts_sub.structure_name, "Bolt");
@@ -2984,10 +2985,7 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
         .template(template_a)
         .build();
 
-    let a_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "A")
+    let a_template = find_template(&compiled.templates, "A")
         .expect("template A must be in the module");
 
     // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
@@ -3031,8 +3029,8 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
         .template(template_b)
         .build();
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").unwrap();
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").unwrap();
+    let a_template = find_template(&compiled.templates, "A").unwrap();
+    let b_template = find_template(&compiled.templates, "B").unwrap();
 
     // BEFORE step-16 fix: A → B → A → … stack overflow.
     // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
@@ -3088,10 +3086,7 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
         .template(template_a)
         .build();
 
-    let container_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "Container")
+    let container_template = find_template(&compiled.templates, "Container")
         .unwrap();
 
     // BEFORE step-16 fix: Container → A → A → … stack overflow.
