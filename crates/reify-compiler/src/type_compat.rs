@@ -114,12 +114,30 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
     }
 }
 
-/// Check if an argument type is compatible with a parameter type.
-/// Exact match always works. Int→Real widening is allowed.
-/// Implicit tensor/vector/matrix conversions are also checked (bidirectional).
+/// Check if an argument type is compatible with a declared parameter/annotation type.
 ///
-/// Not used in overload resolution (which uses exact matching), but used
-/// in trait conformance and field composition checks.
+/// Returns `true` when `arg_ty` can be used where `param_ty` is declared, under
+/// any of the following rules:
+/// - **Identity**: `param_ty == arg_ty` (delegated to `implicitly_converts_to`).
+/// - **Int→Real widening**: whole-number literals parse as `Int` and must be
+///   accepted where `Real` is annotated (e.g. `let x : Real = 42` at
+///   `conformance.rs:591`).
+/// - **Bidirectional implicit conversions**: calls `implicitly_converts_to` in
+///   **both** directions (`param→arg` and `arg→param`), so the explicitly
+///   one-way Rule 3 (`Tensor<2,N,Q>→Matrix<N,N,Q>`) appears symmetric here.
+///   This is intentional for trait-let-binding annotation checks
+///   (`conformance.rs:591`), where either annotation direction must be accepted.
+///
+/// # When to use `implicitly_converts_to` directly
+///
+/// **Use `implicitly_converts_to` directly when direction matters:**
+/// - Trait member conformance (`conformance.rs:384`): producer type must convert
+///   *to* the trait's declared type — direction is fixed.
+/// - Field composition (`functions.rs:289`): inner codomain must convert *to*
+///   outer domain — direction is fixed.
+///
+/// Using `type_compatible` at those sites would silently accept
+/// `Matrix<3,3,Q>→Tensor<2,3,Q>` even though Rule 3 is one-way.
 ///
 /// # Error-wildcard contract (task-448 / task-1918)
 ///
