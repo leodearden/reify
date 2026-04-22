@@ -8491,13 +8491,9 @@
         "dependencies": [],
         "status": "deferred",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src"
-          ],
+          "modules": [],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-compiler/src/lib.rs"
-          ]
+          "files": []
         },
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:03.407Z"
@@ -8512,14 +8508,9 @@
         "dependencies": [],
         "status": "deferred",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src"
-          ],
+          "modules": [],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/type_compat.rs"
-          ]
+          "files": []
         },
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:03.482Z"
@@ -9281,12 +9272,8 @@
         "updatedAt": "2026-04-20T12:20:03.699Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-compiler/src/lib.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/src"
-          ]
+          "files": [],
+          "modules": []
         }
       },
       {
