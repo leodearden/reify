@@ -44968,7 +44968,25 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T04:03:16.380Z"
+        "updatedAt": "2026-04-22T04:03:16.380Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-types/src/geometry.rs",
+            "crates/reify-kernel-occt/src/lib.rs",
+            "crates/reify-eval/tests/sweep_guided_e2e.rs",
+            "crates/reify-eval/tests/sweep_e2e.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests",
+            "crates/reify-types/src",
+            "crates/reify-kernel-occt/src"
+          ]
+        }
       },
       {
         "id": "2123",
@@ -44980,7 +44998,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T04:03:47.513Z"
+        "updatedAt": "2026-04-22T04:03:47.513Z",
+        "metadata": {
+          "files": [
+            "crates/reify-kernel-occt/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-kernel-occt/src"
+          ]
+        }
       },
       {
         "id": "2124",
@@ -44991,7 +45017,19 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/viewport/DualViewport.tsx",
+            "gui/src/stores/viewportStore.ts",
+            "gui/src/components/Splitter.tsx"
+          ],
+          "modules": [
+            "gui/src/viewport",
+            "gui/src/stores",
+            "gui/src/components"
+          ]
+        }
       }
     ],
     "metadata": {
