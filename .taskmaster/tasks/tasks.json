@@ -45395,7 +45395,19 @@
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/tests/guard_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "phase1_reelaborated",
+              "engine_edit.rs",
+              "guarded_groups"
+            ],
+            "queries": [
+              "post-wave2 cleanup phase1_reelaborated edit_param inactive member guard group skipped",
+              "phase1 skipped dirty-guard group inactive member wave2 corruption Undef",
+              "edit_param wave2 does not corrupt inactive members test coverage gap"
+            ]
+          }
         }
       },
       {
