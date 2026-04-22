@@ -10353,7 +10353,7 @@
         "id": "471",
         "title": "Code clarity: comments, naming fixes, and guard loop consolidation",
         "description": "Apply five code-clarity and hardening improvements across engine_edit.rs and adjacent eval/runtime files.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "1. **crates/reify-eval/src/engine_edit.rs — bind eval_state borrow in edit_source**: `self.eval_state.as_ref().unwrap()` appears 7+ times in `edit_source` (around lines 915, 945, 961, 965, 1002, 1064, 1602-1607, 1700-1703), each guarded only by the early `if self.eval_state.is_none()` return. A future refactor that takes a `&mut self` path clearing `eval_state` mid-function would turn every unwrap into a panic vector. The single `old_state` binding in the step-8 seeding scope (line 1064) is the right pattern — bind `let eval_state = self.eval_state.as_ref().unwrap();` once at the top of the guarded section and replace all subsequent `.as_ref().unwrap()` calls with the bound variable.\n\n2. **crates/reify-eval/src/engine_edit.rs — consolidate guard loops in edit_param re-elaboration** (originally crates/reify-eval/src/lib.rs lines 1561-1594, now in engine_edit.rs): Consolidate the guard member/else_member loops in the edit_param re-elaboration path to use the same `for (cells, is_active) in [...]` pattern.\n\n3. **crates/reify-eval/src/engine_eval.rs — comment on merged Analytical|Composed match arm**: Add a comment explaining why the Analytical and Composed evaluation paths share the same match arm.\n\n4. **crates/reify-runtime/src/concurrent_eval.rs — document values/snapshot_values invariant**: Add inline documentation for the `values`/`snapshot_values` invariant in `edit_check_concurrent`.\n\n5. **crates/reify-runtime/tests/concurrent_eval.rs — rename test**: Rename `concurrent_eval_large_graph_no_quadratic_clone` to `concurrent_eval_100_node_chain_correctness` (or add an allocation/timing guard to make the assertion meaningful).\n\nFrom review of task 397 (esc-397-121) and steward-triage from task 2016.",
@@ -10370,9 +10370,12 @@
           ],
           "curator_action": "combine",
           "curator_justification": "Candidate is a tiny single-file code-clarity fix to engine_edit.rs — the same file and the same low-priority clarity theme as Task 471 item 4 (guard loop consolidation). Both tasks will serialize on the same module lock (reify-eval/src), there is zero lost parallelism, and the combined task stays under 5 concerns and 5 files well within the planning budget. The candidate alone is under 300 chars of real detail, making standalone orchestrator overhead disproportionate.",
-          "combined_at": "2026-04-21T22:20:09.932389+00:00"
+          "combined_at": "2026-04-21T22:20:09.932389+00:00",
+          "done_provenance": {
+            "commit": "d4e617bd0aad570a76e208f650e41f2fb527f5cf"
+          }
         },
-        "updatedAt": "2026-04-22T03:01:12.175Z"
+        "updatedAt": "2026-04-22T03:54:36.315Z"
       },
       {
         "id": "472",
@@ -44949,9 +44952,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T03:54:33.543Z",
+      "lastModified": "2026-04-22T03:54:36.315Z",
       "taskCount": 2113,
-      "completedCount": 1848,
+      "completedCount": 1849,
       "tags": [
         "master"
       ]
