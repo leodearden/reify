@@ -8562,16 +8562,9 @@
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "evaluate_let_bindings",
-              "meta_map",
-              "TopologyTemplate",
-              "extract_dependency_trace"
-            ],
+            "entities": [],
             "queries": [
-              "evaluate_let_bindings extract_dependency_trace topological sort redundant computation",
-              "meta_map performance review suggestions task 212 hot-path clones",
-              "task 470 eliminate redundant computation let_bindings TopologyTemplate pre-compute"
+              "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
             ]
           },
           "files": [],
@@ -44952,6 +44945,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-22T03:54:33.542Z"
+      },
+      {
+        "id": "2122",
+        "title": "Migrate SweepGuided off inert geom-ref placeholder args",
+        "description": "Finish the SweepKind::Sweep/Pipe migration from task 383 S6 by removing the inert geom-ref placeholder args from SweepKind::SweepGuided so all three sweep variants share one shape.",
+        "details": "Context: task 383 S6 migrated SweepKind::Sweep (empty args) and SweepKind::Pipe (radius-only args) away from storing the raw compiled profile/path expressions as positional placeholder args that eval never reads. SweepKind::SweepGuided (in crates/reify-compiler/src/geometry.rs around line 748) still emits the inert geom-ref placeholder args for profile/path/guide. A TODO comment at the call site documents this but leaves the divergence open-ended.\n\nWork:\n- Drop the placeholder args[\"profile\"], args[\"path\"], args[\"guide\"] emission from the SweepGuided arm in reify-compiler/src/geometry.rs.\n- Remove the corresponding unused lookups from the eval side (crates/reify-eval/src/geometry_ops.rs) if any still read those keys for SweepGuided.\n- Update/extend compile_api_tests.rs with a test mirroring compile_sweep_emits_empty_args / compile_pipe_omits_path_placeholder for SweepGuided.\n- Extend sweep_e2e.rs as needed (the original task 383 S6 removed dummy args; keep SweepGuided callers consistent).\n\nModules: crates/reify-compiler/src/geometry.rs, crates/reify-compiler/src/types.rs, crates/reify-compiler/tests/compile_api_tests.rs, crates/reify-eval/src/geometry_ops.rs, crates/reify-eval/tests/sweep_e2e.rs\n\nmemory_hints: search \"task 383 S6 Sweep args placeholder\", search \"SweepGuided compile emit\".",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44961,7 +44965,10 @@
       "completedCount": 1850,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T04:02:50.636Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T04:03:10.482Z"
     }
   }
 }
