@@ -1338,14 +1338,189 @@ structure def Widget {
     );
 }
 
-// ── Coverage gap 5 (objectives refresh) is deferred ──────────────────────────
-//
-// Step-5 requires a custom constraint solver (auto params are not in the source
-// grammar; all resolution tests use `TopologyTemplateBuilder.auto_param(...)`
-// with a `SequencedMockConstraintSolver`).  The SimpleConstraintChecker used
-// throughout this file does not implement `solve`, so objective changes have no
-// observable effect without a real solver.  A follow-up task will implement
-// this test using the builder API + a mock solver.
+// ── Coverage gap 5: Step-11 objectives table refresh ─────────────────────────
+
+/// Flipping a template's objective from `Minimize` to `Maximize` (while also
+/// adding a constraint so the dirty cone touches the auto-param group) must cause
+/// `edit_source` to forward the *new* `Maximize` objective to the solver —
+/// matching a cold `eval(B)`.
+///
+/// If Step-11's `self.objectives.clear(); self.objectives.insert(...)` refresh at
+/// `engine_edit.rs:1221-1225` were skipped, `self.objectives` would still carry
+/// the stale `Minimize` objective from `eval(A)`, and the solver would receive
+/// `Minimize` instead of `Maximize` during the `edit_source(B)` resolution phase.
+/// The spy assertion on `captured_problems[1].objective` catches this divergence.
+///
+/// Design: the added constraint (`thickness > 3mm`) in module_b changes the
+/// template's content_hash, puts the new `ConstraintNodeId` in `dirty_cone`,
+/// and — because it references the auto-param — sets `constraints_dirty = true`,
+/// triggering the solver phase in `edit_source`. The spy captures what objective
+/// the engine forwarded to the solver on that call.
+///
+/// NOTE: `auto` params are not available in the reify source grammar (confirmed
+/// 2026-04-22); this test uses `TopologyTemplateBuilder` + `MockConstraintChecker`
+/// + `MultiCallSpyConstraintSolver` / `MockConstraintSolver` for its fixtures,
+/// unlike the other 9 tests which use `parse_and_compile`.
+///
+/// Task 2087 — coverage gap 5.
+#[test]
+fn edit_source_refreshes_objectives_against_cold_eval() {
+    use std::collections::HashMap;
+    use reify_test_support::{
+        CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
+        MultiCallSpyConstraintSolver, TopologyTemplateBuilder, gt, lt, literal, mm, value_ref,
+    };
+    use reify_types::{ModulePath, OptimizationObjective, SolveResult, Type};
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    // Pre-configure solver return values.
+    // Call 1 (eval module_a, Minimize): returns thickness = 2mm (simulates near-lower-bound).
+    let mut min_solved: HashMap<ValueCellId, Value> = HashMap::new();
+    min_solved.insert(thickness_id.clone(), mm(2.0));
+    // Call 2 (edit_source module_b, Maximize): returns thickness = 15mm (simulates near-upper-bound).
+    let mut max_solved: HashMap<ValueCellId, Value> = HashMap::new();
+    max_solved.insert(thickness_id.clone(), mm(15.0));
+
+    // Module A: auto thickness, constraint thickness < 20mm, objective Minimize.
+    let template_a = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            lt(value_ref("S", "thickness"), literal(mm(20.0))),
+        )
+        .objective(OptimizationObjective::Minimize(value_ref(
+            "S",
+            "thickness",
+        )))
+        .build();
+
+    let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .build();
+
+    // Module B: same auto param + unchanged constraint 0, plus ADDED constraint 1
+    // (thickness > 3mm) and objective changed to Maximize.
+    //
+    // The added constraint changes the template's content_hash so edit_source sees
+    // a structural change. Constraint 1 is added to `added_constraints` →
+    // `dirty_cone` → `constraints_dirty = true` → solver phase runs.
+    //
+    // Step-11 must refresh `self.objectives` so that the solver receives Maximize.
+    // If the refresh is skipped, the spy captures Minimize on call 2.
+    let template_b = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            lt(value_ref("S", "thickness"), literal(mm(20.0))),
+        )
+        .constraint(
+            "S",
+            1,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(3.0))),
+        )
+        .objective(OptimizationObjective::Maximize(value_ref(
+            "S",
+            "thickness",
+        )))
+        .build();
+
+    let module_b = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_b)
+        .build();
+
+    // Incremental engine: spy captures every ResolutionProblem in call order.
+    // Call 0: eval(module_a) → receives Minimize objective → returns mm(2.0).
+    // Call 1: edit_source(module_b) → should receive Maximize → returns mm(15.0).
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: min_solved,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: max_solved.clone(),
+            unique: true,
+        },
+    ]);
+    let captured = spy.captured_problems();
+
+    let mut incremental = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy));
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    // Cold engine: single call (eval(module_b)) should receive Maximize and return mm(15.0).
+    let cold_solver = MockConstraintSolver::new_solved(max_solved.clone());
+    let mut cold = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(cold_solver));
+    let cold_result = cold.eval(&module_b);
+
+    // ── Objective spy assertion ───────────────────────────────────────────────
+    // The spy must have recorded exactly 2 calls: eval(A) and edit_source(B).
+    // If only 1 call was recorded, the solver was not re-invoked during edit_source
+    // (constraints_dirty was false — the test setup is wrong).
+    let problems = captured.lock().unwrap();
+    assert_eq!(
+        problems.len(),
+        2,
+        "expected 2 solver calls (eval(A) + edit_source(B)), got {}; \
+         if 1, edit_source did not trigger the solver (constraints not dirty)",
+        problems.len()
+    );
+
+    // Call 0 (eval(A)): objective must be Minimize.
+    assert!(
+        matches!(
+            &problems[0].objective,
+            Some(OptimizationObjective::Minimize(_))
+        ),
+        "eval(A) should forward Minimize objective, got: {:?}",
+        problems[0].objective
+    );
+
+    // Call 1 (edit_source(B)): objective must be Maximize — proving Step-11 refreshed
+    // self.objectives before the solver phase ran.
+    assert!(
+        matches!(
+            &problems[1].objective,
+            Some(OptimizationObjective::Maximize(_))
+        ),
+        "edit_source(B) should forward the refreshed Maximize objective; \
+         got {:?} — likely self.objectives was not refreshed in edit_source \
+         (stale Minimize carried from eval(A))",
+        problems[1].objective
+    );
+    drop(problems); // release lock before cross-check
+
+    // ── Cross-check: resolved_params must agree ───────────────────────────────
+    // Both incremental and cold paths resolve thickness = mm(15.0).
+    // If objectives were not refreshed, the incremental solver would still
+    // get Minimize but return mm(15.0) from the pre-configured sequence —
+    // so the cross-check alone is not sufficient to detect the bug; the spy
+    // assertion above is the primary detector.
+    assert_eq!(
+        incr.resolved_params.get(&thickness_id),
+        cold_result.resolved_params.get(&thickness_id),
+        "resolved_params[thickness] diverges between incremental and cold; \
+         incremental={:?}, cold={:?}",
+        incr.resolved_params.get(&thickness_id),
+        cold_result.resolved_params.get(&thickness_id),
+    );
+
+    // Anchor: both paths must resolve thickness = mm(15.0).
+    assert_eq!(
+        incr.resolved_params.get(&thickness_id),
+        Some(&mm(15.0)),
+        "incremental resolved thickness should be mm(15.0) from the sequenced solver"
+    );
+}
 
 // ── Coverage gap 6: removed cell whose dependents remain ─────────────────────
 
