@@ -44278,7 +44278,18 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine",
+              "guarded_groups"
+            ],
+            "queries": [
+              "edit_source role-flipped guard member inactive active branch deactivate_if_not_auto",
+              "Phase 1 activation deactivation guarded group member test cold eval"
+            ]
+          },
+          "_causation_id": "1ba4db3a-cd2f-4470-9c7e-06f9d0b2963f"
         }
       },
       {
@@ -44355,7 +44366,9 @@
       "completedCount": 1828,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T00:55:59.728Z",
+      "description": "Tasks for master context"
     }
   }
 }
