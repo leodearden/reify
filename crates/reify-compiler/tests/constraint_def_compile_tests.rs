@@ -1273,6 +1273,10 @@ fn constraint_def_with_nonpub_prelude_structure_param_type_compiles_cleanly() {
 /// Fails on the unpatched compiler because the current message is
 /// `"unknown type '{}' in param '{}' of constraint def '{}'"` with no
 /// category listing.
+///
+/// Pins both 'structure' and 'occurrence' because `structure_names` accepts
+/// entities of either kind, and the diagnostic must name both so users know
+/// what is actually valid.
 #[test]
 fn constraint_def_unknown_type_error_lists_acceptable_categories() {
     let source = r#"
@@ -1309,6 +1313,16 @@ constraint def Foo {
         msg.contains("structure"),
         "expected error message to mention 'structure' as an accepted category \
          (the new category added by this patch), got: {:?}",
+        unknown_type_errors[0].message
+    );
+
+    // (iii) The message must also mention 'occurrence' — structure_names is
+    // built from entities whose kind is either "structure" OR "occurrence",
+    // so the diagnostic must name both to correctly describe what is accepted.
+    assert!(
+        msg.contains("occurrence"),
+        "expected error message to mention 'occurrence' as an accepted category \
+         (structure_names accepts both structure AND occurrence names), got: {:?}",
         unknown_type_errors[0].message
     );
 }
