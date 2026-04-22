@@ -1974,6 +1974,11 @@ impl Engine {
                         {
                             continue;
                         }
+                        // Silent-zero for non-Int/non-Undef values is intentional:
+                        // this sub is *being removed* so emitting a warning about a
+                        // now-gone count cell would be noisy. `resolve_count` below
+                        // emits diagnostics only for *surviving* subs where an
+                        // unexpected count type would actually affect the result.
                         let old_count = old_snapshot_values
                             .get(&old_sub.count_cell)
                             .map(|(v, _)| match v {
