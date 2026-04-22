@@ -181,6 +181,14 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 /// Re-apply tracked user overrides to the engine after `eval()` has rebuilt the snapshot
 /// from module defaults.
 ///
+/// Overrides are iterated **in place by reference** (`state.user_overrides.iter()`) — no
+/// full-Vec clone is needed.  `state.engine` and `state.user_overrides` are disjoint
+/// fields of `CliState`, so the partial mutable borrow of `state.engine` (via
+/// `state.engine.as_mut()`) coexists with the immutable iter borrow of
+/// `state.user_overrides` under NLL.  See `set_parameter` (around line 645) for the same
+/// disjoint-field borrow idiom.  Do not reintroduce the clone — the borrow checker does
+/// not require it.
+///
 /// Three cases are distinguished:
 ///
 /// - **`Ok`** — the cell exists and accepted the value; `set_param_and_invalidate` is
@@ -223,20 +231,25 @@ fn reapply_user_overrides(state: &mut CliState) {
         state.warned_overrides.clear();
         return;
     }
-    let overrides: Vec<(ValueCellId, Value)> = state.user_overrides.clone();
 
     // Phase 1: apply overrides to the engine; collect outcomes without accessing
     // `state.warned_overrides` while the engine is mutably borrowed.
+    //
+    // `state.engine` and `state.user_overrides` are disjoint fields, so the
+    // partial mutable borrow of `state.engine` (via `as_mut()`) is compatible with
+    // the immutable iter borrow of `state.user_overrides` under NLL.  Per-iteration
+    // `cell_id.clone()` / `value.clone()` remain because `Engine::edit_param` takes
+    // owned arguments — only the gratuitous outer Vec clone is removed.
     let mut succeeded: Vec<ValueCellId> = Vec::new();
     // (cell_id, error-variant tag, Display string of the error)
     let mut mismatches: Vec<(ValueCellId, &'static str, String)> = Vec::new();
 
     if let Some(engine) = state.engine.as_mut() {
-        for (cell_id, value) in overrides {
+        for (cell_id, value) in state.user_overrides.iter() {
             match engine.edit_param(cell_id.clone(), value.clone()) {
                 Ok(_) => {
-                    engine.set_param_and_invalidate(&cell_id, value);
-                    succeeded.push(cell_id);
+                    engine.set_param_and_invalidate(cell_id, value.clone());
+                    succeeded.push(cell_id.clone());
                 }
                 Err(reify_eval::EngineError::CellNotFound { .. }) => {
                     // Topology changed — skip silently without removing the override
@@ -255,7 +268,7 @@ fn reapply_user_overrides(state: &mut CliState) {
                         reify_eval::EngineError::NotInitialized => "NotInitialized",
                         reify_eval::EngineError::CellNotFound { .. } => "CellNotFound",
                     };
-                    mismatches.push((cell_id, variant_tag, format!("{err}")));
+                    mismatches.push((cell_id.clone(), variant_tag, format!("{err}")));
                 }
             }
         }
