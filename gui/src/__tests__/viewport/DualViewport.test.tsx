@@ -4,6 +4,7 @@ import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type { MeshData } from '../../types';
 import { createViewportStore } from '../../stores/viewportStore';
+import type { ViewportState } from '../../stores/viewportStore';
 
 // ── Mock Viewport ────────────────────────────────────────────────────────────
 // Capture rendered instances by viewportId so we can assert mesh sources.
@@ -80,13 +81,13 @@ const DEFAULT_TEST_CAMERA = {
   zoom: 1,
 };
 
-function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-preview'?: Partial<any>; splitRatio?: number }) {
-  const viewports = {
+function makeViewportStore(overrides?: { 'design-main'?: Partial<ViewportState>; 'def-preview'?: Partial<ViewportState>; splitRatio?: number }) {
+  const initialViewports: Record<string, ViewportState> = {
     'design-main': {
       id: 'design-main',
-      type: 'design' as const,
-      viewId: null as string | null,
-      defPath: null as string | null,
+      type: 'design',
+      viewId: null,
+      defPath: null,
       active: true,
       forceExpanded: false,
       camera: { ...DEFAULT_TEST_CAMERA },
@@ -94,32 +95,27 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
     },
     'def-preview': {
       id: 'def-preview',
-      type: 'def-preview' as const,
-      viewId: null as string | null,
-      defPath: null as string | null,
+      type: 'def-preview',
+      viewId: null,
+      defPath: null,
       active: false,
       forceExpanded: false,
       camera: { ...DEFAULT_TEST_CAMERA },
       ...(overrides?.['def-preview'] ?? {}),
     },
   };
-  const [state, setState] = createStore({ viewports, splitRatio: overrides?.splitRatio ?? 0.5 });
+  const real = createViewportStore(initialViewports);
+  if (overrides?.splitRatio !== undefined) real.setSplitRatio(overrides.splitRatio);
+  // Mock wraps the real store so drift between test double and production is impossible by construction.
   return {
-    state,
-    getViewport: vi.fn(),
-    setActiveViewport: vi.fn(),
-    assignView: vi.fn(),
-    updateCamera: vi.fn(),
-    setDefPath: vi.fn(),
-    setForceExpanded: vi.fn(),
-    // Real setState side-effect so sequential-drag tests can read the updated ratio.
-    // Matches real-store fidelity: Number.isFinite guard mirrors viewportStore.ts:188.
-    setSplitRatio: vi.fn((ratio: number) => {
-      if (!Number.isFinite(ratio)) return false;
-      const clamped = Math.min(0.9, Math.max(0.1, ratio));
-      setState('splitRatio', clamped);
-      return true;
-    }),
+    state: real.state,
+    getViewport: vi.fn(real.getViewport),
+    setActiveViewport: vi.fn(real.setActiveViewport),
+    assignView: vi.fn(real.assignView),
+    updateCamera: vi.fn(real.updateCamera),
+    setDefPath: vi.fn(real.setDefPath),
+    setForceExpanded: vi.fn(real.setForceExpanded),
+    setSplitRatio: vi.fn(real.setSplitRatio),
   };
 }
 
