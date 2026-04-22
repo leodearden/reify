@@ -106,8 +106,9 @@ fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError
 #[cfg(has_occt)]
 /// Tolerance for the pipe start-tangent +Z check.
 ///
-/// The tangent is a unit vector, so checking `t.z > 1 - PIPE_START_TANGENT_Z_EPSILON`
-/// is sufficient: the per-axis residual satisfies x²+y² < 2ε, so |x|,|y| < √(2ε).
+/// The guard is symmetric: `|t.z - 1| < PIPE_START_TANGENT_Z_EPSILON`.
+/// For a true unit vector the per-axis residual satisfies x²+y² < 2ε,
+/// so |x|,|y| < √(2ε).
 const PIPE_START_TANGENT_Z_EPSILON: f64 = 1e-6;
 
 #[cfg(has_occt)]
@@ -608,14 +609,7 @@ impl OcctKernel {
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_f64(radius)?;
                 validate_positive_finite(r, "pipe radius")?;
-                // Reject paths whose start-tangent is not approximately +Z.
-                // The circular profile face is built in the XY plane (normal
-                // = +Z); BRepOffsetAPI_MakePipe requires the profile plane to
-                // align with the path's start-tangent. For non-+Z paths the
-                // swept solid is degenerate (zero volume). We detect this
-                // upfront and return an explicit error rather than silently
-                // producing unusable geometry. General orientation support is
-                // deferred future work (option (a) from task-2095 review).
+                // Reject paths whose start-tangent is not approximately +Z; see validate_pipe_start_tangent.
                 let path_shape = self.get_shape(*path)?;
                 let t = ffi::ffi::wire_start_tangent(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
