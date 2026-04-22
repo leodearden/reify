@@ -8489,14 +8489,14 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": []
         },
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:11.769Z"
+        "updatedAt": "2026-04-22T10:01:40.381Z"
       },
       {
         "id": "395",
@@ -45371,7 +45371,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:01:39.753Z",
+      "lastModified": "2026-04-22T10:01:40.381Z",
       "taskCount": 2140,
       "completedCount": 1873,
       "tags": [
