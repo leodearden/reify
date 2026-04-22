@@ -799,4 +799,104 @@ mod tests {
         // Verify rollback did happen (existing invariant)
         assert!(step_handles.is_empty(), "handles should be truncated on failure");
     }
+
+    /// Pins the last-write-wins (shadowing) semantics for `named_steps` when
+    /// two sibling realizations share the same `realization_name`.  Reify's
+    /// source syntax permits two sibling `let body = …` geometry bindings
+    /// inside a structure with no compile error (`CompilationScope::register`
+    /// uses plain `HashMap::insert` without a duplicate-name check).  When
+    /// that happens, `execute_realization_ops` must overwrite the earlier
+    /// entry so that `named_steps["body"]` resolves to the most-recent
+    /// successful binding.  A regression flipping `HashMap::insert` to
+    /// `entry().or_insert(…)` (first-write-wins) must fail this test.
+    #[test]
+    fn execute_realization_ops_duplicate_name_shadows_previous() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CompiledExpr, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let box_ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+        let cyl_ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Cylinder,
+            args: vec![
+                ("radius".into(), mm_lit(5.0)),
+                ("height".into(), mm_lit(20.0)),
+            ],
+        }];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+
+        // First binding: let body = box(…)
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &box_ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+            &mut named_steps,
+            Some("body"),
+        );
+        let h1 = step_handles[0];
+
+        // Second binding: let body = cylinder(…) — same name, different primitive
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &cyl_ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+            &mut named_steps,
+            Some("body"),
+        );
+        let h2 = step_handles[1];
+
+        // The kernel must have issued distinct handles so the test is non-trivial
+        assert_ne!(
+            h1,
+            h2,
+            "MockGeometryKernel must return distinct handles for distinct ops"
+        );
+
+        // Last-write-wins: named_steps["body"] must equal h2 (the cylinder binding)
+        assert_eq!(
+            named_steps.get("body").copied(),
+            Some(h2),
+            "shadowing contract: the second `let body` binding must overwrite \
+             the first — named_steps[\"body\"] must be the handle from the \
+             most-recent successful realization"
+        );
+
+        // Explicit anti-assertion: a first-write-wins regression must fail here
+        assert_ne!(
+            named_steps.get("body").copied(),
+            Some(h1),
+            "first-write-wins regression guard: named_steps[\"body\"] must NOT \
+             resolve to the first binding's handle after the second binding has \
+             shadowed it"
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "no errors expected for two valid realizations"
+        );
+    }
 }
