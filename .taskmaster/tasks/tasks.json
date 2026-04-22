@@ -42554,8 +42554,14 @@
             "crates/reify-eval/tests/geometry_error_handling.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/geometry_modify.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/draft_e2e.rs",
+            "crates/reify-eval/tests/geometry_error_handling.rs",
+            "crates/reify-eval/tests/geometry_sub_ref_e2e.rs",
+            "crates/reify-test-support/src/helpers.rs"
           ]
         },
         "updatedAt": "2026-04-22T11:55:37.179Z"
@@ -45589,7 +45595,9 @@
       "completedCount": 1877,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T15:06:58.240Z",
+      "description": "Tasks for master context"
     }
   }
 }
