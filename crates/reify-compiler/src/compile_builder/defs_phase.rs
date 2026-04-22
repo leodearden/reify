@@ -103,7 +103,7 @@ fn compile_constraint_def(
                     Diagnostic::error(format!(
                         "unknown type '{}' in param '{}' of constraint def '{}': \
                          expected a builtin scalar, type parameter, alias, enum, \
-                         trait, or structure name in scope",
+                         trait, structure, or occurrence name in scope",
                         name, param.name, c.name
                     ))
                     .with_label(DiagnosticLabel::new(te.span, "unknown type")),
