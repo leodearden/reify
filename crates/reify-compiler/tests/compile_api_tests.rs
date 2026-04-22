@@ -876,6 +876,41 @@ fn compile_sweep_wrong_arg_count() {
     );
 }
 
+#[test]
+fn compile_sweep_rejects_three_args() {
+    // sweep with 3 args (should need exactly 2) — regression guard for over-count (task-383 S4d)
+    let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = sweep(p, p, p)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_3args"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "expected diagnostics for too many args"
+    );
+    // No Sweep(Sweep) op should be produced
+    let has_sweep = compiled.templates.iter().any(|t| {
+        t.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    CompiledGeometryOp::Sweep {
+                        kind: SweepKind::Sweep,
+                        ..
+                    }
+                )
+            })
+        })
+    });
+    assert!(!has_sweep, "no Sweep(Sweep) op should be produced for 3-arg sweep call");
+}
+
 // --- Tube and pipe compound-shape compiler tests (task-324) ---
 
 #[test]
