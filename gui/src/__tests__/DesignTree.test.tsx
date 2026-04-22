@@ -901,3 +901,62 @@ describe('DesignTree — ViewSelector integration', () => {
     expect(screen.queryByRole('button', { name: /default/i })).toBeNull();
   });
 });
+
+describe('DesignTree — stale path rendering', () => {
+  it('normal rows have no data-stale attribute when getStalePaths() is empty', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const row = screen.getByTestId('tree-row-Root.A');
+    expect(row.getAttribute('data-stale')).toBeNull();
+  });
+
+  it('row with a stale path gets data-stale="true"', () => {
+    // Root.A is in explicit but NOT in the store's nodeByPath (stale)
+    const nodeA = makeNode({ entity_path: 'Root.A' });
+    let store: ReturnType<typeof createViewStateStore>;
+    createRoot(() => {
+      store = createViewStateStore();
+      store.setTree([nodeA]);
+      store.setVisibility('Root.A', 'hidden', false);
+      // Now remove Root.A from the tree so it becomes stale in nodeByPath
+      store.setTree([]);
+    });
+    // Render DesignTree with Root.A synthetically (stale in store but present in tree prop)
+    render(() => <DesignTree tree={[nodeA]} viewStateStore={store!} />);
+    const row = screen.getByTestId('tree-row-Root.A');
+    expect(row.getAttribute('data-stale')).toBe('true');
+  });
+
+  it('non-stale rows do not get data-stale even when other paths are stale', () => {
+    const nodeA = makeNode({ entity_path: 'Root.A' });
+    const nodeB = makeNode({ entity_path: 'Root.B' });
+    let store: ReturnType<typeof createViewStateStore>;
+    createRoot(() => {
+      store = createViewStateStore();
+      store.setTree([nodeA, nodeB]);
+      store.setVisibility('Root.A', 'hidden', false);
+      // Remove Root.A from tree so it is stale; Root.B stays in tree
+      store.setTree([nodeB]);
+    });
+    // Render with both nodes — Root.A is stale, Root.B is live
+    render(() => <DesignTree tree={[nodeA, nodeB]} viewStateStore={store!} />);
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-stale')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-stale')).toBeNull();
+  });
+
+  it('getStalePaths() integration: stale row class returns the stale class', () => {
+    const nodeA = makeNode({ entity_path: 'Root.A' });
+    let store: ReturnType<typeof createViewStateStore>;
+    createRoot(() => {
+      store = createViewStateStore();
+      store.setTree([nodeA]);
+      store.setVisibility('Root.A', 'hidden', false);
+      store.setTree([]);
+    });
+    render(() => <DesignTree tree={[nodeA]} viewStateStore={store!} />);
+    const row = screen.getByTestId('tree-row-Root.A');
+    // The row should have the stale CSS class applied (indicative of greying)
+    expect(row.className).toMatch(/stale/);
+  });
+});
