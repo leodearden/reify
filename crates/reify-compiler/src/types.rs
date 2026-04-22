@@ -263,7 +263,7 @@ pub struct TopologyTemplate {
     /// The flag is also mixed into `content_hash` (`compiler::lib.rs`) so that otherwise
     /// identical templates with different recursion topology produce distinct cache keys.
     ///
-    /// **Consumers** (runtime) — the flag is used in three distinct places by code that
+    /// **Consumers** (runtime) — the flag is used in the following places by code that
     /// runs *after* compilation:
     /// - `termination.rs`: gates the termination-condition check so non-recursive templates
     ///   are skipped early.

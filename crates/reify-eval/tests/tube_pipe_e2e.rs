@@ -307,8 +307,8 @@ fn tube_volume_through_full_pipeline_matches_formula() {
 
 /// Full-pipeline e2e for pipe(): source → parse → compile → Engine with
 /// real OcctKernel → build → non-empty geometry output; volume formula
-/// π*r²*L verified within 5% relative error via a parallel direct
-/// OcctKernel query.
+/// π*r²*L verified to floating-point tolerance (rel_err < 1e-6) via a parallel
+/// direct OcctKernel query.
 #[test]
 fn pipe_volume_through_full_pipeline_matches_formula() {
     if !reify_kernel_occt::OCCT_AVAILABLE {

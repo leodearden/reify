@@ -769,7 +769,7 @@ fn unfold_recursive_depth_limit_zero_rejected() {
     engine.set_max_unfold_depth(0); // must panic
 }
 
-// ─── step-29: upper-bound boundary is inclusive (512 accepted) ───────────────
+// ─── step-29: upper-bound boundary is inclusive (max accepted) ───────────────
 
 /// `set_max_unfold_depth(Engine::MAX_UNFOLD_DEPTH_LIMIT)` must NOT panic — the
 /// boundary value (currently 512) is inclusive. This test regression-guards
@@ -778,7 +778,7 @@ fn unfold_recursive_depth_limit_zero_rejected() {
 /// Uses the constant by name rather than the numeric literal so the test
 /// documents that `Engine::MAX_UNFOLD_DEPTH_LIMIT` is publicly reachable.
 #[test]
-fn unfold_recursive_depth_limit_boundary_accepts_512() {
+fn unfold_recursive_depth_limit_boundary_accepts_max() {
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None);
     engine.set_max_unfold_depth(Engine::MAX_UNFOLD_DEPTH_LIMIT); // must NOT panic
@@ -795,7 +795,7 @@ fn unfold_recursive_depth_limit_boundary_accepts_512() {
 ///
 /// The `should_panic` expected string is a stable prefix — it does not embed the
 /// numeric limit — so this test remains correct if `MAX_UNFOLD_DEPTH_LIMIT` is
-/// ever raised (the sibling `boundary_accepts_512` test is the canonical reference
+/// ever raised (the sibling `boundary_accepts_max` test is the canonical reference
 /// for the exact numeric value).
 #[test]
 #[should_panic(expected = "max_unfold_depth must be <=")]
