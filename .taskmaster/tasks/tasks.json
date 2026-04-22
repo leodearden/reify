@@ -8176,14 +8176,13 @@
       {
         "id": "383",
         "title": "Sweep/loft polish: dead code, robustness, test quality",
-        "description": "Follow-up from task 310 code review. All items are non-blocking suggestions that improve sweep/loft code quality.",
-        "details": "## Issues (from task 310 reviewers)\n\n### S1: Redundant Build() in make_pipe\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_pipe()\n- BRepOffsetAPI_MakePipe constructor already calls Build() internally\n- Remove explicit maker.Build() call\n\n### S2: make_line_wire degenerate threshold too small\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_line_wire()\n- Threshold 1e-30 is far below OCCT's Precision::Confusion (~1e-7)\n- Change to 1e-10 (length < 1e-5 mm)\n\n### S3: GeomRef::Sub fallback in Sweep eval dispatch\n- `crates/reify-eval/src/lib.rs` SweepKind::Sweep arm\n- Sub fallback silently maps both profile and path to step_handles.last()\n- Replace with None return or debug_assert\n\n### S4: Test quality improvements\n- Compiler test uses same scalar for both sweep args (should use distinct geometry vars)\n- sweep_e2e.rs carries dummy args that eval ignores (should be vec![])\n- loft_four_circles test only asserts volume > 0 (should use meaningful bound)\n- Missing over-count arg test for sweep (3 args)\n\n### S5: shape_vec_len unused\n- `crates/reify-kernel-occt/src/ffi.rs`, `cpp/occt_wrapper.cpp`, `cpp/occt_wrapper.h`\n- Declared/bridged but never called from Rust\n- Remove or add #[allow(dead_code)] with comment\n\n### S6: CompiledGeometryOp::Sweep args field semantics\n- `crates/reify-compiler/src/lib.rs` CompiledGeometryOp::Sweep\n- args field is meaningful for Extrude/Revolve but ignored for Loft/Sweep\n- Add doc comment explaining per-SweepKind semantics",
-        "testStrategy": "",
+        "description": "Follow-up from task 310 code review (S1–S5) and task 324 review (S6). All items are non-blocking quality improvements to sweep/loft code spanning dead-code removal, threshold correction, fallback hardening, test accuracy, and elimination of the inert geom-ref placeholder in CompiledGeometryOp::Sweep args.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "## S1: Redundant Build() in make_pipe\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_pipe()\n- BRepOffsetAPI_MakePipe constructor already calls Build() internally\n- Remove explicit maker.Build() call\n\n## S2: make_line_wire degenerate threshold too small\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` make_line_wire()\n- Threshold 1e-30 is far below OCCT's Precision::Confusion (~1e-7)\n- Change to 1e-10 (length < 1e-5 mm)\n\n## S3: GeomRef::Sub fallback in Sweep eval dispatch\n- `crates/reify-eval/src/lib.rs` SweepKind::Sweep arm\n- Sub fallback silently maps both profile and path to step_handles.last()\n- Replace with None return or debug_assert\n\n## S4: Test quality improvements\n- Compiler test uses same scalar for both sweep args (should use distinct geometry vars)\n- sweep_e2e.rs carries dummy args that eval ignores (should be vec[])\n- loft_four_circles test only asserts volume > 0 (should use meaningful bound)\n- Missing over-count arg test for sweep (3 args)\n\n## S5: shape_vec_len unused\n- `crates/reify-kernel-occt/src/ffi.rs`, `cpp/occt_wrapper.cpp`, `cpp/occt_wrapper.h`\n- Declared/bridged but never called from Rust\n- Remove or add #[allow(dead_code)] with comment\n\n## S6: Eliminate inert geom-ref placeholder in CompiledGeometryOp::Sweep args\n`CompiledGeometryOp::Sweep`'s `args` field stores the raw compiled `path` expression as a positional placeholder under `args[\"path\"]` that is never read at eval time. The code comment explicitly warns: \"A future refactor that tries to evaluate `args[\"path\"]` as a scalar would silently mis-type.\" The mock-kernel test passes `mm_literal(0.0)` as the placeholder, confirming the data is load-bearing only for its vec position. This goes beyond a doc comment — restructure to eliminate or make the placeholder unmistakable.\n\n**Fix options (choose one):**\n\n(a) **Preferred**: Change `CompiledGeometryOp::Sweep`'s `args` representation to exclude geometry-ref positional placeholders — store only true scalar/string args. Route everything geometry-shaped through `profiles`.\n\n(b) **Minimum**: Replace the placeholder with a clearly inert sentinel (e.g. `CompiledExpr::literal(Value::Real(0.0), Type::unit())` with a comment, or a dedicated `CompiledExpr::GeomRefPlaceholder` variant) so mis-evaluation surfaces loudly.\n\n**Call sites:**\n- `crates/reify-compiler/src/geometry.rs:779-793` (pipe compile arm)\n- Sweep and SweepGuided compile arms in same file (same convention)\n- `crates/reify-compiler/src/lib.rs` CompiledGeometryOp::Sweep (args field definition/semantics)\n- `crates/reify-eval/src/geometry_ops.rs` SweepKind::Pipe/Sweep/SweepGuided arms (consumers)\n\nThis replaces the original S6 doc-comment-only suggestion with a structural fix. Whichever option is chosen, the end state must make silent mis-evaluation impossible or immediately loud.",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-21T14:18:36.651Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
@@ -8194,7 +8193,10 @@
             "crates/reify-eval/tests/sweep_e2e.rs",
             "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
             "crates/reify-kernel-occt/src/lib.rs"
-          ]
+          ],
+          "curator_action": "combine",
+          "curator_justification": "The candidate is a direct superset of task 383 S6 (which calls only for a doc comment on per-SweepKind args semantics; the candidate goes further and eliminates or sentinels the placeholder). Both are low-priority sweep/loft quality work; `crates/reify-eval/src/geometry_ops.rs` is already in 383's file list; the new files (geometry.rs, lib.rs) stay within the reify-compiler module-lock key that 383 already holds. The candidate explicitly requests coordination with 383. Combining means the implem",
+          "combined_at": "2026-04-22T00:54:07.651520+00:00"
         }
       },
       {
@@ -43829,7 +43831,7 @@
         "dependencies": [],
         "priority": "medium",
         "details": "## Item 1 — is_recursive doc count (crates/reify-compiler/src/types.rs:259-279)\nChange \"the flag is used in three distinct places\" → \"four distinct places\", or reword to \"in the following places\" to avoid a stale count on future additions.\n\n## Item 2 — depth-limit test name (crates/reify-eval/tests/recursive_unfold.rs)\nApply the depth-limit test rename identified in the task 424 review.\n\n## Item 3 — engine_admin stale comment (crates/reify-eval/src/engine_admin.rs)\nApply the comment fix identified in the task 424 review.\n\n## Item 4 — tube_pipe_e2e tolerance docstring (crates/reify-eval/tests/tube_pipe_e2e.rs:~310)\nFunction `pipe_volume_through_full_pipeline_matches_formula` has docstring:\n  `π*r²*L verified within 5% relative error via a parallel direct OcctKernel query`\nActual assertion: `rel_err < 1e-6`.\nReplace docstring with:\n  `π*r²*L verified to floating-point tolerance (rel_err < 1e-6) via a parallel direct OcctKernel query`\n\nSingle-line change; no behavior change.",
-        "testStrategy": "",
+        "testStrategy": null,
         "subtasks": [],
         "metadata": {
           "modules": [
@@ -43839,7 +43841,7 @@
           ],
           "curator_action": "combine",
           "curator_justification": "The candidate is a single-line doc fix in crates/reify-eval/tests/tube_pipe_e2e.rs — well under the 300-char tiny-task threshold. Task 2069 is already a bundle of doc/comment/naming accuracy fixes across reify-compiler and reify-eval (is_recursive count, depth-limit test name, engine_admin comment). The candidate fits the same unified concern (\"fix stale doc claims in reify-eval\"), adds no new module-lock key (union stays within crates/reify-compiler + crates/reify-eval), stays well within plann",
-          "combined_at": "2026-04-22T00:52:01.421455+00:00"
+          "combined_at": "2026-04-22T00:54:23.931769+00:00"
         }
       },
       {
@@ -44325,7 +44327,13 @@
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:48:49.746Z"
+        "updatedAt": "2026-04-22T00:48:49.746Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/tests/edit_source.rs"
+          ]
+        }
       },
       {
         "id": "2095",
@@ -44347,7 +44355,9 @@
       "completedCount": 1828,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T00:54:07.837Z",
+      "description": "Tasks for master context"
     }
   }
 }
