@@ -45309,7 +45309,16 @@
           "modules": [
             "crates/reify-eval/tests/edit_source.rs",
             "crates/reify-eval/tests/guard_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "per-group guard-skip optimization Phase 1 Phase 3 skip condition",
+              "last_guard_phase_group_evals counter test assertions perf-lock",
+              "has_added_in_group has_role_flipped_guard_member guard skip suppression",
+              "edit_source edit_param guard re-evaluation perf test coverage"
+            ]
+          }
         }
       },
       {
@@ -45369,7 +45378,9 @@
       "completedCount": 1870,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T08:37:44.268Z",
+      "description": "Tasks for master context"
     }
   }
 }
