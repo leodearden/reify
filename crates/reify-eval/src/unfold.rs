@@ -512,6 +512,15 @@ fn elaborate_child_lets_only<'t>(
 
     for child_node_id in sorted_child_lets {
         let expr = child_let_cells[&child_node_id];
+        // child_let_cells is keyed exclusively by NodeId::Value; topological_sort returns
+        // only keys from that set — so this assertion holds in all correct code paths.
+        // In debug/test builds it fires loud; in release the diagnostic+continue handles
+        // any accidental invariant violation gracefully.
+        debug_assert!(
+            matches!(child_node_id, NodeId::Value(_)),
+            "elaborate_child_lets_only: sorted_child_lets produced a non-Value NodeId: {:?}; construction invariant violated (entity {})",
+            child_node_id, scoped_entity,
+        );
         let child_cell_id = match &child_node_id {
             NodeId::Value(vcid) => vcid,
             _ => {
