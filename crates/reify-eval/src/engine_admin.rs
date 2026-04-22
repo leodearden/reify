@@ -56,6 +56,7 @@ impl Engine {
             next_snapshot_id: 0,
             next_version_id: 0,
             last_eval_set: Vec::new(),
+            last_guard_phase_group_evals: 0,
             journal: EventJournal::new(),
             functions: Vec::new(),
             compiled_purposes: Vec::new(),
@@ -195,6 +196,18 @@ impl Engine {
     /// Access the eval set from the last eval() or edit_param() call.
     pub fn last_eval_set(&self) -> &[NodeId] {
         &self.last_eval_set
+    }
+
+    /// Count of non-skipped guarded-group iterations across Phase 1 and Phase 3
+    /// of the most recent `edit_source` or `edit_param` call.
+    ///
+    /// Resets to 0 at the top of each `edit_source` / `edit_param` invocation.
+    /// A non-skipped iteration is one where the group's guard value actually
+    /// changed vs. the pre-edit snapshot (or, in edit_source Phase 1, a group
+    /// that has newly-added members). Used by tests to assert that the
+    /// per-group skip optimisation is working correctly.
+    pub fn last_guard_phase_group_evals(&self) -> usize {
+        self.last_guard_phase_group_evals
     }
 
     /// Access the event journal (for testing/inspection).

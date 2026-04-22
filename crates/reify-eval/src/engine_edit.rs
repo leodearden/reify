@@ -267,6 +267,8 @@ impl Engine {
         // workaround and same O(N) cost as the clone in eval(); see PERFORMANCE NOTE
         // near eval()'s `let functions` binding for the deferred Arc refactor.
         let functions = self.functions.clone();
+        // Reset the per-edit guard-phase group evaluation counter before Phase 1.
+        self.last_guard_phase_group_evals = 0;
         let state = self
             .eval_state
             .as_ref()
@@ -1325,6 +1327,11 @@ impl Engine {
         // guard/count values; self.eval_state has NOT yet been replaced
         // (that happens in step 15 below).
 
+        // Reset the per-edit guard-phase group evaluation counter. This counter
+        // is incremented for each group that is NOT skipped in Phase 1 or Phase 3;
+        // it is exposed via last_guard_phase_group_evals() for test assertions.
+        self.last_guard_phase_group_evals = 0;
+
         // ── Phase 1: Guard re-elaboration (dirty-cone trigger) ───────────
         // If any structure_controlling cell is in the dirty cone or
         // changed_set — e.g., because its expression or an input
@@ -1424,6 +1431,26 @@ impl Engine {
                     } else {
                         Value::Undef
                     };
+                    // Per-group skip: if this group's guard value is unchanged vs.
+                    // the pre-edit snapshot, AND no members of this group were
+                    // added in this edit, AND no role-flip was detected (role-flip
+                    // suppresses all per-group skips because we can't identify
+                    // which groups were affected without a second full walk), then
+                    // skip the write-back and member re-elaboration for this group.
+                    let old_guard_val = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                        .map(|(v, _)| v);
+                    let has_added_in_group = group.members.iter().any(|m| added.contains(m))
+                        || group.else_members.iter().any(|m| added.contains(m));
+                    if old_guard_val == Some(&guard_val)
+                        && !has_added_in_group
+                        && !has_role_flipped_guard_member
+                    {
+                        continue;
+                    }
+                    self.last_guard_phase_group_evals += 1;
                     values.insert(group.guard_cell.clone(), guard_val.clone());
                     let guard_det = if matches!(&guard_val, Value::Bool(_)) {
                         DeterminacyState::Determined
@@ -1688,6 +1715,20 @@ impl Engine {
                     let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
                         continue;
                     };
+                    // Per-group skip: if this group's guard value is unchanged
+                    // vs. the pre-edit snapshot, its activation state has not
+                    // flipped and its members don't need re-elaboration.
+                    // Phase 3 has no added-member or role-flip exception
+                    // (those are Phase 1 concerns only).
+                    let old_guard_val = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                        .map(|(v, _)| v);
+                    if old_guard_val == Some(&guard_val) {
+                        continue;
+                    }
+                    self.last_guard_phase_group_evals += 1;
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
