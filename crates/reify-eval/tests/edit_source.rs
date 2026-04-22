@@ -1086,6 +1086,87 @@ structure S {
     }
 }
 
+// ── Task 2086: Phase 4 cache invalidation for shrunk+regrown collection ────────
+
+/// Regression test: after `eval(n=4)` → `edit_source(n=2)` → `edit_source(n=4)`,
+/// cache entries for `S.bolts[i].diameter` must be either absent (invalidated and
+/// not repopulated by Phase 4's create loop) or fresh (basis_version ==
+/// current snapshot version).  Without Fix 1, Phase 4's remove loop never calls
+/// `self.cache.invalidate` for the scoped cells it evicts from the graph, so
+/// `bolts[0].diameter` and `bolts[1].diameter` survive at the stale V_A version.
+#[test]
+fn edit_source_phase4_invalidates_cache_for_shrunk_and_regrown_collection_instance() {
+    // Module A: n=4 (initial state — populates cache at V_A)
+    let module_a_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    // Module B: n=2 (shrink — Phase 4 remove-loop evicts bolts[0..3], create-loop
+    // re-inserts bolts[0..1]; without the fix, cache still holds stale V_A entries)
+    let module_b_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 2
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    // Module C: n=4 again (re-grow — same pattern, bolts[2..3] come back as `added`
+    // and are refreshed; bolts[0..1] are unchanged by source diff but re-removed
+    // and re-created by Phase 4; without the fix their cache entries are V_A stale)
+    let module_c_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+    let module_c = parse_and_compile(module_c_src);
+
+    let mut engine = fresh_engine();
+    engine.eval(&module_a);
+    engine
+        .edit_source(&module_b)
+        .expect("edit_source to B (shrink n=4→2) must succeed");
+    engine
+        .edit_source(&module_c)
+        .expect("edit_source to C (re-grow n=2→4) must succeed");
+
+    let current_version = engine
+        .snapshot()
+        .expect("snapshot must be present after two edit_source calls")
+        .version;
+
+    // Every cache entry for S.bolts[i].diameter must be either absent (properly
+    // invalidated by Phase 4's remove loop and not re-populated by the create
+    // loop) or fresh at the current version.  A Some(entry) with a prior version
+    // is a stale cache artifact from V_A — the bug this test pins.
+    for i in 0..4_usize {
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
+        if let Some(entry) = engine.cache_store().get(&bolt_node) {
+            assert_eq!(
+                entry.basis_version,
+                current_version,
+                "S.bolts[{}].diameter cache entry must be fresh after grow→shrink→re-grow; \
+                 got basis_version {:?}, expected {:?}",
+                i,
+                entry.basis_version,
+                current_version
+            );
+        }
+        // None is acceptable — Phase 4's create loop does not call
+        // cache.record_evaluation, so invalidated entries remain absent.
+    }
+}
+
 // ── Coverage gap 2: Step-11 functions table refresh ───────────────────────────
 
 /// Changing a user-function body AND adding a call site that references the new
