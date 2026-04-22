@@ -275,8 +275,26 @@ impl Engine {
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
                 } else if cell.kind == ValueCellKind::Param
-                    && let Some(ref expr) = cell.default_expr
+                    && (cell.default_expr.is_some() || self.param_overrides.contains_key(&cell.id))
                 {
+                    // Param cells: an entry in `self.param_overrides` takes
+                    // precedence over evaluating `default_expr`. This mirrors
+                    // edit_source's seeding rule ("override wins for Param
+                    // cells") so that a value written via
+                    // `set_param_and_invalidate` / `edit_param` survives a
+                    // subsequent `eval()` instead of being silently rebuilt
+                    // from the module default.
+                    //
+                    // If there is no default_expr we only enter this branch
+                    // when an override exists (so the cell gets seeded from
+                    // the override); this preserves the pre-task-2017
+                    // behaviour of silently skipping a no-default Param with
+                    // no override.
+                    //
+                    // Validation (type-kind + Scalar dimension) is added by
+                    // later steps of task 2017; purging of orphaned overrides
+                    // runs once, before this loop (see the retain call after
+                    // Snapshot::from_compiled_module).
                     let node_id = NodeId::Value(cell.id.clone());
                     let start = Instant::now();
                     self.journal.record(EvalEvent {
@@ -287,12 +305,22 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(
-                        expr,
-                        &reify_expr::EvalContext::new(&values, &functions)
-                            .with_meta(&self.meta_map)
-                            .with_determinacy(&snapshot.values),
-                    );
+                    let val = if let Some(v) = self.param_overrides.get(&cell.id).cloned() {
+                        v
+                    } else {
+                        // `cell.default_expr` is guaranteed Some by the outer
+                        // `else if` condition.
+                        let expr = cell
+                            .default_expr
+                            .as_ref()
+                            .expect("default_expr presence gated by outer condition");
+                        reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(&values, &functions)
+                                .with_meta(&self.meta_map)
+                                .with_determinacy(&snapshot.values),
+                        )
+                    };
                     values.insert(cell.id.clone(), val.clone());
 
                     // Update snapshot values
