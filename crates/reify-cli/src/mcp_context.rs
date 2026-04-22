@@ -235,11 +235,14 @@ fn reapply_user_overrides(state: &mut CliState) {
     // Phase 1: apply overrides to the engine; collect outcomes without accessing
     // `state.warned_overrides` while the engine is mutably borrowed.
     //
-    // `state.engine` and `state.user_overrides` are disjoint fields, so the
-    // partial mutable borrow of `state.engine` (via `as_mut()`) is compatible with
-    // the immutable iter borrow of `state.user_overrides` under NLL.  Per-iteration
-    // `cell_id.clone()` / `value.clone()` remain because `Engine::edit_param` takes
-    // owned arguments — only the gratuitous outer Vec clone is removed.
+    // `state.engine` and `state.user_overrides` are disjoint fields of `CliState`,
+    // so the partial mutable borrow of `state.engine` (via `as_mut()`) is compatible
+    // with the immutable iter borrow of `state.user_overrides` under NLL.  The same
+    // idiom appears in `set_parameter` — if you are tempted to reintroduce the outer
+    // `Vec` clone, check there first: the borrow checker has not required it since
+    // Rust 2018/NLL.  Per-iteration `cell_id.clone()` / `value.clone()` remain
+    // because `Engine::edit_param` takes owned arguments — those are unavoidable and
+    // are not the cost that was removed.
     let mut succeeded: Vec<ValueCellId> = Vec::new();
     // (cell_id, error-variant tag, Display string of the error)
     let mut mismatches: Vec<(ValueCellId, &'static str, String)> = Vec::new();
