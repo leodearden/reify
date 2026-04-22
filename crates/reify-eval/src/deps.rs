@@ -589,6 +589,33 @@ mod tests {
         );
     }
 
+    /// Verify `take_trace` removes the key from the map and returns its trace.
+    ///
+    /// Constructs a two-entry map, calls `take_trace` for one key, and asserts:
+    /// - The returned trace's `reads` match the originally-inserted value.
+    /// - The consumed key is no longer in the map.
+    /// - The second key is unaffected.
+    #[test]
+    fn take_trace_removes_present_key_and_returns_its_trace() {
+        let node_id_a = NodeId::Value(ValueCellId::new("E", "a"));
+        let node_id_b = NodeId::Value(ValueCellId::new("E", "b"));
+        let cell_x = ValueCellId::new("E", "x");
+        let cell_y = ValueCellId::new("E", "y");
+
+        let trace_a = DependencyTrace { reads: vec![cell_x.clone()] };
+        let trace_b = DependencyTrace { reads: vec![cell_y.clone()] };
+
+        let mut map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        map.insert(node_id_a.clone(), trace_a);
+        map.insert(node_id_b.clone(), trace_b);
+
+        let returned = take_trace(&mut map, &node_id_a, "sorted_lets");
+
+        assert_eq!(returned.reads, vec![cell_x], "returned trace should match the inserted reads for node_id_a");
+        assert!(!map.contains_key(&node_id_a), "node_id_a should be removed from the map");
+        assert!(map.contains_key(&node_id_b), "node_id_b should remain in the map");
+    }
+
     /// Step 5: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored
     /// in cached entries (the statically extracted trace, not a separate runtime trace).
     ///
