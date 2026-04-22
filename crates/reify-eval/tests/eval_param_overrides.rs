@@ -331,3 +331,41 @@ fn eval_partial_mismatch_preserves_compatible_overrides_and_warns_only_for_misma
         warnings[0].message
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// step-11: clear_param_overrides() empties the map so eval reverts to defaults
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// After `engine.clear_param_overrides()` the next `eval()` must read back
+/// the module defaults rather than any previously-set override.  This is
+/// the engine-level primitive the CLI's `load_file`/`open_file` will call
+/// instead of the current `CliState::clear_overrides` shadow-copy reset.
+///
+/// Currently FAILS TO COMPILE because `Engine::clear_param_overrides()`
+/// does not yet exist — step-12 adds it.
+#[test]
+fn clear_param_overrides_empties_map_and_subsequent_eval_uses_defaults() {
+    let mut engine = fresh_engine();
+    let width_id = ValueCellId::new("S", "width");
+
+    let module_a = compile_source("structure S { param width: Scalar = 100mm }");
+    let _ = engine.eval(&module_a);
+
+    // Establish the override, confirm it takes effect.
+    engine.set_param_and_invalidate(&width_id, length_scalar(0.12));
+    let with_override = engine.eval(&module_a);
+    assert_eq!(
+        with_override.values.get(&width_id),
+        Some(&length_scalar(0.12)),
+        "sanity: override should flow through before clear"
+    );
+
+    // Clear the override map, re-eval: module default wins again.
+    engine.clear_param_overrides();
+    let after_clear = engine.eval(&module_a);
+    assert_eq!(
+        after_clear.values.get(&width_id),
+        Some(&length_scalar(0.1)),
+        "clear_param_overrides must wipe the override so eval falls back to the 100mm default"
+    );
+}
