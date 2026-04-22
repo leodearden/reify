@@ -366,10 +366,14 @@ structure S {
 // ─── step-3: Eval idempotency (caching regression) ───────────────────
 
 /// Regression guard: calling `eval()` twice on the same engine with the
-/// same module must produce identical results AND leave an identical number
-/// of entries in the combined function table.
+/// same module must produce identical results.
 ///
-/// The value assertion (`v1 == v2 == 0.007 m`) verifies semantic idempotency.
+/// The value assertion (`v1 == v2 == 0.003 m`) verifies per-eval resolution
+/// stability. The user `symmetric_tolerance` uses **subtraction** (`nominal -
+/// deviation`) — distinct from the prelude's addition variant — so this is an
+/// independent claim: if shadowing silently broke and eval() resolved to the
+/// prelude's `+`, v1/v2 would be 0.007 — this test would fail.
+///
 /// The `functions_count()` assertion (`count1 == count2`) directly detects
 /// accumulation bugs: if `eval()` appended prelude functions rather than
 /// replacing, the count would grow on every call even though first-match-wins
@@ -378,7 +382,7 @@ structure S {
 fn eval_is_idempotent_for_prelude_functions() {
     let source = r#"
 fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
-    nominal + deviation
+    nominal - deviation
 }
 
 structure S {
@@ -444,10 +448,11 @@ structure S {
         v2,
         (v1 - v2).abs()
     );
-    // User impl (addition, matching prelude): 5mm + 2mm = 7mm = 0.007 m
+    // User impl (subtraction, distinct from prelude): 5mm - 2mm = 3mm = 0.003 m
+    // (prelude would give 0.007 if shadowing broke)
     assert!(
-        (v1 - 0.007).abs() < 1e-9,
-        "symmetric_tolerance(5mm, 2mm) should be 0.007 m (7mm), got {}",
+        (v1 - 0.003).abs() < 1e-9,
+        "symmetric_tolerance(5mm, 2mm) should be 0.003 m (3mm), got {}",
         v1
     );
 }
