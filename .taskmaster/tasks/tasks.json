@@ -37104,12 +37104,18 @@
             "crates/reify-types/src/geometry.rs"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "GeometryHandle",
+              "content_hash"
+            ],
             "queries": [
-              "resolution for: Sentinel robustness: debug_assert for INVALID handle hash + saturating_sub rollback"
+              "INVALID sentinel GeometryHandle content_hash debug_assert",
+              "step_handles rollback saturating_sub unsigned subtraction reify-eval",
+              "task 1755 blocked reason investigation"
             ]
           },
-          "files": []
+          "files": [],
+          "_causation_id": "295b905c-95f4-440c-8090-7792215e35ba"
         }
       },
       {
@@ -44765,7 +44771,9 @@
       "completedCount": 1836,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T02:13:20.830Z",
+      "description": "Tasks for master context"
     }
   }
 }
