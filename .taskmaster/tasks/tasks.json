@@ -11686,7 +11686,7 @@
         "description": "The Revolve arm in compile_geometry_op has 7 independently required args (ox, oy, oz, ax, ay, az, angle), each using ?-propagation. Currently only 'ox' is tested for the missing-arg→None path. Add a table-driven test that omits each required arg in turn and asserts None in every case. Memory hint: search for \"compile_geometry_op revolve\" and \"task 351\".",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11699,9 +11699,20 @@
           "modules": [
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add parametric tests for all required revolve args in compile_geometry_op"
+            ]
+          },
+          "done_provenance": {
+            "commit": "ad850510d7c989874d8a026c04358f701ef8c1eb",
+            "commit_input": "ad850510d7",
+            "note": "Table-driven test compile_geometry_op_revolve_missing_each_required_arg_returns_none at crates/reify-eval/src/geometry_ops.rs:1333-1407 covers all 7 required Revolve args (ox,oy,oz,ax,ay,az,angle). Introduced in ad850510d7 (2026-04-16), predating task 526's in-progress transition. Test PASSES."
+          }
         },
-        "updatedAt": "2026-04-22T01:09:16.729Z"
+        "updatedAt": "2026-04-22T01:09:51.922Z"
       },
       {
         "id": "527",
@@ -44395,9 +44406,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:09:16.729Z",
+      "lastModified": "2026-04-22T01:09:51.922Z",
       "taskCount": 2087,
-      "completedCount": 1831,
+      "completedCount": 1832,
       "tags": [
         "master"
       ]
