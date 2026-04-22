@@ -181,14 +181,6 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 /// Re-apply tracked user overrides to the engine after `eval()` has rebuilt the snapshot
 /// from module defaults.
 ///
-/// Overrides are iterated **in place by reference** (`state.user_overrides.iter()`) — no
-/// full-Vec clone is needed.  `state.engine` and `state.user_overrides` are disjoint
-/// fields of `CliState`, so the partial mutable borrow of `state.engine` (via
-/// `state.engine.as_mut()`) coexists with the immutable iter borrow of
-/// `state.user_overrides` under NLL.  See `set_parameter` (around line 645) for the same
-/// disjoint-field borrow idiom.  Do not reintroduce the clone — the borrow checker does
-/// not require it.
-///
 /// Three cases are distinguished:
 ///
 /// - **`Ok`** — the cell exists and accepted the value; `set_param_and_invalidate` is
@@ -1298,6 +1290,11 @@ structure Bracket {
             .clone();
 
         // Set distinct non-default Scalar[LENGTH] overrides on all three params.
+        // The literal values (0.12 m, 0.15 m, 0.004 m) are chosen to differ from
+        // bracket.ri's current module defaults.  If the fixture is ever edited such
+        // that a default coincides with one of these literals, the `assert_ne!`
+        // sanity checks below will trigger — update the literals together with any
+        // such fixture change so this test continues to exercise the override path.
         ctx.set_parameter("Bracket.width", "0.12")
             .expect("set_parameter width should succeed");
         ctx.set_parameter("Bracket.height", "0.15")
@@ -1420,6 +1417,27 @@ structure Bracket {
                 .value
         };
 
+        // Capture the expected width value string by loading BRACKET_INT_WIDTH in a
+        // fresh context and reading back the Int-typed width — avoids hard-coding the
+        // Display format of Value::Int { value: 80 } so the assertion stays correct
+        // if the default value or Display format ever changes.
+        let expected_width = {
+            let probe = fresh_ctx();
+            probe
+                .load_file(BRACKET_PATH)
+                .expect("probe width: load_file should succeed");
+            probe
+                .update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
+                .expect("probe width: update_source should succeed");
+            probe
+                .get_parameters()
+                .expect("probe width: get_parameters should succeed")
+                .into_iter()
+                .find(|p| p.name == "width")
+                .expect("probe: BRACKET_INT_WIDTH should have a 'width' param")
+                .value
+        };
+
         // Set up the counting subscriber before creating the main context.
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::WARN)
@@ -1480,9 +1498,9 @@ structure Bracket {
             .value
             .clone();
         assert_eq!(
-            width_value, "80",
-            "width must reflect the Int default (80) since the Scalar[LENGTH] override \
-             was incompatible"
+            width_value, expected_width,
+            "width must reflect the Int default (from BRACKET_INT_WIDTH) since the \
+             Scalar[LENGTH] override was incompatible"
         );
     }
 
