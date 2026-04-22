@@ -1959,48 +1959,23 @@ mod tests {
         }
     }
 
-    /// Run [`reelaborate_guarded_group`] with `guard_val = Bool(true)` and
+    /// Run [`reelaborate_guarded_group`] with `guard_val = Bool(guard)` and
     /// empty functions / meta on the supplied graph and group, returning the
     /// resulting `(values, snapshot_values)` maps.
     ///
-    /// Shared by active-branch `members` tests and inactive-branch `else_members`
-    /// tests under guard=true.  Collapses the 7-line call-site boilerplate into
-    /// a single line, leaving each test as a thin assertion-only wrapper.
-    fn run_with_guard_true(
+    /// Collapses the 7-line call-site boilerplate into a single line, leaving
+    /// each test as a thin setup + assertion wrapper.
+    fn run_with_guard(
         graph: EvaluationGraph,
         group: GuardedGroupInfo,
+        guard: bool,
     ) -> (ValueMap, PersistentMap<ValueCellId, (Value, DeterminacyState)>) {
         let mut values = ValueMap::default();
         let mut snapshot_values = PersistentMap::default();
         reelaborate_guarded_group(
             &graph,
             &group,
-            &Value::Bool(true),
-            &mut values,
-            &mut snapshot_values,
-            &[],
-            &HashMap::new(),
-        );
-        (values, snapshot_values)
-    }
-
-    /// Run [`reelaborate_guarded_group`] with `guard_val = Bool(false)` and
-    /// empty functions / meta on the supplied graph and group, returning the
-    /// resulting `(values, snapshot_values)` maps.
-    ///
-    /// Shared by active-branch `else_members` tests and inactive-branch `members`
-    /// tests under guard=false.  Collapses the 7-line call-site boilerplate into
-    /// a single line, leaving each test as a thin assertion-only wrapper.
-    fn run_with_guard_false(
-        graph: EvaluationGraph,
-        group: GuardedGroupInfo,
-    ) -> (ValueMap, PersistentMap<ValueCellId, (Value, DeterminacyState)>) {
-        let mut values = ValueMap::default();
-        let mut snapshot_values = PersistentMap::default();
-        reelaborate_guarded_group(
-            &graph,
-            &group,
-            &Value::Bool(false),
+            &Value::Bool(guard),
             &mut values,
             &mut snapshot_values,
             &[],
@@ -2229,7 +2204,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_with_guard_true(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // Active member: evaluated default_expr → Int(42), Determined.
         assert_eq!(values.get(&member_id), Some(&Value::Int(42)));
@@ -2284,7 +2259,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_with_guard_true(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // Active member with no default_expr: must be left entirely untouched.
         assert!(
@@ -2328,7 +2303,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_with_guard_true(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // Active member absent from graph: must be left entirely untouched.
         assert!(
@@ -2374,7 +2349,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_with_guard_true(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // deactivate_if_not_auto does not check default_expr; Param → Undef/Undetermined.
         assert_eq!(
@@ -2420,7 +2395,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_with_guard_true(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // Missing cell → non-Auto treatment → Undef/Undetermined.
         assert_eq!(
@@ -2435,204 +2410,64 @@ mod tests {
         );
     }
 
-    /// Pins the documented "Cells without a `default_expr` … are left unchanged"
-    /// contract for the **active branch under guard=false** of
-    /// `reelaborate_guarded_group`.
+    /// Pins the symmetric behavior of the shared
+    /// `for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]`
+    /// loop at engine_edit.rs:68 across both guard values in a single test.
     ///
-    /// With `guard_val = Bool(false)`, `else_members` are on the **active branch**.
-    /// The else_member cell IS present in `graph.value_cells` but its `default_expr`
-    /// is `None`, so the inner `if let Some(ref expr) = node.default_expr` guard
-    /// fails and the function must silently skip the cell — leaving both `values`
-    /// and `snapshot_values` empty for it.
+    /// Under `guard=true`: `members` are on the active branch — cells without a
+    /// `default_expr` (present or absent) are left untouched; `else_members` are
+    /// on the inactive branch — all non-Auto cells become `Value::Undef /
+    /// Undetermined`.
     ///
-    /// Mirrors `_active_member_without_default_expr_is_noop`; pins the
-    /// `else_members` side of the symmetric loop at engine_edit.rs:68.
+    /// Under `guard=false`: roles flip — `else_members` become active (→ no-op),
+    /// `members` become inactive (→ `Value::Undef / Undetermined`).
     ///
-    /// A regression that replaced the guarded `if let Some(node) = … && let
-    /// Some(ref expr) = node.default_expr` with an unconditional insert (or that
-    /// silently inserted `Value::Undef` on the missing-expr branch) would be
-    /// caught here on the else-members active path.
+    /// A hypothetical refactor that unrolls the loop and breaks one side
+    /// asymmetrically would fail at least one assertion here.
     #[test]
-    fn reelaborate_guarded_group_active_else_member_without_default_expr_is_noop() {
+    fn reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values() {
         let guard_id = ValueCellId::new("E", "guard");
-        let else_member_id = ValueCellId::new("E", "else_member");
+        let member_present_id = ValueCellId::new("E", "member_present");
+        let member_absent_id = ValueCellId::new("E", "member_absent");
+        let else_present_id = ValueCellId::new("E", "else_present");
+        let else_absent_id = ValueCellId::new("E", "else_absent");
 
         let mut graph = EvaluationGraph::default();
-        // Guard cell is present (guard itself doesn't need a default_expr).
         graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
-        // else_member cell IS present in the graph, but has no default_expr.
-        graph.value_cells.insert(else_member_id.clone(), make_cell(&else_member_id, ValueCellKind::Param, Type::Int, None));
+        // Both present cells have no default_expr so the active-branch no-op path is exercised.
+        graph.value_cells.insert(member_present_id.clone(), make_cell(&member_present_id, ValueCellKind::Param, Type::Int, None));
+        graph.value_cells.insert(else_present_id.clone(), make_cell(&else_present_id, ValueCellKind::Param, Type::Int, None));
+        // member_absent_id and else_absent_id are intentionally NOT inserted.
 
-        // guard=false → else_members active, members inactive.
         let group = GuardedGroupInfo {
             guard_cell: guard_id.clone(),
-            members: vec![],
-            else_members: vec![else_member_id.clone()],
+            members: vec![member_present_id.clone(), member_absent_id.clone()],
+            else_members: vec![else_present_id.clone(), else_absent_id.clone()],
             constraints: vec![],
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_with_guard_false(graph, group);
+        // ── guard=true: members active (no-op), else_members inactive (→ Undef) ──
+        let (values, snap) = run_with_guard(graph.clone(), group.clone(), true);
+        assert!(values.get(&member_present_id).is_none(), "active member (no default_expr) must not appear in values");
+        assert!(snap.get(&member_present_id).is_none(), "active member (no default_expr) must not appear in snapshot_values");
+        assert!(values.get(&member_absent_id).is_none(), "active absent member must not appear in values");
+        assert!(snap.get(&member_absent_id).is_none(), "active absent member must not appear in snapshot_values");
+        assert_eq!(values.get(&else_present_id), Some(&Value::Undef), "inactive else_member must be Undef");
+        assert_eq!(snap.get(&else_present_id), Some(&(Value::Undef, DeterminacyState::Undetermined)), "inactive else_member must be Undetermined");
+        assert_eq!(values.get(&else_absent_id), Some(&Value::Undef), "inactive absent else_member must be Undef");
+        assert_eq!(snap.get(&else_absent_id), Some(&(Value::Undef, DeterminacyState::Undetermined)), "inactive absent else_member must be Undetermined");
 
-        // Active else_member with no default_expr: must be left entirely untouched.
-        assert!(
-            values.get(&else_member_id).is_none(),
-            "Active else_member with default_expr=None must not appear in values"
-        );
-        assert!(
-            snapshot_values.get(&else_member_id).is_none(),
-            "Active else_member with default_expr=None must not appear in snapshot_values"
-        );
-    }
-
-    /// Pins the "absent from the graph" half of the documented "Cells without a
-    /// `default_expr` (or absent from the graph) are left unchanged" contract for
-    /// the **active branch under guard=false** of `reelaborate_guarded_group`.
-    ///
-    /// With `guard_val = Bool(false)`, `else_members` are on the **active branch**.
-    /// The else_member ID is included in `group.else_members` but is NOT inserted
-    /// into `graph.value_cells`, so the outer `if let Some(node) =
-    /// graph.value_cells.get(mid)` guard fails and the function must silently skip
-    /// the cell — leaving both `values` and `snapshot_values` empty for it.
-    ///
-    /// Mirrors `_active_member_absent_from_graph_is_noop`; pins the
-    /// `else_members` side of the symmetric loop at engine_edit.rs:68.
-    ///
-    /// A regression that dropped this guard (e.g. via `&graph.value_cells[mid]`,
-    /// `.unwrap()`, or any unconditional insert keyed on the raw else_member id)
-    /// would be caught here.
-    #[test]
-    fn reelaborate_guarded_group_active_else_member_absent_from_graph_is_noop() {
-        let guard_id = ValueCellId::new("E", "guard");
-        // else_member_id is referenced in the group but intentionally NOT inserted
-        // into graph.value_cells — it is wholly absent from the graph.
-        let else_member_id = ValueCellId::new("E", "else_member");
-
-        let mut graph = EvaluationGraph::default();
-        // Only the guard cell is in the graph.
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
-
-        // guard=false → else_members active, members inactive.
-        let group = GuardedGroupInfo {
-            guard_cell: guard_id.clone(),
-            members: vec![],
-            else_members: vec![else_member_id.clone()],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-
-        let (values, snapshot_values) = run_with_guard_false(graph, group);
-
-        // Active else_member absent from graph: must be left entirely untouched.
-        assert!(
-            values.get(&else_member_id).is_none(),
-            "Active else_member absent from graph must not appear in values"
-        );
-        assert!(
-            snapshot_values.get(&else_member_id).is_none(),
-            "Active else_member absent from graph must not appear in snapshot_values"
-        );
-    }
-
-    /// Pins the behavior of `reelaborate_guarded_group` on the **inactive branch**
-    /// for `members` when a `member` is present in the graph but its
-    /// `default_expr` is `None`.
-    ///
-    /// With `guard_val = Bool(false)`, `members` are on the **inactive branch**
-    /// and are passed to `deactivate_if_not_auto`. That helper does NOT inspect
-    /// `default_expr` — it only checks whether the cell is `Auto`. A non-Auto cell
-    /// (here `ValueCellKind::Param`) must be written as
-    /// `Value::Undef / DeterminacyState::Undetermined` regardless of whether it
-    /// carries a `default_expr`.
-    ///
-    /// Mirrors `_inactive_else_member_without_default_expr_is_deactivated`; pins
-    /// the `members` side of the symmetric loop at engine_edit.rs:68.
-    ///
-    /// A regression that skipped deactivation for cells without a `default_expr`
-    /// (e.g. by wrapping the `deactivate_if_not_auto` call in a
-    /// `default_expr.is_some()` guard) would be caught here on the inactive
-    /// branch under guard=false.
-    #[test]
-    fn reelaborate_guarded_group_inactive_member_without_default_expr_is_deactivated() {
-        let guard_id = ValueCellId::new("E", "guard");
-        let member_id = ValueCellId::new("E", "member");
-
-        let mut graph = EvaluationGraph::default();
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
-        // member IS in the graph but has no default_expr.
-        graph.value_cells.insert(member_id.clone(), make_cell(&member_id, ValueCellKind::Param, Type::Int, None));
-
-        // guard=false → else_members active, members INACTIVE → deactivate_if_not_auto.
-        let group = GuardedGroupInfo {
-            guard_cell: guard_id.clone(),
-            members: vec![member_id.clone()],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-
-        let (values, snapshot_values) = run_with_guard_false(graph, group);
-
-        // deactivate_if_not_auto does not check default_expr; Param → Undef/Undetermined.
-        assert_eq!(
-            values.get(&member_id),
-            Some(&Value::Undef),
-            "Inactive Param member with default_expr=None must be deactivated to Undef"
-        );
-        assert_eq!(
-            snapshot_values.get(&member_id),
-            Some(&(Value::Undef, DeterminacyState::Undetermined)),
-            "Inactive Param member with default_expr=None must be Undetermined in snapshot_values"
-        );
-    }
-
-    /// Pins the behavior of `reelaborate_guarded_group` on the **inactive branch**
-    /// for `members` when a `member` is wholly absent from `graph.value_cells`.
-    ///
-    /// With `guard_val = Bool(false)`, `members` are on the **inactive branch**
-    /// and are passed to `deactivate_if_not_auto`. That helper treats a missing cell
-    /// as non-Auto (preserving the prior `is_some_and` semantics documented in its
-    /// docstring) and writes `Value::Undef / DeterminacyState::Undetermined`.
-    ///
-    /// Mirrors `_inactive_else_member_absent_from_graph_is_deactivated`; pins
-    /// the `members` side of the symmetric loop at engine_edit.rs:68.
-    ///
-    /// A regression that skipped absent cells on the inactive branch (e.g. by
-    /// wrapping the `deactivate_if_not_auto` call in a
-    /// `graph.value_cells.get(mid).is_some()` guard) would be caught here on
-    /// the inactive branch under guard=false.
-    #[test]
-    fn reelaborate_guarded_group_inactive_member_absent_from_graph_is_deactivated() {
-        let guard_id = ValueCellId::new("E", "guard");
-        // member_id is included in the group but NOT inserted into graph.
-        let member_id = ValueCellId::new("E", "member");
-
-        let mut graph = EvaluationGraph::default();
-        // Only the guard cell is in the graph.
-        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
-
-        // guard=false → else_members active, members INACTIVE → deactivate_if_not_auto.
-        let group = GuardedGroupInfo {
-            guard_cell: guard_id.clone(),
-            members: vec![member_id.clone()],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-
-        let (values, snapshot_values) = run_with_guard_false(graph, group);
-
-        // Missing cell → non-Auto treatment → Undef/Undetermined.
-        assert_eq!(
-            values.get(&member_id),
-            Some(&Value::Undef),
-            "Absent member must be deactivated to Undef on the inactive branch under guard=false"
-        );
-        assert_eq!(
-            snapshot_values.get(&member_id),
-            Some(&(Value::Undef, DeterminacyState::Undetermined)),
-            "Absent member must be Undetermined in snapshot_values on the inactive branch under guard=false"
-        );
+        // ── guard=false: else_members active (no-op), members inactive (→ Undef) ──
+        let (values, snap) = run_with_guard(graph, group, false);
+        assert!(values.get(&else_present_id).is_none(), "active else_member (no default_expr) must not appear in values");
+        assert!(snap.get(&else_present_id).is_none(), "active else_member (no default_expr) must not appear in snapshot_values");
+        assert!(values.get(&else_absent_id).is_none(), "active absent else_member must not appear in values");
+        assert!(snap.get(&else_absent_id).is_none(), "active absent else_member must not appear in snapshot_values");
+        assert_eq!(values.get(&member_present_id), Some(&Value::Undef), "inactive member must be Undef");
+        assert_eq!(snap.get(&member_present_id), Some(&(Value::Undef, DeterminacyState::Undetermined)), "inactive member must be Undetermined");
+        assert_eq!(values.get(&member_absent_id), Some(&Value::Undef), "inactive absent member must be Undef");
+        assert_eq!(snap.get(&member_absent_id), Some(&(Value::Undef, DeterminacyState::Undetermined)), "inactive absent member must be Undetermined");
     }
 
     /// When `guard_val = Bool(false)`, `reelaborate_guarded_group` must
