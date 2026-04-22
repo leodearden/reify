@@ -8556,15 +8556,9 @@
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "evaluate_let_bindings",
-              "meta_map",
-              "TopologyTemplate"
-            ],
+            "entities": [],
             "queries": [
-              "evaluate_let_bindings extract_dependency_trace topological sort",
-              "meta_map performance review suggestions task 212",
-              "task 470 eliminate redundant computation let_bindings"
+              "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
             ]
           },
           "files": [],
@@ -43991,11 +43985,11 @@
         "description": "Post-merge cleanup for task 2035. Three related items in crates/reify-compiler/src/compile_builder/: (1) retarget stale 'above/below' pre-pass comments in entities_phase.rs L88-145 to name the sibling modules (e.g. 'Already compiled by functions_phase::phase_functions'); (2) lift the duplicate-filter in entities_phase::compile_entity_decl L178-183 into an explicit CompilationCtx method fn is_first_entity_def(&self, name: &str, span: SourceSpan) -> bool and share it with pre_pass; (3) extract fn build_constraint_def_registry(local, prelude) to mirror build_trait_registry, replacing the inline rebuild in phase_entities L54-66. No behavior change — cargo test -p reify-compiler must still pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:33:45.317Z",
+        "updatedAt": "2026-04-22T00:04:25.091Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder"
@@ -44153,7 +44147,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-21T23:09:07.861Z",
+      "lastModified": "2026-04-22T00:04:25.091Z",
       "taskCount": 2081,
       "completedCount": 1822,
       "tags": [
