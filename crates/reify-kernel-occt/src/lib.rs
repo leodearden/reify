@@ -114,7 +114,8 @@ const PIPE_START_TANGENT_Z_EPSILON: f64 = 1e-6;
 /// Validate that a pipe start-tangent is approximately +Z and all-finite.
 ///
 /// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity) or if
-/// `t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON` (tangent not close enough to +Z).
+/// `t.z` is outside `[1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON]`
+/// (tangent not close enough to the unit +Z vector).
 fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError> {
     if !t.x.is_finite() || !t.y.is_finite() || !t.z.is_finite() {
         return Err(GeometryError::OperationFailed(format!(
@@ -122,7 +123,7 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
             t.x, t.y, t.z
         )));
     }
-    if t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON {
+    if t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON || t.z > 1.0 + PIPE_START_TANGENT_Z_EPSILON {
         return Err(GeometryError::OperationFailed(format!(
             "pipe currently only supports paths whose start-tangent is +Z \
              (tolerance {:e}) (got tangent ({:.3}, {:.3}, {:.3}))",
