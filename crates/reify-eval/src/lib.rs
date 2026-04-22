@@ -211,7 +211,8 @@ pub struct Engine {
     /// the start of each `edit_source` / `edit_param` call (before Phase 1).
     /// Incremented once per group that is NOT skipped by the guard-value-unchanged
     /// optimisation or the cross-phase dedup set. A group re-elaborated in
-    /// Phase 1 is NOT counted again in Phase 3 (edit_param only; task 2140).
+    /// Phase 1 is NOT counted again in Phase 3 (edit_param: task 2140;
+    /// edit_source: task 2142).
     /// Used by tests to assert that the per-group skip is working correctly
     /// (e.g. only the affected group is re-elaborated, not all N groups).
     ///

@@ -206,11 +206,11 @@ impl Engine {
     /// Resets to 0 at the top of each `edit_source` / `edit_param` invocation.
     /// A non-skipped iteration is one where the group's guard value actually
     /// changed vs. the pre-edit snapshot (or, in edit_source Phase 1, a group
-    /// that has newly-added members). In `edit_param`, a group re-elaborated
-    /// by Phase 1 is NOT counted again in Phase 3 — the cross-phase dedup set
-    /// (`phase1_reelaborated`) skips it before the counter is incremented
-    /// (task 2140). Used by tests to assert that the per-group skip is working
-    /// correctly.
+    /// that has newly-added members or a role-flipped guard member). A group
+    /// re-elaborated by Phase 1 is NOT counted again in Phase 3 — the
+    /// cross-phase dedup set (`phase1_reelaborated`) skips it before the
+    /// counter is incremented (edit_param: task 2140; edit_source: task 2142).
+    /// Used by tests to assert that the per-group skip is working correctly.
     ///
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     /// Integration tests reach this method by adding a self-dev-dep with the
