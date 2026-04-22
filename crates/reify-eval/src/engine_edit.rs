@@ -452,44 +452,33 @@ impl Engine {
                     let is_true = matches!(&guard_val, Value::Bool(true));
                     let is_false = matches!(&guard_val, Value::Bool(false));
 
-                    for mid in &group.members {
-                        if is_true {
-                            if let Some(node) = graph.value_cells.get(mid)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(
-                                    expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                    for (cells, is_active) in
+                        [(&group.members, is_true), (&group.else_members, is_false)]
+                    {
+                        for mid in cells {
+                            if is_active {
+                                if let Some(node) = graph.value_cells.get(mid)
+                                    && let Some(ref expr) = node.default_expr
+                                {
+                                    let val = reify_expr::eval_expr(
+                                        expr,
+                                        &reify_expr::EvalContext::new(&values, &functions)
+                                            .with_meta(&self.meta_map),
+                                    );
+                                    values.insert(mid.clone(), val.clone());
+                                    new_snapshot
+                                        .values
+                                        .insert(mid.clone(), (val, DeterminacyState::Determined));
+                                }
+                            } else {
+                                // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                                deactivate_if_not_auto(
+                                    graph,
+                                    mid,
+                                    &mut values,
+                                    &mut new_snapshot.values,
                                 );
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
-                        } else {
-                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
-                        }
-                    }
-                    for mid in &group.else_members {
-                        if is_false {
-                            if let Some(node) = graph.value_cells.get(mid)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(
-                                    expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
-                                );
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
-                            }
-                        } else {
-                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
                     }
                 }
@@ -701,49 +690,37 @@ impl Engine {
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
-                    // Process members (active when guard is true)
-                    for member_id in &group.members {
-                        if guard_is_true {
-                            // Re-evaluate member from its default_expr
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(
-                                    expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                    // members active when guard is true; else_members active when guard is false.
+                    for (cells, is_active) in [
+                        (&group.members, guard_is_true),
+                        (&group.else_members, guard_is_false),
+                    ] {
+                        for member_id in cells {
+                            if is_active {
+                                if let Some(node) =
+                                    new_snapshot.graph.value_cells.get(member_id)
+                                    && let Some(ref expr) = node.default_expr
+                                {
+                                    let val = reify_expr::eval_expr(
+                                        expr,
+                                        &reify_expr::EvalContext::new(&values, &functions)
+                                            .with_meta(&self.meta_map),
+                                    );
+                                    values.insert(member_id.clone(), val.clone());
+                                    new_snapshot.values.insert(
+                                        member_id.clone(),
+                                        (val, DeterminacyState::Determined),
+                                    );
+                                }
+                            } else {
+                                // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                                deactivate_if_not_auto(
+                                    &new_snapshot.graph,
+                                    member_id,
+                                    &mut values,
+                                    &mut new_snapshot.values,
                                 );
-                                values.insert(member_id.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
-                        } else {
-                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                            deactivate_if_not_auto(&new_snapshot.graph, member_id, &mut values, &mut new_snapshot.values);
-                        }
-                    }
-
-                    // Process else_members (active when guard is false)
-                    for member_id in &group.else_members {
-                        if guard_is_false {
-                            // Re-evaluate else member from its default_expr
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(
-                                    expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
-                                );
-                                values.insert(member_id.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(member_id.clone(), (val, DeterminacyState::Determined));
-                            }
-                        } else {
-                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                            deactivate_if_not_auto(&new_snapshot.graph, member_id, &mut values, &mut new_snapshot.values);
                         }
                     }
                 }
@@ -953,9 +930,10 @@ impl Engine {
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
+        let eval_state = self.eval_state.as_ref().unwrap();
 
         // (1) Capture the parent snapshot id before we mutate any state.
-        let parent_id = self.eval_state.as_ref().unwrap().snapshot.id;
+        let parent_id = eval_state.snapshot.id;
 
         // (2) Build the new snapshot from the incoming CompiledModule.
         //     Snapshot::from_compiled_module seeds every value cell to
@@ -984,7 +962,7 @@ impl Engine {
 
         // (4) Diff the old and new graphs at value-cell granularity.
         let (changed, added, removed) = diff_value_cells(
-            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &eval_state.snapshot.graph,
             &new_snapshot.graph,
         );
         let changed_set: HashSet<ValueCellId> =
@@ -1000,11 +978,11 @@ impl Engine {
         //      or added, so callers can observe the diff, and we want their
         //      stale cache entries invalidated when removed.
         let (changed_constraints, added_constraints, removed_constraints) = diff_constraints(
-            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &eval_state.snapshot.graph,
             &new_snapshot.graph,
         );
         let (changed_realizations, added_realizations, removed_realizations) = diff_realizations(
-            &self.eval_state.as_ref().unwrap().snapshot.graph,
+            &eval_state.snapshot.graph,
             &new_snapshot.graph,
         );
 
@@ -1041,7 +1019,7 @@ impl Engine {
         //     check, symmetric with the other arms, once Resolution nodes
         //     participate in the demand set.
         {
-            let old_reverse_index = &self.eval_state.as_ref().unwrap().reverse_index;
+            let old_reverse_index = &eval_state.reverse_index;
             for id in &removed {
                 for dep in old_reverse_index.dependents_of(id) {
                     let still_present = match dep {
@@ -1095,61 +1073,52 @@ impl Engine {
         //     are simply absent from the new graph, and their override entries
         //     are purged from `self.param_overrides` below.
         let mut values = ValueMap::new();
-        // Read-only references into the old snapshot: avoids the full
-        // PersistentMap clones that previously existed solely to placate the
-        // borrow checker against the later `param_overrides.retain` call.
-        // The immutable borrow on `self.eval_state` is held only for the
-        // seeding loop (below); once the loop scope ends, Rust's NLL drops
-        // the borrow so the retain can take its mutable borrow on
-        // `self.param_overrides`.
-        {
-            let old_state = self.eval_state.as_ref().unwrap();
-            let old_graph_snapshot_values = &old_state.snapshot.values;
-            let old_graph_cells = &old_state.snapshot.graph.value_cells;
-            for (id, new_node) in new_snapshot.graph.value_cells.iter() {
-                // `param_overrides` wins for Param cells whose content_hash is
-                // unchanged across the edit. This mirrors eval_cached's precedence
-                // rule ("override always wins for Param cells") and ensures an
-                // override established before a structural edit survives the edit.
-                // For Param cells whose content_hash CHANGED (e.g. the source
-                // default was edited), we intentionally skip the override — the
-                // diff has classified the cell as dirty and the eval loop will
-                // re-derive it from the new default_expr. If the user wants the
-                // override to persist across a content-hash-shifting edit, they
-                // can re-install it via set_param_and_invalidate after edit_source.
-                let unchanged_hash = old_graph_cells
-                    .get(id)
-                    .map(|old_node| old_node.content_hash == new_node.content_hash)
-                    .unwrap_or(false);
+        // Shortcut references into the prior snapshot for the seeding loop below.
+        let old_graph_snapshot_values = &eval_state.snapshot.values;
+        let old_graph_cells = &eval_state.snapshot.graph.value_cells;
+        for (id, new_node) in new_snapshot.graph.value_cells.iter() {
+            // `param_overrides` wins for Param cells whose content_hash is
+            // unchanged across the edit. This mirrors eval_cached's precedence
+            // rule ("override always wins for Param cells") and ensures an
+            // override established before a structural edit survives the edit.
+            // For Param cells whose content_hash CHANGED (e.g. the source
+            // default was edited), we intentionally skip the override — the
+            // diff has classified the cell as dirty and the eval loop will
+            // re-derive it from the new default_expr. If the user wants the
+            // override to persist across a content-hash-shifting edit, they
+            // can re-install it via set_param_and_invalidate after edit_source.
+            let unchanged_hash = old_graph_cells
+                .get(id)
+                .map(|old_node| old_node.content_hash == new_node.content_hash)
+                .unwrap_or(false);
 
-                if matches!(new_node.kind, reify_compiler::ValueCellKind::Param)
-                    && unchanged_hash
-                    && let Some(override_val) = self.param_overrides.get(id)
-                {
-                    new_snapshot.values.insert(
-                        id.clone(),
-                        (override_val.clone(), DeterminacyState::Determined),
-                    );
-                    values.insert(id.clone(), override_val.clone());
-                    continue;
-                }
+            if matches!(new_node.kind, reify_compiler::ValueCellKind::Param)
+                && unchanged_hash
+                && let Some(override_val) = self.param_overrides.get(id)
+            {
+                new_snapshot.values.insert(
+                    id.clone(),
+                    (override_val.clone(), DeterminacyState::Determined),
+                );
+                values.insert(id.clone(), override_val.clone());
+                continue;
+            }
 
-                if unchanged_hash
-                    && let Some((val, det)) = old_graph_snapshot_values.get(id)
-                {
-                    new_snapshot
-                        .values
-                        .insert(id.clone(), (val.clone(), *det));
-                    values.insert(id.clone(), val.clone());
-                    continue;
-                }
-                // Changed/added/no prior entry: read the Undef seed placed by
-                // Snapshot::from_compiled_module so the working values map has
-                // an entry for every present cell (downstream expressions can
-                // fail-stop on missing reads).
-                if let Some((val, _)) = new_snapshot.values.get(id) {
-                    values.insert(id.clone(), val.clone());
-                }
+            if unchanged_hash
+                && let Some((val, det)) = old_graph_snapshot_values.get(id)
+            {
+                new_snapshot
+                    .values
+                    .insert(id.clone(), (val.clone(), *det));
+                values.insert(id.clone(), val.clone());
+                continue;
+            }
+            // Changed/added/no prior entry: read the Undef seed placed by
+            // Snapshot::from_compiled_module so the working values map has
+            // an entry for every present cell (downstream expressions can
+            // fail-stop on missing reads).
+            if let Some((val, _)) = new_snapshot.values.get(id) {
+                values.insert(id.clone(), val.clone());
             }
         }
 
@@ -1398,13 +1367,8 @@ impl Engine {
             // any mismatch is found. Skip entirely when both sides are empty so
             // the common no-guarded-group case is free. branch_tag 0 = members,
             // 1 = else_members.
-            let old_groups = &self
-                .eval_state
-                .as_ref()
-                .unwrap()
-                .snapshot
-                .graph
-                .guarded_groups;
+            let eval_state = self.eval_state.as_ref().unwrap();
+            let old_groups = &eval_state.snapshot.graph.guarded_groups;
             let new_groups = &graph.guarded_groups;
             let has_role_flipped_guard_member = if old_groups.is_empty() && new_groups.is_empty() {
                 false

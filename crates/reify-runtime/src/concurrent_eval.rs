@@ -538,6 +538,28 @@ pub async fn edit_check_concurrent(
     // Capture resolution metadata before apply consumes the result
     let resolved_params = result.resolved_params.clone();
     let mut diagnostics = result.diagnostics.clone();
+    // Invariant maintained by `edit_param_concurrent`: `result.values` and
+    // `result.snapshot_values` carry the same set of ValueCellId keys and the
+    // same `Value` payloads for every key. The two fields differ only in that
+    // `snapshot_values` additionally carries `DeterminacyState` per entry —
+    // they are populated together by the concurrent evaluator. This lets us
+    // (1) clone just `result.values` (a `ValueMap`) as the input to
+    // `check_constraints_with_values` below, and (2) move `result` into
+    // `apply_concurrent_edit` to commit `snapshot_values` as the engine's new
+    // snapshot — with the guarantee that the constraint check sees the same
+    // post-edit values that the engine will commit. If `edit_param_concurrent`
+    // ever diverges the two maps, the constraint results here will be
+    // inconsistent with the committed engine state.
+    debug_assert!(
+        result.values.len() == result.snapshot_values.len()
+            && result.values.iter().all(|(id, val)| {
+                result
+                    .snapshot_values
+                    .get(id)
+                    .is_some_and(|(sv, _)| sv == val)
+            }),
+        "edit_param_concurrent invariant violated: values and snapshot_values have inconsistent keys or values"
+    );
     let values = result.values.clone();
 
     // Apply concurrent edit to update engine state
