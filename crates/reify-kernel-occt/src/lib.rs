@@ -570,11 +570,24 @@ impl OcctKernel {
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_f64(radius)?;
                 validate_positive_finite(r, "pipe radius")?;
-                // Compose: a circle face in the XY plane at z=0 swept along
-                // the stored path wire via make_pipe. The circle face is a
-                // private kernel-internal detail — user code never sees a
-                // `circle()` primitive.
+                // Reject paths whose start-tangent is not approximately +Z.
+                // The circular profile face is built in the XY plane (normal
+                // = +Z); BRepOffsetAPI_MakePipe requires the profile plane to
+                // align with the path's start-tangent. For non-+Z paths the
+                // swept solid is degenerate (zero volume). We detect this
+                // upfront and return an explicit error rather than silently
+                // producing unusable geometry. General orientation support is
+                // deferred future work (option (a) from task-2095 review).
                 let path_shape = self.get_shape(*path)?;
+                let t = ffi::ffi::wire_start_tangent(path_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                if !(t.x.abs() < 1e-6 && t.y.abs() < 1e-6 && t.z > 1.0 - 1e-6) {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "pipe currently only supports paths whose start-tangent is +Z \
+                         (got tangent ({:.3}, {:.3}, {:.3}))",
+                        t.x, t.y, t.z
+                    )));
+                }
                 let circle_shape = ffi::ffi::make_circle_face(r, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 ffi::ffi::make_pipe(&circle_shape, path_shape)

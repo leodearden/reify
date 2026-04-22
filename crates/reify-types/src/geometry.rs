@@ -183,18 +183,22 @@ pub enum GeometryOp {
     ///
     /// The circular cross-section is a face in the **XY plane at z=0**
     /// (i.e. its normal is +Z). `BRepOffsetAPI_MakePipe` expects the
-    /// profile's plane to align with the path's start-tangent; in
-    /// practice this means the current implementation is well-behaved
-    /// only for paths whose start-tangent is along the +Z axis (the
-    /// task's canonical use case).
+    /// profile's plane to align with the path's start-tangent; only paths
+    /// whose start-tangent is approximately **+Z** (within 1e-6) are
+    /// accepted.
     ///
-    /// Paths with a non-Z start-tangent currently yield a degenerate
-    /// (zero-volume) solid — `execute` does not fail, but the resulting
-    /// shape is unusable. The `kernel_pipe_x_axis_path_degenerate_solid`
-    /// test pins this behaviour so a future orientation fix is detected
-    /// as a regression on the existing assertion. Callers that need
+    /// Paths whose start-tangent is not aligned with +Z are rejected at
+    /// `execute` with `GeometryError::OperationFailed`. Callers needing
     /// arbitrary path orientations should use `Sweep { profile, path }`
-    /// directly, supplying an explicit profile wire.
+    /// directly, supplying an explicit profile wire already aligned to
+    /// the desired frame.
+    ///
+    /// The `kernel_pipe_non_z_start_tangent_returns_error` test locks in
+    /// this contract over +X, +Y, and arc-in-XY-plane paths.
+    ///
+    /// **Future work:** General start-tangent reorientation (automatically
+    /// aligning the profile face to the path's local frame) is deferred;
+    /// see option (a) from the task-2095 review.
     Pipe {
         path: GeometryHandleId,
         radius: Value,
