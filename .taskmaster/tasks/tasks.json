@@ -44445,6 +44445,19 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T01:50:48.095Z"
+      },
+      {
+        "id": "2098",
+        "title": "engine_edit: fix role-flip probe count mismatch with intra-group duplicates",
+        "description": "The role-flip probe in `Engine::edit_source` (crates/reify-eval/src/engine_edit.rs around line 1435) ends with `flipped || new_total != old_roles.len()`, where `new_total` is a raw per-member iteration count (no dedup) while `old_roles.len()` reflects a deduped HashMap. When both old and new guarded-groups contain the same intra-group duplicate (same ValueCellId in both members and else_members of one group — an affirmatively-supported shape per `build_old_role_map`'s docstring), `new_total` counts it twice but `old_roles.len()` counts it once, so the probe falsely reports a role-flip and forces an unnecessary guard re-eval.\n\nSpotted by reviewer_comprehensive after task 2092's intra-group-duplicate test pinned the helper's last-write-wins contract.\n\nFix options: (a) track HashSet of seen IDs during new-groups walk, compare seen.len() vs old_roles.len(); or (b) have build_old_role_map return (map, pre_dedup_count) so probe compares raw-vs-raw.\n\nAdd regression test with identical intra-group duplicate in both old and new graphs; assert probe does NOT report role-flip.\n\nmemory_hints:\n- search: \"build_old_role_map intra-group duplicate last-write-wins\"\n- entity: \"Engine\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2092"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44454,7 +44467,10 @@
       "completedCount": 1835,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:51:39.438Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T01:51:39.559Z"
     }
   }
 }
