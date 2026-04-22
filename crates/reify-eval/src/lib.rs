@@ -632,6 +632,28 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: Bool arm direct coverage (task-1893) ────────
+    // Pre-existing Bool→Int negative lock: `value_type_kind_matches_bool_value_into_int_type_returns_false`
+    // above (task-1922, this file ~line 625).  The two tests below close the remaining coverage gap:
+    // symmetric Int→Bool negative direction and the Bool→Bool positive path.
+
+    /// `Value::Int` paired with `Type::Bool` must return `false`.
+    ///
+    /// Symmetric-direction negative lock for the `Value::Bool(_) => matches!(ty, Type::Bool)` arm
+    /// in `value_type_kind_matches`.  Paired with the pre-existing Bool→Int negative lock above
+    /// and the Bool→Bool positive lock below, this ensures the arm cannot be trivially widened
+    /// without breaking at least one of the three locks.
+    #[test]
+    fn value_type_kind_matches_int_value_into_bool_type_returns_false() {
+        use reify_types::{Type, Value};
+        let v = Value::Int(1);
+        let t = Type::Bool;
+        assert!(
+            !value_type_kind_matches(&v, &t),
+            "Value::Int against Type::Bool must return false (Bool arm must not accept non-Bool values)"
+        );
+    }
+
     // execute_realization_ops_* tests moved to engine_build.rs
 
     // ── Engine.functions accumulation regression (task 506 / 1873) ───────────
