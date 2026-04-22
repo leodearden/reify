@@ -343,8 +343,25 @@ impl ModuleDag {
         // Commit filesystem mode now that the module has compiled successfully.
         // Deferred from the Ok-and-std match arm above so that a parse/compile
         // failure does not taint stdlib_mode (no std.* module was actually inserted
-        // into self.modules on a failed compile).
+        // into self.modules on a failed compile). Also reject the case where a
+        // transitive std.* import committed Embedded mode during recursion;
+        // overwriting would silently mix sources.
         if commit_fs_mode {
+            // During import recursion, a transitive std.* import may have fallen
+            // back to the embedded stdlib (because it was missing from stdlib_root)
+            // and committed Embedded mode. Overwriting with FileSystem here would
+            // silently mix stdlib sources — exactly the partial-overlay scenario
+            // the all-or-nothing invariant exists to reject.
+            if self.stdlib_mode == Some(StdlibMode::Embedded) {
+                return Err(vec![Diagnostic::error(format!(
+                    "partial stdlib overlay: '{}' resolved on the filesystem but a transitive \
+                     std.* import was served from the embedded stdlib; either populate all \
+                     stdlib modules under '{}' or remove that directory to use the embedded \
+                     stdlib exclusively",
+                    module_path,
+                    resolver.stdlib_root.display(),
+                ))]);
+            }
             self.stdlib_mode = Some(StdlibMode::FileSystem);
         }
 
