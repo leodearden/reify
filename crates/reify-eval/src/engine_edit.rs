@@ -2067,4 +2067,45 @@ mod tests {
             "Param cell must be deactivated in snapshot_values"
         );
     }
+
+    /// Happy-path characterization: two valid groups with non-overlapping
+    /// members produce the expected four-entry role map.
+    #[test]
+    fn build_old_role_map_returns_expected_map_for_valid_groups() {
+        use std::collections::HashMap;
+
+        use crate::graph::GuardedGroupInfo;
+
+        use super::build_old_role_map;
+
+        let g1 = ValueCellId::new("E1", "guard");
+        let g2 = ValueCellId::new("E2", "guard");
+        let a = ValueCellId::new("E1", "a");
+        let b = ValueCellId::new("E1", "b");
+        let c = ValueCellId::new("E2", "c");
+        let d = ValueCellId::new("E2", "d");
+
+        let group1 = GuardedGroupInfo {
+            guard_cell: g1.clone(),
+            members: vec![a.clone()],
+            else_members: vec![b.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let group2 = GuardedGroupInfo {
+            guard_cell: g2.clone(),
+            members: vec![c.clone()],
+            else_members: vec![d.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_old_role_map(&[group1, group2]);
+
+        assert_eq!(map.len(), 4);
+        assert_eq!(map.get(&a), Some(&(g1.clone(), 0u8)));
+        assert_eq!(map.get(&b), Some(&(g1.clone(), 1u8)));
+        assert_eq!(map.get(&c), Some(&(g2.clone(), 0u8)));
+        assert_eq!(map.get(&d), Some(&(g2.clone(), 1u8)));
+    }
 }
