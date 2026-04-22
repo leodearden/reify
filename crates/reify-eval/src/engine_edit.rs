@@ -466,6 +466,11 @@ impl Engine {
         // ── Guard re-elaboration phase ────────────────────────────────
         // If any structure_controlling cell changed, re-evaluate guarded groups
         // to flip which branch is active/inactive, and recompute fingerprint.
+        //
+        // Cross-phase dedup (task 2140): track groups re-elaborated by Phase 1
+        // so Phase 3 can skip them. Reelaboration is idempotent for a given guard
+        // value, so Phase 1's work is sufficient when it already ran for a group.
+        let mut phase1_reelaborated: HashSet<ValueCellId> = HashSet::new();
         {
             let graph = &new_snapshot.graph;
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
@@ -517,6 +522,7 @@ impl Engine {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
+                    phase1_reelaborated.insert(group.guard_cell.clone());
 
                     reelaborate_guarded_group(
                         graph,
@@ -733,6 +739,14 @@ impl Engine {
                         .get(&group.guard_cell)
                         .cloned()
                         .expect("guard cell must have a value after initial evaluation");
+                    // Cross-phase dedup: skip groups already re-elaborated by Phase 1
+                    // in this same edit_param call (task 2140). Reelaboration is
+                    // idempotent, so Phase 1's work is sufficient. The existing
+                    // old-vs-new skip below still covers groups where Phase 1 did NOT
+                    // fire (e.g. resolver-driven guard changes via auto params).
+                    if phase1_reelaborated.contains(&group.guard_cell) {
+                        continue;
+                    }
                     // Per-group skip: if this group's guard value is unchanged vs.
                     // the pre-edit snapshot, its activation state has not flipped
                     // and its members don't need re-elaboration.

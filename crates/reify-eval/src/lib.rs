@@ -210,8 +210,10 @@ pub struct Engine {
     /// of the most recent `edit_source` or `edit_param` call. Reset to 0 at
     /// the start of each `edit_source` / `edit_param` call (before Phase 1).
     /// Incremented once per group that is NOT skipped by the guard-value-unchanged
-    /// optimisation. Used by tests to assert that the per-group skip is working
-    /// correctly (e.g. only the affected group is re-elaborated, not all N groups).
+    /// optimisation or the cross-phase dedup set. A group re-elaborated in
+    /// Phase 1 is NOT counted again in Phase 3 (edit_param only; task 2140).
+    /// Used by tests to assert that the per-group skip is working correctly
+    /// (e.g. only the affected group is re-elaborated, not all N groups).
     last_guard_phase_group_evals: usize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
