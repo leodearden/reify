@@ -45123,6 +45123,17 @@
             "crates/reify-kernel-occt/src/lib.rs"
           ]
         }
+      },
+      {
+        "id": "2130",
+        "title": "Harden DualViewport tests and add containerRef null guard",
+        "description": "Post-merge robustness follow-ups from task 2124 review. Four related tweaks to DualViewport.tsx and DualViewport.test.tsx:\n\n1. **Test (l) jsdom flex-shorthand coupling** — `gui/src/__tests__/viewport/DualViewport.test.tsx:613` asserts on the `flex` shorthand string (`'0.3 0 0%'`). jsdom's CSSOM has been inconsistent about parsing/round-tripping the `flex` shorthand; if it normalizes the basis (`0%` → `0px`) or drops tokens, this test will flake. Switch to asserting on `flexGrow` directly: `expect(defWrapper.style.flexGrow).toBe('0.3')` and similar for design. Keep a separate assertion that the style prop is non-empty to cover the single-viewport fallback.\n\n2. **Test mock fidelity for setSplitRatio** — `gui/src/__tests__/viewport/DualViewport.test.tsx:114-119` mock's `setSplitRatio` clamps via Math.min/Math.max but skips the real store's `Number.isFinite` guard. If a future DualViewport change ever produces NaN (e.g. 0/0 when container height is measured as NaN) the mock silently stores NaN while the real store no-ops — tests pass, production breaks. Add `if (!Number.isFinite(ratio)) return false;` at the top of the mock, matching viewportStore.ts:188. (Alt: import the real `createViewportStore` and spy on it instead of re-implementing.)\n\n3. **handleDualResize containerRef null guard** — `gui/src/viewport/DualViewport.tsx:92-97` reads `containerRef.clientHeight` and checks `h <= 0` but not `containerRef` itself. Safe today because Solid assigns `let containerRef!` during JSX render before any splitter event, but fragile under deferred callbacks in tests or SSR. Change to `if (!containerRef || containerRef.clientHeight <= 0) return;` — same cost, explicit null coverage.\n\n4. **Clamp end-to-end coverage** — `gui/src/__tests__/viewport/DualViewport.test.tsx:476-501` has no test exercising an end-to-end clamp through the real store. Add a test that imports the real `createViewportStore`, passes `onResize(1000)` with h=400, and asserts the resulting `state.splitRatio` is clamped to 0.9. (Naturally composes with change #2 above — if you switch to the real store there, this test is almost free.)\n\nThese are all tiny, scoped to the DualViewport module. Suggest handling together since #2 and #4 interact.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45132,7 +45143,10 @@
       "completedCount": 1857,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T05:05:33.055Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T05:05:33.082Z"
     }
   }
 }
