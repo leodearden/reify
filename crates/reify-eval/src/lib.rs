@@ -633,4 +633,64 @@ mod tests {
     }
 
     // execute_realization_ops_* tests moved to engine_build.rs
+
+    // ── Engine.functions accumulation regression (task 506 / 1873) ───────────
+
+    /// Regression guard: `eval()` must **replace** the combined function table on
+    /// every call, never extend it.  If `engine_eval.rs` ever changed from
+    /// `self.functions = …` to `self.functions.extend(…)`, the count would grow
+    /// with each call.
+    ///
+    /// This assertion accesses the private `Engine::functions` field directly —
+    /// the test module is a child of `lib.rs` and inherits same-module visibility.
+    /// No public accessor is needed.
+    ///
+    /// Value-level idempotency is covered separately by the sibling integration
+    /// test `eval_is_idempotent_for_prelude_functions` in
+    /// `crates/reify-eval/tests/stdlib_prelude_tests.rs`.
+    #[test]
+    fn eval_does_not_accumulate_functions() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_types::ModulePath;
+
+        let source = r#"
+fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
+    nominal - deviation
+}
+
+structure S {
+    let v : Length = symmetric_tolerance(5mm, 2mm)
+}
+"#;
+        let prelude = reify_compiler::stdlib_loader::load_stdlib();
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+
+        let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+
+        // First eval
+        engine.eval(&compiled);
+        let count1 = engine.functions.len();
+
+        // Second eval on same engine — must not grow
+        engine.eval(&compiled);
+        let count2 = engine.functions.len();
+
+        assert!(
+            count1 > 0,
+            "sanity: function table must be non-empty after eval (got 0 — check prelude wiring)"
+        );
+        assert_eq!(
+            count1, count2,
+            "eval() must replace, not extend, self.functions: count1={} count2={}",
+            count1, count2
+        );
+    }
 }
