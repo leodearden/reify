@@ -31884,11 +31884,11 @@
         "description": "Four improvements: (1) lib.rs:634: replace magic ContentHash::of(&[1u8]) with ContentHash::of_str(\"is_recursive\") for domain-tagging and hoist above loop as loop-invariant constant. (2) recursive_detection_tests.rs:571-577: refactor compile_all to call compile_module internally to reduce duplication. (3) recursive_detection_tests.rs:588-623: add comment noting is_recursive_mixed_into_content_hash assumes A's hash doesn't include B's resolved hash transitively.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:12.703Z",
+        "updatedAt": "2026-04-22T10:01:25.019Z",
         "metadata": {
           "modules": [],
           "files": []
@@ -37119,11 +37119,11 @@
         "description": "Three small robustness/doc improvements in the reify-compiler prelude compilation path, all stemming from the task-1392 refactor:\n\n1. **Block-scope the shared borrow in compile_module** (module_dag.rs ~lines 191-199): compile_project already wraps its collect_import_preludes + compile_with_prelude_refs in an explicit block scope (lines 261-264) so the shared borrow of modules is visually bounded. compile_module relies on a comment instead. Wrap lines 196-199 in a block: `let compiled = { let preludes = collect_import_preludes(&parsed, &self.modules); crate::compile_with_prelude_refs(&parsed, &preludes) };` to make both call sites consistent.\n\n2. **Add debug_assert in collect_import_preludes** (module_dag.rs lines 20-35): The function silently skips imports not found in the modules map. Add `debug_assert!(result.is_some(), \"import '{}' not yet compiled\", import.path);` inside the filter_map to surface invariant violations during development.\n\n3. **Fix misleading doc on compile_with_prelude** (lib.rs ~lines 74-81): The performance note says callers in a hot loop should use compile_with_prelude_refs \"directly\", but that function is pub(crate) so external callers cannot. Amend to: \"crate-internal callers in a hot loop should use compile_with_prelude_refs directly to avoid repeated allocation.\"\n\nmemory_hints: search \"collect_import_preludes block scope borrow\" and \"compile_with_prelude doc\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:12.834Z",
+        "updatedAt": "2026-04-22T10:01:25.705Z",
         "metadata": {
           "modules": [],
           "files": []
@@ -45371,7 +45371,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:01:24.209Z",
+      "lastModified": "2026-04-22T10:01:25.705Z",
       "taskCount": 2140,
       "completedCount": 1873,
       "tags": [
