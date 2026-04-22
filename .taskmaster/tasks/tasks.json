@@ -45306,23 +45306,21 @@
         "description": "The same `old_guard_val` lookup is duplicated verbatim across three sites in crates/reify-eval/src/engine_edit.rs (around lines 516, 744, and 1492/1759), each pulling `self.eval_state.as_ref().and_then(|s| s.snapshot.values.get(&group.guard_cell)).map(|(v, _)| v)` with near-identical comment blocks. Phase 3 edit_param (~744) and Phase 3 edit_source (~1759) skip logic is identical; Phase 1 edit_param and Phase 1 edit_source differ only by the added/role-flip clause.\n\nFix: extract a small helper like `fn guard_value_unchanged(&self, guard_cell: &ValueCellId, new_val: &Value) -> bool` on Engine (or a free fn scoped by eval_state). Call it from all three sites. Phase 1 of edit_source can layer the `has_added_in_group || has_role_flipped_guard_member` clause at the call site. Consolidate the doc-comment in one place.\n\nLow priority — functional no-op but reduces drift risk.\n\nSource: post-merge review suggestion on task 2088 (merge commit 90804da34).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T07:24:12.588Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T07:23:41.353Z",
-      "taskCount": 2130,
+      "lastModified": "2026-04-22T07:24:12.588Z",
+      "taskCount": 2131,
       "completedCount": 1869,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T07:24:09.518Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T07:24:09.543Z"
+      ]
     }
   }
 }
