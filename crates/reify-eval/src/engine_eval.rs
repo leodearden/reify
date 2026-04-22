@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{find_template, CompiledModule, ValueCellKind};
 use reify_types::{
     AutoParam, CompiledFunction, DeterminacyState, Diagnostic, FIELD_ENTITY_PREFIX,
     ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
@@ -416,11 +416,7 @@ impl Engine {
         for template in &module.templates {
             for sub in &template.sub_components {
                 // Find the referenced child template by name
-                let child_template = match module
-                    .templates
-                    .iter()
-                    .find(|t| t.name == sub.structure_name)
-                {
+                let child_template = match find_template(&module.templates, &sub.structure_name) {
                     Some(t) => t,
                     None => {
                         diagnostics.push(Diagnostic::error(format!(
