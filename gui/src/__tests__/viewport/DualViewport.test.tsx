@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type { MeshData } from '../../types';
+import { createViewportStore } from '../../stores/viewportStore';
 
 // ── Mock Viewport ────────────────────────────────────────────────────────────
 // Capture rendered instances by viewportId so we can assert mesh sources.
@@ -615,6 +616,61 @@ describe('DualViewport', () => {
       const negInfResult = store.setSplitRatio(-Infinity);
       expect(negInfResult).toBe(false);
       expect(store.state.splitRatio).toBe(0.5);
+    });
+
+    it('(k6) end-to-end clamp upper bound: real store clamps raw ratio 3.0 → 0.9', async () => {
+      // Uses the real createViewportStore to lock in the integration contract between
+      // handleDualResize's raw arithmetic and the real store's clamp semantics.
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      // Real store: initial splitRatio = 0.5, clamp [0.1, 0.9]
+      const viewportStore = createViewportStore();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      // containerHeight = 400; delta = 1000 → raw = 0.5 + 1000/400 = 3.0 → clamped to 0.9
+      const container = screen.getByTestId('dual-viewport');
+      Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 });
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(1000);
+
+      expect(viewportStore.state.splitRatio).toBe(0.9);
+    });
+
+    it('(k7) end-to-end clamp lower bound: real store clamps raw ratio -2.0 → 0.1', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      const viewportStore = createViewportStore();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      // containerHeight = 400; delta = -1000 → raw = 0.5 + (-1000)/400 = -2.0 → clamped to 0.1
+      const container = screen.getByTestId('dual-viewport');
+      Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 });
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(-1000);
+
+      expect(viewportStore.state.splitRatio).toBe(0.1);
     });
 
     it('(l) both viewports active: wrapper flex styles reflect splitRatio', async () => {
