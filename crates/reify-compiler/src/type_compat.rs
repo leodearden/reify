@@ -57,6 +57,27 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
             },
         ) => tn == vn && tq == vq,
 
+        // Rule 2c: Tensor<0,M,Q> -> Tensor<0,N,Q>  (same Q, any N — N irrelevant for rank-0)
+        //
+        // Spec rationale: rank-0 tensors are semantically scalar-like; their N dimension
+        // carries no indexable information. By transitivity of Rules 2a/2b, if both
+        // `Q → Tensor<0,M,Q>` and `Q → Tensor<0,N,Q>` hold, direct
+        // `Tensor<0,M,Q> → Tensor<0,N,Q>` must also hold. Without this rule a trait
+        // requiring `Tensor<0,5,Q>` would reject a structure providing `Tensor<0,3,Q>`
+        // despite them being semantically identical.
+        (
+            Type::Tensor {
+                rank: 0,
+                quantity: q1,
+                ..
+            },
+            Type::Tensor {
+                rank: 0,
+                quantity: q2,
+                ..
+            },
+        ) => q1 == q2,
+
         // Rule 2a: Q -> Tensor<0,_,Q>  (N is irrelevant for rank-0)
         (
             from_ty,
