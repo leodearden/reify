@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::time::Instant;
 
-use reify_compiler::CompiledModule;
+use reify_compiler::{CompiledFunction, CompiledModule};
 use reify_types::{
     AutoParam, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic, PersistentMap,
     RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
@@ -34,6 +34,54 @@ pub(crate) fn deactivate_if_not_auto(
     if !graph.is_auto_cell(id) {
         values.insert(id.clone(), Value::Undef);
         snapshot_values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
+    }
+}
+
+/// Re-elaborate the active and inactive branches of a single guarded group
+/// given the already-computed guard value.
+///
+/// - **Active branch** (`is_true` for `members`, `is_false` for `else_members`):
+///   each cell's `default_expr` is evaluated with
+///   `EvalContext::new(values, functions).with_meta(meta_map)` and written into
+///   both `values` and `snapshot_values` with `DeterminacyState::Determined`.
+///   Cells without a `default_expr` (or absent from the graph) are left
+///   unchanged.
+/// - **Inactive branch**: each cell is passed to `deactivate_if_not_auto`,
+///   which writes `Undef / Undetermined` for non-Auto cells and skips Auto
+///   cells (whose lifecycle is owned by the constraint solver).
+///
+/// The caller is responsible for computing and inserting the guard cell value
+/// itself — this helper takes `guard_val` as input and handles only the member
+/// propagation step.
+fn reelaborate_guarded_group(
+    graph: &EvaluationGraph,
+    group: &GuardedGroupInfo,
+    guard_val: &Value,
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    let is_true = matches!(guard_val, Value::Bool(true));
+    let is_false = matches!(guard_val, Value::Bool(false));
+
+    for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)] {
+        for mid in cells {
+            if is_active {
+                if let Some(node) = graph.value_cells.get(mid)
+                    && let Some(ref expr) = node.default_expr
+                {
+                    let val = reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                    );
+                    values.insert(mid.clone(), val.clone());
+                    snapshot_values.insert(mid.clone(), (val, DeterminacyState::Determined));
+                }
+            } else {
+                deactivate_if_not_auto(graph, mid, values, snapshot_values);
+            }
+        }
     }
 }
 
