@@ -44533,11 +44533,11 @@
         "description": "engine_edit.rs ~L1435: `new_total != old_roles.len()` compares raw count vs deduped len; identical intra-group dups on both sides produce false role-flip. Spawned from task 2092 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:54:22.093Z",
+        "updatedAt": "2026-04-22T02:04:53.139Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44637,15 +44637,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:04:30.158Z",
-      "taskCount": 2100,
+      "lastModified": "2026-04-22T02:04:53.142Z",
+      "taskCount": 2101,
       "completedCount": 1836,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T02:04:52.608Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T02:04:52.918Z"
+      ]
     }
   }
 }
