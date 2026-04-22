@@ -4677,6 +4677,28 @@ mod tests {
     }
 
     #[test]
+    fn build_generates_line_wire_floor_header() {
+        // Compile-time load of the generated header — include_str! fails at
+        // test-crate compile time if the file doesn't exist in OUT_DIR.
+        // This test intentionally fails to compile until step-4 (build.rs update)
+        // writes line_wire_floors.h into $OUT_DIR.
+        let content = include_str!(concat!(env!("OUT_DIR"), "/line_wire_floors.h"));
+        assert!(
+            content.contains("CPP_LINE_WIRE_MIN_LENGTH_SQ"),
+            "generated header must define CPP_LINE_WIRE_MIN_LENGTH_SQ"
+        );
+        assert!(
+            content.contains("namespace occt"),
+            "generated header must be scoped in namespace occt"
+        );
+        let expected_value = format!("{:e}", crate::CPP_LINE_WIRE_MIN_LENGTH_SQ);
+        assert!(
+            content.contains(&expected_value),
+            "generated header must contain the CPP floor value '{expected_value}'"
+        );
+    }
+
+    #[test]
     fn rust_line_wire_floor_strictly_below_cpp_floor() {
         // Drift-guard: asserts that the Rust-layer primary floor
         // (RUST_LINE_WIRE_MIN_LENGTH_SQ) stays strictly below the C++-layer
