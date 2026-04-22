@@ -44669,7 +44669,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:06:00.206Z"
+        "updatedAt": "2026-04-22T02:06:00.206Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/deps.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/unfold.rs"
+          ]
+        }
       },
       {
         "id": "2111",
