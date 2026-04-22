@@ -1575,6 +1575,70 @@ fn multi_guard_fingerprint_disambiguates_by_guard_identity() {
     );
 }
 
+/// Regression test: regular Param-kind else_members must still get Undetermined
+/// when their else branch is inactive at eval() time (guard=true). The Auto-kind
+/// fix must not affect normal params.
+///
+/// Mirrors `eval_guard_false_regular_param_still_undetermined` (members-side) with
+/// `members` ↔ `else_members` and guard default flipped to true. Closes the missing
+/// quadrant in the regular-Param × {members, else_members} × {eval, edit_param} matrix.
+#[test]
+fn eval_guard_true_else_member_regular_param_still_undetermined() {
+    let _active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let width_id = ValueCellId::new("S", "width");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Regular Param-kind else_member 'width' with a default value
+    let width_decl = make_param_decl("S", "width", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            // Guard defaults to true → else_members are inactive
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![],           // members (active when true, empty here)
+            vec![],           // constraints
+            vec![width_decl], // else_members (inactive because guard=true)
+            vec![],           // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // eval() with guard=true: width is in deactivated else_members
+    let _result = engine.eval(&module);
+
+    // Regular Param-kind cell should still have DeterminacyState::Undetermined
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&width_id)
+        .expect("width should be in snapshot after eval");
+    assert_eq!(
+        *snap_val,
+        Value::Undef,
+        "Deactivated regular Param in else_members should have Value::Undef"
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Undetermined,
+        "Deactivated regular Param in else_members should have DeterminacyState::Undetermined"
+    );
+}
+
 /// Block-A-only Auto-skip regression test (task 750).
 ///
 /// Block A in `edit_param` fires when `has_dirty_guards` — meaning the guard
