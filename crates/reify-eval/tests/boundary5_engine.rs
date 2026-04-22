@@ -1069,7 +1069,6 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
     use reify_eval::cache::NodeId;
     use reify_test_support::builders::{binop, literal};
     use reify_types::{BinOp, ModulePath, Type, Value, ValueCellId};
-    use std::collections::HashSet;
 
     // let a = 1        (no reads — literal)
     // let b = 2        (no reads — literal)
@@ -1115,28 +1114,28 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
     let cache_c = cache
         .get(&node_c)
         .expect("S.c should be in cache after eval");
-    let reads_c: HashSet<&ValueCellId> = cache_c.dependency_trace.reads.iter().collect();
-    let expected_c: HashSet<ValueCellId> = [ValueCellId::new("S", "a"), ValueCellId::new("S", "b")]
-        .into_iter()
-        .collect();
-    let expected_c_refs: HashSet<&ValueCellId> = expected_c.iter().collect();
+    let mut reads_c = cache_c.dependency_trace.reads.clone();
+    reads_c.sort();
+    let mut expected_c = vec![ValueCellId::new("S", "a"), ValueCellId::new("S", "b")];
+    expected_c.sort();
     assert_eq!(
-        reads_c, expected_c_refs,
-        "S.c dependency_trace.reads should be {{S.a, S.b}}, got {:?}",
+        reads_c, expected_c,
+        "S.c dependency_trace.reads should be [S.a, S.b] (sorted), got {:?}",
         cache_c.dependency_trace.reads,
     );
 
-    // S.d should have reads = {S.c} (chain: topologically later node)
+    // S.d should have reads = [S.c] (chain: topologically later node)
     let node_d = NodeId::Value(ValueCellId::new("S", "d"));
     let cache_d = cache
         .get(&node_d)
         .expect("S.d should be in cache after eval");
-    let reads_d: HashSet<&ValueCellId> = cache_d.dependency_trace.reads.iter().collect();
-    let expected_d: HashSet<ValueCellId> = [ValueCellId::new("S", "c")].into_iter().collect();
-    let expected_d_refs: HashSet<&ValueCellId> = expected_d.iter().collect();
+    let mut reads_d = cache_d.dependency_trace.reads.clone();
+    reads_d.sort();
+    let mut expected_d = vec![ValueCellId::new("S", "c")];
+    expected_d.sort();
     assert_eq!(
-        reads_d, expected_d_refs,
-        "S.d dependency_trace.reads should be {{S.c}}, got {:?}",
+        reads_d, expected_d,
+        "S.d dependency_trace.reads should be [S.c] (sorted), got {:?}",
         cache_d.dependency_trace.reads,
     );
 
@@ -1149,5 +1148,74 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
         cache_a.dependency_trace.reads.is_empty(),
         "S.a dependency_trace.reads should be empty (literal), got {:?}",
         cache_a.dependency_trace.reads,
+    );
+}
+
+/// Regression test: evaluate_let_bindings must preserve duplicate reads when the same
+/// cell appears more than once in a let-binding expression.
+///
+/// Template:
+///   let a = 1       (literal, no reads)
+///   let c = a + a   (BinOp; both operands are ValueRef(S.a) — two reads of the same cell)
+///
+/// `cache_c.dependency_trace.reads` must contain S.a *twice*, not once.  A HashSet
+/// comparison would silently pass even if the implementation deduplicates; sorted-Vec
+/// equality locks in the multiplicity.  This mirrors the deps.rs-level tests
+/// `extract_dependency_trace_preserves_duplicate_reads_for_same_cell_in_binop` but
+/// exercises the full evaluate_let_bindings → cache handoff path.
+#[test]
+fn evaluate_let_bindings_cache_preserves_duplicate_reads_for_same_cell() {
+    use reify_eval::cache::NodeId;
+    use reify_test_support::builders::{binop, literal, value_ref_typed};
+    use reify_types::{BinOp, ModulePath, Type, Value, ValueCellId};
+
+    // let a = 1        (no reads — literal)
+    // let c = a + a    (two reads of S.a — same cell referenced twice)
+    let template = TopologyTemplateBuilder::new("S")
+        .let_binding("S", "a", Type::Int, literal(Value::Int(1)))
+        .let_binding(
+            "S",
+            "c",
+            Type::Int,
+            binop(
+                BinOp::Add,
+                value_ref_typed("S", "a", Type::Int),
+                value_ref_typed("S", "a", Type::Int),
+            ),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+
+    let cache = engine.cache_store();
+
+    let node_c = NodeId::Value(ValueCellId::new("S", "c"));
+    let cache_c = cache
+        .get(&node_c)
+        .expect("S.c should be in cache after eval");
+
+    // Multiplicity check: two reads, not one.
+    assert_eq!(
+        cache_c.dependency_trace.reads.len(),
+        2,
+        "S.c dependency_trace.reads should have length 2 (S.a appears twice), got {:?}",
+        cache_c.dependency_trace.reads,
+    );
+
+    // Content check: both reads refer to S.a.
+    let mut reads_c = cache_c.dependency_trace.reads.clone();
+    reads_c.sort();
+    let mut expected = vec![ValueCellId::new("S", "a"), ValueCellId::new("S", "a")];
+    expected.sort();
+    assert_eq!(
+        reads_c, expected,
+        "S.c dependency_trace.reads should be [S.a, S.a] (sorted), got {:?}",
+        cache_c.dependency_trace.reads,
     );
 }

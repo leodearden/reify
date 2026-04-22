@@ -1129,9 +1129,24 @@ impl Engine {
 
         for node_id in sorted_lets {
             let expr = let_cells[&node_id];
+            // let_cells is keyed exclusively by NodeId::Value; topological_sort returns
+            // only keys from that set — so this assertion holds in all correct code paths.
+            // In debug/test builds it fires loud; in release the diagnostic+continue handles
+            // any accidental invariant violation gracefully.
+            debug_assert!(
+                matches!(node_id, NodeId::Value(_)),
+                "evaluate_let_bindings: sorted_lets produced a non-Value NodeId: {:?}; construction invariant violated",
+                node_id,
+            );
             let cell_id = match &node_id {
                 NodeId::Value(vcid) => vcid,
-                _ => unreachable!(),
+                _ => {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "let-binding evaluation: expected NodeId::Value, got {:?}; skipping",
+                        node_id,
+                    )));
+                    continue;
+                }
             };
 
             let start = Instant::now();
@@ -1157,7 +1172,9 @@ impl Engine {
 
             // Move the trace out of `let_traces` (built above from the same key set);
             // every node in `sorted_lets` is guaranteed present, so remove() cannot fail.
-            // Using remove() avoids a Vec clone compared to indexing+clone.
+            // Using remove() avoids a second walk of the expression tree — extract_dependency_trace
+            // was already called above for every let cell — and also avoids the Vec clone you'd get
+            // with indexing+clone.
             let trace = let_traces
                 .remove(&node_id)
                 .expect("sorted_lets entries are always keys in let_traces");

@@ -477,17 +477,12 @@ fn elaborate_child_lets_only<'t>(
     let child_let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = child_template
         .value_cells
         .iter()
-        .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-        .map(|c| {
-            (
-                NodeId::Value(c.id.clone()),
-                c.default_expr.as_ref().unwrap(),
-            )
-        })
+        .filter(|c| c.kind == ValueCellKind::Let)
+        .filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))
         .collect();
 
     let child_let_node_ids: HashSet<NodeId> = child_let_cells.keys().cloned().collect();
-    let child_let_traces: HashMap<NodeId, DependencyTrace> = child_let_cells
+    let mut child_let_traces: HashMap<NodeId, DependencyTrace> = child_let_cells
         .iter()
         .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
         .collect();
@@ -517,9 +512,24 @@ fn elaborate_child_lets_only<'t>(
 
     for child_node_id in sorted_child_lets {
         let expr = child_let_cells[&child_node_id];
+        // child_let_cells is keyed exclusively by NodeId::Value; topological_sort returns
+        // only keys from that set — so this assertion holds in all correct code paths.
+        // In debug/test builds it fires loud; in release the diagnostic+continue handles
+        // any accidental invariant violation gracefully.
+        debug_assert!(
+            matches!(child_node_id, NodeId::Value(_)),
+            "elaborate_child_lets_only: sorted_child_lets produced a non-Value NodeId: {:?}; construction invariant violated (entity {})",
+            child_node_id, scoped_entity,
+        );
         let child_cell_id = match &child_node_id {
             NodeId::Value(vcid) => vcid,
-            _ => unreachable!(),
+            _ => {
+                diagnostics.push(Diagnostic::error(format!(
+                    "let-binding evaluation: expected NodeId::Value, got {:?}; skipping (entity {})",
+                    child_node_id, scoped_entity,
+                )));
+                continue;
+            }
         };
         let member = &child_cell_id.member;
 
@@ -546,7 +556,14 @@ fn elaborate_child_lets_only<'t>(
             (val.clone(), DeterminacyState::Determined),
         );
 
-        let trace = extract_dependency_trace(expr);
+        // Move the trace out of `child_let_traces` (built above from the same key set);
+        // every node in `sorted_child_lets` is guaranteed present, so remove() cannot fail.
+        // Using remove() avoids a second walk of the expression tree — extract_dependency_trace
+        // was already called above for every let cell — and also avoids the Vec clone you'd get
+        // with indexing+clone.
+        let trace = child_let_traces
+            .remove(&child_node_id)
+            .expect("sorted_child_lets entries are always keys in child_let_traces");
         let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
         let outcome =
             cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
