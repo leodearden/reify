@@ -27,8 +27,12 @@ vi.mock('../../viewport/Viewport', () => ({
 }));
 
 // ── Mock Splitter ────────────────────────────────────────────────────────────
+// Capture props keyed by data-testid so tests can invoke onResize etc.
+const capturedSplitterPropsByTestId: Record<string, any> = {};
+
 vi.mock('../../components/Splitter', () => ({
   Splitter: (props: any) => {
+    capturedSplitterPropsByTestId[props['data-testid'] ?? 'splitter'] = props;
     const el = document.createElement('div');
     el.setAttribute('data-testid', props['data-testid'] ?? 'splitter');
     el.setAttribute('data-orientation', props.orientation);
@@ -98,7 +102,7 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
       ...(overrides?.['def-preview'] ?? {}),
     },
   };
-  const [state] = createStore({ viewports });
+  const [state] = createStore({ viewports, splitRatio: 0.5 });
   return {
     state,
     getViewport: vi.fn(),
@@ -107,6 +111,7 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
     updateCamera: vi.fn(),
     setDefPath: vi.fn(),
     setForceExpanded: vi.fn(),
+    setSplitRatio: vi.fn(() => true),
   };
 }
 
@@ -123,6 +128,9 @@ afterEach(() => {
   }
   for (const key of Object.keys(capturedInnerFnsByViewportId)) {
     delete capturedInnerFnsByViewportId[key];
+  }
+  for (const key of Object.keys(capturedSplitterPropsByTestId)) {
+    delete capturedSplitterPropsByTestId[key];
   }
   vi.clearAllMocks();
 });
@@ -458,6 +466,60 @@ describe('DualViewport', () => {
       // Invoking parent proxy now delegates to the inner fn
       parentProxy();
       expect(innerFitSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('(k) dragging splitter-dual calls viewportStore.setSplitRatio with current + delta/containerHeight', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      const viewportStore = makeViewportStore();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      // Stub the root container clientHeight to 400
+      const container = screen.getByTestId('dual-viewport');
+      Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 });
+
+      // Invoke the dual splitter's onResize callback with delta=80
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(80);
+
+      // Expected: 0.5 + 80/400 = 0.7
+      expect(viewportStore.setSplitRatio).toHaveBeenCalledOnce();
+      expect(viewportStore.setSplitRatio).toHaveBeenCalledWith(0.7);
+    });
+
+    it('(k2) no-op when container height is 0 — store not called', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      const viewportStore = makeViewportStore();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      // clientHeight defaults to 0 in jsdom — no override needed
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(80);
+
+      expect(viewportStore.setSplitRatio).not.toHaveBeenCalled();
     });
 
     it('(j) after design Viewport unmounts, proxy becomes a no-op (inner fn not called again)', async () => {
