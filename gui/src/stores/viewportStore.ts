@@ -32,6 +32,8 @@ export interface ViewportState {
 /** Top-level store state shape. */
 export interface ViewportStoreState {
   viewports: Record<string, ViewportState>;
+  /** Fraction of container height allocated to the def-preview viewport when both are active. Clamped to [0.1, 0.9]. */
+  splitRatio: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +105,7 @@ export function createViewportStore(
 ) {
   const [state, setState] = createStore<ViewportStoreState>({
     viewports: initialViewports ?? defaultViewports(),
+    splitRatio: 0.5,
   });
 
   // ---------------------------------------------------------------------------
@@ -174,6 +177,17 @@ export function createViewportStore(
     return true;
   }
 
+  /**
+   * Set the split ratio (fraction of container height for the def-preview viewport).
+   * Clamps the value to [0.1, 0.9] so neither viewport collapses to zero.
+   * Always returns `true`.
+   */
+  function setSplitRatio(ratio: number): boolean {
+    const clamped = Math.min(0.9, Math.max(0.1, ratio));
+    setState('splitRatio', clamped);
+    return true;
+  }
+
   return {
     state,
     getViewport,
@@ -182,6 +196,7 @@ export function createViewportStore(
     updateCamera,
     setDefPath,
     setForceExpanded,
+    setSplitRatio,
   };
 }
 
