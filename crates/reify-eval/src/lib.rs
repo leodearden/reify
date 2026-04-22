@@ -633,16 +633,11 @@ mod tests {
     }
 
     // ── value_type_kind_matches: Bool arm direct coverage (task-1893) ────────
-    // Pre-existing Bool→Int negative lock: `value_type_kind_matches_bool_value_into_int_type_returns_false`
-    // above (task-1922, this file ~line 625).  The two tests below close the remaining coverage gap:
-    // symmetric Int→Bool negative direction and the Bool→Bool positive path.
+    // task-1922 added a Bool→Int negative lock above; these two tests complete
+    // the symmetric set: Int→Bool negative and Bool→Bool positive.  Together the
+    // three locks pin the arm against accidental widening or deletion.
 
-    /// `Value::Int` paired with `Type::Bool` must return `false`.
-    ///
-    /// Symmetric-direction negative lock for the `Value::Bool(_) => matches!(ty, Type::Bool)` arm
-    /// in `value_type_kind_matches`.  Paired with the pre-existing Bool→Int negative lock above
-    /// and the Bool→Bool positive lock below, this ensures the arm cannot be trivially widened
-    /// without breaking at least one of the three locks.
+    /// Negative lock for the Bool arm: non-Bool values must not satisfy Type::Bool.
     #[test]
     fn value_type_kind_matches_int_value_into_bool_type_returns_false() {
         use reify_types::{Type, Value};
@@ -650,16 +645,11 @@ mod tests {
         let t = Type::Bool;
         assert!(
             !value_type_kind_matches(&v, &t),
-            "Value::Int against Type::Bool must return false (Bool arm must not accept non-Bool values)"
+            "Value::Int against Type::Bool must return false"
         );
     }
 
-    /// `Value::Bool` paired with `Type::Bool` must return `true`.
-    ///
-    /// Positive-path regression lock for the `Value::Bool(_) => matches!(ty, Type::Bool)` arm
-    /// in `value_type_kind_matches`.  Paired with the Bool→Int negative lock above (~line 625)
-    /// and the Int→Bool negative lock immediately preceding this test, this triplet ensures the
-    /// Bool arm cannot be silently broken by a future refactor without failing at least one lock.
+    /// Positive lock for the Bool arm: Bool values must satisfy Type::Bool.
     #[test]
     fn value_type_kind_matches_bool_value_into_bool_type_returns_true() {
         use reify_types::{Type, Value};
@@ -667,7 +657,7 @@ mod tests {
         let t = Type::Bool;
         assert!(
             value_type_kind_matches(&v, &t),
-            "Value::Bool against Type::Bool must return true (Bool arm positive path)"
+            "Value::Bool against Type::Bool must return true"
         );
     }
 
