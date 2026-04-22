@@ -369,3 +369,59 @@ fn clear_param_overrides_empties_map_and_subsequent_eval_uses_defaults() {
         "clear_param_overrides must wipe the override so eval falls back to the 100mm default"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// step-13: no-override baseline — behavior unchanged for untouched engines
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression lock for the "behavior is unchanged for the common case where
+/// param_overrides was never populated" invariant.  Critical because
+/// hundreds of existing tests across the crate rely on eval() reading
+/// module defaults and not emitting spurious diagnostics when no override
+/// has been set — this must not flip after steps 2/4/6/8/12.
+#[test]
+fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics() {
+    let mut engine = fresh_engine();
+    let width_id = ValueCellId::new("S", "width");
+    let height_id = ValueCellId::new("S", "height");
+
+    let module = compile_source(
+        "structure S { param width: Scalar = 100mm\n param height: Scalar = 200mm }",
+    );
+    let result = engine.eval(&module);
+
+    // (a) Both params read back their module defaults.
+    assert_eq!(
+        result.values.get(&width_id),
+        Some(&length_scalar(0.1)),
+        "width must read its 100mm default when no override was set"
+    );
+    assert_eq!(
+        result.values.get(&height_id),
+        Some(&length_scalar(0.2)),
+        "height must read its 200mm default when no override was set"
+    );
+
+    // (b) No diagnostics — none of the override-mismatch warnings should
+    //     fire for a cell with no override in the map.
+    assert!(
+        result.diagnostics.is_empty(),
+        "untouched engine must not emit diagnostics on a vanilla eval, got: {:?}",
+        result.diagnostics
+    );
+
+    // (c) clear_param_overrides on an already-empty map is a no-op: must
+    //     not panic, and a subsequent eval still yields the defaults.
+    engine.clear_param_overrides();
+    let after_noop_clear = engine.eval(&module);
+    assert_eq!(
+        after_noop_clear.values.get(&width_id),
+        Some(&length_scalar(0.1)),
+        "clear on empty map must leave defaults intact"
+    );
+    assert!(
+        after_noop_clear.diagnostics.is_empty(),
+        "eval after no-op clear must still not emit diagnostics, got: {:?}",
+        after_noop_clear.diagnostics
+    );
+}
