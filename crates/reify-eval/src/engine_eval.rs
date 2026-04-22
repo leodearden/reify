@@ -317,15 +317,39 @@ impl Engine {
                     // Orphan purging runs once, before this loop (see the
                     // retain call after Snapshot::from_compiled_module).
                     let override_val = match self.param_overrides.get(&cell.id) {
-                        Some(v) if value_type_kind_matches(v, &cell.cell_type) => Some(v.clone()),
-                        Some(v) => {
+                        None => None,
+                        Some(v) if !value_type_kind_matches(v, &cell.cell_type) => {
                             diagnostics.push(Diagnostic::warning(format!(
                                 "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
                                 cell.id, cell.cell_type, v
                             )));
                             None
                         }
-                        None => None,
+                        Some(v) => {
+                            // Type-kind matches.  Apply the Scalar dimension
+                            // guard mirrored from Engine::edit_param
+                            // (engine_edit.rs:344-355): a Scalar[LENGTH]
+                            // override against a Scalar[MASS] cell is
+                            // silently corrupting unless we reject it here.
+                            // Emit a Warning, leave the override in place
+                            // (reverting the source edit should resurrect
+                            // it), and fall through to the default_expr
+                            // path below.
+                            if let reify_types::Type::Scalar {
+                                dimension: expected,
+                            } = cell.cell_type
+                                && let reify_types::Value::Scalar { dimension: got, .. } = v
+                                && *got != expected
+                            {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                                    cell.id, expected, got
+                                )));
+                                None
+                            } else {
+                                Some(v.clone())
+                            }
+                        }
                     };
 
                     let node_id = NodeId::Value(cell.id.clone());
