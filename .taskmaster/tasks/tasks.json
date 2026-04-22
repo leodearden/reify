@@ -8547,7 +8547,7 @@
         "id": "397",
         "title": "Review: Eval meta_map performance and refactoring (17 suggestions from task 212)",
         "description": "Triage and address 17 code review suggestions from the task-212 review. Key themes: hot-path clones, code duplication, eager cloning, async safety, test gaps.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "<info added on 2026-04-21T14:28:33.374Z>\nMemory hints have been updated to include entities: [\"evaluate_let_bindings\", \"meta_map\", \"TopologyTemplate\"] and queries: [\"evaluate_let_bindings extract_dependency_trace topological sort\", \"meta_map performance review suggestions task 212\", \"task 470 eliminate redundant computation let_bindings\"]. Note: Task 470 (Eliminate redundant computation in evaluate_let_bindings) was created directly from this review's findings and completed via commit 2ab85ba6578c (2026-04-22). Task 397 is now unblocked and pending.\n</info added on 2026-04-21T14:28:33.374Z>",
@@ -8576,7 +8576,8 @@
           },
           "files": [],
           "_causation_id": "e4f619eb-8acf-4a83-a696-3b1cd5162acb"
-        }
+        },
+        "updatedAt": "2026-04-22T03:54:40.351Z"
       },
       {
         "id": "398",
@@ -10105,11 +10106,11 @@
         "description": "From task 421 review — non-blocking quality improvements to unfold_recursive_sub (crates/reify-eval/src/lib.rs): (1) Rename child_recursive_subs/child_recursive_sub_names to next_recursive_subs/next_recursive_sub_names for clarity. (2) Add inline comment at recursive call site documenting child_template→current_template handoff. (3) Extract find_template() utility (same pattern at lib.rs:1137, lib.rs:3339, graph.rs:155, and test helper at recursive_detection_tests.rs:25). (4) Test: unknown structure_name failure mode — verify diagnostic emitted. (5) Test: n=3 variant for deeper alternation coverage. (6) Test: negative assertion that B is not instantiated as top-level entity. Modules: crates/reify-eval, crates/reify-compiler (find_template reuse). Reviewers: architect, test_analyst, reuse_auditor.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T19:43:26.225Z",
+        "updatedAt": "2026-04-22T03:54:40.131Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
@@ -44952,7 +44953,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T03:54:36.315Z",
+      "lastModified": "2026-04-22T03:54:40.351Z",
       "taskCount": 2113,
       "completedCount": 1849,
       "tags": [
