@@ -44957,6 +44957,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T04:03:16.380Z"
+      },
+      {
+        "id": "2123",
+        "title": "Add Rust-side drift test for layered make_line_wire length floor",
+        "description": "Guard the Rust vs C++ layered minimum-length floor in make_line_wire against future drift: add a test that fails if the Rust-layer floor becomes >= the C++ floor.",
+        "details": "Context: task 383 S2 set a C++ degeneracy floor of 1e-10 m² in crates/reify-kernel-occt/cpp/occt_wrapper.cpp (see comment at ~lines 124-132), while Rust applies a stricter 1e-12 m² floor upstream. The layered design means the Rust guard must stay strictly smaller than the C++ guard; if a future edit loosens the Rust guard above 1e-10, the C++ guard becomes the effective limit silently with no regression signal.\n\nWork:\n- Expose CPP_LINE_WIRE_MIN_LENGTH_SQ to Rust via a C-exported const (preferred) or mirror it in Rust with a comment pointing to the exact C++ source location.\n- Add a unit test in crates/reify-kernel-occt that asserts the Rust-layer floor is strictly smaller than the C++ floor (e.g. `assert!(RUST_MIN_LEN_SQ < cpp_min_len_sq())`).\n- Update the C++ comment to reference the test by name so future edits on either side know where to look.\n\nModules: crates/reify-kernel-occt/cpp/occt_wrapper.cpp, crates/reify-kernel-occt/cpp/occt_wrapper.h, crates/reify-kernel-occt/src/ffi.rs, crates/reify-kernel-occt/src/lib.rs\n\nmemory_hints: search \"task 383 S2 make_line_wire degenerate threshold\", search \"layered guard 1e-10 1e-12\".",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44966,7 +44977,10 @@
       "completedCount": 1850,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T04:03:44.265Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T04:03:44.289Z"
     }
   }
 }
