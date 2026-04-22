@@ -24656,7 +24656,7 @@
         "description": "In lib.rs:5146-5189, the same `compiled_templates.iter().find(|t| t.name == sub.structure_name)` linear scan is performed 3 times for the same sub (lines 5151, 5160, 5176). All find the same `child_tmpl`. Additionally, for collection subs, `sub_member_types` and `collection_sub_member_types` are populated with identical HashMap data.\n\nFix: Hoist the template lookup to a single `let child_tmpl = ...` and share it across all three consumers. For collection subs, either skip `sub_member_types` population (if they should use a different resolution path per the collection guard task) or share the HashMap.\n\nmemory_hints: search \"sub scope building template lookup\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24674,15 +24674,11 @@
             ]
           },
           "done_provenance": {
-            "commit": null,
-            "note": "Superseded by Task 1570 step-2 which collapsed the duplicate compiled_templates lookup in entity.rs Sub handler and unified sub_member_types with collection_sub_member_types in scope.rs. The file:line coordinates in the original description are obsolete; the named fields no longer exist in the current tree.",
-            "superseded_by": "1570",
-            "stale_commit_cleared_at": "2026-04-22",
-            "cleared_by": "recon-stage-task_knowledge_sync"
+            "note": "Superseded by Task 1570 (done). The original lib.rs:5146-5189 target no longer exists — lib.rs is now 229 lines and `compiled_templates.iter().find` is gone from the compiler source. Task 1570 collapsed the duplicate template lookup in entity.rs and unified sub_member_types with collection_sub_member_types in scope.rs."
           },
           "_causation_id": "d483d5f6-cc64-4374-b7d1-d595a864247b"
         },
-        "updatedAt": "2026-04-22T19:30:09.003Z"
+        "updatedAt": "2026-04-22T20:28:26.705Z"
       },
       {
         "id": "1127",
@@ -45671,9 +45667,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T19:48:15.301Z",
+      "lastModified": "2026-04-22T20:28:26.706Z",
       "taskCount": 2142,
-      "completedCount": 1889,
+      "completedCount": 1890,
       "tags": [
         "master"
       ]
