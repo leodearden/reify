@@ -844,6 +844,47 @@ pub(crate) fn check_trait_arg_conformance(
 mod tests {
     use super::*;
 
+    /// Run `check_trait_conformance` against the given traits and structure, returning all
+    /// diagnostics emitted.
+    ///
+    /// Centralises the ~20-line scaffolding (scope/value_cells/constraints init, registry
+    /// construction, alias_registry, the call itself) that would otherwise be repeated
+    /// verbatim in every conformance unit test.  Each test only needs to build its trait
+    /// and structure fixtures and then assert on the returned `Vec<Diagnostic>`.
+    fn run_conformance(
+        traits: &[CompiledTrait],
+        structure_def: &reify_syntax::StructureDef,
+        enum_defs: &[reify_types::EnumDef],
+    ) -> Vec<Diagnostic> {
+        let entity_ref = EntityDefRef::from(structure_def);
+        let trait_registry: HashMap<String, &CompiledTrait> =
+            traits.iter().map(|t| (t.name.clone(), t)).collect();
+        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let mut scope = CompilationScope::new(&structure_def.name);
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        diagnostics
+    }
+
     /// Unit test for the Option B fix (task 1951).
     ///
     /// This test exercises the code path the integration-level
@@ -984,33 +1025,7 @@ mod tests {
             annotations: vec![],
         };
 
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let trait_registry: HashMap<String, &CompiledTrait> =
-            [("TraitDir".to_string(), &trait_dir)].into_iter().collect();
-
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index = 0u32;
-        let functions: &[CompiledFunction] = &[];
-        let alias_registry = TypeAliasRegistry::new();
-        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_trait_conformance(
-            &entity_ref,
-            &trait_registry,
-            &trait_names,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            &enum_defs,
-            functions,
-            &alias_registry,
-            &mut diagnostics,
-        );
+        let diagnostics = run_conformance(&[trait_dir], &structure_def, &enum_defs);
 
         // No "unresolved type" → both dir and kind resolved successfully (to Type::Enum)
         let unresolved_diags: Vec<_> = diagnostics
@@ -1162,39 +1177,7 @@ mod tests {
             annotations: vec![],
         };
 
-        let entity_ref = EntityDefRef::from(&structure_def);
-
-        let trait_registry: HashMap<String, &CompiledTrait> = [
-            ("TraitX".to_string(), &trait_x),
-            ("TraitY".to_string(), &trait_y),
-            ("TraitZ".to_string(), &trait_z),
-        ]
-        .into_iter()
-        .collect();
-
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index = 0u32;
-        let enum_defs: &[reify_types::EnumDef] = &[];
-        let functions: &[CompiledFunction] = &[];
-        let alias_registry = TypeAliasRegistry::new();
-        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_trait_conformance(
-            &entity_ref,
-            &trait_registry,
-            &trait_names,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            enum_defs,
-            functions,
-            &alias_registry,
-            &mut diagnostics,
-        );
+        let diagnostics = run_conformance(&[trait_x, trait_y, trait_z], &structure_def, &[]);
 
         // --- Assertion 1: no phantom type-mismatch diagnostic ---
         // Pre-fix: `available_defaults` had `("x", Let) -> Real`; the
@@ -1284,30 +1267,7 @@ mod tests {
             annotations: vec![],
         };
 
-        let entity_ref = EntityDefRef::from(&structure_def);
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index = 0u32;
-        let functions: &[CompiledFunction] = &[];
-        let alias_registry = TypeAliasRegistry::new();
-        let trait_names: HashSet<String> = HashSet::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_trait_conformance(
-            &entity_ref,
-            &trait_registry,
-            &trait_names,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            &enum_defs,
-            functions,
-            &alias_registry,
-            &mut diagnostics,
-        );
+        let diagnostics = run_conformance(&[], &structure_def, &enum_defs);
 
         // Expect exactly one diagnostic reporting the type-args error.
         let type_args_errors: Vec<_> = diagnostics
@@ -1375,32 +1335,9 @@ mod tests {
             annotations: vec![],
         };
 
-        let entity_ref = EntityDefRef::from(&structure_def);
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index = 0u32;
-        let functions: &[CompiledFunction] = &[];
-        let alias_registry = TypeAliasRegistry::new();
-        let trait_names: HashSet<String> = HashSet::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
         // Should NOT panic — "NotAnEnum" is not in enum_defs, so the enum-match arm
         // (where the debug_assert lives) is never taken.
-        check_trait_conformance(
-            &entity_ref,
-            &trait_registry,
-            &trait_names,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            &enum_defs,
-            functions,
-            &alias_registry,
-            &mut diagnostics,
-        );
+        let diagnostics = run_conformance(&[], &structure_def, &enum_defs);
 
         // The unknown type produces an "unresolved type" diagnostic — not a panic.
         let unresolved: Vec<_> = diagnostics
@@ -1520,61 +1457,17 @@ mod tests {
             annotations: vec![],
         };
 
-        let entity_ref = EntityDefRef::from(&structure_def);
+        let diagnostics = run_conformance(&[trait_a, trait_b], &structure_def, &[]);
 
-        let trait_registry: HashMap<String, &CompiledTrait> = [
-            ("TraitA".to_string(), &trait_a),
-            ("TraitB".to_string(), &trait_b),
-        ]
-        .into_iter()
-        .collect();
-
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index = 0u32;
-        let enum_defs: &[reify_types::EnumDef] = &[];
-        let functions: &[CompiledFunction] = &[];
-        let alias_registry = TypeAliasRegistry::new();
-        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_trait_conformance(
-            &entity_ref,
-            &trait_registry,
-            &trait_names,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            enum_defs,
-            functions,
-            &alias_registry,
-            &mut diagnostics,
-        );
-
-        // No "type mismatch" → inferred Type::length() satisfied RequirementKind::Let(Length)
-        // via the `Some(default_type) if implicitly_converts_to(...)` arm at
-        // conformance.rs:406-410.
+        // A clean satisfaction path produces zero diagnostics.  Using is_empty() rather than
+        // filtered substring checks means any unrelated upstream failure (e.g. a silent
+        // compile_expr error) also trips this assertion — making it load-bearing beyond just
+        // the two previously-checked categories ("type mismatch" / "missing required member").
         assert!(
-            diagnostics
-                .iter()
-                .filter(|d| d.message.contains("type mismatch"))
-                .count()
-                == 0,
-            "Expected no 'type mismatch' diagnostics; got: {:?}",
-            diagnostics
-        );
-
-        // No "missing required member" → the inferred_let_exprs fallback advertised
-        // `("x", Let) -> Type::length()` so the None arm was never reached.
-        assert!(
-            diagnostics
-                .iter()
-                .filter(|d| d.message.contains("missing required member"))
-                .count()
-                == 0,
-            "Expected no 'missing required member' diagnostics; got: {:?}",
+            diagnostics.is_empty(),
+            "Expected no diagnostics: inferred Type::length() should satisfy \
+             RequirementKind::Let(Length) via the `Some(default_type) if \
+             implicitly_converts_to(...)` arm at conformance.rs:406-410; got: {:?}",
             diagnostics
         );
     }
@@ -1678,47 +1571,19 @@ mod tests {
             annotations: vec![],
         };
 
-        let entity_ref = EntityDefRef::from(&structure_def);
+        let diagnostics = run_conformance(&[trait_a, trait_b], &structure_def, &[]);
 
-        let trait_registry: HashMap<String, &CompiledTrait> = [
-            ("TraitA".to_string(), &trait_a),
-            ("TraitB".to_string(), &trait_b),
-        ]
-        .into_iter()
-        .collect();
-
-        let mut scope = CompilationScope::new("S");
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index = 0u32;
-        let enum_defs: &[reify_types::EnumDef] = &[];
-        let functions: &[CompiledFunction] = &[];
-        let alias_registry = TypeAliasRegistry::new();
-        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        check_trait_conformance(
-            &entity_ref,
-            &trait_registry,
-            &trait_names,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            enum_defs,
-            functions,
-            &alias_registry,
-            &mut diagnostics,
-        );
-
-        // Assertion 1: exactly one "type mismatch" + "available default" + "x" diagnostic.
-        // This pins the `Some(default_type) =>` branch at conformance.rs:411-423.
+        // Assertion 1: exactly one "type mismatch" + "available default" + "'x'" diagnostic.
+        // Using "'x'" (quoted member name as it appears in the diagnostic template at
+        // conformance.rs:415) rather than bare 'x' avoids false matches on words like
+        // "expects" that also contain the character.  This pins the `Some(default_type) =>`
+        // branch at conformance.rs:411-423.
         let mismatch: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
                 d.message.contains("type mismatch")
                     && d.message.contains("available default")
-                    && d.message.contains('x')
+                    && d.message.contains("'x'")
             })
             .collect();
         assert_eq!(
@@ -1729,7 +1594,7 @@ mod tests {
             diagnostics
         );
 
-        // Assertion 2: no "missing required member" for "x".
+        // Assertion 2: no "missing required member" for "'x'" (quoted, same rationale).
         // The inferred_let_exprs fallback advertised `("x", Let)` so the None arm was
         // never reached — the default IS present in available_defaults, just with an
         // incompatible type.
@@ -1737,7 +1602,7 @@ mod tests {
             diagnostics
                 .iter()
                 .filter(|d| d.message.contains("missing required member")
-                    && d.message.contains('x'))
+                    && d.message.contains("'x'"))
                 .count()
                 == 0,
             "negative case should hit the Some(default_type) arm, not the None arm; \
