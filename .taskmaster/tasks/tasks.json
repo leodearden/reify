@@ -31890,14 +31890,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:05.820Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ],
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/recursive_detection_tests.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
