@@ -45275,6 +45275,17 @@
             "commit": "405b9b1d6dabe1e944a467be7d93346c246c21fe"
           }
         }
+      },
+      {
+        "id": "2137",
+        "title": "Restrict last_guard_phase_group_evals() to test-only surface",
+        "description": "`Engine::last_guard_phase_group_evals()` (crates/reify-eval/src/engine_admin.rs:209 + field at lib.rs:215) is a pub accessor whose sole purpose is test instrumentation for the per-group skip optimisation added in task 2088. Exposing a performance counter on the public API couples callers to an internal optimisation and risks external users treating it as a supported metric.\n\nFix: gate the accessor behind `#[cfg(any(test, feature = \"test-instrumentation\"))]` or downgrade to `pub(crate)` with a test-only re-export, OR rename to something general (e.g. `last_guard_reelaboration_count`) and document it as a stable inspection metric rather than a skip-optimisation probe. Reviewer (reviewer_comprehensive) prefers option (a).\n\nAffected sites: same treatment for the `last_guard_phase_group_evals: usize` field declaration and any doc-comment updates.\n\nSource: post-merge review suggestion on task 2088 (merge commit 90804da34).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45284,7 +45295,10 @@
       "completedCount": 1869,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T07:22:59.404Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T07:22:59.423Z"
     }
   }
 }
