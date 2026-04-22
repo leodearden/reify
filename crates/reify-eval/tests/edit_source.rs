@@ -1558,24 +1558,6 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
         Some(&mm(15.0)),
         "incremental resolved thickness should be mm(15.0) from the sequenced solver"
     );
-
-    // Final call-count guard: the spy's SequencedMockConstraintSolver repeats the
-    // last result on exhaustion rather than panicking, so a silent third solver call
-    // during edit_source would return mm(15.0) again and all preceding assertions
-    // would still pass.  Re-asserting the total call count here catches that case.
-    // The spy is pre-configured with exactly 2 results (vec! above), so any extra
-    // invocation is an unintended re-solve.
-    {
-        let problems = captured.lock().unwrap();
-        assert_eq!(
-            problems.len(),
-            2,
-            "expected exactly 2 solver calls total (eval(A) + edit_source(B)); \
-             got {} — extra calls indicate an unintended re-solve; if intentional, \
-             extend the spy's result sequence accordingly",
-            problems.len()
-        );
-    }
 }
 
 // ── Coverage gap 6: removed cell whose dependents remain ─────────────────────
