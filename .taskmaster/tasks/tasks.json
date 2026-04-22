@@ -39803,16 +39803,19 @@
         "description": "In crates/reify-compiler/src/conformance.rs around line 273, `ty.clone()` is unconditionally called inside the default pre-registration loop. The clone is only *consumed* on the cold `!was_new` (trait-merge conflict) path for the debug event, but runs on every iteration (hot path). The existing inline comment acknowledges the clone is compile-time-only so cost is negligible, but this can be avoided.\n\nTwo suggested approaches:\n(a) Probe first: check `scope.names.contains_key(name)` — if present, clone `ty` for the debug emission before calling `register_if_absent(name, ty)`; otherwise move `ty` directly into `register_if_absent` without cloning.\n(b) Change `scope::register_if_absent` to return `Result<(), Type>` (or `Option<Type>`) that hands back the rejected `Type` on conflict, so the caller can log `ignored_ty` without cloning on either path.\n\nOption (b) is preferable because it removes the probe race/duplication and centralises the \"rejected type\" return in the API. Option (a) is mechanically simpler but duplicates the lookup.\n\nEither way, keep (or update) the inline comment to reflect the new ownership story and ensure the `trait_merge_name_conflict_emits_debug_event` test still passes (debug event still emits `ignored_ty`).\n\nmemory_hints:\n- search: \"register_if_absent scope trait merge conformance\"\n- entity: \"Scope\", \"register_if_absent\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:33.222Z",
+        "updatedAt": "2026-04-22T10:46:33.992Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
             "crates/reify-compiler/src/scope.rs"
-          ]
+          ],
+          "done_provenance": {
+            "note": "Phantom in-progress. Option (b) from task description landed on main 2026-04-17 via 4ce363c7d (refactor: register_if_absent -> Option<Type>) + c5c7fd248 (test update). Verified at conformance.rs:278 — hot-path clone eliminated."
+          }
         }
       },
       {
@@ -45500,9 +45503,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:14:41.659Z",
+      "lastModified": "2026-04-22T10:46:33.992Z",
       "taskCount": 2139,
-      "completedCount": 1875,
+      "completedCount": 1876,
       "tags": [
         "master"
       ]
