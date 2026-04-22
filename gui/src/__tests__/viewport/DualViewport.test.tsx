@@ -766,4 +766,25 @@ describe('DualViewport', () => {
       expect(innerFitSpy).toHaveBeenCalledTimes(1);
     });
   });
+
+  it('(m) makeViewportStore wraps the real createViewportStore — spies delegate to real impl', () => {
+    // Characterisation test: verifies that mock methods actually delegate mutations
+    // to real store logic, not no-op stubs. If any method is re-hand-rolled as a
+    // bare vi.fn(), this test will catch it.
+    const store = makeViewportStore();
+
+    // (1) setForceExpanded must mutate state — not be a no-op stub
+    expect(store.state.viewports['design-main'].forceExpanded).toBe(false);
+    store.setForceExpanded('design-main', true);
+    expect(store.state.viewports['design-main'].forceExpanded).toBe(true);
+
+    // (2) setSplitRatio must use real clamp semantics
+    store.setSplitRatio(1.5);
+    expect(store.state.splitRatio).toBe(0.9);
+    store.setSplitRatio(-5);
+    expect(store.state.splitRatio).toBe(0.1);
+    // NaN is rejected — state stays at 0.1 from prior call
+    store.setSplitRatio(NaN);
+    expect(store.state.splitRatio).toBe(0.1);
+  });
 });
