@@ -24622,7 +24622,7 @@
         "description": "In lib.rs:5146-5189, the same `compiled_templates.iter().find(|t| t.name == sub.structure_name)` linear scan is performed 3 times for the same sub (lines 5151, 5160, 5176). All find the same `child_tmpl`. Additionally, for collection subs, `sub_member_types` and `collection_sub_member_types` are populated with identical HashMap data.\n\nFix: Hoist the template lookup to a single `let child_tmpl = ...` and share it across all three consumers. For collection subs, either skip `sub_member_types` population (if they should use a different resolution path per the collection guard task) or share the HashMap.\n\nmemory_hints: search \"sub scope building template lookup\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24645,7 +24645,7 @@
             "note": "Superseded by Task 1570 step-2 which collapsed the duplicate compiled_templates lookup in entity.rs Sub handler and unified sub_member_types with collection_sub_member_types in scope.rs. The file:line coordinates in the original description are obsolete; the named fields no longer exist in the current tree."
           }
         },
-        "updatedAt": "2026-04-22T10:04:50.582Z"
+        "updatedAt": "2026-04-22T10:04:56.334Z"
       },
       {
         "id": "1127",
@@ -45404,9 +45404,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:04:50.582Z",
+      "lastModified": "2026-04-22T10:04:56.334Z",
       "taskCount": 2140,
-      "completedCount": 1875,
+      "completedCount": 1874,
       "tags": [
         "master"
       ]
