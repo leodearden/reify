@@ -44519,6 +44519,19 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-22T01:54:53.454Z"
+      },
+      {
+        "id": "2104",
+        "title": "engine_edit: fix role-flip probe count mismatch on intra-group duplicates",
+        "description": "The role-flip probe in `Engine::edit_source` (crates/reify-eval/src/engine_edit.rs ~L1435) ends with `flipped || new_total != old_roles.len()`. `new_total` is a raw per-member iteration count (no dedup); `old_roles.len()` is a deduped HashMap len. When old and new guarded-groups each contain the same intra-group duplicate (same ValueCellId in both members and else_members of one group — an affirmatively-supported shape per `build_old_role_map`'s docstring), `new_total` counts it twice while `old_roles.len()` counts it once, so the probe falsely reports a role-flip and forces an unnecessary guard re-eval.\n\nSpotted by reviewer_comprehensive on task 2092 review (see Mem0 memory 092192b7-3d7d-417d-a2dc-81ebc18abc39).\n\nFix options (pick one):\n  (a) Track a HashSet<ValueCellId> of seen IDs during the new-groups walk; compare `seen.len() != old_roles.len()` after the loop (apples-to-apples dedup).\n  (b) Have `build_old_role_map` return `(map, pre_dedup_insert_count)` so the probe compares raw-vs-raw counts.\n\nAdd a regression test that constructs old and new graphs each containing the identical intra-group duplicate and asserts the probe does NOT report a role-flip (currently it would).\n\nmemory_hints:\n- search: \"build_old_role_map intra-group duplicate last-write-wins\"\n- entity: \"Engine\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2092"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44528,7 +44541,10 @@
       "completedCount": 1835,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:55:29.121Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T01:55:29.153Z"
     }
   }
 }
