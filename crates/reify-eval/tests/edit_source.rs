@@ -2005,10 +2005,18 @@ fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
     // Phase 3. The other 9 groups have unchanged guard values (uN=true in both
     // modules) and must be skipped. Expected total: 1 + 1 = 2.
     // Without the skip optimization, this counter would be 10 + 10 = 20.
+    // The lower bound (>= 1) ensures the counter instrumentation is actually in
+    // place — if the `self.last_guard_phase_group_evals += 1;` increments are
+    // dropped from edit_source Phase 1 or Phase 3, the counter stays 0, which
+    // fails this check (counter = 0 is neither "skip works" nor "processing
+    // 20 groups" — it means the counter was never incremented at all).
+    let counter = incremental.last_guard_phase_group_evals();
     assert!(
-        incremental.last_guard_phase_group_evals() <= 2,
-        "expected ≤ 2 non-skipped guard-phase group iterations (1 per phase for the \
-         affected group); got {} — the per-group skip is not working",
-        incremental.last_guard_phase_group_evals()
+        counter >= 1 && counter <= 2,
+        "expected between 1 and 2 non-skipped guard-phase group iterations \
+         (1 per phase for the one affected group, 9 per phase skipped); \
+         got {} — if 0, the counter increment is missing from edit_source \
+         (instrumentation was dropped); if > 2, the per-group skip is not working",
+        counter
     );
 }
