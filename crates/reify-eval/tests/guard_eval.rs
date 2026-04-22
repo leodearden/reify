@@ -1575,6 +1575,71 @@ fn multi_guard_fingerprint_disambiguates_by_guard_identity() {
     );
 }
 
+/// Regression test: regular Param-kind else_members must still be set to Undef when
+/// the else branch deactivates via edit_param. The Auto-skip fix must not affect
+/// normal params.
+///
+/// Mirrors `edit_param_guard_false_still_deactivates_regular_params` (members-side)
+/// with `members` ↔ `else_members` and the guard transition reversed (false→true).
+/// Closes the missing quadrant in the regular-Param × {members, else_members}
+/// × {eval, edit_param} matrix.
+#[test]
+fn edit_param_guard_false_to_true_still_deactivates_regular_params_in_else_members() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let width_id = ValueCellId::new("S", "width");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Regular Param-kind else_member 'width' with a default value
+    let width_decl = make_param_decl("S", "width", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            // Guard defaults to false → else_members are active
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![],           // members (active when true, empty here)
+            vec![],           // constraints
+            vec![width_decl], // else_members (active because guard=false)
+            vec![],           // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval with guard=false; width (in else_members) should be 10mm = 0.01
+    let initial_result = engine.eval(&module);
+    assert_eq!(
+        initial_result.values.get(&width_id),
+        Some(&Value::length(0.01)),
+        "width should be 0.01 (10mm SI) when else branch is active (guard=false)"
+    );
+
+    // Edit 'active' from false to true — else branch deactivates
+    let edit_result = engine
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param should succeed");
+
+    // Regular Param else_member should be Undef after else branch deactivation
+    assert_eq!(
+        edit_result.values.get(&width_id),
+        Some(&Value::Undef),
+        "Regular Param 'width' in else_members should be Undef after guard changed to true"
+    );
+}
+
 /// Regression test: regular Param-kind else_members must still get Undetermined
 /// when their else branch is inactive at eval() time (guard=true). The Auto-kind
 /// fix must not affect normal params.
