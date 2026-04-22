@@ -8300,15 +8300,9 @@
         "dependencies": [],
         "status": "deferred",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ],
+          "modules": [],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/trait_conformance_tests.rs"
-          ]
+          "files": []
         },
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:03.337Z"
@@ -45504,7 +45498,9 @@
       "completedCount": 1873,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T10:00:57.913Z",
+      "description": "Tasks for master context"
     }
   }
 }
