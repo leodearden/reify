@@ -4663,67 +4663,23 @@ mod tests {
     }
 
     #[test]
-    fn kernel_line_segment_anchors_rust_floor_rejection_boundary() {
+    fn rust_guard_above_floor_does_not_fire() {
         // Behavioral complement to the compile-time invariant at crate root:
         //   `const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ);`
         // and to the FFI-path `cpp_line_wire_floor_matches_rust_const` test above
         // (which brackets the *C++* floor, not the Rust one).
         //
-        // This test anchors the *externally observable rejection path* at the
-        // Rust-layer floor via `OcctKernel::execute(&GeometryOp::LineSegment { .. })`.
+        // The below-floor invariant (Rust guard fires and emits the '[rust-guard]' marker)
+        // is covered by the non-OCCT-gated unit test in `floor_constants::tests`.
         //
-        // Why the above-floor case asserts "no Rust-layer signature" rather than Ok:
+        // This test covers the above-floor case via `OcctKernel::execute`:
+        //   dist_sq = 1.1 × RUST_LINE_WIRE_MIN_LENGTH_SQ — the Rust guard must NOT fire.
         //   CPP_LINE_WIRE_MIN_LENGTH_SQ (1e-10) is 100× above RUST_LINE_WIRE_MIN_LENGTH_SQ
-        //   (1e-12), so at dist_sq = 1.1 * RUST_floor the C++ layer still rejects.
-        //   An Ok result is architecturally impossible here. Asserting that the
-        //   *Rust-layer* error signature ("coincident" / "zero length") does NOT appear
-        //   correctly anchors the Rust floor as a message-path boundary.
+        //   (1e-12), so the C++ layer still rejects this input. The '[rust-guard]' marker
+        //   must be absent from whatever C++-layer error surfaces.
         //
-        // Failure modes caught (even when `RUST < CPP` compile-time assert still holds):
-        //   - Rust guard deleted or bypassed: below-floor msg becomes C++'s "distinct"
-        //     (contains neither "coincident" nor "zero length") → below assertion fails.
-        //   - Rust guard reworded: below assertion fails on the signature check.
-        //   - Rust guard widened (fires at above-floor value): above assertion fails
-        //     because the "coincident"/"zero length" signature appears unexpectedly.
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-
-        // Below-floor case: dist_sq = 0.9 × RUST_LINE_WIRE_MIN_LENGTH_SQ.
-        // The Rust guard must fire and return the Rust-layer error signature.
-        // below_dx is derived via sqrt so that dist_sq stays expressed in terms of the
-        // constant; the debug_assert below verifies the fp round-trip didn't drift across
-        // the boundary (safe with a 10 % margin, but worth documenting for future tightening).
-        let below_dx = (0.9 * crate::RUST_LINE_WIRE_MIN_LENGTH_SQ).sqrt();
-        debug_assert!(
-            below_dx * below_dx < crate::RUST_LINE_WIRE_MIN_LENGTH_SQ,
-            "below_dx² must be strictly < RUST_LINE_WIRE_MIN_LENGTH_SQ after fp round-trip"
-        );
-        let mut kernel = OcctKernel::new();
-        let below_result = kernel.execute(&GeometryOp::LineSegment {
-            x1: 0.0, y1: 0.0, z1: 0.0,
-            x2: below_dx, y2: 0.0, z2: 0.0,
-        });
-        match below_result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                let lower = msg.to_lowercase();
-                assert!(
-                    lower.contains("coincident") || lower.contains("zero length"),
-                    "below-floor Rust guard must emit 'coincident' or 'zero length', \
-                     got: {msg:?}. This failure indicates the Rust-layer guard at \
-                     GeometryOp::LineSegment was removed, bypassed, or reworded."
-                );
-            }
-            Ok(_) => panic!(
-                "below-floor case (dist_sq = 0.9 × RUST_LINE_WIRE_MIN_LENGTH_SQ) \
-                 should return Err, got Ok"
-            ),
-            Err(other) => panic!(
-                "below-floor case should be OperationFailed, got {:?}",
-                other
-            ),
-        }
+        // Failure mode caught: Rust guard widened (fires at above-floor value) → assertion
+        //   fails because the '[rust-guard]' marker appears unexpectedly in the error.
 
         // Above-floor case: dist_sq = 1.1 × RUST_LINE_WIRE_MIN_LENGTH_SQ.
         // The Rust guard must NOT fire; any error here is from the C++ layer.
@@ -4739,21 +4695,11 @@ mod tests {
         });
         match above_result {
             Err(GeometryError::OperationFailed(msg)) => {
-                let lower = msg.to_lowercase();
-                // NOTE: this assertion depends implicitly on the C++ layer's current rejection
-                // wording: "make_line_wire: start and end points must be distinct"
-                // (cpp/occt_wrapper.cpp). If the C++ message is ever reworded to include
-                // "coincident" or "zero length" (e.g. "coincident endpoints", "zero-length
-                // segment"), this test will produce a false negative even though the Rust guard
-                // is functioning correctly — update the sentinel words here to stay distinct from
-                // any new C++ phrasing, or introduce a Rust-side marker in the OperationFailed
-                // message at lib.rs:694-695 to remove this implicit coupling entirely.
                 assert!(
-                    !lower.contains("coincident") && !lower.contains("zero length"),
-                    "above-floor case must not trigger the Rust guard; \
-                     expected a C++-layer rejection (not 'coincident'/'zero length'), \
-                     got: {msg:?}. This failure indicates the Rust guard was incorrectly \
-                     widened to fire at values above RUST_LINE_WIRE_MIN_LENGTH_SQ."
+                    !msg.contains(crate::floor_constants::RUST_GUARD_MARKER),
+                    "above-floor case must not fire the Rust guard; marker '[rust-guard]' must \
+                     be absent in error (C++ rejection expected here), got: {msg:?}. This \
+                     indicates the Rust guard was widened to fire above RUST_LINE_WIRE_MIN_LENGTH_SQ."
                 );
             }
             Ok(_) => { /* stronger than needed but acceptable */ }
