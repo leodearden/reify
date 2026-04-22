@@ -9,7 +9,7 @@ use reify_mcp::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
     SelectionInfo, SetParamResult, SourceContent, SourceLocationInfo, ToolError, UpdateResult,
 };
-use reify_types::{DeterminacyState, Value, ValueCellId};
+use reify_types::{DeterminacyState, Value};
 
 /// Tracks the state of an open file.
 struct FileEntry {
@@ -24,35 +24,12 @@ struct CliState {
     files: HashMap<String, FileEntry>,
     active_file: Option<String>,
     _project_dir: PathBuf,
-    /// User-set parameter overrides, tracked so they can be re-applied after
-    /// `eval()` (which rebuilds the snapshot from module defaults and does not
-    /// consult `Engine::param_overrides`).  Cleared by `load_file` and
-    /// `open_file` which semantically start over with a new file.
-    user_overrides: Vec<(ValueCellId, Value)>,
-    /// Dedupe set for `reapply_user_overrides` warn events.  Tracks `(cell_id,
-    /// error-variant)` pairs that have already been warned about so that
-    /// repeated save cycles with a stale override downgrade subsequent
-    /// occurrences to `tracing::debug!`.  Cleared alongside `user_overrides`
-    /// on `load_file` / `open_file`.  When a cell applies successfully its
-    /// entry is removed so a future re-type-change warns again.
-    warned_overrides: std::collections::HashSet<(ValueCellId, &'static str)>,
     /// Counts how many times `Engine::new(...)` has been called during this
     /// context's lifetime.  Only compiled in test builds; used to assert that
     /// engine construction happens at most once (lazy-init) rather than on
     /// every load/update/open call.
     #[cfg(test)]
     engine_construction_count: usize,
-}
-
-impl CliState {
-    /// Clear both `user_overrides` and `warned_overrides` together, enforcing
-    /// the invariant that the two collections are always pruned as a unit.
-    /// Called from `load_file` and `open_file` which semantically start over
-    /// with a fresh file and must reset all override tracking state.
-    fn clear_overrides(&mut self) {
-        self.user_overrides.clear();
-        self.warned_overrides.clear();
-    }
 }
 
 /// CLI-mode implementation of ReifyToolContext.
@@ -71,8 +48,6 @@ impl CliToolContext {
                 files: HashMap::new(),
                 active_file: None,
                 _project_dir: project_dir,
-                user_overrides: Vec::new(),
-                warned_overrides: std::collections::HashSet::new(),
                 #[cfg(test)]
                 engine_construction_count: 0,
             }),
@@ -125,8 +100,9 @@ impl CliToolContext {
         let mut state = self.lock_state();
         // load_file semantically starts over with a new file — clear any prior
         // user overrides so get_parameters() returns fresh module defaults.
-        state.clear_overrides();
-        ensure_engine(&mut state).eval(&compiled);
+        let engine = ensure_engine(&mut state);
+        engine.clear_param_overrides();
+        engine.eval(&compiled);
         state.files.insert(
             abs_path.clone(),
             FileEntry {
@@ -160,14 +136,13 @@ impl CliToolContext {
 ///
 /// # param_overrides semantics
 ///
-/// `Engine::eval()` rebuilds the snapshot from module defaults and does **not** read
-/// the engine's internal `param_overrides` map.  Consequently, after every `eval()`
-/// call `get_parameters()` returns module defaults, not user-set overrides.  The
-/// internal `param_overrides` map is only consulted by `eval_cached()`, which is not
-/// used by the MCP context.  User overrides are instead tracked in
-/// `CliState::user_overrides` and re-applied explicitly after `eval()` via
-/// `reapply_user_overrides()`.  `load_file` and `open_file` clear `user_overrides`
-/// because those operations semantically start over with a fresh file.
+/// As of task 2017, `Engine::eval()` consults `self.param_overrides` directly:
+/// values written via `Engine::set_param_and_invalidate` survive subsequent
+/// `eval()` calls without the CLI having to shadow-track them.  `load_file`
+/// and `open_file` call `Engine::clear_param_overrides` before evaluating
+/// because opening a new file semantically starts over.  Type-kind /
+/// dimension mismatches between a stored override and the current cell type
+/// land in `EvalResult.diagnostics` as `Severity::Warning` entries.
 fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
     #[cfg(test)]
     if state.engine.is_none() {
@@ -176,129 +151,6 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
     state.engine.get_or_insert_with(|| {
         reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
     })
-}
-
-/// Re-apply tracked user overrides to the engine after `eval()` has rebuilt the snapshot
-/// from module defaults.
-///
-/// Three cases are distinguished:
-///
-/// - **`Ok`** — the cell exists and accepted the value; `set_param_and_invalidate` is
-///   called to commit the override into the engine.  Any existing warn-dedupe entry for
-///   this cell is cleared so a future mismatch (after the user re-types the param) will
-///   warn again.
-/// - **`Err(CellNotFound)`** — topology changed (the param was deleted or renamed);
-///   skip silently and keep the override in `user_overrides` so it can reappear if
-///   the topology reverts in a subsequent edit.
-/// - **Any other `Err`** (`TypeKindMismatch`, `DimensionMismatch`) —
-///   the cell exists but the stored value is incompatible with its current type.  The
-///   **first** occurrence emits a `tracing::warn!` event with the cell id and error for
-///   diagnostic inspection; subsequent occurrences of the same `(cell_id, error_variant)`
-///   pair are downgraded to `tracing::debug!` to avoid log spam when a stale override
-///   persists across repeated saves.  The override is kept in `user_overrides` so the
-///   user's intent survives a transient mismatch and reapplies when the type becomes
-///   compatible again.  `NotInitialized` is enforced by a `debug_assert!` in the `Err`
-///   arm: callers must invoke `reapply_user_overrides` after `ensure_engine(...).eval(...)`;
-///   in release builds the assertion elides and the variant is classified harmlessly as a
-///   mismatch for exhaustiveness.
-fn reapply_user_overrides(state: &mut CliState) {
-    if state.user_overrides.is_empty() {
-        // Invariant: warned_overrides must also be empty whenever user_overrides
-        // is empty.  `CliState::clear_overrides()` is called at every public
-        // entry point that resets overrides (load_file, open_file), so this
-        // state is unreachable via the API.  The debug_assert! fires loudly in
-        // debug/test builds if future mutation paths ever drift from the invariant.
-        debug_assert!(
-            state.warned_overrides.is_empty(),
-            "reapply_user_overrides: warned_overrides must be empty when user_overrides is \
-             empty — public mutation paths (load_file, open_file, set_parameter, and the \
-             per-cell retain in the Ok arm) preserve this invariant together"
-        );
-        // Self-heal in release builds: if the invariant above is ever violated by
-        // a future mutation path, stale `warned_overrides` entries would otherwise
-        // persist silently and downgrade legitimate future warnings to debug.  The
-        // debug_assert! already fires loudly in debug/test builds; this clear()
-        // keeps release builds self-correcting with no behavior change in the
-        // invariant-holding fast path (the HashMap is already empty).
-        state.warned_overrides.clear();
-        return;
-    }
-
-    // Phase 1: apply overrides to the engine; collect outcomes without accessing
-    // `state.warned_overrides` while the engine is mutably borrowed.
-    //
-    // `state.engine` and `state.user_overrides` are disjoint fields of `CliState`,
-    // so the partial mutable borrow of `state.engine` (via `as_mut()`) is compatible
-    // with the immutable iter borrow of `state.user_overrides` under NLL.  The same
-    // idiom appears in `set_parameter` — if you are tempted to reintroduce the outer
-    // `Vec` clone, check there first: the borrow checker has not required it since
-    // Rust 2018/NLL.  Per-iteration `cell_id.clone()` / `value.clone()` remain
-    // because `Engine::edit_param` takes owned arguments — those are unavoidable and
-    // are not the cost that was removed.
-    let mut succeeded: Vec<ValueCellId> = Vec::new();
-    // (cell_id, error-variant tag, Display string of the error)
-    let mut mismatches: Vec<(ValueCellId, &'static str, String)> = Vec::new();
-
-    if let Some(engine) = state.engine.as_mut() {
-        for (cell_id, value) in state.user_overrides.iter() {
-            match engine.edit_param(cell_id.clone(), value.clone()) {
-                Ok(_) => {
-                    engine.set_param_and_invalidate(cell_id, value.clone());
-                    succeeded.push(cell_id.clone());
-                }
-                Err(reify_eval::EngineError::CellNotFound { .. }) => {
-                    // Topology changed — skip silently without removing the override
-                    // so it can be re-applied if the cell returns to the topology in
-                    // a subsequent edit.
-                }
-                Err(err) => {
-                    debug_assert!(
-                        !matches!(&err, reify_eval::EngineError::NotInitialized),
-                        "reapply_user_overrides: called before eval() populated the engine \
-                         snapshot — this path is only valid after ensure_engine(...).eval(...)"
-                    );
-                    let variant_tag: &'static str = match &err {
-                        reify_eval::EngineError::TypeKindMismatch { .. } => "TypeKindMismatch",
-                        reify_eval::EngineError::DimensionMismatch { .. } => "DimensionMismatch",
-                        reify_eval::EngineError::NotInitialized => "NotInitialized",
-                        reify_eval::EngineError::CellNotFound { .. } => "CellNotFound",
-                    };
-                    mismatches.push((cell_id.clone(), variant_tag, format!("{err}")));
-                }
-            }
-        }
-    }
-
-    // Phase 2: update the warn-dedupe set and emit log events.
-    // For cells that applied OK, clear their dedupe entries so a future mismatch
-    // (after the user re-types the param) will warn again rather than being silenced.
-    for cell_id in succeeded {
-        state.warned_overrides.retain(|(id, _)| id != &cell_id);
-    }
-
-    // Emit warn on first occurrence of a (cell_id, variant) pair; downgrade
-    // repeats to debug to reduce log noise across repeated saves.
-    for (cell_id, variant_tag, err_display) in mismatches {
-        if state
-            .warned_overrides
-            .insert((cell_id.clone(), variant_tag))
-        {
-            tracing::warn!(
-                cell_id = %cell_id,
-                error = %err_display,
-                "reapply_user_overrides: edit_param failed with non-CellNotFound error; \
-                 override retained in user_overrides so it can reapply when the topology \
-                 becomes compatible"
-            );
-        } else {
-            tracing::debug!(
-                cell_id = %cell_id,
-                error = %err_display,
-                "reapply_user_overrides: mismatch previously warned, downgraded to debug; \
-                 override retained in user_overrides"
-            );
-        }
-    }
 }
 
 /// Format a dimension as a human-readable unit string.
@@ -569,13 +421,12 @@ impl ReifyToolContext for CliToolContext {
         let diag_count = compiled.diagnostics.len() as u32;
 
         // Pipeline succeeded — commit file content and eval on the long-lived engine.
+        // Engine::eval() reads self.param_overrides directly (task 2017), so
+        // overrides previously written via set_parameter survive topology-
+        // preserving edits without an explicit re-apply pass.  Orphaned entries
+        // (cells removed by the new module) are pruned inside eval().
         let mut state = self.lock_state();
         ensure_engine(&mut state).eval(&compiled);
-        // Re-apply user overrides for cells that still exist in the new topology.
-        // This preserves parameter values set via set_parameter across topology-
-        // preserving edits (e.g. whitespace changes, comment updates).  Overrides
-        // for cells removed by a topology-changing edit are silently skipped.
-        reapply_user_overrides(&mut state);
         if let Some(entry) = state.files.get_mut(&canonical) {
             entry.content = content.to_string();
             entry.dirty = true;
@@ -650,19 +501,16 @@ impl ReifyToolContext for CliToolContext {
         // Apply the parameter change via incremental edit.
         // edit_param must succeed before mutating engine state via set_param_and_invalidate:
         // if edit_param fails, param_overrides and cache remain in their last consistent state.
+        //
+        // As of task 2017, set_param_and_invalidate's write into
+        // Engine::param_overrides is the only bookkeeping needed: Engine::eval
+        // now consults that map directly, so the value survives a subsequent
+        // update_source without CLI-side shadow state.
         let engine = state.engine.as_mut().unwrap();
         engine
             .edit_param(cell_id_obj.clone(), new_value.clone())
             .map_err(|e| ToolError::EngineError(format!("incremental eval failed: {e}")))?;
         engine.set_param_and_invalidate(&cell_id_obj, new_value.clone());
-        // NLL: `engine` borrow of `state.engine` ends here (last use above).
-
-        // Track override so update_source can re-apply it after eval().
-        // Only reached on success — edit_param failure returns early via `?`.
-        state.user_overrides.retain(|(id, _)| id != &cell_id_obj);
-        state
-            .user_overrides
-            .push((cell_id_obj.clone(), new_value.clone()));
 
         let unit = dimension_unit(&ty);
         Ok(SetParamResult {
@@ -714,8 +562,9 @@ impl ReifyToolContext for CliToolContext {
         if let Some(compiled) = pipeline_result {
             // open_file semantically starts over with a new file — clear any
             // prior user overrides so get_parameters() returns fresh module defaults.
-            state.clear_overrides();
-            ensure_engine(&mut state).eval(&compiled);
+            let engine = ensure_engine(&mut state);
+            engine.clear_param_overrides();
+            engine.eval(&compiled);
             state.compiled = Some(compiled);
         }
 
@@ -778,65 +627,6 @@ mod tests {
 
     const BRACKET_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
 
-    // ── Source fixtures for reapply_user_overrides tests ─────────────────────
-    // Each variant modifies bracket.ri's `param width` in a way that triggers a
-    // different `EngineError` when the `Scalar[LENGTH]` override (0.12 m) is
-    // re-applied after `update_source`.
-
-    /// `width` changed from `Scalar` (LENGTH) to `Int` — triggers `TypeKindMismatch`.
-    const BRACKET_INT_WIDTH: &str = "\
-structure Bracket {
-    param width: Int = 80
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
-    param fillet_radius: Scalar = 3mm
-    param hole_diameter: Scalar = 6mm
-
-    let volume = height * thickness
-
-    constraint thickness > 2mm
-    constraint hole_diameter < thickness * 2
-
-    let body = box(height, height, thickness)
-}
-";
-
-    /// `width` changed from `Scalar` (LENGTH) to `Mass` — triggers `DimensionMismatch`.
-    const BRACKET_MASS_WIDTH: &str = "\
-structure Bracket {
-    param width: Mass = 5kg
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
-    param fillet_radius: Scalar = 3mm
-    param hole_diameter: Scalar = 6mm
-
-    let volume = height * thickness
-
-    constraint thickness > 2mm
-    constraint hole_diameter < thickness * 2
-
-    let body = box(height, height, thickness)
-}
-";
-
-    /// `width` param removed entirely — triggers `CellNotFound` (topology change).
-    const BRACKET_NO_WIDTH: &str = "\
-structure Bracket {
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
-    param fillet_radius: Scalar = 3mm
-    param hole_diameter: Scalar = 6mm
-
-    let volume = height * thickness
-
-    constraint thickness > 2mm
-    constraint thickness < height / 4
-    constraint hole_diameter < thickness * 2
-
-    let body = box(height, height, thickness)
-}
-";
-
     /// Obviously-nonsense Reify source: a single top-level `{` with no matching
     /// close brace.  No token in the Reify grammar begins a top-level declaration
     /// with `{`, so this input is overwhelmingly unlikely to ever become
@@ -853,58 +643,6 @@ structure Bracket {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures"
         )))
-    }
-
-    /// Set up a fresh `CliToolContext` with `Bracket.width` overridden to
-    /// `0.12` (a `Scalar[LENGTH]` value), then call `update_source` with each
-    /// string in `replacements` in order.  Returns the total number of `WARN`
-    /// events emitted by `reify::mcp_context` across all `update_source` calls.
-    ///
-    /// Uses `CountingSubscriberBuilder::target_prefix("reify::mcp_context")`
-    /// (`reify` is the binary crate name from `[[bin]] name = "reify"`) so
-    /// only warns from `reapply_user_overrides` are counted — unrelated warns
-    /// from the compiler, engine, or constraint solver do not affect the result.
-    ///
-    /// The subscriber guard is held for the entire slice iteration so the same
-    /// target-filtered counter accumulates all events before being read.
-    fn run_reapply_with_sources(replacements: &[&str]) -> usize {
-        use reify_test_support::CountingSubscriberBuilder;
-        use std::sync::atomic::Ordering;
-
-        let (subscriber, counters) = CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify::mcp_context")
-            .build();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        let counter = counters[&tracing::Level::WARN].clone();
-
-        let ctx = fresh_ctx();
-        ctx.load_file(BRACKET_PATH)
-            .expect("load_file should succeed");
-        // Override width to 0.12 m — stores Value::Scalar[LENGTH].
-        ctx.set_parameter("Bracket.width", "0.12")
-            .expect("set_parameter should succeed");
-
-        let before = counter.load(Ordering::Acquire);
-
-        for replacement in replacements {
-            let result = ctx
-                .update_source(BRACKET_PATH, replacement)
-                .expect("update_source should return Ok even on override mismatch");
-            assert!(
-                result.success,
-                "update_source should succeed (parse/compile passed)"
-            );
-        }
-
-        counter.load(Ordering::Acquire) - before
-    }
-
-    /// Convenience wrapper around [`run_reapply_with_sources`] for the common
-    /// single-update case.  Returns the number of `WARN` events emitted by
-    /// `reify::mcp_context` during the single `update_source` call.
-    fn run_reapply_with_source(replacement: &str) -> usize {
-        run_reapply_with_sources(&[replacement])
     }
 
     /// Verify that `update_source` reuses the Engine instance rather than constructing
@@ -1066,204 +804,19 @@ structure Bracket {
         );
     }
 
-    /// Verify that `reapply_user_overrides` emits exactly one WARN (from
-    /// `reify::mcp_context`) when `edit_param` returns `TypeKindMismatch`.
-    ///
-    /// Uses `run_reapply_with_source` with `BRACKET_INT_WIDTH` which changes
-    /// `width` from `Scalar` (LENGTH) to `Int`, making the stored
-    /// `Scalar[LENGTH]` override incompatible.  The target-filtered counter
-    /// ensures only warns from `reapply_user_overrides` are counted.
-    #[test]
-    fn reapply_user_overrides_warns_on_type_kind_mismatch() {
-        assert_eq!(
-            run_reapply_with_source(BRACKET_INT_WIDTH),
-            1,
-            "TypeKindMismatch must emit exactly one warn from reify_cli::mcp_context"
-        );
-    }
-
-    /// Verify that `reapply_user_overrides` emits exactly one WARN (from
-    /// `reify::mcp_context`) when `edit_param` returns `DimensionMismatch`.
-    ///
-    /// Uses `run_reapply_with_source` with `BRACKET_MASS_WIDTH` which changes
-    /// `width` from `Scalar` (LENGTH) to `Mass`, making the stored `Scalar[LENGTH]`
-    /// override dimensionally incompatible.  The target-filtered counter ensures
-    /// only warns from `reapply_user_overrides` are counted.
-    ///
-    /// Note: changing only the unit suffix (e.g. `Scalar = 5kg`) does NOT change
-    /// the dimension — `"Scalar"` always resolves to `Type::length()` regardless
-    /// of the default literal's unit.  The type annotation itself must be `Mass`.
-    #[test]
-    fn reapply_user_overrides_warns_on_dimension_mismatch() {
-        assert_eq!(
-            run_reapply_with_source(BRACKET_MASS_WIDTH),
-            1,
-            "DimensionMismatch must emit exactly one warn from reify_cli::mcp_context"
-        );
-    }
-
-    /// Verify that `reapply_user_overrides` emits NO WARN (from
-    /// `reify::mcp_context`) when `edit_param` returns `CellNotFound`.
-    ///
-    /// Uses `run_reapply_with_source` with `BRACKET_NO_WIDTH` which removes the
-    /// `width` param entirely.  The silent-skip path must produce delta == 0,
-    /// regardless of any unrelated warns from other modules.
-    #[test]
-    fn reapply_user_overrides_cell_not_found_is_silent() {
-        assert_eq!(
-            run_reapply_with_source(BRACKET_NO_WIDTH),
-            0,
-            "CellNotFound must NOT emit a warn — silent skip"
-        );
-    }
-
-    /// Verify that the second `update_source` call that triggers the same
-    /// `TypeKindMismatch` error for the same `(cell_id, variant)` pair is
-    /// downgraded from WARN to DEBUG.
-    ///
-    /// A total WARN delta of 1 means the first call emits the warn and the
-    /// second is silently demoted — the dedupe set is working.  A delta of 2
-    /// would mean the downgrade path is broken (missing `insert`, wrong hash, …)
-    /// and the caller's log would be flooded with repeated warns.
-    #[test]
-    fn reapply_user_overrides_warn_deduped_on_repeat() {
-        assert_eq!(
-            run_reapply_with_sources(&[BRACKET_INT_WIDTH, BRACKET_INT_WIDTH]),
-            1,
-            "second TypeKindMismatch on the same (cell_id, variant) pair must be \
-             downgraded to debug — warned_overrides.insert() should return false on repeat"
-        );
-    }
-
-    /// Verify that a successful `reapply_user_overrides` call clears the dedupe
-    /// entry for a `(cell_id, variant)` pair, so a subsequent mismatch for the
-    /// same pair emits a fresh WARN rather than a downgraded DEBUG.
-    ///
-    /// The sequence is:
-    /// 1. `BRACKET_INT_WIDTH` — TypeKindMismatch; warns, inserts into `warned_overrides`.
-    /// 2. Original `bracket.ri` — all overrides succeed; `retain` prunes the entry.
-    /// 3. `BRACKET_INT_WIDTH` again — TypeKindMismatch; warns again (entry gone).
-    ///
-    /// A delta of 2 means both mismatch calls warned (correct).  A delta of 1
-    /// would mean the `retain` in the success path was missing or broken.
-    #[test]
-    fn reapply_user_overrides_warn_cleared_on_success() {
-        let original = std::fs::read_to_string(BRACKET_PATH)
-            .expect("bracket.ri fixture must be readable");
-        assert_eq!(
-            run_reapply_with_sources(&[BRACKET_INT_WIDTH, original.as_str(), BRACKET_INT_WIDTH]),
-            2,
-            "successful reapply must clear the dedupe entry so the next mismatch warns again"
-        );
-    }
-
-    /// Invariant guard: `debug_assert!` fires when `user_overrides` is empty but
-    /// `warned_overrides` is non-empty.  This state is unreachable through the
-    /// public API (`load_file`/`open_file` clear both collections together;
-    /// `set_parameter` always re-pushes to `user_overrides`), so the `debug_assert!`
-    /// exists to catch future invariant drift loudly in debug builds.
-    ///
-    /// The scenario:
-    ///  1. Load bracket.ri and set an override that eventually mismatches.
-    ///  2. Manually clear `user_overrides` without going through a public entry point,
-    ///     leaving `warned_overrides` populated.
-    ///  3. Drive `update_source` so `reapply_user_overrides` enters the
-    ///     `user_overrides.is_empty()` early-return branch — the `debug_assert!`
-    ///     must panic.
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "warned_overrides must be empty")]
-    fn reapply_user_overrides_debug_asserts_on_warned_without_user_overrides() {
-        let ctx = fresh_ctx();
-        ctx.load_file(BRACKET_PATH)
-            .expect("load_file should succeed");
-
-        // 1. Populate warned_overrides via the normal flow: set a Scalar[LENGTH]
-        //    override, then update_source with BRACKET_INT_WIDTH which changes
-        //    width to Int, triggering TypeKindMismatch → inserts into warned_overrides.
-        ctx.set_parameter("Bracket.width", "0.12")
-            .expect("set_parameter should succeed");
-        ctx.update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
-            .expect("update_source should return Ok even on override mismatch");
-
-        // 2. Clear user_overrides directly to create the "empty user_overrides with
-        //    populated warned_overrides" state that violates the invariant.
-        {
-            let mut state = ctx.lock_state();
-            state.user_overrides.clear();
-        }
-
-        // 3. Drive reapply_user_overrides through the early-return branch by
-        //    calling update_source with the original valid bracket source.
-        //    The debug_assert! must panic with "warned_overrides must be empty".
-        let source = std::fs::read_to_string(BRACKET_PATH)
-            .expect("bracket.ri fixture must be readable");
-        ctx.update_source(BRACKET_PATH, &source)
-            .expect("update_source with valid source should succeed");
-    }
-
-    /// Invariant guard: `debug_assert!` fires when `reapply_user_overrides` is
-    /// entered with an engine that has never had `.eval(...)` called on it.
-    /// `edit_param` returns `EngineError::NotInitialized` in that case, which
-    /// is classified by the existing exhaustiveness match but should never arise
-    /// in production — `reapply_user_overrides` is only called from `update_source`
-    /// after `ensure_engine(...).eval(...)`.
-    ///
-    /// The test injects a never-eval'd engine directly into `CliState`, pushes one
-    /// user override, then calls `reapply_user_overrides` directly (accessible from
-    /// the same-file test module via `use super::*`), expecting the future
-    /// `debug_assert!` to panic.
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "called before eval")]
-    fn reapply_user_overrides_debug_asserts_on_not_initialized_variant() {
-        let ctx = fresh_ctx();
-
-        // Inject a never-eval'd engine: mirrors ensure_engine construction (see
-        // `ensure_engine`, line ~177: `Engine::new(Box::new(SimpleConstraintChecker), None)`)
-        // but skips the eval() call, so edit_param will return NotInitialized.
-        // NOTE: if ensure_engine ever changes its Engine::new arguments, update
-        // this test to stay in sync — otherwise the test will still catch the
-        // NotInitialized variant but may exercise a slightly different engine state.
-        {
-            let mut state = ctx.lock_state();
-            state.engine = Some(reify_eval::Engine::new(
-                Box::new(reify_constraints::SimpleConstraintChecker),
-                None,
-            ));
-            // Push one user override so user_overrides is non-empty and the
-            // early-return branch is not taken.
-            state.user_overrides.push((
-                ValueCellId::new("Bracket", "width"),
-                Value::Real(0.12_f64),
-            ));
-        }
-
-        // Call reapply_user_overrides directly — the debug_assert! (added in
-        // step-4) must panic with a message containing "called before eval".
-        {
-            let mut state = ctx.lock_state();
-            reapply_user_overrides(&mut state);
-        }
-    }
-
-    /// Regression guard: `reapply_user_overrides` must preserve **all** active
-    /// overrides when there are multiple overrides and the `update_source` call
-    /// is topology-preserving (only whitespace added, so all params survive).
-    ///
-    /// This test locks the multi-override path before the refactor that removes
-    /// the `Vec` clone from `reapply_user_overrides`.  It passes against the
-    /// pre-refactor code deliberately — its purpose is to fail loudly if a
-    /// future "re-optimization" short-circuits on the first error, changes
-    /// iteration order in a way that loses overrides, or reintroduces the clone
-    /// in a broken way.
+    /// Regression guard: multiple parameter overrides must all survive a
+    /// topology-preserving `update_source` (only whitespace added, so all params
+    /// survive).  Override persistence is now handled inside `Engine::eval()`
+    /// via `self.param_overrides`; this test locks the outward behaviour so
+    /// future refactors of the engine's override path cannot silently drop one
+    /// of several concurrently-set overrides.
     ///
     /// Three distinct `Scalar[LENGTH]` overrides are set on width / height /
     /// thickness.  After a topology-preserving `update_source` (trailing
     /// whitespace), all three must read back at their overridden values, not
     /// the module defaults.
     #[test]
-    fn reapply_user_overrides_preserves_multiple_overrides_across_topology_preserving_update() {
+    fn multiple_overrides_survive_topology_preserving_update_source() {
         let ctx = fresh_ctx();
         ctx.load_file(BRACKET_PATH)
             .expect("load_file should succeed");
@@ -1328,8 +881,9 @@ structure Bracket {
         assert_ne!(overridden_height, default_height, "height override must differ from default");
         assert_ne!(overridden_thickness, default_thickness, "thickness override must differ from default");
 
-        // Topology-preserving update: append trailing whitespace.  This drives
-        // `reapply_user_overrides` over all three entries without removing any param.
+        // Topology-preserving update: append trailing whitespace.  `Engine::eval`
+        // re-applies all three entries from its internal `param_overrides` map;
+        // none of the three params is removed by the edit so nothing is purged.
         let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
         let modified = format!("{source} ");
         let result = ctx
@@ -1337,7 +891,7 @@ structure Bracket {
             .expect("topology-preserving update_source should succeed");
         assert!(result.success, "update_source should succeed");
 
-        // All three overrides must survive reapply_user_overrides.
+        // All three overrides must survive the re-eval.
         let params_after = ctx.get_parameters().expect("get_parameters should succeed");
         let width_after = params_after
             .iter()
@@ -1369,138 +923,6 @@ structure Bracket {
         assert_eq!(
             thickness_after, overridden_thickness,
             "thickness override must survive topology-preserving update_source"
-        );
-    }
-
-    /// Regression guard: when multiple overrides are active and one of them
-    /// encounters a type mismatch on `update_source`, the surviving override(s)
-    /// must still be applied and the mismatched one must emit exactly one WARN.
-    ///
-    /// This pins **per-override independence** after the Vec-clone removal.  A
-    /// regression that short-circuits on the first mismatch, applies overrides in
-    /// a broken order, or fails to call `set_param_and_invalidate` for the
-    /// surviving entries would cause assertion (3) below to fail.
-    ///
-    /// Scenario:
-    ///  - width override `0.12` (`Scalar[LENGTH]`)  ← will mismatch with `Int`
-    ///  - thickness override `0.004` (`Scalar[LENGTH]`) ← compatible; must apply
-    ///  - `update_source(BRACKET_INT_WIDTH)` changes `width` to `Int = 80`
-    ///
-    /// Assertions:
-    ///  1. `update_source` returns `success = true`.
-    ///  2. WARN delta == 1 — only `width`'s mismatch warns; `thickness` applies cleanly.
-    ///  3. `thickness` reads back at its overridden value (not the module default).
-    ///  4. `width` reflects the new Int default (80) — override was not applied.
-    #[test]
-    fn reapply_user_overrides_partial_mismatch_preserves_surviving_overrides_and_warns_for_mismatched(
-    ) {
-        use reify_test_support::CountingSubscriberBuilder;
-        use std::sync::atomic::Ordering;
-
-        // Capture the expected thickness value string by setting the override in a
-        // fresh context and reading it back via get_parameters — avoids hard-coding
-        // the Display format of Value::Scalar { si_value: 0.004, dimension: LENGTH }.
-        let expected_thickness = {
-            let probe = fresh_ctx();
-            probe
-                .load_file(BRACKET_PATH)
-                .expect("probe load_file should succeed");
-            probe
-                .set_parameter("Bracket.thickness", "0.004")
-                .expect("probe set_parameter thickness should succeed");
-            probe
-                .get_parameters()
-                .expect("probe get_parameters should succeed")
-                .into_iter()
-                .find(|p| p.name == "thickness")
-                .expect("probe: bracket.ri should have a 'thickness' param")
-                .value
-        };
-
-        // Capture the expected width value string by loading BRACKET_INT_WIDTH in a
-        // fresh context and reading back the Int-typed width — avoids hard-coding the
-        // Display format of Value::Int { value: 80 } so the assertion stays correct
-        // if the default value or Display format ever changes.
-        let expected_width = {
-            let probe = fresh_ctx();
-            probe
-                .load_file(BRACKET_PATH)
-                .expect("probe width: load_file should succeed");
-            probe
-                .update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
-                .expect("probe width: update_source should succeed");
-            probe
-                .get_parameters()
-                .expect("probe width: get_parameters should succeed")
-                .into_iter()
-                .find(|p| p.name == "width")
-                .expect("probe: BRACKET_INT_WIDTH should have a 'width' param")
-                .value
-        };
-
-        // Set up the counting subscriber before creating the main context.
-        let (subscriber, counters) = CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify::mcp_context")
-            .build();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        let counter = counters[&tracing::Level::WARN].clone();
-
-        let ctx = fresh_ctx();
-        ctx.load_file(BRACKET_PATH)
-            .expect("load_file should succeed");
-
-        // Set both overrides: width will mismatch (Scalar[LENGTH] vs new Int),
-        // thickness will succeed (still Scalar[LENGTH]).
-        ctx.set_parameter("Bracket.width", "0.12")
-            .expect("set_parameter width should succeed");
-        ctx.set_parameter("Bracket.thickness", "0.004")
-            .expect("set_parameter thickness should succeed");
-
-        let before = counter.load(Ordering::Acquire);
-
-        // (1) update_source must succeed (parse/compile passes even if override fails).
-        let result = ctx
-            .update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
-            .expect("update_source should return Ok even on override mismatch");
-        assert!(
-            result.success,
-            "update_source should succeed (parse/compile passed)"
-        );
-
-        // (2) Exactly one WARN from reify::mcp_context — only width mismatches.
-        let warn_delta = counter.load(Ordering::Acquire) - before;
-        assert_eq!(
-            warn_delta, 1,
-            "exactly one warn expected: width mismatches (TypeKindMismatch), \
-             thickness applies cleanly; got warn_delta={warn_delta}"
-        );
-
-        let params = ctx.get_parameters().expect("get_parameters should succeed");
-
-        // (3) thickness survived at its overridden value.
-        let thickness_value = params
-            .iter()
-            .find(|p| p.name == "thickness")
-            .expect("thickness should exist after update_source")
-            .value
-            .clone();
-        assert_eq!(
-            thickness_value, expected_thickness,
-            "thickness override must survive despite width's TypeKindMismatch"
-        );
-
-        // (4) width reflects the new Int default (80) — override was not applied.
-        let width_value = params
-            .iter()
-            .find(|p| p.name == "width")
-            .expect("width should exist after update_source")
-            .value
-            .clone();
-        assert_eq!(
-            width_value, expected_width,
-            "width must reflect the Int default (from BRACKET_INT_WIDTH) since the \
-             Scalar[LENGTH] override was incompatible"
         );
     }
 
