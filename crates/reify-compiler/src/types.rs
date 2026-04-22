@@ -297,6 +297,19 @@ impl TopologyTemplate {
     }
 }
 
+/// Look up a topology template by name in a slice of compiled templates.
+///
+/// Returns `Some(&template)` for the first match, or `None` if no template has
+/// the given name.  All callers keep their own error-handling (diagnostic
+/// emission, silent skip, or test panic) — this utility is policy-neutral.
+///
+/// This is the canonical `templates.iter().find(|t| t.name == name)` spelling;
+/// it is re-exported from `reify_compiler` via the existing `pub use types::*`
+/// in `lib.rs` so downstream crates can call `reify_compiler::find_template`.
+pub fn find_template<'a>(templates: &'a [TopologyTemplate], name: &str) -> Option<&'a TopologyTemplate> {
+    templates.iter().find(|t| t.name == name)
+}
+
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
 #[derive(Debug, Clone)]
 pub struct CompiledConnection {
