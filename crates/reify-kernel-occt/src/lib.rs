@@ -64,6 +64,20 @@ struct OcctWarmState {
 /// Value: 1e-12 → minimum magnitude ~1e-6 → ~1 micrometer.
 const AXIS_MAG_SQ_MIN: f64 = 1e-12;
 
+#[cfg(has_occt)]
+/// Minimum squared length (m²) for `make_line_wire` endpoints — primary Rust-layer floor.
+///
+/// Line segments with squared point-to-point distance below this threshold are rejected
+/// before the FFI call, catching sub-micrometer degenerate wires early.
+///
+/// This guard is **stricter** than the C++-layer defense-in-depth floor
+/// `CPP_LINE_WIRE_MIN_LENGTH_SQ` (1e-10) defined in `cpp/occt_wrapper.cpp`. The invariant
+/// `RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ` is enforced by the test
+/// `rust_line_wire_floor_strictly_below_cpp_floor`.
+///
+/// Value: 1e-12 m² → minimum segment length ~1 µm.
+const RUST_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-12;
+
 /// Minimum absolute angle (radians) for revolve operations.
 /// Angles below this are treated as effectively zero.
 /// Matches the C++ ANGLE_ABS_MIN threshold (1e-30).
@@ -682,7 +696,7 @@ impl OcctKernel {
                 let dy = y2 - y1;
                 let dz = z2 - z1;
                 let dist_sq = dx * dx + dy * dy + dz * dz;
-                if dist_sq < 1e-12 {
+                if dist_sq < RUST_LINE_WIRE_MIN_LENGTH_SQ {
                     return Err(GeometryError::OperationFailed(
                         "line_segment endpoints are coincident (zero length)".into(),
                     ));
