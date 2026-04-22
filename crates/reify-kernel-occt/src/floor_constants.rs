@@ -38,7 +38,7 @@ pub(crate) const RUST_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-12;
 /// C++-layer phrasing, isolating Rust-guard assertions from C++ rewording.
 // `build.rs` includes this file via `#[path]` and sees this as dead; allow that.
 #[allow(dead_code)]
-pub(crate) const RUST_GUARD_MARKER: &str = "[rust-guard]";
+pub const RUST_GUARD_MARKER: &str = "[rust-guard]";
 
 /// Rust-layer length guard for `make_line_wire`.
 ///

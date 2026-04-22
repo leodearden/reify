@@ -23,6 +23,7 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 #[allow(dead_code)]
 mod ffi;
 mod floor_constants;
+pub use floor_constants::RUST_GUARD_MARKER;
 #[cfg(has_occt)]
 mod handle;
 #[cfg(has_occt)]
