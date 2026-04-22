@@ -2281,6 +2281,68 @@ mod tests {
         );
     }
 
+    /// Pins the "absent from the graph" half of the documented "Cells without a
+    /// `default_expr` (or absent from the graph) are left unchanged" contract for
+    /// the **active branch** of `reelaborate_guarded_group`.
+    ///
+    /// The member ID is included in `group.members` but is NOT inserted into
+    /// `graph.value_cells`, so the outer `if let Some(node) = graph.value_cells.get(mid)`
+    /// guard fails and the function must silently skip the cell — leaving both
+    /// `values` and `snapshot_values` empty for it.
+    ///
+    /// A regression that dropped this guard (e.g. via `&graph.value_cells[mid]`,
+    /// `.unwrap()`, or any unconditional insert keyed on the raw member id) would
+    /// be caught here.
+    #[test]
+    fn reelaborate_guarded_group_active_member_absent_from_graph_is_noop() {
+        use std::collections::HashMap;
+
+        use crate::graph::GuardedGroupInfo;
+
+        use super::reelaborate_guarded_group;
+
+        let guard_id = ValueCellId::new("E", "guard");
+        // member_id is referenced in the group but intentionally NOT inserted
+        // into graph.value_cells — it is wholly absent from the graph.
+        let member_id = ValueCellId::new("E", "member");
+
+        let mut graph = EvaluationGraph::default();
+        // Only the guard cell is in the graph.
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+
+        let group = GuardedGroupInfo {
+            guard_cell: guard_id.clone(),
+            members: vec![member_id.clone()],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        reelaborate_guarded_group(
+            &graph,
+            &group,
+            &Value::Bool(true),
+            &mut values,
+            &mut snapshot_values,
+            &[],
+            &HashMap::new(),
+        );
+
+        // Active member absent from graph: must be left entirely untouched.
+        assert!(
+            values.get(&member_id).is_none(),
+            "Active member absent from graph must not appear in values"
+        );
+        assert!(
+            snapshot_values.get(&member_id).is_none(),
+            "Active member absent from graph must not appear in snapshot_values"
+        );
+    }
+
     /// When `guard_val = Bool(false)`, `reelaborate_guarded_group` must
     /// activate `else_members` and deactivate `members`.
     ///
