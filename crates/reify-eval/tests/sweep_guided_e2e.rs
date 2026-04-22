@@ -40,15 +40,13 @@ fn sweep_guided_through_full_eval_pipeline() {
         args: vec![("radius".into(), mm_literal(2.0))],
     };
 
+    // SweepKind::SweepGuided carries all data in `profiles`; args is intentionally
+    // empty — eval reads only profiles[0]/profiles[1]/profiles[2] (task-383 S4b / task-2122).
     // Op 3: SweepGuided referencing Step(0), Step(1), Step(2)
     let sweep_guided_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::SweepGuided,
         profiles: vec![GeomRef::Step(0), GeomRef::Step(1), GeomRef::Step(2)],
-        args: vec![
-            ("profile".into(), mm_literal(5.0)),
-            ("path".into(), mm_literal(3.0)),
-            ("guide".into(), mm_literal(2.0)),
-        ],
+        args: vec![],
     };
 
     let template = TopologyTemplateBuilder::new(e)
