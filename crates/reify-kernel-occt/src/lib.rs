@@ -4505,9 +4505,8 @@ mod tests {
     #[test]
     fn validate_pipe_start_tangent_rejects_oversize_z() {
         // Guards the upper-bound: a finite t.z far above 1.0 (e.g. 1e100) is not
-        // a unit vector. The current comparator only checks t.z < 1.0 - ε, so
-        // this test is expected to FAIL until the upper-bound guard is added in
-        // step-3.
+        // a unit vector. The two-sided comparator rejects t.z outside
+        // [1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON].
         let t = ffi::ffi::Point3 { x: 0.0, y: 0.0, z: 1e100 };
         match super::validate_pipe_start_tangent(t) {
             Err(GeometryError::OperationFailed(msg)) => {
