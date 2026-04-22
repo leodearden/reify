@@ -24,6 +24,24 @@ fn fresh_engine() -> Engine {
     Engine::new(Box::new(SimpleConstraintChecker), None)
 }
 
+/// Cross-check two value maps entry-for-entry via key-union.
+/// Panics on the first diverging key with a message identical to the
+/// inline pattern previously copy-pasted across the Task 2087 tests.
+fn assert_values_match(incr: &ValueMap, cold: &ValueMap) {
+    let incr_keys: HashSet<&ValueCellId> = incr.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.get(key);
+        let cold_val = cold.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+}
+
 /// Run `eval(module_a)` then `edit_source(module_b)` on a single engine,
 /// returning both results. Used by tests that compare the incremental edit
 /// against the baseline eval.
