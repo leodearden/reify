@@ -44720,6 +44720,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T02:08:49.651Z"
+      },
+      {
+        "id": "2114",
+        "title": "Document/test duplicate let-binding shadowing semantics in named_steps",
+        "description": "`crates/reify-eval/src/engine_build.rs:332-345` (in `execute_realization_ops`) — two `let` bindings with the same name within a single structure will silently overwrite each other in `named_steps` (HashMap::insert); any subsequent `GeomRef::Sub(name)` then resolves to the latest binding. This may be intended shadowing semantics, but (a) it is not documented and (b) it is not tested — a regression flipping to first-write-wins would go unnoticed.\n\nFix: either (1) add a one-line comment noting that duplicate names here are impossible because the compiler rejects them earlier (cite the rejection site); or (2) if shadowing IS allowed at compile time, add a test that two `let body = …` bindings resolve `Sub(\"body\")` to the second one, and document the decision in the doc comment on `execute_realization_ops`.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44731,7 +44742,8 @@
         "master"
       ],
       "created": "2026-04-22T02:09:26.502Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T02:11:08.797Z"
     }
   }
 }
