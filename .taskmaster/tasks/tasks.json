@@ -17065,12 +17065,8 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-compiler/src/lib.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/src"
-          ]
+          "files": [],
+          "modules": []
         },
         "updatedAt": "2026-04-20T12:20:05.053Z"
       },
@@ -24261,14 +24257,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:05.266Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-compiler/src"
-          ],
-          "files": [
-            "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
-            "crates/reify-compiler/src/lib.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
