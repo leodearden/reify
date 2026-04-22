@@ -218,7 +218,9 @@ fn emit_constraint_def_shadow_warnings(
 ///
 /// Borrows from `local` (module-local constraint defs in ctx) and every prelude
 /// module's `constraint_defs`. Non-pub prelude defs are excluded — only pub
-/// constraint defs are exported.
+/// constraint defs are exported. All local constraint defs (pub or not) are
+/// inserted; non-pub local defs are only reachable within the current module
+/// but still shadow prelude defs of the same name.
 ///
 /// Shadow warnings for cross-prelude name collisions are NOT emitted here —
 /// they were already emitted once in [`phase_constraint_defs`] via
