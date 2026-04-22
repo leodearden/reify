@@ -44545,23 +44545,21 @@
         "description": "Decide whether make_polyline_wire (added in task 2095 for composite-wire tangent tests) belongs in the production FFI surface or should be gated to test-only builds.",
         "details": "Post-merge review of task 2095 (reviewer_comprehensive) noted that `make_polyline_wire` (crates/reify-kernel-occt/cpp/occt_wrapper.cpp:897-934, plus its exports in the C++ header and cxx bridge) is consumed only by two FFI tests — the composite-wire start-tangent tests. Because it is public in the bridge, it becomes part of the kernel FFI surface indefinitely purely for test scaffolding.\n\nTwo acceptable resolutions:\n\n(a) **Gate behind a test-only cfg/feature.** Move the function (C++ side, header, and cxx bridge declaration) behind a `#[cfg(any(test, feature = \"test-helpers\"))]`-equivalent so production builds do not expose it. If the C++ side cannot easily be conditionally compiled, build the two-segment composite wire in C++ by wiring two `make_line_wire` outputs via a small test-only helper, keeping the production FFI lean.\n\n(b) **Document as intentional stable FFI.** Update the header comment on `make_polyline_wire` to state explicitly that it is part of the stable FFI surface for future polyline use cases, not just CompCurve testing — the current comment only justifies it for the tests.\n\nChoose based on whether polyline construction is a likely near-term production need. Touches:\n- crates/reify-kernel-occt/cpp/occt_wrapper.cpp\n- crates/reify-kernel-occt/cpp/occt_wrapper.h (header export)\n- crates/reify-kernel-occt/src/ffi*.rs (cxx bridge)\n- the two tests that consume it (no functional change expected).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T01:58:43.495Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:55:42.327Z",
-      "taskCount": 2096,
+      "lastModified": "2026-04-22T01:58:43.495Z",
+      "taskCount": 2097,
       "completedCount": 1835,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T01:57:00.798Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T01:58:29.395Z"
+      ]
     }
   }
 }
