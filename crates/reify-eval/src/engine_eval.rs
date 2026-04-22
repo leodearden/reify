@@ -1157,7 +1157,9 @@ impl Engine {
 
             // Move the trace out of `let_traces` (built above from the same key set);
             // every node in `sorted_lets` is guaranteed present, so remove() cannot fail.
-            // Using remove() avoids a Vec clone compared to indexing+clone.
+            // Using remove() avoids a second walk of the expression tree — extract_dependency_trace
+            // was already called above for every let cell — and also avoids the Vec clone you'd get
+            // with indexing+clone.
             let trace = let_traces
                 .remove(&node_id)
                 .expect("sorted_lets entries are always keys in let_traces");
