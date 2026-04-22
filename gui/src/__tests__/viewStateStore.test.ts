@@ -797,8 +797,14 @@ describe('viewStateStore — regenerateAutoViews — active view reconciliation'
   });
 });
 
-describe('viewStateStore — setTree pruning', () => {
-  it('stale explicit entries for removed paths are pruned when setTree is called', () => {
+describe('viewStateStore — setTree stale-entry preservation', () => {
+  // NOTE: Prior to step-18 (task 1749) this describe block was titled
+  // "setTree pruning" and asserted that stale explicit entries were deleted on
+  // tree change.  Step-18 removed that pruning loop per PRD §8.2: stale
+  // entries must survive for undo/branch-switch restoration.  Tests updated
+  // accordingly.
+
+  it('stale explicit entries for removed paths are PRESERVED when setTree is called', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
       const nodeA = makeNode({ entity_path: 'Root.A' });
@@ -811,10 +817,10 @@ describe('viewStateStore — setTree pruning', () => {
       expect(store.state.explicit['Root.A']).toBe('hidden');
       expect(store.state.explicit['Root.B']).toBe('ghost');
 
-      // Replace tree with only B — A is removed.
+      // Replace tree with only B — A becomes stale.
       store.setTree([nodeB]);
-      // Stale entry for Root.A must be pruned.
-      expect(store.state.explicit['Root.A']).toBeUndefined();
+      // Stale entry for Root.A must be preserved (PRD §8.2).
+      expect(store.state.explicit['Root.A']).toBe('hidden');
       // Root.B's explicit is preserved since it still exists.
       expect(store.state.explicit['Root.B']).toBe('ghost');
 
@@ -822,7 +828,7 @@ describe('viewStateStore — setTree pruning', () => {
     });
   });
 
-  it('re-introducing a previously-removed path does not inherit old explicit state', () => {
+  it('re-introducing a previously-removed path re-surfaces its prior explicit state', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
       const nodeA = makeNode({ entity_path: 'Root.A' });
@@ -831,13 +837,13 @@ describe('viewStateStore — setTree pruning', () => {
       store.setTree([nodeA, nodeB]);
       store.setVisibility('Root.A', 'hidden', false);
 
-      // Remove A, then re-introduce it.
+      // Remove A (becomes stale), then re-introduce it.
       store.setTree([nodeB]);
       store.setTree([nodeA, nodeB]);
 
-      // Re-introduced A should have no explicit state (fresh inherit).
-      expect(store.state.explicit['Root.A']).toBeUndefined();
-      expect(store.getEffectiveVisibility('Root.A')).toBe('show');
+      // Re-introduced A should inherit its prior explicit state (PRD §8.2).
+      expect(store.state.explicit['Root.A']).toBe('hidden');
+      expect(store.getEffectiveVisibility('Root.A')).toBe('hidden');
 
       dispose();
     });
