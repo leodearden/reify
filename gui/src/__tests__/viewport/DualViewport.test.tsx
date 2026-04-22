@@ -4,6 +4,7 @@ import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type { MeshData } from '../../types';
 import { createViewportStore } from '../../stores/viewportStore';
+import type { ViewportState } from '../../stores/viewportStore';
 
 // ── Mock Viewport ────────────────────────────────────────────────────────────
 // Capture rendered instances by viewportId so we can assert mesh sources.
@@ -80,13 +81,13 @@ const DEFAULT_TEST_CAMERA = {
   zoom: 1,
 };
 
-function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-preview'?: Partial<any>; splitRatio?: number }) {
-  const viewports = {
+function makeViewportStore(overrides?: { 'design-main'?: Partial<ViewportState>; 'def-preview'?: Partial<ViewportState>; splitRatio?: number }) {
+  const initialViewports: Record<string, ViewportState> = {
     'design-main': {
       id: 'design-main',
-      type: 'design' as const,
-      viewId: null as string | null,
-      defPath: null as string | null,
+      type: 'design',
+      viewId: null,
+      defPath: null,
       active: true,
       forceExpanded: false,
       camera: { ...DEFAULT_TEST_CAMERA },
@@ -94,32 +95,28 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
     },
     'def-preview': {
       id: 'def-preview',
-      type: 'def-preview' as const,
-      viewId: null as string | null,
-      defPath: null as string | null,
+      type: 'def-preview',
+      viewId: null,
+      defPath: null,
       active: false,
       forceExpanded: false,
       camera: { ...DEFAULT_TEST_CAMERA },
       ...(overrides?.['def-preview'] ?? {}),
     },
   };
-  const [state, setState] = createStore({ viewports, splitRatio: overrides?.splitRatio ?? 0.5 });
+  const real = createViewportStore(initialViewports);
+  if (overrides?.splitRatio !== undefined) real.setSplitRatio(overrides.splitRatio);
+  // Mock wraps the real store so drift between test double and production is impossible by construction.
+  // Arrow wrappers make the delegation explicit and guard against future this-dependent refactors.
   return {
-    state,
-    getViewport: vi.fn(),
-    setActiveViewport: vi.fn(),
-    assignView: vi.fn(),
-    updateCamera: vi.fn(),
-    setDefPath: vi.fn(),
-    setForceExpanded: vi.fn(),
-    // Real setState side-effect so sequential-drag tests can read the updated ratio.
-    // Matches real-store fidelity: Number.isFinite guard mirrors viewportStore.ts:188.
-    setSplitRatio: vi.fn((ratio: number) => {
-      if (!Number.isFinite(ratio)) return false;
-      const clamped = Math.min(0.9, Math.max(0.1, ratio));
-      setState('splitRatio', clamped);
-      return true;
-    }),
+    state: real.state,
+    getViewport: vi.fn((...a: Parameters<typeof real.getViewport>) => real.getViewport(...a)),
+    setActiveViewport: vi.fn((...a: Parameters<typeof real.setActiveViewport>) => real.setActiveViewport(...a)),
+    assignView: vi.fn((...a: Parameters<typeof real.assignView>) => real.assignView(...a)),
+    updateCamera: vi.fn((...a: Parameters<typeof real.updateCamera>) => real.updateCamera(...a)),
+    setDefPath: vi.fn((...a: Parameters<typeof real.setDefPath>) => real.setDefPath(...a)),
+    setForceExpanded: vi.fn((...a: Parameters<typeof real.setForceExpanded>) => real.setForceExpanded(...a)),
+    setSplitRatio: vi.fn((...a: Parameters<typeof real.setSplitRatio>) => real.setSplitRatio(...a)),
   };
 }
 
@@ -765,5 +762,51 @@ describe('DualViewport', () => {
       // Inner fn should NOT have been called again
       expect(innerFitSpy).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('(m) makeViewportStore wraps the real createViewportStore — spies delegate to real impl', () => {
+    // Characterisation test: verifies that every mock method delegates to the real store
+    // rather than being a no-op stub. Covers all seven methods so any re-hand-rolled
+    // bare vi.fn() will be caught here.
+    const store = makeViewportStore();
+
+    // setForceExpanded must mutate state — not be a no-op stub
+    expect(store.state.viewports['design-main'].forceExpanded).toBe(false);
+    store.setForceExpanded('design-main', true);
+    expect(store.state.viewports['design-main'].forceExpanded).toBe(true);
+
+    // assignView must update viewId
+    expect(store.state.viewports['design-main'].viewId).toBeNull();
+    store.assignView('design-main', 'v1');
+    expect(store.state.viewports['design-main'].viewId).toBe('v1');
+
+    // setActiveViewport must flip active flags across all viewports
+    expect(store.state.viewports['design-main'].active).toBe(true);
+    expect(store.state.viewports['def-preview'].active).toBe(false);
+    store.setActiveViewport('def-preview');
+    expect(store.state.viewports['def-preview'].active).toBe(true);
+    expect(store.state.viewports['design-main'].active).toBe(false);
+
+    // updateCamera must persist camera state
+    store.updateCamera('design-main', { ...DEFAULT_TEST_CAMERA, zoom: 2 });
+    expect(store.state.viewports['design-main'].camera.zoom).toBe(2);
+
+    // setDefPath must update defPath
+    expect(store.state.viewports['design-main'].defPath).toBeNull();
+    store.setDefPath('design-main', 'some/def.ts');
+    expect(store.state.viewports['design-main'].defPath).toBe('some/def.ts');
+
+    // getViewport must return the live viewport state (reflects prior mutations)
+    const vp = store.getViewport('design-main');
+    expect(vp?.defPath).toBe('some/def.ts');
+
+    // setSplitRatio must use real clamp semantics
+    store.setSplitRatio(1.5);
+    expect(store.state.splitRatio).toBe(0.9);
+    store.setSplitRatio(-5);
+    expect(store.state.splitRatio).toBe(0.1);
+    // NaN is rejected — state stays at 0.1 from prior call
+    store.setSplitRatio(NaN);
+    expect(store.state.splitRatio).toBe(0.1);
   });
 });
