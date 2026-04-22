@@ -45450,7 +45450,22 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:53:11.783Z"
+        "updatedAt": "2026-04-22T09:53:11.783Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "phase1_reelaborated",
+              "engine_edit.rs",
+              "reapply_phase1_deactivations"
+            ],
+            "queries": [
+              "phase1_reelaborated wave2 guard flip dedup cross-phase edit_source edit_param",
+              "guard value changed between Phase 1 and Phase 3 wave2 auto param resolver flip",
+              "phase1_reelaborated HashMap guard value at insert time dedup bypass on flip",
+              "cross-phase dedup guard flip regression test else_member Undef Determined"
+            ]
+          }
+        }
       },
       {
         "id": "2147",
