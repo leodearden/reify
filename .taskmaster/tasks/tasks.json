@@ -45422,7 +45422,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:18:35.026Z"
+        "updatedAt": "2026-04-22T09:18:35.026Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/tests/guard_eval.rs"
+          ]
+        }
       },
       {
         "id": "2145",
@@ -45444,7 +45450,9 @@
       "completedCount": 1872,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T09:26:54.577Z",
+      "description": "Tasks for master context"
     }
   }
 }
