@@ -179,6 +179,22 @@ impl Engine {
         snapshot.version = VersionId(version_id);
         snapshot.provenance = SnapshotProvenance::Initial;
 
+        // Purge orphaned param_overrides entries BEFORE the per-cell Param
+        // loop populates `values` from the override map. A dormant override on
+        // a cell that no longer exists (or whose kind changed from Param to
+        // Let/Auto) would otherwise zombie-resurrect if a future edit re-adds
+        // a cell with the same ValueCellId. Identical predicate to
+        // `engine_edit.rs` Engine::edit_source's post-seed retain call — any
+        // future refinement to the rule should land in both places.
+        self.param_overrides.retain(|id, _| {
+            snapshot
+                .graph
+                .value_cells
+                .get(id)
+                .map(|node| matches!(node.kind, ValueCellKind::Param))
+                .unwrap_or(false)
+        });
+
         // Build dependency structures from the graph
         let reverse_index = ReverseDependencyIndex::build_from_graph(&snapshot.graph);
         let trace_map = crate::deps::build_trace_map(&snapshot.graph);
