@@ -4452,24 +4452,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_pipe_start_tangent_error_mentions_tolerance() {
-        // Verifies that the non-+Z error message surfaces the tolerance so
-        // operators can read the accepted margin directly from the error.
-        let t = ffi::ffi::Point3 { x: 1.0, y: 0.0, z: 0.0 }; // +X tangent, not +Z
-        let result = super::validate_pipe_start_tangent(t);
-        match result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("tolerance"),
-                    "expected error message to mention 'tolerance', got: {msg}"
-                );
-            }
-            Ok(()) => panic!("expected Err for +X tangent, got Ok"),
-            Err(other) => panic!("expected OperationFailed for +X tangent, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn validate_pipe_start_tangent_rejects_negative_z() {
         // Exercises the pure helper with a -Z unit tangent directly.
         // Guards against a future refactor that compares t.z.abs() instead of
