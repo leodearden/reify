@@ -23,6 +23,37 @@ use crate::{
     guard_state_fingerprint,
 };
 
+/// Debug-only invariant check: assert that every `ValueCellNode` in the
+/// evaluation graph has a `cell_type` that has a corresponding `Value`
+/// variant.  `Type::TypeParam`, `Type::StructureRef`, and `Type::Geometry`
+/// have no `Value` counterpart, so any non-Undef value against such a cell
+/// triggers `TypeKindMismatch` — see `value_type_kind_matches` in lib.rs.
+///
+/// Fully elided in release builds (cfg-gated, not debug_assert!-wrapped) to
+/// avoid the HashMap walk on the hot eval() path.  Tests run under
+/// cfg(debug_assertions) by default so the four unit tests in
+/// `invariant_tests` below see this function normally.
+///
+/// Enforcement points: this call (runtime) and
+/// `crates/reify-eval/tests/value_cell_type_invariants.rs` (CI regression lock).
+#[cfg(debug_assertions)]
+fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) {
+    use reify_types::Type;
+    for (id, node) in graph.value_cells.iter() {
+        assert!(
+            !matches!(
+                &node.cell_type,
+                Type::TypeParam(_) | Type::StructureRef(_) | Type::Geometry
+            ),
+            "value cell `{}` has unrepresentable cell_type {:?} post-compilation; \
+             value_type_kind_matches treats these variants as having no Value counterpart — \
+             see crates/reify-eval/tests/value_cell_type_invariants.rs",
+            id,
+            node.cell_type,
+        );
+    }
+}
+
 /// Populate a fresh `DemandRegistry` with the full per-node-kind demand
 /// set for a graph and rebuild its cone.
 ///
@@ -142,6 +173,8 @@ impl Engine {
         self.next_version_id += 1;
 
         let mut snapshot = Snapshot::from_compiled_module(module);
+        #[cfg(debug_assertions)]
+        assert_value_cell_types_representable(&snapshot.graph);
         snapshot.id = SnapshotId(snapshot_id);
         snapshot.version = VersionId(version_id);
         snapshot.provenance = SnapshotProvenance::Initial;
