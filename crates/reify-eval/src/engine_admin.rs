@@ -193,6 +193,29 @@ impl Engine {
         self.eval_state.as_ref().map(|s| &s.snapshot)
     }
 
+    /// Clear all param overrides currently held by this engine.
+    ///
+    /// Intended for callers that semantically start fresh with respect to
+    /// user edits — e.g. the CLI's `load_file` / `open_file` when the user
+    /// opens a new source file and any overrides from the previous file
+    /// should no longer apply.
+    ///
+    /// This method:
+    /// - wipes every entry from `self.param_overrides`,
+    /// - does NOT invalidate the cache — the next call to `eval()` rebuilds
+    ///   the snapshot from the module defaults anyway (and the per-eval
+    ///   purge step would drop the entries on its own once the module
+    ///   changes, but this primitive makes the reset explicit for
+    ///   topology-preserving reloads),
+    /// - does NOT touch `eval_state`, `snapshot`, `cache`, or `journal`.
+    ///
+    /// Distinct from `set_param_and_invalidate` (which writes a single
+    /// override) — the "clear" intent warrants its own entry point rather
+    /// than being smuggled in as a sentinel value.
+    pub fn clear_param_overrides(&mut self) {
+        self.param_overrides.clear();
+    }
+
     /// Access the eval set from the last eval() or edit_param() call.
     pub fn last_eval_set(&self) -> &[NodeId] {
         &self.last_eval_set
