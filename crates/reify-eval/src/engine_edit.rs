@@ -1790,6 +1790,43 @@ impl Engine {
                         );
                     }
                 }
+
+                // Post-wave2 cleanup for cross-phase dedup safety (task 2142):
+                // wave2 unconditionally re-evaluates any cell in the demand cone
+                // whose default_expr reads a resolved auto param — including
+                // inactive-branch members that Phase 1 already deactivated (Undef).
+                // For each group Phase 1 processed, re-deactivate its inactive
+                // branch so Phase 3's `phase1_reelaborated` skip yields a correct
+                // final state. Mirrors edit_param's cleanup at lines 721-753 (task 2140).
+                // edit_source's wave2 uses local new_reverse_index / new_trace_map /
+                // new_demand, so no `if let Some(es) = ...` wrapping is needed here.
+                if !phase1_reelaborated.is_empty() {
+                    for group in new_snapshot.graph.guarded_groups.clone() {
+                        if !phase1_reelaborated.contains(&group.guard_cell) {
+                            continue;
+                        }
+                        let guard_val = values
+                            .get(&group.guard_cell)
+                            .cloned()
+                            .expect("guard cell must have a value after Phase 1");
+                        let is_true = matches!(&guard_val, Value::Bool(true));
+                        let is_false = matches!(&guard_val, Value::Bool(false));
+                        for (cells, is_active) in
+                            [(&group.members, is_true), (&group.else_members, is_false)]
+                        {
+                            if !is_active {
+                                for mid in cells {
+                                    deactivate_if_not_auto(
+                                        &new_snapshot.graph,
+                                        mid,
+                                        &mut values,
+                                        &mut new_snapshot.values,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
