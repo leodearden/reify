@@ -45410,7 +45410,14 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:18:04.114Z"
+        "updatedAt": "2026-04-22T09:18:04.114Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/guard_eval.rs"
+          ]
+        }
       },
       {
         "id": "2144",
