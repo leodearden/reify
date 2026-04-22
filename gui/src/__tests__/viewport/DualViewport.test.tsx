@@ -79,7 +79,7 @@ const DEFAULT_TEST_CAMERA = {
   zoom: 1,
 };
 
-function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-preview'?: Partial<any> }) {
+function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-preview'?: Partial<any>; splitRatio?: number }) {
   const viewports = {
     'design-main': {
       id: 'design-main',
@@ -102,7 +102,7 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
       ...(overrides?.['def-preview'] ?? {}),
     },
   };
-  const [state] = createStore({ viewports, splitRatio: 0.5 });
+  const [state] = createStore({ viewports, splitRatio: overrides?.splitRatio ?? 0.5 });
   return {
     state,
     getViewport: vi.fn(),
@@ -520,6 +520,54 @@ describe('DualViewport', () => {
       capturedSplitterPropsByTestId['splitter-dual'].onResize(80);
 
       expect(viewportStore.setSplitRatio).not.toHaveBeenCalled();
+    });
+
+    it('(l) both viewports active: wrapper flex styles reflect splitRatio', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      // splitRatio of 0.3 → def-preview gets 0.3, design gets 0.7
+      const viewportStore = makeViewportStore({ splitRatio: 0.3 });
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      const defWrapper = screen.getByTestId('dual-viewport-def-preview-wrapper');
+      const designWrapper = screen.getByTestId('dual-viewport-design-wrapper');
+      expect(defWrapper.style.flex).toBe('0.3 0 0%');
+      expect(designWrapper.style.flex).toBe('0.7 0 0%');
+    });
+
+    it('(l2) single-viewport mode: design wrapper has no inline flex style', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore([], null);
+      const viewportStore = makeViewportStore({ splitRatio: 0.3 });
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => false}
+          designViewportActive={() => true}
+          defName={() => null}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      const designWrapper = screen.getByTestId('dual-viewport-design-wrapper');
+      // No inline flex override — CSS flex: 1 fallback applies
+      expect(designWrapper.style.flex).toBe('');
     });
 
     it('(j) after design Viewport unmounts, proxy becomes a no-op (inner fn not called again)', async () => {
