@@ -1900,3 +1900,115 @@ fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
         eval_set
     );
 }
+
+// ── Phase 1 & 3 performance: skip unchanged guarded groups ────────────────────
+
+/// Performance lock: When a guard expression changes for exactly ONE of ten
+/// independent `where` groups, `edit_source` must skip the remaining nine
+/// groups in both Phase 1 and Phase 3, performing at most 2 non-skipped
+/// group iterations total (one per phase for the affected group).
+///
+/// Test design:
+/// - module_a: structure S with 10 independent `where uN { let xN = 1mm }` blocks,
+///   all guarded by `uN: Bool = true`. eval(module_a) → all x0..x9 = 1mm.
+/// - module_b: identical except group 3 changes guard from `where u3` to `where !u3`.
+///   With `u3 = true`, `!u3` evaluates to `false`, so x3 deactivates to Undef.
+///   Both Phase 1 (guard cell content_hash changed → dirty cone trigger) AND
+///   Phase 3 (guard value changed: true → false → `guard_changed` outer gate) fire.
+///   However, only group 3 actually changed its guard value — groups 0,1,2,4..9
+///   all have `uN = true` unchanged — so only group 3 needs re-elaboration.
+///
+/// Without the fix: counter = 10 (Phase 1) + 10 (Phase 3) = 20.
+/// With the fix:    counter = 1  (Phase 1) + 1  (Phase 3) = 2.
+///
+/// Task 2088 — edit_source Phase 1 & 3 per-group skip.
+#[test]
+fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    param u2: Bool = true
+    param u3: Bool = true
+    param u4: Bool = true
+    param u5: Bool = true
+    param u6: Bool = true
+    param u7: Bool = true
+    param u8: Bool = true
+    param u9: Bool = true
+    where u0 { let x0 = 1mm }
+    where u1 { let x1 = 1mm }
+    where u2 { let x2 = 1mm }
+    where u3 { let x3 = 1mm }
+    where u4 { let x4 = 1mm }
+    where u5 { let x5 = 1mm }
+    where u6 { let x6 = 1mm }
+    where u7 { let x7 = 1mm }
+    where u8 { let x8 = 1mm }
+    where u9 { let x9 = 1mm }
+}"#;
+    // Module B: identical except group 3's guard expression is negated.
+    // With u3=true, `!u3` evaluates to false → x3 deactivates to Undef.
+    // The guard cell for group 3 has a different expression text (content_hash
+    // changes), so `has_dirty_guards` fires Phase 1; the guard value also
+    // changes (true → false), so `guard_changed` fires Phase 3.
+    let module_b_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    param u2: Bool = true
+    param u3: Bool = true
+    param u4: Bool = true
+    param u5: Bool = true
+    param u6: Bool = true
+    param u7: Bool = true
+    param u8: Bool = true
+    param u9: Bool = true
+    where u0 { let x0 = 1mm }
+    where u1 { let x1 = 1mm }
+    where u2 { let x2 = 1mm }
+    where !u3 { let x3 = 1mm }
+    where u4 { let x4 = 1mm }
+    where u5 { let x5 = 1mm }
+    where u6 { let x6 = 1mm }
+    where u7 { let x7 = 1mm }
+    where u8 { let x8 = 1mm }
+    where u9 { let x9 = 1mm }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchor: x3 must be Undef in cold eval since guard (!u3) is
+    // false when u3=true. Ensures the cross-check above can't silently pass
+    // if both paths are wrong.
+    let x3_id = ValueCellId::new("S", "x3");
+    assert!(
+        matches!(cold_result.values.get(&x3_id), Some(Value::Undef)),
+        "cold eval must deactivate x3 to Undef when guard (!u3) is false with u3=true; \
+         got {:?}",
+        cold_result.values.get(&x3_id)
+    );
+
+    // (c) Performance lock: only group 3 must be re-elaborated in Phase 1 and
+    // Phase 3. The other 9 groups have unchanged guard values (uN=true in both
+    // modules) and must be skipped. Expected total: 1 + 1 = 2.
+    // Without the skip optimization, this counter would be 10 + 10 = 20.
+    assert!(
+        incremental.last_guard_phase_group_evals() <= 2,
+        "expected ≤ 2 non-skipped guard-phase group iterations (1 per phase for the \
+         affected group); got {} — the per-group skip is not working",
+        incremental.last_guard_phase_group_evals()
+    );
+}
