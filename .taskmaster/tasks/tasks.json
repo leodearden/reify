@@ -42596,7 +42596,7 @@
         "description": "`reapply_user_overrides` in `crates/reify-cli/src/mcp_context.rs:169-185` clones the entire `state.user_overrides` Vec on every invocation, then performs N separate `edit_param` calls — each of which clones the snapshot and walks a dirty cone. For a user with many parameters set, every topology-preserving `update_source` now pays O(N × snapshot-clone) work to re-apply overrides sequentially.\n\nTwo options:\n- (a) Iterate `user_overrides` in place by index (split borrows) to avoid the Vec clone.\n- (b) Add a batch-edit API on `Engine` (e.g. `edit_params(impl IntoIterator<...>)`) that applies a set of param changes against a single snapshot revision, amortizing the clone + dirty-cone traversal.\n\nReviewer notes this is not a hot path yet — low priority — but the work compounds with parameter count.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -42608,9 +42608,12 @@
           "modules": [
             "crates/reify-cli/src",
             "crates/reify-eval/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "3d60340159cd2c0f5e486e46901642b0101118dc"
+          }
         },
-        "updatedAt": "2026-04-22T01:44:15.391Z"
+        "updatedAt": "2026-04-22T02:38:04.318Z"
       },
       {
         "id": "2015",
@@ -44810,9 +44813,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:34:25.691Z",
+      "lastModified": "2026-04-22T02:38:04.319Z",
       "taskCount": 2107,
-      "completedCount": 1839,
+      "completedCount": 1840,
       "tags": [
         "master"
       ]
