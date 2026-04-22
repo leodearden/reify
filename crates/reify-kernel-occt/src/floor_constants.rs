@@ -38,7 +38,7 @@ pub(crate) const RUST_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-12;
 /// C++-layer phrasing, isolating Rust-guard assertions from C++ rewording.
 // `build.rs` includes this file via `#[path]` and sees this as dead; allow that.
 #[allow(dead_code)]
-pub(crate) const RUST_GUARD_MARKER: &str = "[rust-guard]";
+pub const RUST_GUARD_MARKER: &str = "[rust-guard]";
 
 /// Rust-layer length guard for `make_line_wire`.
 ///
@@ -114,5 +114,23 @@ mod tests {
                  should return Err, got Ok"
             ),
         }
+    }
+
+    #[test]
+    fn above_floor_passes() {
+        // Derive an above-floor dx so that dist_sq = dx² > RUST_LINE_WIRE_MIN_LENGTH_SQ.
+        // Using 1.1 × floor gives a 10% margin that survives fp round-trip.
+        let above_dx = (1.1 * RUST_LINE_WIRE_MIN_LENGTH_SQ).sqrt();
+        debug_assert!(
+            above_dx * above_dx > RUST_LINE_WIRE_MIN_LENGTH_SQ,
+            "above_dx² must be strictly > RUST_LINE_WIRE_MIN_LENGTH_SQ after fp round-trip"
+        );
+
+        let result = line_segment_rust_guard(above_dx, 0.0, 0.0);
+        assert!(
+            result.is_ok(),
+            "above-floor (1.1 × RUST_LINE_WIRE_MIN_LENGTH_SQ) must not trip the Rust guard, got: {:?}",
+            result
+        );
     }
 }
