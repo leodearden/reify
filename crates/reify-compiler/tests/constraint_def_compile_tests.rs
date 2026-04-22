@@ -1165,3 +1165,62 @@ fn constraint_def_with_prelude_structure_param_type_compiles_cleanly() {
         def.params.len()
     );
 }
+
+// ── Test 20: unknown type error lists acceptable categories ──────────────────
+
+/// A genuinely unknown param type must still produce an error, AND the error
+/// message must list acceptable categories (builtin, type parameter, alias,
+/// enum, trait, structure) so the user knows what IS accepted.
+///
+/// This test asserts:
+///   (i)  an Error-severity diagnostic is emitted whose message starts with
+///        "unknown type '" and contains the bogus name.
+///   (ii) the message mentions at least two of the accepted categories by
+///        lowercase substring — uses an "at least two" check to avoid
+///        over-pinning specific wording.
+///
+/// Fails on the unpatched compiler because the current message is
+/// `"unknown type '{}' in param '{}' of constraint def '{}'"` with no
+/// category listing.
+#[test]
+fn constraint_def_unknown_type_error_lists_acceptable_categories() {
+    let source = r#"
+constraint def Foo {
+    param x: GenuinelyUnknownTypeName
+    x > 0
+}
+"#;
+    let module = compile_source(source);
+    let errors = error_diags(&module.diagnostics);
+
+    // (i) The error must still be emitted and name the bogus type.
+    let unknown_type_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| {
+            d.message.starts_with("unknown type '")
+                && d.message.contains("GenuinelyUnknownTypeName")
+        })
+        .collect();
+    assert_eq!(
+        unknown_type_errors.len(),
+        1,
+        "expected exactly one 'unknown type' error for 'GenuinelyUnknownTypeName', got: {:?}",
+        errors
+    );
+
+    // (ii) The message must list at least two of the accepted categories.
+    let msg = unknown_type_errors[0].message.to_lowercase();
+    let category_keywords = ["builtin", "type parameter", "alias", "enum", "trait", "structure"];
+    let matched: Vec<_> = category_keywords
+        .iter()
+        .filter(|kw| msg.contains(**kw))
+        .collect();
+    assert!(
+        matched.len() >= 2,
+        "expected at least 2 category keywords in the error message, \
+         got {} ({:?}). Full message: {:?}",
+        matched.len(),
+        matched,
+        unknown_type_errors[0].message
+    );
+}
