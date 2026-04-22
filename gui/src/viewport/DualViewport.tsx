@@ -58,6 +58,9 @@ export interface DualViewportProps extends PassthroughProps, RefProps {
 // ---------------------------------------------------------------------------
 
 export function DualViewport(props: DualViewportProps) {
+  // ── Container ref for resize calculations ─────────────────────────────────
+  let containerRef!: HTMLDivElement;
+
   // ── Stable ref proxies ────────────────────────────────────────────────────
   // These closures capture the inner fn registered by the mounted Viewport.
   // They are installed unconditionally at setup time so the parent always
@@ -82,6 +85,14 @@ export function DualViewport(props: DualViewportProps) {
   );
 
 
+  // ── Dual-splitter resize handler ──────────────────────────────────────────
+  function handleDualResize(delta: number) {
+    const h = containerRef?.clientHeight ?? 0;
+    if (h <= 0) return;
+    const current = props.viewportStore.state.splitRatio;
+    props.viewportStore.setSplitRatio(current + delta / h);
+  }
+
   // Label for the def-preview strip
   const defPreviewLabel = createMemo(() => {
     const name = props.defName();
@@ -90,6 +101,7 @@ export function DualViewport(props: DualViewportProps) {
 
   return (
     <div
+      ref={containerRef}
       class={styles.container}
       data-testid={props['data-testid'] ?? 'dual-viewport'}
     >
@@ -127,7 +139,7 @@ export function DualViewport(props: DualViewportProps) {
         <Show when={defPreviewEffective() && designEffective()}>
           <Splitter
             orientation="horizontal"
-            onResize={() => {}}
+            onResize={handleDualResize}
             data-testid="splitter-dual"
           />
         </Show>
