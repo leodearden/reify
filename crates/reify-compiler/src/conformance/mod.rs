@@ -236,7 +236,8 @@ pub(crate) fn check_trait_arg_conformance(
 /// `traits.rs:36`, so a `compile_source`-based rewrite would see 2+ emissions
 /// and break the exact-count assertions.  Relaxing to `any(...)` would lose the
 /// path-specificity that makes these tests load-bearing (they pin that the
-/// `conformance.rs:42` emission site fires in both debug and release builds).
+/// `conformance/checker.rs` emission site in `check_phase_resolve_structure_members`
+/// fires in both debug and release builds).
 ///
 /// **Closest integration-level siblings** that cover the *parser-reachable*
 /// scenarios:

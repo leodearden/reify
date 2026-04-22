@@ -677,8 +677,9 @@ pub(super) fn check_phase_inject_defaults(
                                     if pass2_skipped.contains(name) {
                                         // Deliberate skip: Pass 2 found an annotated
                                         // type already occupying the scope slot and
-                                        // did not cache this expression (see `pass2_skipped`
-                                        // above).  The Param/annotated-Let default will
+                                        // did not cache this expression (see the `pass2_skipped`
+                                        // parameter populated by check_phase_pre_register_default_types).
+                                        // The Param/annotated-Let default will
                                         // inject its own cell; skip Let injection here
                                         // to prevent duplicate (entity, member) cells.
                                         continue;
@@ -689,7 +690,8 @@ pub(super) fn check_phase_inject_defaults(
                                         false,
                                         "unannotated let '{}' has no cached compiled expression \
                                          and is not in pass2_skipped — drift between the \
-                                         pre-register guard and the injection guard in conformance.rs",
+                                         pre-register guard and the injection guard in \
+                                         check_phase_pre_register_default_types / check_phase_inject_defaults",
                                         name
                                     );
                                     diagnostics.push(
@@ -697,7 +699,8 @@ pub(super) fn check_phase_inject_defaults(
                                             "internal error: compiled expression for unannotated \
                                              trait let '{}' was not cached by the pre-register \
                                              pass; this indicates a drift between the pre-register \
-                                             and injection guards in conformance.rs",
+                                             and injection guards in \
+                                             check_phase_pre_register_default_types / check_phase_inject_defaults",
                                             name
                                         ))
                                         .with_label(
@@ -724,9 +727,9 @@ pub(super) fn check_phase_inject_defaults(
                     // throughout type checking (type_compat.rs:81), so accepting it here
                     // matches the rest of the compiler instead of being stricter at this
                     // one site.  See task 1834 esc-1834-58 for the trade-off; the
-                    // requirement-vs-member sites at lines 268/293 keep the stricter
-                    // `implicitly_converts_to` because they compare two annotated types
-                    // (no Int-literal source).
+                    // requirement-vs-member sites inside `check_phase_check_members_against_requirements`
+                    // keep the stricter `implicitly_converts_to` because they compare two
+                    // annotated types (no Int-literal source).
                     if let Some(annotation_ty) = cell_type
                         && !type_compatible(annotation_ty, &compiled_expr.result_type)
                     {
@@ -740,8 +743,8 @@ pub(super) fn check_phase_inject_defaults(
                     }
 
                     // Annotation is authoritative on the injected cell type when present
-                    // (matches the scope pre-registration at ~line 167 which also
-                    // prefers the annotation over the inferred expression type).
+                    // (matches the scope pre-registration in check_phase_pre_register_default_types
+                    // (Pass 1) which also prefers the annotation over the inferred expression type).
                     // Fall back to the inferred expression type only when there
                     // is no annotation.
                     let injected_cell_type = cell_type
