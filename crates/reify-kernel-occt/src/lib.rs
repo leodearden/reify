@@ -2709,11 +2709,19 @@ mod tests {
             })
             .unwrap();
 
-        // Query volume — should be positive
+        // Query volume — should fall between the smallest-enclosing cylinder
+        // (π·r_min²·h_total = π·16·30 ≈ 1508) and the largest-enclosing
+        // cylinder (π·r_max²·h_total = π·100·30 ≈ 9425). Expected OCCT result
+        // for this four-circle frustum stack is ≈ 4900, comfortably inside.
+        // Pattern mirrors loft_two_different_circles_cone_like (task-383 S4c).
         let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
-                assert!(v > 0.0, "loft volume should be positive, got {v}");
+                assert!(
+                    v > 1508.0 && v < 9425.0,
+                    "loft frustum volume should be between 1508 (smallest cylinder) \
+                     and 9425 (largest cylinder), got {v}"
+                );
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
