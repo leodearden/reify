@@ -25337,7 +25337,11 @@
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs"
+          ],
           "bundled_from": [
             "1164",
             "1165"
