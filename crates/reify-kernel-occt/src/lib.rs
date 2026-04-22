@@ -4700,7 +4700,14 @@ mod tests {
 
         // Below-floor case: dist_sq = 0.9 × RUST_LINE_WIRE_MIN_LENGTH_SQ.
         // The Rust guard must fire and return the Rust-layer error signature.
+        // below_dx is derived via sqrt so that dist_sq stays expressed in terms of the
+        // constant; the debug_assert below verifies the fp round-trip didn't drift across
+        // the boundary (safe with a 10 % margin, but worth documenting for future tightening).
         let below_dx = (0.9 * crate::RUST_LINE_WIRE_MIN_LENGTH_SQ).sqrt();
+        debug_assert!(
+            below_dx * below_dx < crate::RUST_LINE_WIRE_MIN_LENGTH_SQ,
+            "below_dx² must be strictly < RUST_LINE_WIRE_MIN_LENGTH_SQ after fp round-trip"
+        );
         let mut kernel = OcctKernel::new();
         let below_result = kernel.execute(&GeometryOp::LineSegment {
             x1: 0.0, y1: 0.0, z1: 0.0,
@@ -4729,6 +4736,10 @@ mod tests {
         // Above-floor case: dist_sq = 1.1 × RUST_LINE_WIRE_MIN_LENGTH_SQ.
         // The Rust guard must NOT fire; any error here is from the C++ layer.
         let above_dx = (1.1 * crate::RUST_LINE_WIRE_MIN_LENGTH_SQ).sqrt();
+        debug_assert!(
+            above_dx * above_dx > crate::RUST_LINE_WIRE_MIN_LENGTH_SQ,
+            "above_dx² must be strictly > RUST_LINE_WIRE_MIN_LENGTH_SQ after fp round-trip"
+        );
         let mut kernel = OcctKernel::new();
         let above_result = kernel.execute(&GeometryOp::LineSegment {
             x1: 0.0, y1: 0.0, z1: 0.0,
@@ -4737,6 +4748,14 @@ mod tests {
         match above_result {
             Err(GeometryError::OperationFailed(msg)) => {
                 let lower = msg.to_lowercase();
+                // NOTE: this assertion depends implicitly on the C++ layer's current rejection
+                // wording: "make_line_wire: start and end points must be distinct"
+                // (cpp/occt_wrapper.cpp). If the C++ message is ever reworded to include
+                // "coincident" or "zero length" (e.g. "coincident endpoints", "zero-length
+                // segment"), this test will produce a false negative even though the Rust guard
+                // is functioning correctly — update the sentinel words here to stay distinct from
+                // any new C++ phrasing, or introduce a Rust-side marker in the OperationFailed
+                // message at lib.rs:694-695 to remove this implicit coupling entirely.
                 assert!(
                     !lower.contains("coincident") && !lower.contains("zero length"),
                     "above-floor case must not trigger the Rust guard; \
