@@ -25331,7 +25331,7 @@
         "description": "Consolidates pragma validation consolidation with context-aware diagnostics, module-level pragma inclusion in CompiledModule content_hash, and missing pragma test coverage (occurrences and #no_prelude storage).",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 1163 plus 2 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 1163: Consolidate pragma validation and add context-aware diagnostics\n\n\nTwo related improvements to pragma validation in the compiler:\n\n1. **Use `_context` parameter in `validate_pragmas`** (lib.rs:4732-4746): The `_context` parameter is accepted but never read. Unlike `validate_annotations` which uses context for context-specific warnings, `validate_pragmas` only does name-lookup. Use the context to provide better diagnostics (e.g., \"#no_prelude is only valid at module level\" when found on a block).\n\n2. **Consolidate known pragma name lists** (lib.rs:3905 and 4737): `KNOWN_MODULE_PRAGMAS` (5 entries) and `KNOWN_BLOCK_PRAGMAS` (3 entries, a subset) are defined independently with no compiler-enforced link. Extract to a shared location or add cross-references.\n\nMemory hints: search for \"pragma validation\" and \"known pragma names\" in reify-compiler.\n\n### Absorbed from task 1164: Include module-level pragmas in CompiledModule content hash\nThe content hash computation for CompiledModule (lib.rs:4530-4552) does not include module-level pragmas. If pragmas like `#precision(value=64)` are semantically meaningful for downstream compilation (solver config, numeric precision), a change to pragmas alone won't invalidate cached content hashes, risking stale results in incremental compilation.\n\nEither:\n- Hash the pragmas vector into `all_hashes` if they affect semantics, OR\n- Document that pragmas are intentionally excluded from the content hash if they are purely advisory/metadata.\n\nMemory hints: search for \"content hash\" and \"CompiledModule\" in reify-compiler. Check task 12 for content-hash caching context.\n\n### Absorbed from task 1165: Add missing pragma test coverage: occurrences and #no_prelude storage\nTwo test coverage gaps in pragma_compile_tests.rs:\n\n1. **Occurrence-level pragmas untested**: Tests cover pragma propagation for structures, traits, and purposes, but not occurrences. The `From<&'a OccurrenceDef>` → `EntityDefRef` conversion path that carries pragmas is untested. Add a test like `occurrence_pragma_propagated_to_topology_template`.\n\n2. **#no_prelude not verified in CompiledModule.pragmas**: Existing tests verify the behavioral effect (suppressing stdlib units) but not that `#no_prelude` itself appears in `module.pragmas`. Add an assertion like `module.pragmas.iter().any(|p| p.name == \"no_prelude\")` to `no_prelude_simple_structure_compiles_clean` or a new test.\n\nBoth are low-risk (shared code paths / behavioral coverage exists) but worth closing.\n\nMemory hints: search for \"pragma compile tests\" and \"EntityDefRef\" in reify-compiler.\n",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -25349,7 +25349,7 @@
           "bundled_at": "2026-04-11",
           "bundle_key": "F"
         },
-        "updatedAt": "2026-04-22T10:01:22.829Z"
+        "updatedAt": "2026-04-22T10:08:39.665Z"
       },
       {
         "id": "1164",
@@ -39900,13 +39900,13 @@
         "description": "The `inferred_let_exprs.get(name)` fallback inside the `available_defaults` builder in `crates/reify-compiler/src/conformance.rs:246-251` (task 1834 step-8) currently has no observable end-to-end coverage: `RequirementKind::Let` is unreachable from source because the parser's `lower_let` rejects `let x : T` without a value (documented in `let_with_type_and_no_value_parses_as_empty_trait`). That makes the entire inferred-type → `AvailableDefaultKind::Let` lookup path effectively dormant, so a future regression — e.g., breaking the cache population in the pre-register pass — would not be caught by any source-driven test.\n\nAdd an in-crate (`#[cfg(test)] mod tests` inside `conformance.rs`, since `MergeContext`, `TraitRequirement`, and `TraitDefault` are `pub(crate)`) unit test that calls `check_trait_conformance` with a manually-constructed `ctx.requirements` containing a `RequirementKind::Let(expected_ty)` and a sibling unannotated `DefaultKind::Let { cell_type: None, .. }`. Assert the inferred type from the let's expression satisfies the requirement (no diagnostics).\n\nA second negative case (inferred type incompatible with `expected_ty`) would also pin the `Some(default_type) => type-mismatch diagnostic` branch around line 297-309.\n\nOrigin: esc-1834-67 review suggestion #1 from reviewer_comprehensive (task 1834). Triaged as a follow-up rather than folded into 1834 because it requires an in-crate test module that doesn't exist yet — out of scope for the original task but worth pinning before a future parser change inadvertently surfaces `RequirementKind::Let` from source.\n\nMemory hints: search \"DefaultKind Let cell_type conformance scope registration\", \"MergeContext available_defaults\", entities: DefaultKind, RequirementKind, check_trait_conformance, MergeContext.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1834"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:33.833Z",
+        "updatedAt": "2026-04-22T10:08:39.881Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -39915,7 +39915,9 @@
             ]
           },
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/conformance.rs"
+          ]
         }
       },
       {
@@ -45420,14 +45422,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:08:00.927Z",
-      "taskCount": 2140,
+      "lastModified": "2026-04-22T10:08:39.881Z",
+      "taskCount": 2139,
       "completedCount": 1874,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T10:08:03.409Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
