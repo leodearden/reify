@@ -44832,11 +44832,11 @@
         "description": "`crates/reify-compiler/src/types.rs:454-461` — the doc comment on `RealizationDecl.name` says `None for anonymous realizations that have no direct let-binding (e.g. intermediate guarded-group params without a user-visible name)`, but after Task 2011 all three compile-time call sites in `entity.rs` (lines 1345, 1371, 1887 — including the guarded-geometry path) populate `Some(param.name.clone())`. The only production of `name: None` is the `TopologyTemplateBuilder::realization()` test-support helper.\n\nOptions: (a) rewrite the doc to say `Some(...)` for every let-binding/named param emitted by the compiler; `None` is only produced by test scaffolding. (b) If a legitimate compile-time `None` case exists, add it back in entity.rs; otherwise narrow the type to `String` once test-support is updated.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:08:49.651Z",
+        "updatedAt": "2026-04-22T11:55:32.702Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/types.rs"
@@ -44866,11 +44866,11 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:253-257` — on an unknown `Sub(name)` lookup the error message is `unresolvable GeomRef::Sub('{name}') — no such named sub-reference in scope`. This is surfaced via `Diagnostic::error(format!(\"failed to compile geometry operation: {}\", err))` with no source span (the caller uses `SourceSpan::new(0,0)` everywhere upstream), so a user with a typo in `difference(body, hoel)` gets no indication of which file/line.\n\nNot specific to `Sub(name)` — all surrounding diagnostics share the same span-less shape. Fix: thread the realization's `span` into `execute_realization_ops` so per-op diagnostics can carry a span. Self-acknowledged follow-up from Task 2011 review (reviewer explicitly marked it out of scope).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:12:28.445Z",
+        "updatedAt": "2026-04-22T11:55:32.829Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -44885,13 +44885,13 @@
         "description": "Implement a NaN-safe guard for the start-tangent magnitude in the Pipe kernel as suggested in a previous code review.",
         "details": "In the file `crates/reify-kernel-occt/src/lib.rs`, around lines 588-591, add a check to ensure that the start-tangent magnitude is not NaN. This involves modifying the existing logic to include a conditional statement that verifies the magnitude is a valid number before proceeding with further calculations. Use Rust's `f32::is_nan()` or `f64::is_nan()` method to perform this check, depending on the data type used. If a NaN is detected, handle it gracefully by either setting a default value or logging an error, based on the existing error handling strategy in the module.",
         "testStrategy": "1. Write unit tests to simulate scenarios where the start-tangent magnitude could be NaN and verify that the guard correctly identifies and handles these cases. 2. Ensure that the tests cover both valid and invalid inputs, confirming that valid inputs are processed normally. 3. Run the full test suite to ensure no regressions are introduced by this change.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2095"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T03:00:47.679Z",
+        "updatedAt": "2026-04-22T11:55:32.951Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:32.578Z",
+      "lastModified": "2026-04-22T11:55:32.951Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
