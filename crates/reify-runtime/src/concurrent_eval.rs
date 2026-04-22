@@ -556,7 +556,7 @@ pub async fn edit_check_concurrent(
                 result
                     .snapshot_values
                     .get(id)
-                    .map_or(false, |(sv, _)| sv == val)
+                    .is_some_and(|(sv, _)| sv == val)
             }),
         "edit_param_concurrent invariant violated: values and snapshot_values have inconsistent keys or values"
     );
