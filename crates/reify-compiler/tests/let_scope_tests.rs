@@ -1,8 +1,9 @@
 //! Tests for let-binding scope resolution, especially geometry lets.
 
-use reify_compiler::{BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind,
-                     PrimitiveKind, RealizationDecl, SweepKind, TopologyTemplate,
-                     TransformKind};
+use reify_compiler::{
+    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
+    RealizationDecl, SweepKind, TopologyTemplate, TransformKind,
+};
 use reify_test_support::{compile_source, parse_and_compile};
 use reify_types::Severity;
 
@@ -88,9 +89,27 @@ enum ExpectedOp {
 
 fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
     match (actual, expected) {
-        (CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }, ExpectedOp::Cylinder) => true,
-        (CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }, ExpectedOp::Sphere) => true,
-        (CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }, ExpectedOp::Box_) => true,
+        (
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Cylinder,
+                ..
+            },
+            ExpectedOp::Cylinder,
+        ) => true,
+        (
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Sphere,
+                ..
+            },
+            ExpectedOp::Sphere,
+        ) => true,
+        (
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                ..
+            },
+            ExpectedOp::Box_,
+        ) => true,
         (
             CompiledGeometryOp::Boolean {
                 op: BooleanOp::Difference,
@@ -116,31 +135,38 @@ fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
             ExpectedOp::BoolIntersect(el, er),
         ) => l == el && r == er,
         (
-            CompiledGeometryOp::Transform { kind, target: GeomRef::Step(t), .. },
+            CompiledGeometryOp::Transform {
+                kind,
+                target: GeomRef::Step(t),
+                ..
+            },
             ExpectedOp::Transform(ek, es),
         ) => kind == ek && t == es,
         (
-            CompiledGeometryOp::Pattern { kind, target: GeomRef::Step(t), .. },
+            CompiledGeometryOp::Pattern {
+                kind,
+                target: GeomRef::Step(t),
+                ..
+            },
             ExpectedOp::Pattern(ek, es),
         ) => kind == ek && t == es,
-        (
-            CompiledGeometryOp::Sweep { kind, profiles, .. },
-            ExpectedOp::Sweep(ek, ep),
-        ) => {
+        (CompiledGeometryOp::Sweep { kind, profiles, .. }, ExpectedOp::Sweep(ek, ep)) => {
             kind == ek
                 && profiles.len() == ep.len()
-                && profiles.iter().zip(ep.iter()).all(|(p, &es)| {
-                    matches!(p, GeomRef::Step(s) if *s == es)
-                })
+                && profiles
+                    .iter()
+                    .zip(ep.iter())
+                    .all(|(p, &es)| matches!(p, GeomRef::Step(s) if *s == es))
         }
         (
-            CompiledGeometryOp::Modify { kind, target: GeomRef::Step(t), .. },
+            CompiledGeometryOp::Modify {
+                kind,
+                target: GeomRef::Step(t),
+                ..
+            },
             ExpectedOp::Modify(ek, es),
         ) => kind == ek && t == es,
-        (
-            CompiledGeometryOp::Curve { kind, .. },
-            ExpectedOp::Curve(ek),
-        ) => kind == ek,
+        (CompiledGeometryOp::Curve { kind, .. }, ExpectedOp::Curve(ek)) => kind == ek,
         _ => false,
     }
 }
@@ -182,10 +208,12 @@ fn realization_named<'a>(
         names.len(),
         template.realizations.len()
     );
-    let idx = names
-        .iter()
-        .position(|&n| n == target)
-        .unwrap_or_else(|| panic!("geometry let '{}' not found in names list {:?}", target, names));
+    let idx = names.iter().position(|&n| n == target).unwrap_or_else(|| {
+        panic!(
+            "geometry let '{}' not found in names list {:?}",
+            target, names
+        )
+    });
     &template.realizations[idx]
 }
 
@@ -234,7 +262,6 @@ fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_ty
         .filter(|d| d.severity == Severity::Error)
         .collect()
 }
-
 
 // ─── step-1: geometry let should be in scope for subsequent let ───
 
@@ -366,9 +393,9 @@ fn non_geometry_let_in_boolean_op_errors() {
         "expected error diagnostic when non-geometry let used in boolean op"
     );
     assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("argument 1 must be a geometry expression")),
+        errors.iter().any(|d| d
+            .message
+            .contains("argument 1 must be a geometry expression")),
         "expected 'argument 1 must be a geometry expression' error, got: {:?}",
         errors
     );
@@ -460,8 +487,7 @@ fn nested_boolean_ops_verify_step_indices() {
     // Source shared with nested_boolean_ops_with_let_args.
     let compiled = compile_no_errors(SRC_NESTED_BOOLEAN_OPS);
     let template = &compiled.templates[0];
-    let realization =
-        realization_named(template, &["a", "b", "combined", "c", "result"], "result");
+    let realization = realization_named(template, &["a", "b", "combined", "c", "result"], "result");
     assert_op_sequence(
         &realization.operations,
         &[
@@ -1394,8 +1420,7 @@ fn chained_ident_alias_transitive() {
         "expected 4 realizations (a, b, c, result), got {}",
         template.realizations.len()
     );
-    let result_real =
-        realization_named(template, &["a", "b", "c", "result"], "result");
+    let result_real = realization_named(template, &["a", "b", "c", "result"], "result");
     assert_op_sequence(
         &result_real.operations,
         &[
@@ -1419,7 +1444,10 @@ fn ident_alias_not_a_value_cell() {
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
     assert!(
-        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        !template
+            .value_cells
+            .iter()
+            .any(|vc| vc.id.member == "alias"),
         "geometry-let ident alias 'alias' should NOT be a value cell, but found one"
     );
     assert!(
@@ -1464,8 +1492,7 @@ fn ident_alias_with_transform() {
         "expected 3 realizations (body, alias, result), got {}",
         template.realizations.len()
     );
-    let result_real =
-        realization_named(template, &["body", "alias", "result"], "result");
+    let result_real = realization_named(template, &["body", "alias", "result"], "result");
     assert_op_sequence(
         &result_real.operations,
         &[
@@ -1501,7 +1528,10 @@ fn ident_alias_scope_type_is_geometry() {
     );
     // (2) `alias` itself must NOT appear as a value cell.
     assert!(
-        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        !template
+            .value_cells
+            .iter()
+            .any(|vc| vc.id.member == "alias"),
         "alias should NOT be a value cell (it has Type::Geometry)"
     );
     // (3) `x = alias + 1` is NOT a geometry let, so x must be a value cell.
@@ -1544,7 +1574,10 @@ fn ident_alias_in_guarded_group_documents_current_behavior() {
     );
     // `alias` must NOT appear as a value cell (the pass-2 geometry-let skip applies).
     assert!(
-        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        !template
+            .value_cells
+            .iter()
+            .any(|vc| vc.id.member == "alias"),
         "alias inside guarded block should NOT be a value cell"
     );
 }

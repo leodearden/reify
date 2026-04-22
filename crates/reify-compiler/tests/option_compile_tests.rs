@@ -10,7 +10,11 @@ use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
 /// Helper: compile source, return the first topology template and diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<reify_types::Diagnostic>) {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let template = compiled
         .templates
@@ -22,12 +26,13 @@ fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<reify_types::D
 
 /// Helper: compile source and extract the value cell named `cell_name`'s default_expr.
 /// Panics if there are errors or the cell is missing.
-fn compile_and_get_expr(
-    source: &str,
-    cell_name: &str,
-) -> reify_types::CompiledExpr {
+fn compile_and_get_expr(source: &str, cell_name: &str) -> reify_types::CompiledExpr {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -36,7 +41,11 @@ fn compile_and_get_expr(
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let cell = template
@@ -54,7 +63,11 @@ fn compile_and_get_expr(
 /// Helper: compile source and expect diagnostics (errors allowed). Returns compiled module.
 fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -64,8 +77,7 @@ fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
 fn assert_option_none(member: &ValueCellDecl, inner_type: Type, label: &str) {
     let option_type = Type::Option(Box::new(inner_type));
     assert_eq!(
-        member.cell_type,
-        option_type,
+        member.cell_type, option_type,
         "{label}: cell_type should be Option<{option_type:?}>, got {:?}",
         member.cell_type
     );
@@ -74,8 +86,7 @@ fn assert_option_none(member: &ValueCellDecl, inner_type: Type, label: &str) {
         .as_ref()
         .unwrap_or_else(|| panic!("{label}: member should have a default_expr"));
     assert_eq!(
-        default.result_type,
-        option_type,
+        default.result_type, option_type,
         "{label}: default_expr.result_type should be Option<{option_type:?}>, got {:?}",
         default.result_type
     );
@@ -164,7 +175,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -173,7 +188,11 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let cell = template
@@ -223,7 +242,10 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected an error for some() with 0 args");
+    assert!(
+        !errors.is_empty(),
+        "expected an error for some() with 0 args"
+    );
     let msg = &errors[0].message;
     assert!(
         msg.contains("some") && (msg.contains("1") || msg.contains("argument")),
@@ -246,7 +268,10 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected an error for some(1, 2) with 2 args");
+    assert!(
+        !errors.is_empty(),
+        "expected an error for some(1, 2) with 2 args"
+    );
 }
 
 /// step-8c: nested some(some(42)) → OptionSome(OptionSome(Literal(42))) with type Option<Option<Int>>.
@@ -334,7 +359,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -343,7 +372,11 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no errors for `let x = none`, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for `let x = none`, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let cell = template
@@ -404,7 +437,13 @@ structure def S {
         .find(|m| m.id.member == "p.x")
         .expect("should have port member 'p.x'");
 
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port param");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "port param",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +484,13 @@ structure def S {
         .find(|m| m.id.member == "p.y")
         .expect("should have port member 'p.y'");
 
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port let");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "port let",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -474,11 +519,7 @@ structure S {
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    assert_eq!(
-        template.guarded_groups.len(),
-        1,
-        "expected 1 guarded group"
-    );
+    assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
     let group: &CompiledGuardedGroup = &template.guarded_groups[0];
 
     let member = group
@@ -487,7 +528,13 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have guarded member 'x'");
 
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded param");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "guarded param",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -516,11 +563,7 @@ structure S {
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    assert_eq!(
-        template.guarded_groups.len(),
-        1,
-        "expected 1 guarded group"
-    );
+    assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
     let group: &CompiledGuardedGroup = &template.guarded_groups[0];
 
     let member = group
@@ -529,7 +572,13 @@ structure S {
         .find(|m| m.id.member == "y")
         .expect("should have guarded member 'y'");
 
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded let");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "guarded let",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -577,7 +626,13 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have nested guarded member 'x'");
 
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "nested guarded param");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "nested guarded param",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -611,11 +666,7 @@ structure S {
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    assert_eq!(
-        template.guarded_groups.len(),
-        1,
-        "expected 1 guarded group"
-    );
+    assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
     let group: &CompiledGuardedGroup = &template.guarded_groups[0];
 
     let member = group
@@ -625,7 +676,13 @@ structure S {
         .expect("should have guarded member 'x'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded param (alias)");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "guarded param (alias)",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -675,7 +732,13 @@ structure def S {
         .expect("should have port member 'p.x'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port param (alias)");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "port param (alias)",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -725,7 +788,13 @@ structure def S {
         .expect("should have port member 'p.y'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port let (alias)");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "port let (alias)",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -762,11 +831,7 @@ structure S {
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    assert_eq!(
-        template.guarded_groups.len(),
-        1,
-        "expected 1 guarded group"
-    );
+    assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
     let group: &CompiledGuardedGroup = &template.guarded_groups[0];
 
     let member = group
@@ -776,7 +841,13 @@ structure S {
         .expect("should have guarded member 'y'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded let (alias)");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "guarded let (alias)",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -806,11 +877,7 @@ structure S {
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    assert_eq!(
-        template.guarded_groups.len(),
-        1,
-        "expected 1 guarded group"
-    );
+    assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
     let group: &CompiledGuardedGroup = &template.guarded_groups[0];
 
     let member = group
@@ -819,5 +886,11 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have else-branch guarded member 'x'");
 
-    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "else-branch guarded param");
+    assert_option_none(
+        member,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "else-branch guarded param",
+    );
 }

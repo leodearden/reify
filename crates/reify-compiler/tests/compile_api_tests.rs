@@ -97,8 +97,7 @@ fn compile_linear_pattern_2d_produces_realization() {
     param w: Scalar = 10mm
     let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20, 0, 1, 0, 4, 30)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat2d"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat2d"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -143,16 +142,14 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
     param w: Scalar = 10mm
     let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat2d_err"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat2d_err"));
     assert!(parsed.errors.is_empty());
     let compiled = compile(&parsed);
     assert!(
         compiled
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("linear_pattern_2d")
-                && d.message.contains("11 arguments")),
+            .any(|d| d.message.contains("linear_pattern_2d") && d.message.contains("11 arguments")),
         "expected arity diagnostic, got: {:?}",
         compiled.diagnostics
     );
@@ -165,8 +162,7 @@ fn compile_arbitrary_pattern_produces_realization() {
     param w: Scalar = 10mm
     let pattern = arbitrary_pattern(w, 10, 0, 0, 0, 20, 0)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -210,8 +206,7 @@ fn compile_arbitrary_pattern_too_few_args_produces_diagnostic() {
     param w: Scalar = 10mm
     let pattern = arbitrary_pattern(w, 10, 0)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat_err1"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat_err1"));
     assert!(parsed.errors.is_empty());
     let compiled = compile(&parsed);
     assert!(
@@ -231,8 +226,7 @@ fn compile_arbitrary_pattern_non_triple_args_produces_diagnostic() {
     param w: Scalar = 10mm
     let pattern = arbitrary_pattern(w, 10, 0, 0, 5, 0)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat_err2"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat_err2"));
     assert!(parsed.errors.is_empty());
     let compiled = compile(&parsed);
     assert!(
@@ -494,8 +488,7 @@ fn compile_nested_boolean_produces_five_ops() {
     let source = r#"structure S {
     let r = union(difference(box(20mm, 20mm, 20mm), cylinder(5mm, 20mm)), sphere(10mm))
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_nested_bool"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_nested_bool"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -579,8 +572,7 @@ fn compile_union_wrong_arity_emits_diagnostic() {
     let source = r#"structure S {
     let r = union(box(10mm, 10mm, 10mm))
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_union_arity"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_arity"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -840,7 +832,12 @@ fn compile_sweep_produces_sweep_kind() {
     );
     let ops = &template.realizations[0].operations;
     // Expected: [0]=Primitive(Sphere), [1]=Curve(LineSegment), [2]=Sweep(Sweep)
-    assert_eq!(ops.len(), 3, "expected 3 ops (sphere + line_segment + sweep), got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        3,
+        "expected 3 ops (sphere + line_segment + sweep), got {}",
+        ops.len()
+    );
     let op = &ops[2];
     assert!(
         matches!(
@@ -861,8 +858,16 @@ fn compile_sweep_produces_sweep_kind() {
             "sweep should have 2 profiles (profile + path), got {}",
             profiles.len()
         );
-        assert_eq!(profiles[0], GeomRef::Step(0), "profile should point to Step(0) (sphere)");
-        assert_eq!(profiles[1], GeomRef::Step(1), "path should point to Step(1) (line_segment)");
+        assert_eq!(
+            profiles[0],
+            GeomRef::Step(0),
+            "profile should point to Step(0) (sphere)"
+        );
+        assert_eq!(
+            profiles[1],
+            GeomRef::Step(1),
+            "path should point to Step(1) (line_segment)"
+        );
     }
 }
 
@@ -928,7 +933,10 @@ fn compile_sweep_rejects_three_args() {
             })
         })
     });
-    assert!(!has_sweep, "no Sweep(Sweep) op should be produced for 3-arg sweep call");
+    assert!(
+        !has_sweep,
+        "no Sweep(Sweep) op should be produced for 3-arg sweep call"
+    );
 }
 
 #[test]
@@ -938,8 +946,15 @@ fn compile_sweep_emits_empty_args() {
     let source = r#"structure S {
     let result = sweep(sphere(5mm), line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_empty_args"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("test_sweep_empty_args"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = compile(&parsed);
     assert!(
         compiled.diagnostics.is_empty(),
@@ -991,7 +1006,12 @@ fn compile_tube_produces_primitive_tube_kind() {
         "expected 1 realization for tube call"
     );
     let ops = &template.realizations[0].operations;
-    assert_eq!(ops.len(), 1, "expected exactly 1 op (Tube primitive), got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected exactly 1 op (Tube primitive), got {}",
+        ops.len()
+    );
     match &ops[0] {
         CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Tube,
@@ -1088,7 +1108,11 @@ fn compile_pipe_produces_sweep_pipe_kind_with_path_ref() {
             args,
         } => {
             assert_eq!(profiles.len(), 1, "pipe should have 1 profile (path)");
-            assert_eq!(profiles[0], GeomRef::Step(0), "path should point to Step(0)");
+            assert_eq!(
+                profiles[0],
+                GeomRef::Step(0),
+                "path should point to Step(0)"
+            );
             // task-383 S6: path was an inert placeholder; only radius remains in args
             assert_eq!(args.len(), 1, "pipe should have 1 named arg (radius only)");
             assert_eq!(args[0].0, "radius", "arg[0] should be radius");
@@ -1104,8 +1128,15 @@ fn compile_pipe_omits_path_placeholder() {
     let source = r#"structure S {
     let r = pipe(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm), 2mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_pipe_no_path_arg"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("test_pipe_no_path_arg"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = compile(&parsed);
     assert!(
         compiled.diagnostics.is_empty(),
@@ -1125,7 +1156,11 @@ fn compile_pipe_omits_path_placeholder() {
                 "pipe args should contain only 'radius', got {:?}",
                 args.iter().map(|(k, _)| k).collect::<Vec<_>>()
             );
-            assert_eq!(args[0].0, "radius", "sole arg should be 'radius', got {:?}", args[0].0);
+            assert_eq!(
+                args[0].0, "radius",
+                "sole arg should be 'radius', got {:?}",
+                args[0].0
+            );
         }
         other => panic!("expected Sweep{{Pipe}} at ops[1], got {:?}", other),
     }
@@ -1138,8 +1173,15 @@ fn compile_sweep_guided_emits_empty_args() {
     let source = r#"structure S {
     let result = sweep_guided(sphere(5mm), sphere(3mm), sphere(2mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_guided_empty_args"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("test_sweep_guided_empty_args"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = compile(&parsed);
     assert!(
         compiled.diagnostics.is_empty(),
@@ -1208,8 +1250,7 @@ structure S {
     param p: Scalar = 5mm
     let result = scale(p, 2)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_shadow_scale"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_shadow_scale"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1256,8 +1297,7 @@ fn compile_rotate_wrong_arg_count() {
     param p: Scalar = 5mm
     let result = rotate(p, p)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate_bad"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate_bad"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1357,8 +1397,7 @@ fn compile_rotate_arg_ordering() {
     param p: Scalar = 5mm
     let result = rotate(p, p, p, p, p)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate_args"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate_args"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1383,8 +1422,7 @@ fn compile_scale_arg_ordering() {
     param p: Scalar = 5mm
     let result = scale(p, p)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_scale_args"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_scale_args"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1455,10 +1493,21 @@ fn loft_nested_in_union_correct_step_refs() {
     assert_eq!(template.realizations.len(), 1, "expected 1 realization");
     // ops layout: [0]=box, [1]=loft, [2]=Boolean(Union, Step(0), Step(1))
     let ops = &template.realizations[0].operations;
-    assert_eq!(ops.len(), 3, "expected 3 ops (box + loft + union), got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        3,
+        "expected 3 ops (box + loft + union), got {}",
+        ops.len()
+    );
     // ops[0] must be the Box primitive.
     assert!(
-        matches!(&ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+        matches!(
+            &ops[0],
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                ..
+            }
+        ),
         "expected ops[0] to be a Box primitive, got {:?}",
         ops[0]
     );
@@ -1491,18 +1540,41 @@ fn compile_boolean_op_union_via_compile() {
     let a = union(sphere(1), cylinder(1, 2))
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bool_union"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = compile(&parsed);
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
     let ops = &template.realizations[0].operations;
     // Expected: Primitive(Sphere), Primitive(Cylinder), Boolean{Union, Step(0), Step(1)}
     assert_eq!(ops.len(), 3, "expected 3 ops, got {}: {:?}", ops.len(), ops);
-    assert!(matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
-    assert!(matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }));
+    assert!(matches!(
+        ops[0],
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Sphere,
+            ..
+        }
+    ));
+    assert!(matches!(
+        ops[1],
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Cylinder,
+            ..
+        }
+    ));
     match &ops[2] {
-        CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(0), right: GeomRef::Step(1) } => {}
-        other => panic!("expected Boolean{{Union, Step(0), Step(1)}}, got {:?}", other),
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        } => {}
+        other => panic!(
+            "expected Boolean{{Union, Step(0), Step(1)}}, got {:?}",
+            other
+        ),
     }
 }
 
@@ -1511,17 +1583,54 @@ fn compile_boolean_op_union_all_via_compile() {
     let source = r#"structure S {
     let a = union_all(sphere(1), sphere(2), sphere(3))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bool_union_all"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("test_bool_union_all"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = compile(&parsed);
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
     let ops = &template.realizations[0].operations;
     // Expected left-fold: Sphere(0), Sphere(1), Boolean{Union,0,1}(2), Sphere(3), Boolean{Union,2,3}(4)
     assert_eq!(ops.len(), 5, "expected 5 ops, got {}: {:?}", ops.len(), ops);
-    assert!(matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
-    assert!(matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
-    assert!(matches!(ops[2], CompiledGeometryOp::Boolean { op: BooleanOp::Union, .. }));
-    assert!(matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
-    assert!(matches!(ops[4], CompiledGeometryOp::Boolean { op: BooleanOp::Union, .. }));
+    assert!(matches!(
+        ops[0],
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Sphere,
+            ..
+        }
+    ));
+    assert!(matches!(
+        ops[1],
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Sphere,
+            ..
+        }
+    ));
+    assert!(matches!(
+        ops[2],
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            ..
+        }
+    ));
+    assert!(matches!(
+        ops[3],
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Sphere,
+            ..
+        }
+    ));
+    assert!(matches!(
+        ops[4],
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            ..
+        }
+    ));
 }

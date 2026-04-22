@@ -36,10 +36,8 @@ pub(crate) fn phase_units(
                 // Detect cross-prelude collision before overwriting: if another
                 // prelude module already seeded this unit name, emit a warning.
                 if let Some(existing) = ctx.unit_registry.lookup(&cu.name) {
-                    let first_module: &str = existing
-                        .source_module
-                        .as_deref()
-                        .unwrap_or("<unknown>");
+                    let first_module: &str =
+                        existing.source_module.as_deref().unwrap_or("<unknown>");
                     ctx.diagnostics.push(
                         Diagnostic::warning(format!(
                             "prelude unit '{}' declared in both '{}' and '{}'; last-wins",

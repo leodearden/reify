@@ -147,7 +147,10 @@ fn deprecated_sub_resolves_members_and_emits_warning() {
                 id.member
             );
         }
-        other => panic!("expected CompiledExprKind::ValueRef for 'd', got {:?}", other),
+        other => panic!(
+            "expected CompiledExprKind::ValueRef for 'd', got {:?}",
+            other
+        ),
     }
     assert_eq!(
         d_expr.result_type,

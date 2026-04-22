@@ -13,7 +13,7 @@
 //! 10. Block-level guards satisfy termination requirement.
 
 use reify_compiler::*;
-use reify_test_support::{compile_source, compile_first_template};
+use reify_test_support::{compile_first_template, compile_source};
 use reify_types::*;
 
 /// Helper: compile and destructure into templates + diagnostics.
@@ -442,7 +442,8 @@ structure S {
     // termination check piling on.
     let guard_ref_error = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("guard") && (msg.contains("param") || msg.contains("int") || msg.contains("bool"))
+        msg.contains("guard")
+            && (msg.contains("param") || msg.contains("int") || msg.contains("bool"))
     });
     assert!(
         !guard_ref_error,

@@ -24290,7 +24290,7 @@
         "id": "1108",
         "title": "Clean up stale/fragile comments from task 1083 (OptionNone let-binding fixup)",
         "description": "Stale doc-comment cleanup in crates/reify-compiler/tests and crates/reify-compiler/src from multiple review passes (task 1083 follow-up + esc-1966-3). All changes are doc-comment edits only — no assertion logic or production-code behavior changes.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "### Item 1 — Stale doc comment from task 1083 (qualified_access_compile_tests.rs)\n\n**File:** `crates/reify-compiler/tests/qualified_access_compile_tests.rs` lines 278-280\n\nThe comment reads: \"Currently fails because the let-binding second pass uses compiled_expr.result_type (Option<Real> placeholder) instead of consulting let_decl.type_expr, and lacks the OptionNone fixup present in the param-default path.\" This is now inaccurate — the fixup has been implemented and the test passes. Update the comment to describe the tested behavior as it stands today (the OptionNone fixup is present and the test succeeds).\n\n### Item 2 — Second cleanup item from task 1083\n\nSee original task 1083 review notes in `crates/reify-compiler/src` for the second stale/fragile comment identified during that review pass. Retarget or remove as appropriate.\n\n### Item 3 — Stale doc-comment preamble on constraint_def_unknown_type_error_lists_acceptable_categories (esc-1966-3)\n\n**File:** `crates/reify-compiler/tests/constraint_def_compile_tests.rs:1264-1283`\n\nThe doc-comment preamble for assertion (ii) describes an \"at least two of the accepted categories by lowercase substring\" check with an \"'at least two' check to avoid over-pinning specific wording\" rationale, but the code actually asserts a single `structure` substring. The inline `// (ii) ...` comment correctly explains the chosen check. Fix: delete the outdated \"at least two...\" preamble lines from the doc comment above `fn constraint_def_unknown_type_error_lists_acceptable_categories`; do not alter the assertion logic.",
@@ -24307,9 +24307,12 @@
           ],
           "curator_action": "combine",
           "curator_justification": "Both tasks are tiny stale-doc-comment cleanups inside crates/reify-compiler/tests (and src). They share the same module-lock keys (reify-compiler/src + reify-compiler/tests), the same concern (doc comments that no longer match the code they annotate), and zero behavioral changes. Combining loads context once and serializes on the same lock with no parallelism loss. All four combine rules hold: single coherent concern, same ≤2 module keys, well under planning budget, both low/polish priority with",
-          "combined_at": "2026-04-22T15:19:55.627032+00:00"
+          "combined_at": "2026-04-22T15:19:55.627032+00:00",
+          "done_provenance": {
+            "commit": "71317add9d694dbe296dca021544120903bdad25"
+          }
         },
-        "updatedAt": "2026-04-22T15:25:27.167Z"
+        "updatedAt": "2026-04-22T16:09:35.512Z"
       },
       {
         "id": "1109",
@@ -24668,10 +24671,13 @@
             ]
           },
           "done_provenance": {
-            "commit": "e2de46274573a4a6bb1ebc0dde6fd3126342f0c8",
-            "commit_input": "e2de46274",
-            "note": "Superseded by Task 1570 step-2 which collapsed the duplicate compiled_templates lookup in entity.rs Sub handler and unified sub_member_types with collection_sub_member_types in scope.rs. The file:line coordinates in the original description are obsolete; the named fields no longer exist in the current tree."
-          }
+            "commit": null,
+            "note": "Superseded by Task 1570 step-2 which collapsed the duplicate compiled_templates lookup in entity.rs Sub handler and unified sub_member_types with collection_sub_member_types in scope.rs. The file:line coordinates in the original description are obsolete; the named fields no longer exist in the current tree.",
+            "superseded_by": "1570",
+            "stale_commit_cleared_at": "2026-04-22",
+            "cleared_by": "recon-stage-task_knowledge_sync"
+          },
+          "_causation_id": "d483d5f6-cc64-4374-b7d1-d595a864247b"
         },
         "updatedAt": "2026-04-22T10:04:56.334Z"
       },
@@ -45611,12 +45617,14 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T16:01:04.957Z",
+      "lastModified": "2026-04-22T16:09:35.512Z",
       "taskCount": 2139,
-      "completedCount": 1882,
+      "completedCount": 1883,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T16:10:11.109Z",
+      "description": "Tasks for master context"
     }
   }
 }

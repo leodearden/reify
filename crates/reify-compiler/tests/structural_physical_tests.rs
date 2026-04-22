@@ -44,8 +44,7 @@ fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: Bin
         .unwrap_or_else(|| panic!("expected a constraint referencing {member}"));
     let (op, _, _) = common::expect_binop(&cc.expr);
     assert_eq!(
-        *op,
-        expected,
+        *op, expected,
         "{member} constraint expected BinOp::{expected:?}, got BinOp::{op:?}"
     );
 }

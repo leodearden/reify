@@ -123,7 +123,10 @@ structure S {
     }
 
     // Labels: Triple[0], Triple[1], Triple[2]
-    for (i, expected_label) in ["Triple#0[0]", "Triple#0[1]", "Triple#0[2]"].iter().enumerate() {
+    for (i, expected_label) in ["Triple#0[0]", "Triple#0[1]", "Triple#0[2]"]
+        .iter()
+        .enumerate()
+    {
         assert_eq!(
             tmpl.constraints[i].label,
             Some(expected_label.to_string()),
@@ -225,7 +228,10 @@ structure S {
                         id.member
                     );
                 }
-                other => panic!("left of second constraint should be ValueRef, got {:?}", other),
+                other => panic!(
+                    "left of second constraint should be ValueRef, got {:?}",
+                    other
+                ),
             }
         }
         other => panic!("expected BinOp for second constraint, got {:?}", other),
@@ -648,12 +654,9 @@ structure S {
         "expected an error-level diagnostic for Bool-for-Length type mismatch, \
          got no diagnostics at all"
     );
-    let has_type_or_mismatch = errors
-        .iter()
-        .any(|d| {
-            d.message.to_lowercase().contains("type")
-                || d.message.to_lowercase().contains("mismatch")
-        });
+    let has_type_or_mismatch = errors.iter().any(|d| {
+        d.message.to_lowercase().contains("type") || d.message.to_lowercase().contains("mismatch")
+    });
     assert!(
         has_type_or_mismatch,
         "expected error mentioning 'type' or 'mismatch' for Bool-for-Length mismatch, \
@@ -801,7 +804,10 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
         result.unwrap_err()
     );
 
-    let compiled_main = dag.modules.get("main").expect("compiled module 'main' not found");
+    let compiled_main = dag
+        .modules
+        .get("main")
+        .expect("compiled module 'main' not found");
 
     // No Error-level diagnostics: collision is a warning, not a hard failure.
     let errors: Vec<_> = compiled_main
@@ -876,7 +882,9 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
     );
     let c = &s_template.constraints[0];
     assert!(
-        c.label.as_deref().is_some_and(|l| l.starts_with("MinThickness")),
+        c.label
+            .as_deref()
+            .is_some_and(|l| l.starts_with("MinThickness")),
         "expected constraint label starting with 'MinThickness', got: {:?}",
         c.label
     );

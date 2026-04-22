@@ -294,7 +294,11 @@ mod tests {
 
         assert_eq!(ctx.requirements.len(), 1);
         assert_eq!(ctx.requirements[0].name, "width");
-        assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
     }
 
     /// Verify that `collect_all_requirements` deduplicates requirements in a diamond
@@ -385,7 +389,11 @@ mod tests {
             "Expected exactly one 'b' requirement (dedup via visited), got {}",
             b_count
         );
-        assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
     }
 
     // ---- helpers for the additional branch tests below ----

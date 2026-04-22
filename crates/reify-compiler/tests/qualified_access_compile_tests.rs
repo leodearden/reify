@@ -34,8 +34,10 @@ structure def S : A {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> =
-        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
 
     let has_x = template.value_cells.iter().any(|vc| vc.id.member == "x");
@@ -45,7 +47,11 @@ structure def S : A {
     assert!(
         has_y,
         "expected value cell 'y' in template, got: {:?}",
-        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+        template
+            .value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -83,12 +89,17 @@ structure def S : A + B {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> =
-        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
 
-    let cell_names: Vec<_> =
-        template.value_cells.iter().map(|vc| vc.id.member.as_str()).collect();
+    let cell_names: Vec<_> = template
+        .value_cells
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
 
     assert!(
         cell_names.contains(&"size"),
@@ -125,9 +136,15 @@ structure def S {
 
     let module = compile_source(source);
 
-    let errors: Vec<_> =
-        module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(!errors.is_empty(), "expected error diagnostic for unknown trait");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostic for unknown trait"
+    );
 
     let error_msg = format!("{:?}", errors);
     let lower = error_msg.to_lowercase();
@@ -161,9 +178,15 @@ structure def S : A {
 
     let module = compile_source(source);
 
-    let errors: Vec<_> =
-        module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(!errors.is_empty(), "expected error diagnostic for missing trait member");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostic for missing trait member"
+    );
 
     let error_msg = format!("{:?}", errors);
     assert!(
@@ -196,8 +219,10 @@ structure def S : A {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> =
-        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
 
     assert!(
@@ -240,8 +265,11 @@ structure def Outer {
 
     let module = compile_source(source);
 
-    let errors: Vec<_> =
-        module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
         !errors.is_empty(),
         "expected error diagnostic: Inner does not implement A"
@@ -257,10 +285,6 @@ structure def Outer {
 ///
 /// Assert: no compile errors, value cell 'y' has type Option<Length> (not Option<Real>),
 /// and default_expr is OptionNone with matching result_type.
-///
-/// Currently fails because the let-binding second pass uses compiled_expr.result_type
-/// (Option<Real> placeholder) instead of consulting let_decl.type_expr, and lacks the
-/// OptionNone fixup present in the param-default path.
 #[test]
 fn let_none_with_typed_annotation_gets_correct_type() {
     let source = r#"
@@ -271,8 +295,10 @@ structure def S {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> =
-        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
 
     let y_cell = template
@@ -281,19 +307,22 @@ structure def S {
         .find(|vc| vc.id.member == "y")
         .expect("expected value cell 'y'");
 
-    let expected_type = Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }));
+    let expected_type = Type::Option(Box::new(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    }));
     assert_eq!(
-        y_cell.cell_type,
-        expected_type,
+        y_cell.cell_type, expected_type,
         "cell_type for 'let y : Option<Length> = none' should be Option<Length>, got: {:?}",
         y_cell.cell_type
     );
 
     // Also verify that the default_expr has been fixed up to have the correct type.
-    let default_expr = y_cell.default_expr.as_ref().expect("expected default_expr for let y");
+    let default_expr = y_cell
+        .default_expr
+        .as_ref()
+        .expect("expected default_expr for let y");
     assert_eq!(
-        default_expr.result_type,
-        expected_type,
+        default_expr.result_type, expected_type,
         "default_expr.result_type should be Option<Length> after OptionNone fixup, got: {:?}",
         default_expr.result_type
     );

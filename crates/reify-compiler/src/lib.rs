@@ -1,67 +1,66 @@
-pub mod module_dag;
-mod scc;
-pub mod si_units;
-pub mod stdlib_loader;
-mod types;
-mod units;
-mod type_resolution;
-mod type_compat;
-mod scope;
-mod expr;
-mod traits;
 mod annotations;
 mod compile_builder;
-mod termination;
-mod entity;
-mod connect;
-mod guards;
 mod conformance;
-mod trait_requirements;
+mod connect;
+mod constants;
+mod entity;
+mod expr;
 mod functions;
 mod geometry;
 mod geometry_boolean;
-mod geometry_transform;
-mod geometry_modify;
 mod geometry_curve;
-mod constants;
+mod geometry_modify;
+mod geometry_transform;
+mod guards;
+pub mod module_dag;
+mod scc;
+mod scope;
+pub mod si_units;
+pub mod stdlib_loader;
+mod termination;
+mod trait_requirements;
+mod traits;
+mod type_compat;
+mod type_resolution;
+mod types;
+mod units;
 
-pub use types::*;
 pub use type_compat::{implicitly_converts_to, type_compatible};
+pub use types::*;
 
 // Re-export submodule items for internal cross-module access via `use super::*;`
-pub use units::{UnitEntry, UnitRegistry};
-pub(crate) use units::*;
-pub(crate) use type_resolution::*;
-#[allow(unused_imports)]
-pub(crate) use type_compat::*;
-pub(crate) use scope::*;
-pub(crate) use expr::*;
-#[allow(unused_imports)]
-pub(crate) use traits::*;
 pub(crate) use annotations::*;
-#[allow(unused_imports)]
-pub(crate) use termination::*;
-pub(crate) use entity::*;
-pub(crate) use connect::*;
-pub(crate) use guards::*;
 pub(crate) use conformance::*;
-pub(crate) use trait_requirements::*;
+pub(crate) use connect::*;
+pub(crate) use entity::*;
+pub(crate) use expr::*;
 #[allow(unused_imports)]
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
 pub(crate) use geometry_boolean::*;
-pub(crate) use geometry_transform::*;
-pub(crate) use geometry_modify::*;
 pub(crate) use geometry_curve::*;
+pub(crate) use geometry_modify::*;
+pub(crate) use geometry_transform::*;
+pub(crate) use guards::*;
+pub(crate) use scope::*;
+#[allow(unused_imports)]
+pub(crate) use termination::*;
+pub(crate) use trait_requirements::*;
+#[allow(unused_imports)]
+pub(crate) use traits::*;
+#[allow(unused_imports)]
+pub(crate) use type_compat::*;
+pub(crate) use type_resolution::*;
+pub(crate) use units::*;
+pub use units::{UnitEntry, UnitRegistry};
 
 use std::collections::{HashMap, HashSet};
 
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash,
-    DeterminacyPredicateKind, Diagnostic, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX,
-    OptimizationObjective, RealizationNodeId, ResolvedFunction, SelectorKind, Severity,
-    SourceSpan, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, Type,
-    UnOp, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DeterminacyPredicateKind,
+    Diagnostic, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, OptimizationObjective,
+    RealizationNodeId, ResolvedFunction, SelectorKind, Severity, SourceSpan, TAG_CONDITIONAL,
+    TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, Type, UnOp, Value, ValueCellId,
 };
 
 /// Compile a parsed module into a compiled module.
@@ -130,7 +129,8 @@ pub fn merge_prelude_functions(
         let shadowed = result.iter().any(|uf| {
             uf.name == f.name
                 && uf.params.len() == f.params.len()
-                && uf.params
+                && uf
+                    .params
                     .iter()
                     .zip(f.params.iter())
                     .all(|((_, ut), (_, ft))| ut == ft)
@@ -198,12 +198,7 @@ pub(crate) fn compile_with_prelude_refs(
 
     // Compile all local constraint defs in a single pass. Also emits
     // one-time shadow warnings for cross-prelude name collisions.
-    compile_builder::defs_phase::phase_constraint_defs(
-        &mut ctx,
-        parsed,
-        prelude,
-        &trait_names,
-    );
+    compile_builder::defs_phase::phase_constraint_defs(&mut ctx, parsed, prelude, &trait_names);
 
     // Compile structures / occurrences and forward imports.
     compile_builder::entities_phase::phase_entities(&mut ctx, parsed, &trait_names, prelude);
@@ -228,8 +223,7 @@ pub(crate) fn compile_with_prelude_refs(
     let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut ctx, parsed);
 
     // Build a content-sensitive hash by combining the path with all compiled content.
-    let content_hash =
-        compile_builder::hash::compute_module_hash(&ctx, parsed, &compiled_purposes);
+    let content_hash = compile_builder::hash::compute_module_hash(&ctx, parsed, &compiled_purposes);
 
     ctx.into_compiled_module(parsed, compiled_purposes, content_hash)
 }

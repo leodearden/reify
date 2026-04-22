@@ -130,16 +130,18 @@ pub(crate) fn resolve_field_type_name(
     // Field types do not currently resolve trait names into TraitObject; pass
     // an empty trait-name set so behavior is unchanged for fields.
     let empty_traits: HashSet<String> = HashSet::new();
-    resolve_type_with_aliases(name, &empty_params, alias_registry, &empty_traits).unwrap_or_else(|| {
-        diagnostics.push(
-            Diagnostic::warning(format!(
-                "unresolved field type '{}', treating as structure reference",
-                name
-            ))
-            .with_label(DiagnosticLabel::new(span, "unknown type name")),
-        );
-        Type::StructureRef(name.to_string())
-    })
+    resolve_type_with_aliases(name, &empty_params, alias_registry, &empty_traits).unwrap_or_else(
+        || {
+            diagnostics.push(
+                Diagnostic::warning(format!(
+                    "unresolved field type '{}', treating as structure reference",
+                    name
+                ))
+                .with_label(DiagnosticLabel::new(span, "unknown type name")),
+            );
+            Type::StructureRef(name.to_string())
+        },
+    )
 }
 
 /// Compile a field declaration into a CompiledField.
@@ -181,11 +183,14 @@ pub(crate) fn compile_field(
         ),
         reify_syntax::TypeExprKind::DimensionalOp { .. } => {
             diagnostics.push(
-                Diagnostic::error(format!("unresolved field type: {}", field_def.codomain_type))
-                    .with_label(DiagnosticLabel::new(
-                        field_def.codomain_type.span,
-                        "unexpected dimensional expression",
-                    )),
+                Diagnostic::error(format!(
+                    "unresolved field type: {}",
+                    field_def.codomain_type
+                ))
+                .with_label(DiagnosticLabel::new(
+                    field_def.codomain_type.span,
+                    "unexpected dimensional expression",
+                )),
             );
             Type::Real
         }
@@ -420,4 +425,3 @@ mod tests {
         );
     }
 }
-

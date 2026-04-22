@@ -385,7 +385,10 @@ structure S { let f = |x: UnknownType| x + 1.0 }
                 params,
             );
         }
-        other => panic!("expected Type::Function result_type for lambda, got {:?}", other),
+        other => panic!(
+            "expected Type::Function result_type for lambda, got {:?}",
+            other
+        ),
     }
 }
 

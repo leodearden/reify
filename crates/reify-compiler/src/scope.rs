@@ -69,7 +69,11 @@ impl<'u> CompilationScope<'u> {
 
     /// Look up a unit by name, applying factor and offset.
     /// Returns None if the unit is not in the registry.
-    pub(crate) fn lookup_unit_in_registry(&self, value: f64, unit: &str) -> Option<(Value, DimensionVector)> {
+    pub(crate) fn lookup_unit_in_registry(
+        &self,
+        value: f64,
+        unit: &str,
+    ) -> Option<(Value, DimensionVector)> {
         self.unit_registry?.lookup(unit).map(|entry| {
             let si_value = value * entry.factor + entry.offset.unwrap_or(0.0);
             (
@@ -126,7 +130,10 @@ mod tests {
 
         // Vacant case: register_if_absent should insert and return None.
         let inserted = scope.register_if_absent("y", Type::Bool);
-        assert!(inserted.is_none(), "register_if_absent should return None for a fresh name");
+        assert!(
+            inserted.is_none(),
+            "register_if_absent should return None for a fresh name"
+        );
         let (_, ty, _) = scope.names["y"].clone();
         assert_eq!(ty, Type::Bool, "fresh insert should store the given type");
 

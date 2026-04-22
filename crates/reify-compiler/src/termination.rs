@@ -71,8 +71,10 @@ pub(crate) fn check_recursive_termination(
             // Step 14: undef in guard-referenced args is forbidden.
             // Only check args whose param is referenced by the guard — other args are
             // termination-irrelevant and may legally contain undef.
-            let guard_param_names: HashSet<String> =
-                referenced_params.iter().map(|vc| vc.id.member.clone()).collect();
+            let guard_param_names: HashSet<String> = referenced_params
+                .iter()
+                .map(|vc| vc.id.member.clone())
+                .collect();
             if termination_args_contain_undef(sub, &guard_param_names) {
                 diagnostics.push(
                     Diagnostic::error(

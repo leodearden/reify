@@ -6,18 +6,30 @@
 /// Helper: parse and compile source, return compiled module.
 fn compile_module(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("solver_hint_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
 /// Helper: return only error-severity diagnostics (ignoring warnings).
 fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module.diagnostics.iter().filter(|d| d.severity == reify_types::Severity::Error).collect()
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect()
 }
 
 /// Helper: return only warning-severity diagnostics.
 fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module.diagnostics.iter().filter(|d| d.severity == reify_types::Severity::Warning).collect()
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .collect()
 }
 
 // ── Step 7: @solver_hint("discrete_set", ...) on param compiles ─────────────
@@ -26,10 +38,17 @@ fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::D
 fn solver_hint_discrete_set_compiles() {
     let source = r#"structure S { @solver_hint("discrete_set", bolt_lengths) param length : Length = auto }"#;
     let module = compile_module(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let template = &module.templates[0];
-    assert!(!template.value_cells.is_empty(), "expected at least one value cell");
+    assert!(
+        !template.value_cells.is_empty(),
+        "expected at least one value cell"
+    );
 
     let cell = &template.value_cells[0];
     assert_eq!(
@@ -38,7 +57,10 @@ fn solver_hint_discrete_set_compiles() {
         "expected 1 solver hint, got {:?}",
         cell.solver_hints
     );
-    assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(
+        cell.solver_hints[0].kind,
+        reify_compiler::SolverHintKind::DiscreteSet
+    );
     assert_eq!(cell.solver_hints[0].collection, "bolt_lengths");
 }
 
@@ -48,7 +70,11 @@ fn solver_hint_discrete_set_compiles() {
 fn solver_hint_prefer_stock_compiles() {
     let source = r#"structure S { @solver_hint("prefer_stock", sheet_thicknesses) param width : Length = auto }"#;
     let module = compile_module(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let template = &module.templates[0];
     let cell = &template.value_cells[0];
@@ -58,7 +84,10 @@ fn solver_hint_prefer_stock_compiles() {
         "expected 1 solver hint, got {:?}",
         cell.solver_hints
     );
-    assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::PreferStock);
+    assert_eq!(
+        cell.solver_hints[0].kind,
+        reify_compiler::SolverHintKind::PreferStock
+    );
     assert_eq!(cell.solver_hints[0].collection, "sheet_thicknesses");
 }
 
@@ -68,7 +97,11 @@ fn solver_hint_prefer_stock_compiles() {
 fn solver_hint_on_let_compiles() {
     let source = r#"structure S { @solver_hint("discrete_set", gauges) let t : Length = 5mm }"#;
     let module = compile_module(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let template = &module.templates[0];
     // Find the let value cell (kind == Let)
@@ -84,7 +117,10 @@ fn solver_hint_on_let_compiles() {
         "expected 1 solver hint on let, got {:?}",
         let_cell.solver_hints
     );
-    assert_eq!(let_cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(
+        let_cell.solver_hints[0].kind,
+        reify_compiler::SolverHintKind::DiscreteSet
+    );
     assert_eq!(let_cell.solver_hints[0].collection, "gauges");
 }
 
@@ -95,7 +131,11 @@ fn solver_hint_invalid_kind_warns() {
     let source =
         r#"structure S { @solver_hint("invalid_kind", collection) param length : Length = auto }"#;
     let module = compile_module(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let template = &module.templates[0];
     let cell = &template.value_cells[0];
@@ -107,7 +147,9 @@ fn solver_hint_invalid_kind_warns() {
 
     let warns = warnings_only(&module);
     assert!(
-        warns.iter().any(|d| d.message.contains("unknown solver hint kind")),
+        warns
+            .iter()
+            .any(|d| d.message.contains("unknown solver hint kind")),
         "expected warning about unknown solver hint kind, got: {:?}",
         warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -117,10 +159,13 @@ fn solver_hint_invalid_kind_warns() {
 
 #[test]
 fn solver_hint_missing_collection_warns() {
-    let source =
-        r#"structure S { @solver_hint("discrete_set") param length : Length = auto }"#;
+    let source = r#"structure S { @solver_hint("discrete_set") param length : Length = auto }"#;
     let module = compile_module(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let template = &module.templates[0];
     let cell = &template.value_cells[0];
@@ -132,7 +177,9 @@ fn solver_hint_missing_collection_warns() {
 
     let warns = warnings_only(&module);
     assert!(
-        warns.iter().any(|d| d.message.contains("collection reference")),
+        warns
+            .iter()
+            .any(|d| d.message.contains("collection reference")),
         "expected warning about missing collection, got: {:?}",
         warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -144,7 +191,11 @@ fn solver_hint_missing_collection_warns() {
 fn solver_hint_zero_args_warns() {
     let source = r#"structure S { @solver_hint param x : Real = auto }"#;
     let module = compile_module(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let template = &module.templates[0];
     let cell = &template.value_cells[0];
@@ -156,7 +207,9 @@ fn solver_hint_zero_args_warns() {
 
     let warns = warnings_only(&module);
     assert!(
-        warns.iter().any(|d| d.message.contains("requires a string literal kind as first argument")),
+        warns.iter().any(|d| d
+            .message
+            .contains("requires a string literal kind as first argument")),
         "expected warning about missing kind, got: {:?}",
         warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -174,7 +227,11 @@ fn solver_hint_in_guarded_block_compiles() {
         }
     }"#;
     let module = compile_module(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let template = &module.templates[0];
     // Guarded members live in guarded_groups, not value_cells
@@ -191,7 +248,10 @@ fn solver_hint_in_guarded_block_compiles() {
         "expected 1 solver hint on guarded param, got {:?}",
         width_cell.solver_hints
     );
-    assert_eq!(width_cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(
+        width_cell.solver_hints[0].kind,
+        reify_compiler::SolverHintKind::DiscreteSet
+    );
     assert_eq!(width_cell.solver_hints[0].collection, "sizes");
 }
 
@@ -205,7 +265,11 @@ fn solver_hint_multiple_on_same_param() {
         param length : Length = auto
     }"#;
     let module = compile_module(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let template = &module.templates[0];
     let cell = &template.value_cells[0];
@@ -215,9 +279,15 @@ fn solver_hint_multiple_on_same_param() {
         "expected 2 solver hints, got {:?}",
         cell.solver_hints
     );
-    assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(
+        cell.solver_hints[0].kind,
+        reify_compiler::SolverHintKind::DiscreteSet
+    );
     assert_eq!(cell.solver_hints[0].collection, "a");
-    assert_eq!(cell.solver_hints[1].kind, reify_compiler::SolverHintKind::PreferStock);
+    assert_eq!(
+        cell.solver_hints[1].kind,
+        reify_compiler::SolverHintKind::PreferStock
+    );
     assert_eq!(cell.solver_hints[1].collection, "b");
 }
 
@@ -240,6 +310,9 @@ fn builder_param_with_solver_hints() {
     assert_eq!(template.value_cells.len(), 1);
     let cell = &template.value_cells[0];
     assert_eq!(cell.solver_hints.len(), 1);
-    assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(
+        cell.solver_hints[0].kind,
+        reify_compiler::SolverHintKind::DiscreteSet
+    );
     assert_eq!(cell.solver_hints[0].collection, "bolt_lengths");
 }

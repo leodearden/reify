@@ -529,7 +529,6 @@ fn error_wildcard_implicit_from_error_to_real() {
     );
 }
 
-
 /// `implicitly_converts_to(Error, Int) == true`.
 #[test]
 fn error_wildcard_implicit_error_to_int() {
@@ -538,7 +537,6 @@ fn error_wildcard_implicit_error_to_int() {
         "implicitly_converts_to(Error, Int) must be true (anti-cascade guard, task-1912)"
     );
 }
-
 
 /// `implicitly_converts_to(Error, Bool) == true`.
 #[test]
@@ -558,7 +556,6 @@ fn error_wildcard_implicit_error_to_string() {
     );
 }
 
-
 /// `implicitly_converts_to(Error, List<Int>) == true` — compound type.
 #[test]
 fn error_wildcard_implicit_error_to_list() {
@@ -568,7 +565,6 @@ fn error_wildcard_implicit_error_to_list() {
         "implicitly_converts_to(Error, List<Int>) must be true (anti-cascade guard, task-1912)"
     );
 }
-
 
 /// `implicitly_converts_to(Error, Option<Real>) == true` — compound type.
 #[test]
@@ -588,7 +584,6 @@ fn error_wildcard_implicit_error_to_scalar() {
         "implicitly_converts_to(Error, Scalar[m]) must be true (anti-cascade guard, task-1912)"
     );
 }
-
 
 /// `implicitly_converts_to(Error, Vector<3,Real>) == true` — shape-carrying type.
 #[test]

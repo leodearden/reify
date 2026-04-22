@@ -7,7 +7,7 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
-use reify_compiler::{stdlib_loader, CompiledModule};
+use reify_compiler::{CompiledModule, stdlib_loader};
 use reify_types::{DimensionVector, Severity};
 
 // ─── local helper ─────────────────────────────────────────────────────────────
@@ -85,7 +85,12 @@ fn assert_eq_rel(a: f64, b: f64, rel_tol: f64, msg: &str) {
 
 /// Assert that a named unit in `std/units` has the expected dimension, factor
 /// (within `rel_tol` relative tolerance), and no offset.
-fn assert_simple_unit(name: &str, expected_dim: DimensionVector, expected_factor: f64, rel_tol: f64) {
+fn assert_simple_unit(
+    name: &str,
+    expected_dim: DimensionVector,
+    expected_factor: f64,
+    rel_tol: f64,
+) {
     let module = units_module();
     let u = module
         .units
@@ -204,7 +209,12 @@ fn cross_relationships_between_imperial_units() {
     // 1 gal == 128 fl_oz
     let (gal_si, _) = stdlib_param_si_value("Volume", "1gal");
     let (fl_oz128_si, _) = stdlib_param_si_value("Volume", "128fl_oz");
-    assert_eq_rel(gal_si, fl_oz128_si, 1e-12, "1gal should equal 128fl_oz in SI");
+    assert_eq_rel(
+        gal_si,
+        fl_oz128_si,
+        1e-12,
+        "1gal should equal 128fl_oz in SI",
+    );
 
     // 1 psi == 1 lbf / (1 in * 1 in)
     // Compound Reify arithmetic compiles to BinOp (not a Literal), so compute
@@ -213,7 +223,12 @@ fn cross_relationships_between_imperial_units() {
     let (lbf_si, _) = stdlib_param_si_value("Force", "1lbf");
     let (in_si, _) = stdlib_param_si_value("Length", "1in");
     let psi_from_lbf_in2 = lbf_si / (in_si * in_si);
-    assert_eq_rel(psi_si, psi_from_lbf_in2, 1e-12, "1psi should equal 1lbf/(1in²) in SI");
+    assert_eq_rel(
+        psi_si,
+        psi_from_lbf_in2,
+        1e-12,
+        "1psi should equal 1lbf/(1in²) in SI",
+    );
 }
 
 // ─── step-9: cross-unit arithmetic lbf * mm → Energy ─────────────────────────
@@ -278,7 +293,11 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
                     dimension,
                     ..
                 }) => {
-                    assert_eq!(*dimension, DimensionVector::FORCE, "left dim should be FORCE");
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::FORCE,
+                        "left dim should be FORCE"
+                    );
                     let expected = 2.0 * LBF_SI;
                     assert!(
                         (si_value - expected).abs() < 1e-9,
@@ -297,7 +316,11 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
                     dimension,
                     ..
                 }) => {
-                    assert_eq!(*dimension, DimensionVector::LENGTH, "right dim should be LENGTH");
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::LENGTH,
+                        "right dim should be LENGTH"
+                    );
                     assert!(
                         (si_value - 0.003).abs() < 1e-12,
                         "right si_value should be 0.003 (3mm), got {}",
@@ -331,25 +354,28 @@ fn existing_imperial_units_ft_thou_in_lb_oz_unchanged_post_task_335() {
     // are unchanged by this task's edits to units.ri.
 
     // Length units (SI base: metre)
-    let length_cases: &[(&str, f64)] = &[
-        ("1ft",   0.3048),
-        ("1thou", 0.0000254),
-        ("1in",   0.0254),
-    ];
+    let length_cases: &[(&str, f64)] = &[("1ft", 0.3048), ("1thou", 0.0000254), ("1in", 0.0254)];
     for (literal, expected) in length_cases {
         let (v, d) = stdlib_param_si_value("Length", literal);
-        assert_eq_rel(v, *expected, 1e-12, &format!("{} should be {} m", literal, expected));
+        assert_eq_rel(
+            v,
+            *expected,
+            1e-12,
+            &format!("{} should be {} m", literal, expected),
+        );
         assert_eq!(d, DimensionVector::LENGTH, "{} dimension wrong", literal);
     }
 
     // Mass units (SI base: kilogram)
-    let mass_cases: &[(&str, f64)] = &[
-        ("1lb",  0.45359237),
-        ("1oz",  0.028349523125),
-    ];
+    let mass_cases: &[(&str, f64)] = &[("1lb", 0.45359237), ("1oz", 0.028349523125)];
     for (literal, expected) in mass_cases {
         let (v, d) = stdlib_param_si_value("Mass", literal);
-        assert_eq_rel(v, *expected, 1e-12, &format!("{} should be {} kg", literal, expected));
+        assert_eq_rel(
+            v,
+            *expected,
+            1e-12,
+            &format!("{} should be {} kg", literal, expected),
+        );
         assert_eq!(d, DimensionVector::MASS, "{} dimension wrong", literal);
     }
 
@@ -362,10 +388,6 @@ fn existing_imperial_units_ft_thou_in_lb_oz_unchanged_post_task_335() {
             .iter()
             .find(|u| u.name == *name)
             .unwrap_or_else(|| panic!("unit '{}' not found in std/units", name));
-        assert!(
-            u.offset.is_none(),
-            "unit '{}' should have no offset",
-            name
-        );
+        assert!(u.offset.is_none(), "unit '{}' should have no offset", name);
     }
 }

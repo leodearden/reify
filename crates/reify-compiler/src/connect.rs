@@ -266,8 +266,16 @@ pub(crate) fn compile_connection(
     {
         let is_bare = |name: &str| !name.contains('.');
         if is_bare(&left_port) && is_bare(&right_port) {
-            let left_type = ctx.ports.iter().find(|p| p.name == left_port).map(|p| p.type_name.as_str());
-            let right_type = ctx.ports.iter().find(|p| p.name == right_port).map(|p| p.type_name.as_str());
+            let left_type = ctx
+                .ports
+                .iter()
+                .find(|p| p.name == left_port)
+                .map(|p| p.type_name.as_str());
+            let right_type = ctx
+                .ports
+                .iter()
+                .find(|p| p.name == right_port)
+                .map(|p| p.type_name.as_str());
 
             // NOTE: this check only works for trait-typed ports. Ports declared with a
             // structure type (or a built-in type) won't be found in the trait_registry,
@@ -277,15 +285,26 @@ pub(crate) fn compile_connection(
             if let (Some(lt), Some(rt)) = (left_type, right_type) {
                 let mut visited_l = HashSet::new();
                 let mut visited_r = HashSet::new();
-                let left_located = trait_satisfies(lt, reify_types::LOCATED_PORT_TRAIT, ctx.trait_registry, &mut visited_l);
-                let right_located = trait_satisfies(rt, reify_types::LOCATED_PORT_TRAIT, ctx.trait_registry, &mut visited_r);
+                let left_located = trait_satisfies(
+                    lt,
+                    reify_types::LOCATED_PORT_TRAIT,
+                    ctx.trait_registry,
+                    &mut visited_l,
+                );
+                let right_located = trait_satisfies(
+                    rt,
+                    reify_types::LOCATED_PORT_TRAIT,
+                    ctx.trait_registry,
+                    &mut visited_r,
+                );
 
                 if left_located != right_located {
-                    let (located_port, located_type, unlocated_port, unlocated_type) = if left_located {
-                        (&left_port, lt, &right_port, rt)
-                    } else {
-                        (&right_port, rt, &left_port, lt)
-                    };
+                    let (located_port, located_type, unlocated_port, unlocated_type) =
+                        if left_located {
+                            (&left_port, lt, &right_port, rt)
+                        } else {
+                            (&right_port, rt, &left_port, lt)
+                        };
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "asymmetric LocatedPort: port \"{}\" ({}) satisfies LocatedPort but port \"{}\" ({}) does not \
@@ -373,18 +392,24 @@ pub(crate) fn compile_connection(
     // records the pair so the evaluator can align them.
     let frame_constraint =
         if is_ad_hoc_selector(input.left_expr) && is_ad_hoc_selector(input.right_expr) {
-            let left_frame =
-                compile_expr(input.left_expr, ctx.scope, ctx.enum_defs, ctx.functions, diagnostics);
-            let right_frame =
-                compile_expr(input.right_expr, ctx.scope, ctx.enum_defs, ctx.functions, diagnostics);
+            let left_frame = compile_expr(
+                input.left_expr,
+                ctx.scope,
+                ctx.enum_defs,
+                ctx.functions,
+                diagnostics,
+            );
+            let right_frame = compile_expr(
+                input.right_expr,
+                ctx.scope,
+                ctx.enum_defs,
+                ctx.functions,
+                diagnostics,
+            );
 
             // Frame alignment constraint: the two frames should coincide.
-            let frame_eq = CompiledExpr::binop(
-                reify_types::BinOp::Eq,
-                left_frame,
-                right_frame,
-                Type::Bool,
-            );
+            let frame_eq =
+                CompiledExpr::binop(reify_types::BinOp::Eq, left_frame, right_frame, Type::Bool);
 
             let fc_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);
             acc.constraints.push(CompiledConstraint {
@@ -412,4 +437,3 @@ pub(crate) fn compile_connection(
         span,
     });
 }
-

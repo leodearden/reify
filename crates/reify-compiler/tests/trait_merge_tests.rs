@@ -7,7 +7,7 @@
 use std::sync::atomic::Ordering;
 
 use reify_compiler::*;
-use reify_test_support::{compile_first_template, CountingSubscriberBuilder};
+use reify_test_support::{CountingSubscriberBuilder, compile_first_template};
 use reify_types::*;
 
 /// Step 1a: Two traits each providing `let area : Real = width * height`.
@@ -83,7 +83,10 @@ structure def U : TraitAlpha + TraitBeta {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected conflict diagnostic for same-name different-type let defaults");
+    assert!(
+        !errors.is_empty(),
+        "expected conflict diagnostic for same-name different-type let defaults"
+    );
 
     assert!(
         errors[0].message.contains("conflicting"),
@@ -626,7 +629,11 @@ structure def S : ProvidesParamX + ProvidesLetX {
         .iter()
         .filter(|vc| vc.kind == ValueCellKind::Let)
         .collect();
-    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell (let_default_not_discarded)");
+    assert_eq!(
+        let_cells.len(),
+        1,
+        "expected exactly 1 Let 'x' cell (let_default_not_discarded)"
+    );
 }
 
 /// Step 1b: Two traits each requiring `param x : Length`.
@@ -1263,10 +1270,7 @@ structure def S : HasParamAndConstraint {
                 right.kind
             );
         }
-        other => panic!(
-            "expected BinOp for constraint x > 0, got {:?}",
-            other
-        ),
+        other => panic!("expected BinOp for constraint x > 0, got {:?}", other),
     }
 }
 
@@ -1393,8 +1397,7 @@ structure def S : TraitA + TraitB {
     // which fires the tracing::debug! path exactly once. Equality also guards against
     // accidental over-emission if additional debug sites are added to the same path.
     assert_eq!(
-        debug,
-        1,
+        debug, 1,
         "expected exactly 1 DEBUG event from reify_compiler::conformance target when two \
          traits supply the same-named default (second register_if_absent returns false), got {}",
         debug

@@ -717,8 +717,7 @@ structure C {
     // Before the fix both hashes are equal (is_recursive not mixed in),
     // so this assertion fails before the fix.
     assert_ne!(
-        a_cyclic.content_hash,
-        a_acyclic.content_hash,
+        a_cyclic.content_hash, a_acyclic.content_hash,
         "template A with is_recursive=true must have a different content_hash \
          than the same template with is_recursive=false (incremental correctness)"
     );
@@ -770,8 +769,7 @@ structure C {
 
     // C's hash must be identical in both compilations.
     assert_eq!(
-        c_combined.content_hash,
-        c_standalone.content_hash,
+        c_combined.content_hash, c_standalone.content_hash,
         "non-recursive template C must have the same content_hash whether or not \
          it appears in a module that also contains a recursive cycle"
     );
@@ -817,8 +815,7 @@ structure C {
     // The module hashes must differ: the cyclic module has recursive templates
     // whose hashes were remixed, so the aggregated module hash differs.
     assert_ne!(
-        cyclic_module.content_hash,
-        acyclic_module.content_hash,
+        cyclic_module.content_hash, acyclic_module.content_hash,
         "module content_hash must differ between cyclic and acyclic topology \
          (is_recursive remix propagates to module level)"
     );
