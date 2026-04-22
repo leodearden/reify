@@ -45411,6 +45411,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-22T09:18:04.114Z"
+      },
+      {
+        "id": "2144",
+        "title": "edit_param post-wave2 cleanup misses Phase-1-skipped-but-dirty-guard groups",
+        "description": "The post-wave2 cleanup in crates/reify-eval/src/engine_edit.rs:727-753 only iterates groups that Phase 1 actually re-elaborated (i.e. added to `phase1_reelaborated`). Groups that Phase 1 fired over but skipped via the per-group unchanged-guard short-circuit (line 524) are NOT in the set. Yet wave2 will still re-evaluate any inactive member of such a group whose default_expr reads a resolved auto param — overwriting the cell's prior Undef with a concrete value. Phase 3's per-group skip will then also short-circuit (guard value unchanged), so the corruption never gets repaired.\n\nThe existing test `edit_param_wave2_does_not_corrupt_inactive_members` exercises only the Phase-1-fired-for-this-group path; the Phase-1-skipped-but-dirty-guards path is untested.\n\nSuggested fix: Either (a) broaden the cleanup to iterate ALL guarded groups whose guard value is unchanged (re-assert inactive-branch deactivation regardless of whether Phase 1 ran for them), or (b) add a test that constructs two groups — one whose guard changes and one whose guard is unchanged but has an inactive member reading a resolved auto param — and asserts the unchanged group's inactive member stays Undef. If the intent is that this scenario cannot occur in practice, state the precondition and enforce it with a debug_assert.\n\nSource: post-merge review suggestion on task 2140.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45420,7 +45431,10 @@
       "completedCount": 1872,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T09:18:33.324Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T09:18:33.344Z"
     }
   }
 }
