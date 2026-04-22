@@ -928,6 +928,12 @@ impl Engine {
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
+        // Disjoint-field borrow: Rust's NLL tracks this borrow as touching only
+        // the `eval_state` field (not all of `self`), so later mutable borrows
+        // of sibling fields — `self.param_overrides.retain(...)` and
+        // `self.cache.invalidate(...)` — coexist without a lifetime conflict.
+        // `eval_state` is used read-only throughout: parent_id, old graph,
+        // reverse_index, and trace_map.
         let eval_state = self.eval_state.as_ref().unwrap();
 
         // (1) Capture the parent snapshot id before we mutate any state.
