@@ -1963,9 +1963,10 @@ mod tests {
     /// empty functions / meta on the supplied graph and group, returning the
     /// resulting `(values, snapshot_values)` maps.
     ///
-    /// Used by the active-branch unit tests to collapse the call-site boilerplate
-    /// into a single line, leaving each test as a thin assertion-only wrapper.
-    fn run_active_case(
+    /// Shared by active-branch `members` tests and inactive-branch `else_members`
+    /// tests under guard=true.  Collapses the 7-line call-site boilerplate into
+    /// a single line, leaving each test as a thin assertion-only wrapper.
+    fn run_with_guard_true(
         graph: EvaluationGraph,
         group: GuardedGroupInfo,
     ) -> (ValueMap, PersistentMap<ValueCellId, (Value, DeterminacyState)>) {
@@ -2203,7 +2204,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard_true(graph, group);
 
         // Active member: evaluated default_expr → Int(42), Determined.
         assert_eq!(values.get(&member_id), Some(&Value::Int(42)));
@@ -2258,7 +2259,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard_true(graph, group);
 
         // Active member with no default_expr: must be left entirely untouched.
         assert!(
@@ -2302,7 +2303,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard_true(graph, group);
 
         // Active member absent from graph: must be left entirely untouched.
         assert!(
@@ -2348,7 +2349,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard_true(graph, group);
 
         // deactivate_if_not_auto does not check default_expr; Param → Undef/Undetermined.
         assert_eq!(
@@ -2394,7 +2395,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard_true(graph, group);
 
         // Missing cell → non-Auto treatment → Undef/Undetermined.
         assert_eq!(
