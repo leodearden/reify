@@ -8300,9 +8300,19 @@
         "dependencies": [],
         "status": "in-progress",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": []
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/src/trait_requirements.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs",
+            "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-22T10:01:39.752Z"
@@ -8491,9 +8501,17 @@
         "dependencies": [],
         "status": "in-progress",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": []
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/constraint_inst_tests.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-22T10:01:40.381Z"
@@ -45508,7 +45526,9 @@
       "completedCount": 1876,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T11:55:20.069Z",
+      "description": "Tasks for master context"
     }
   }
 }
