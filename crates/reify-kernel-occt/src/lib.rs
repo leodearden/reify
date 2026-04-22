@@ -4514,6 +4514,10 @@ mod tests {
                     msg.contains("start-tangent"),
                     "expected error containing 'start-tangent' for oversize-z tangent, got: {msg}"
                 );
+                assert!(
+                    msg.contains("+Z"),
+                    "expected error to identify the +Z-tolerance branch (not the non-finite branch) for oversize-z tangent, got: {msg}"
+                );
             }
             Ok(()) => panic!("expected Err for oversize-z tangent (z=1e100), got Ok"),
             Err(other) => panic!(
