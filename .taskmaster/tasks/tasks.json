@@ -44409,11 +44409,16 @@
         "description": "Follow-up from task 324 review. The Pipe kernel arm always creates its circular profile face in the XY plane at z=0 (+Z normal). Any path whose start-tangent is not aligned with +Z silently produces a degenerate zero-volume solid — execute() returns Ok with no diagnostic. `pipe(arc(...), r)` or `pipe(bezier(...), r)` produce invalid output with zero user feedback. The kernel_pipe_x_axis_path_degenerate_solid test currently pins this broken behavior as intended, turning a real correctness bug into a locked-in contract.",
         "details": "## Fix options\n\n(a) **Correct fix**: Reorient the profile face to the path's start-tangent frame inside the Pipe kernel arm (crates/reify-kernel-occt/src/lib.rs:570-582). The existing docstring acknowledges this as the eventual direction.\n\n(b) **Interim fix**: Inspect the path's start-tangent before swinging and return `GeometryError::OperationFailed(\"pipe currently only supports paths whose start-tangent is +Z\")` for non-Z-aligned paths. This at least surfaces a diagnostic instead of silent garbage geometry.\n\n## Test follow-up\n\nUpdate `kernel_pipe_x_axis_path_degenerate_solid` in crates/reify-kernel-occt/src/lib.rs (~line 4330) from an Ok-with-zero-volume pin into a `should_panic`/error-expectation test, so the silent-failure path is not enshrined as desired behavior.\n\n## Doc\n\nUpdate `GeometryOp::Pipe` doc in crates/reify-types/src/geometry.rs to reflect the final constraint (either general orientation supported, or Z-only with explicit error).\n\n## Why this matters\n\npipe() is a user-facing surface-language primitive (registered in units.rs, compile arm, e2e test). Silent garbage geometry from non-Z paths is a meaningful UX/correctness hazard that downstream consumers (STEP export, tessellation) happily accept.\n\n## memory_hints\n- search: \"Pipe kernel arm orientation start-tangent\"\n- entity: GeometryOp::Pipe",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:50:43.560Z"
+        "updatedAt": "2026-04-22T01:50:09.698Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "e369bc5d76089c7c154e53a4502a922c0c5d4055"
+          }
+        }
       },
       {
         "id": "2096",
@@ -44430,9 +44435,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:44:15.391Z",
+      "lastModified": "2026-04-22T01:50:09.698Z",
       "taskCount": 2088,
-      "completedCount": 1834,
+      "completedCount": 1835,
       "tags": [
         "master"
       ]
