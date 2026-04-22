@@ -4257,9 +4257,14 @@ mod tests {
         let v = vol.as_f64().expect("Volume should be numeric");
         let expected = std::f64::consts::PI * 0.002_f64.powi(2) * 0.020;
         let rel_err = (v - expected).abs() / expected;
+        // Direct BRep volume queries are analytic (not tessellation-based),
+        // so a straight circular pipe should match the formula to within
+        // floating-point noise. The tight tolerance protects against silent
+        // unit-conversion regressions (a 1-3% error would previously pass a
+        // lax 5% bound).
         assert!(
-            rel_err < 0.05,
-            "pipe volume should be ≈ {expected:.3e} m³, got {v:.3e} (rel_err={rel_err:.4})"
+            rel_err < 1e-6,
+            "pipe volume should be ≈ {expected:.3e} m³, got {v:.3e} (rel_err={rel_err:.4e})"
         );
     }
 
