@@ -44403,6 +44403,17 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-22T00:50:43.560Z"
+      },
+      {
+        "id": "2096",
+        "title": "Extract take_trace helper to dedupe let-binding trace consumption",
+        "description": "The two let-binding evaluation call-sites (engine_eval.rs ~1173-1180 and unfold.rs ~559-566) now share structurally identical logic: topologically sort, then remove the precomputed dependency trace from a HashMap with an expect(). The same multi-line explanatory comment is duplicated verbatim. Introduce a small private helper — e.g. `fn take_trace(traces: &mut HashMap<NodeId, DependencyTrace>, node_id: &NodeId) -> DependencyTrace` — shared between engine_eval.rs and unfold.rs (or an inline closure) so the remove+expect and its rationale live in one place.",
+        "details": "Post-merge review suggestion from task 555 (reviewer_comprehensive, code_reuse). Locations: crates/reify-eval/src/engine_eval.rs lines ~1172-1180 and crates/reify-eval/src/unfold.rs lines ~559-566. At minimum deduplicate the 4-line comment block; ideally factor the remove+expect into a helper. Keep the expect() message meaningful (include which sorted set was the source of truth). Run `cargo test -p reify-eval` after refactor.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44412,7 +44423,10 @@
       "completedCount": 1831,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:18:08.991Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T01:18:09.009Z"
     }
   }
 }
