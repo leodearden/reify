@@ -951,7 +951,7 @@ structure def Steel : Material + Elastic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_compiler::ValueCellKind;
+    use reify_compiler::{ValueCellKind, find_template};
     use reify_types::Severity;
 
     #[test]
@@ -1074,8 +1074,8 @@ mod tests {
         assert_eq!(container.required_members[0].name, "count");
         // 2 templates: Bolt and Crate
         assert_eq!(module.templates.len(), 2);
-        let bolt = module.templates.iter().find(|t| t.name == "Bolt");
-        let crate_t = module.templates.iter().find(|t| t.name == "Crate");
+        let bolt = find_template(&module.templates, "Bolt");
+        let crate_t = find_template(&module.templates, "Crate");
         let bolt = bolt.expect("should have Bolt template");
         // Bolt conforms to Rigid
         assert!(
@@ -1287,8 +1287,8 @@ mod tests {
     fn mutual_recursion_module_structure() {
         let module = mutual_recursion_module();
         assert_eq!(module.templates.len(), 2);
-        let node_a = module.templates.iter().find(|t| t.name == "NodeA");
-        let node_b = module.templates.iter().find(|t| t.name == "NodeB");
+        let node_a = find_template(&module.templates, "NodeA");
+        let node_b = find_template(&module.templates, "NodeB");
         assert!(node_a.is_some(), "should have NodeA template");
         assert!(node_b.is_some(), "should have NodeB template");
         let node_a = node_a.unwrap();
@@ -1371,10 +1371,7 @@ mod tests {
      {
         let source = warn_source_with_unknown_port_type_with_width();
         let compiled = assert_warning_source_compiles_with_unknown_port_warning(source);
-        let s_template = compiled
-            .templates
-            .iter()
-            .find(|t| t.name == "S")
+        let s_template = find_template(&compiled.templates, "S")
             .expect("expected S template in compiled module");
         let width_cell = s_template
             .value_cells
