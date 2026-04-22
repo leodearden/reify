@@ -43824,11 +43824,11 @@
       {
         "id": "2069",
         "title": "Polish task 424 follow-ups: is_recursive doc count, depth-limit test name, engine_admin comment",
-        "description": "Three small post-merge polish items from task 424 review:\n\n1. **crates/reify-compiler/src/types.rs:259-279** — `is_recursive` docstring says \"the flag is used in three distinct places\" but then enumerates four bullets (termination.rs, unfold.rs, engine_eval.rs, gui/src-tauri/src/engine.rs). Fix: change \"three distinct places\" to \"four distinct places\", or drop the count and say \"in the following places\" so future additions don't require re-editing the prose.\n\n2. **crates/reify-eval/tests/recursive_unfold.rs:783-785** — `unfold_recursive_depth_limit_boundary_accepts_512` hard-codes \"512\" in the test name while the body uses `Engine::MAX_UNFOLD_DEPTH_LIMIT`. If the constant is ever raised (e.g., to 1024), the test still passes but the name lies. Fix: rename to `unfold_recursive_depth_limit_boundary_accepts_max`, OR add `assert_eq!(Engine::MAX_UNFOLD_DEPTH_LIMIT, 512);` so any change to the constant forces a deliberate update to the name and the canonical-value claim.\n\n3. **crates/reify-eval/src/engine_admin.rs:132-136** — Inline comment block rehashing the panic-vs-Result decision duplicates reasoning already captured in task 205 memory and the `# Panics` rustdoc immediately above. Fix: drop the inline comment block; keep the rustdoc and the two asserts as self-documenting. If rationale must be preserved, move it to the memory store rather than the source file.\n\nAll three are cosmetic / documentation polish; no behavioral change required. Grouped as one task because each is a few-minute edit in modules already touched by task 424.",
+        "description": "Four doc/naming accuracy fixes across reify-compiler and reify-eval — all from post-merge review (tasks 424 and 324):\n\n1. **crates/reify-compiler/src/types.rs:259-279** — `is_recursive` docstring says \"the flag is used in three distinct places\" but enumerates four bullets (termination.rs, unfold.rs, engine_eval.rs, gui/src-tauri/src/engine.rs). Fix: change \"three distinct places\" to \"four distinct places\", or use \"in the following places\" so future additions don't require re-editing the prose.\n\n2. **crates/reify-eval/tests/recursive_unfold.rs** — depth-limit test name fix (from task 424 review).\n\n3. **crates/reify-eval/src/engine_admin.rs** — stale comment fix (from task 424 review).\n\n4. **crates/reify-eval/tests/tube_pipe_e2e.rs:~310** — `pipe_volume_through_full_pipeline_matches_formula` docstring reads \"π*r²*L verified within 5% relative error via a parallel direct OcctKernel query\" but the actual assertion is `rel_err < 1e-6`. Update to: \"π*r²*L verified to floating-point tolerance (rel_err < 1e-6) via a parallel direct OcctKernel query\".\n\nAll items are doc/comment/naming accuracy fixes; no behavior changes.",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "details": "",
+        "details": "## Item 1 — is_recursive doc count (crates/reify-compiler/src/types.rs:259-279)\nChange \"the flag is used in three distinct places\" → \"four distinct places\", or reword to \"in the following places\" to avoid a stale count on future additions.\n\n## Item 2 — depth-limit test name (crates/reify-eval/tests/recursive_unfold.rs)\nApply the depth-limit test rename identified in the task 424 review.\n\n## Item 3 — engine_admin stale comment (crates/reify-eval/src/engine_admin.rs)\nApply the comment fix identified in the task 424 review.\n\n## Item 4 — tube_pipe_e2e tolerance docstring (crates/reify-eval/tests/tube_pipe_e2e.rs:~310)\nFunction `pipe_volume_through_full_pipeline_matches_formula` has docstring:\n  `π*r²*L verified within 5% relative error via a parallel direct OcctKernel query`\nActual assertion: `rel_err < 1e-6`.\nReplace docstring with:\n  `π*r²*L verified to floating-point tolerance (rel_err < 1e-6) via a parallel direct OcctKernel query`\n\nSingle-line change; no behavior change.",
         "testStrategy": "",
         "subtasks": [],
         "metadata": {
@@ -43836,7 +43836,10 @@
             "crates/reify-compiler/src/types.rs",
             "crates/reify-eval/src/engine_admin.rs",
             "crates/reify-eval/tests/recursive_unfold.rs"
-          ]
+          ],
+          "curator_action": "combine",
+          "curator_justification": "The candidate is a single-line doc fix in crates/reify-eval/tests/tube_pipe_e2e.rs — well under the 300-char tiny-task threshold. Task 2069 is already a bundle of doc/comment/naming accuracy fixes across reify-compiler and reify-eval (is_recursive count, depth-limit test name, engine_admin comment). The candidate fits the same unified concern (\"fix stale doc claims in reify-eval\"), adds no new module-lock key (union stays within crates/reify-compiler + crates/reify-eval), stays well within plann",
+          "combined_at": "2026-04-22T00:52:01.421455+00:00"
         }
       },
       {
@@ -44269,7 +44272,12 @@
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:48:48.616Z"
+        "updatedAt": "2026-04-22T00:48:48.616Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/edit_source.rs"
+          ]
+        }
       },
       {
         "id": "2092",
@@ -44333,7 +44341,9 @@
       "completedCount": 1828,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T00:52:01.444Z",
+      "description": "Tasks for master context"
     }
   }
 }
