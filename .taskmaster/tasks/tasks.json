@@ -44751,15 +44751,16 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:253-257` — on an unknown `Sub(name)` lookup the error message is `unresolvable GeomRef::Sub('{name}') — no such named sub-reference in scope`. This is surfaced via `Diagnostic::error(format!(\"failed to compile geometry operation: {}\", err))` with no source span (the caller uses `SourceSpan::new(0,0)` everywhere upstream), so a user with a typo in `difference(body, hoel)` gets no indication of which file/line.\n\nNot specific to `Sub(name)` — all surrounding diagnostics share the same span-less shape. Fix: thread the realization's `span` into `execute_realization_ops` so per-op diagnostics can carry a span. Self-acknowledged follow-up from Task 2011 review (reviewer explicitly marked it out of scope).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T02:12:28.445Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:12:27.113Z",
+      "lastModified": "2026-04-22T02:12:28.445Z",
       "taskCount": 2107,
       "completedCount": 1836,
       "tags": [
