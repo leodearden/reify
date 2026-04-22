@@ -2059,13 +2059,16 @@ fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
 ///
 /// `has_dirty_guards` fires (Phase 1) because group 3's guard cell is in the
 /// dirty cone of the edit. `guard_changed` fires (Phase 3) because group 3's
-/// guard value changes from true to false. With the per-group skip, only group 3
-/// is re-elaborated in both phases → counter = 2.
+/// guard value changes from true to false. Phase 1 processes group 3 and records
+/// it in `phase1_reelaborated`; Phase 3 sees it in the set and skips it →
+/// counter = 1.
 ///
-/// Without the fix: counter = 10 (Phase 1) + 10 (Phase 3) = 20.
-/// With the fix:    counter = 1  (Phase 1) + 1  (Phase 3) = 2.
+/// Without per-group skip (pre-task-2088):          counter = 10 (Phase 1) + 10 (Phase 3) = 20.
+/// With per-group skip, no cross-phase dedup:       counter =  1 (Phase 1) +  1 (Phase 3) =  2.
+/// With cross-phase dedup via phase1_reelaborated:  counter =  1 (Phase 1) +  0 (Phase 3) =  1.
 ///
 /// Task 2088 — edit_param Phase 1 & 3 per-group skip.
+/// Task 2140 — cross-phase dedup via `phase1_reelaborated` set.
 #[test]
 fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
     let module_src = r#"structure S {
@@ -2135,21 +2138,21 @@ fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
         );
     }
 
-    // (c) Performance lock: only group 3 must be re-elaborated in Phase 1 and
-    // Phase 3. The other 9 groups have unchanged guard values (uN=true) and must
-    // be skipped. edit_param(u3, false) triggers both Phase 1 (u3 in changed
-    // structure_controlling set → has_dirty_guards) and Phase 3 (guard value
-    // flips true→false → guard_changed). Expected total: 1 (Phase 1) + 1
-    // (Phase 3) = exactly 2.
-    // Without the skip optimisation this counter would be 10 + 10 = 20.
+    // (c) Performance lock: only Phase 1 re-elaborates group 3. Phase 3 sees
+    // group 3 in `phase1_reelaborated` (task 2140 cross-phase dedup set) and
+    // skips it. The other 9 groups have unchanged guard values (uN=true) and
+    // are skipped by the per-group skip (task 2088). Expected total:
+    // 1 (Phase 1) + 0 (Phase 3) = exactly 1.
+    // Without the skip optimisation: 10 (Phase 1) + 10 (Phase 3) = 20.
+    // With per-group skip but no cross-phase dedup: 1 (Phase 1) + 1 (Phase 3) = 2.
     let counter = engine.last_guard_phase_group_evals();
     assert_eq!(
-        counter, 2,
-        "expected exactly 2 non-skipped guard-phase group iterations \
-         (1 in Phase 1 + 1 in Phase 3 for the one affected group, \
-         9 per phase skipped); got {} — if 0, the counter increment is \
-         missing from edit_param (instrumentation dropped); \
-         if > 2, the per-group skip is broken",
+        counter, 1,
+        "expected exactly 1 non-skipped guard-phase group iteration \
+         (Phase 1 processes group 3; Phase 3 skips it via phase1_reelaborated set); \
+         got {} — if 0, the counter increment is missing from Phase 1 \
+         (instrumentation dropped); if > 1, cross-phase dedup is broken \
+         (2 specifically means Phase 3 is redoing Phase 1's work)",
         counter
     );
 }
