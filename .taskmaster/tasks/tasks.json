@@ -45087,23 +45087,21 @@
         "description": "Replace the runtime FFI drift-guard test for make_line_wire floors with a compile-time invariant, eliminating the test-only FFI accessor leaking into production binaries.",
         "details": "Context: Task 2123 added a runtime drift-guard test (`rust_line_wire_floor_strictly_below_cpp_floor`) that reads the C++ `CPP_LINE_WIRE_MIN_LENGTH_SQ` through a new FFI accessor `cpp_line_wire_min_length_sq()`. Reviewer flagged two concerns:\n\n1. (ffi.rs:271) The accessor is declared in the production cxx-bridge with no `#[cfg(test)]` gate — comment-only enforcement of TEST-ONLY tends to drift, and the symbol is linked into release binaries.\n2. (occt_wrapper.cpp:136 + lib.rs:80) Both floor constants are duplicated across the language boundary, and a whole FFI shim + runtime test exists purely to detect drift. A single-source-of-truth design removes the drift class entirely.\n\nPreferred redesign:\n- Promote `CPP_LINE_WIRE_MIN_LENGTH_SQ` to a Rust `const` alongside `RUST_LINE_WIRE_MIN_LENGTH_SQ`.\n- Pass the C++ floor value to the C++ layer via one of: (a) generated header written by build.rs, (b) `extern \"Rust\"` fn that C++ calls at startup to init a static, or (c) compile-time cxx constant export if supported in the project's cxx version.\n- Replace the runtime test with `const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ);`.\n- Remove the `cpp_line_wire_min_length_sq()` FFI accessor (both the bridge decl in `src/ffi.rs:~271` and the C++ impl in `cpp/occt_wrapper.cpp:~140`).\n- Update comments in `occt_wrapper.cpp:~132-135` and `lib.rs:~68-80` to reflect the new single-source design.\n\nKeep the existing behavioral tests (`ffi_make_line_wire_rejects_sub_epsilon_length`) intact.\n\nmemory_hints: search \"task 2123 drift guard make_line_wire floor\", search \"cxx bridge const export Rust C++\".",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T04:46:57.265Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T04:38:26.227Z",
-      "taskCount": 2119,
+      "lastModified": "2026-04-22T04:46:57.265Z",
+      "taskCount": 2120,
       "completedCount": 1854,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T04:44:04.058Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T04:46:55.819Z"
+      ]
     }
   }
 }
