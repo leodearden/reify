@@ -2364,3 +2364,82 @@ describe('viewStateStore — stale path preservation (step-17)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// getStalePaths — step-19 tests (fail until step-20 adds the accessor)
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — getStalePaths (step-19)', () => {
+  function treeWith(child?: string) {
+    if (!child) return [makeNode({ entity_path: 'Root', kind: 'structure' })];
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [makeNode({ entity_path: child, kind: 'occurrence' })],
+      }),
+    ];
+  }
+
+  it('(a) returns paths present in state.explicit but absent from the current tree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      store.setTree(treeWith('Root.going_away'));
+      store.setVisibility('Root.going_away', 'hidden', false);
+
+      // Remove the path
+      store.setTree(treeWith());
+
+      // getStalePaths should report it
+      expect((store as any).getStalePaths()).toContain('Root.going_away');
+
+      dispose();
+    });
+  });
+
+  it('(b) returns [] when the tree is empty (no nodeByPath entries)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // No setTree call → nodeByPath is empty
+      store.setVisibility('Some.path', 'hidden', false);
+
+      expect((store as any).getStalePaths()).toEqual([]);
+
+      dispose();
+    });
+  });
+
+  it('(c) does not include paths that are currently in the tree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      store.setTree(treeWith('Root.present'));
+      store.setVisibility('Root.present', 'hidden', false);
+
+      const stale = (store as any).getStalePaths() as string[];
+      expect(stale).not.toContain('Root.present');
+
+      dispose();
+    });
+  });
+
+  it('(d) stale path disappears from results when the tree re-includes it', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      store.setTree(treeWith('Root.movable'));
+      store.setVisibility('Root.movable', 'ghost', false);
+
+      // Path leaves tree → becomes stale
+      store.setTree(treeWith());
+      expect((store as any).getStalePaths()).toContain('Root.movable');
+
+      // Path returns → no longer stale
+      store.setTree(treeWith('Root.movable'));
+      expect((store as any).getStalePaths()).not.toContain('Root.movable');
+
+      dispose();
+    });
+  });
+});
