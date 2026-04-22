@@ -499,19 +499,24 @@ impl Engine {
                         .as_ref()
                         .and_then(|s| s.snapshot.values.get(&group.guard_cell))
                         .map(|(v, _)| v);
-                    if old_guard_val == Some(&guard_val) {
-                        continue;
-                    }
-                    self.last_guard_phase_group_evals += 1;
-                    values.insert(group.guard_cell.clone(), guard_val.clone());
+                    // Always write the guard cell value before the skip check.
+                    // Phase 1 re-evaluates guards with a determinacy context that
+                    // the main eval loop lacks; DeterminacyPredicate guards (e.g.
+                    // `determined(x)`) evaluate to Undef in the main loop and must
+                    // be corrected here — even when we skip member re-elaboration.
                     let guard_det = if matches!(&guard_val, Value::Bool(_)) {
                         DeterminacyState::Determined
                     } else {
                         DeterminacyState::Undetermined
                     };
+                    values.insert(group.guard_cell.clone(), guard_val.clone());
                     new_snapshot
                         .values
                         .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
+                    if old_guard_val == Some(&guard_val) {
+                        continue;
+                    }
+                    self.last_guard_phase_group_evals += 1;
 
                     reelaborate_guarded_group(
                         graph,
@@ -1462,7 +1467,7 @@ impl Engine {
                     // added in this edit, AND no role-flip was detected (role-flip
                     // suppresses all per-group skips because we can't identify
                     // which groups were affected without a second full walk), then
-                    // skip the write-back and member re-elaboration for this group.
+                    // skip the member re-elaboration for this group.
                     let old_guard_val = self
                         .eval_state
                         .as_ref()
@@ -1470,6 +1475,20 @@ impl Engine {
                         .map(|(v, _)| v);
                     let has_added_in_group = group.members.iter().any(|m| added.contains(m))
                         || group.else_members.iter().any(|m| added.contains(m));
+                    // Always write the guard cell value before the skip check.
+                    // Phase 1 re-evaluates guards with a determinacy context that
+                    // the main eval loop lacks; DeterminacyPredicate guards (e.g.
+                    // `determined(x)`) evaluate to Undef in the main loop and must
+                    // be corrected here — even when we skip member re-elaboration.
+                    let guard_det = if matches!(&guard_val, Value::Bool(_)) {
+                        DeterminacyState::Determined
+                    } else {
+                        DeterminacyState::Undetermined
+                    };
+                    values.insert(group.guard_cell.clone(), guard_val.clone());
+                    new_snapshot
+                        .values
+                        .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
                     if old_guard_val == Some(&guard_val)
                         && !has_added_in_group
                         && !has_role_flipped_guard_member
@@ -1477,15 +1496,6 @@ impl Engine {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
-                    values.insert(group.guard_cell.clone(), guard_val.clone());
-                    let guard_det = if matches!(&guard_val, Value::Bool(_)) {
-                        DeterminacyState::Determined
-                    } else {
-                        DeterminacyState::Undetermined
-                    };
-                    new_snapshot
-                        .values
-                        .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
 
                     let is_true = matches!(&guard_val, Value::Bool(true));
                     let is_false = matches!(&guard_val, Value::Bool(false));
