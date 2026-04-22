@@ -20,7 +20,7 @@ use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
-    guard_state_fingerprint,
+    guard_state_fingerprint, value_type_kind_matches,
 };
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
@@ -307,10 +307,27 @@ impl Engine {
                     // behaviour of silently skipping a no-default Param with
                     // no override.
                     //
-                    // Validation (type-kind + Scalar dimension) is added by
-                    // later steps of task 2017; purging of orphaned overrides
-                    // runs once, before this loop (see the retain call after
-                    // Snapshot::from_compiled_module).
+                    // Validation mirrors Engine::edit_param: type-kind
+                    // checked here (step-6); Scalar dimension check added by
+                    // step-8. On mismatch we emit a Warning diagnostic,
+                    // retain the entry in param_overrides (reverting the
+                    // source edit should resurrect it), and fall back to the
+                    // default_expr path.
+                    //
+                    // Orphan purging runs once, before this loop (see the
+                    // retain call after Snapshot::from_compiled_module).
+                    let override_val = match self.param_overrides.get(&cell.id) {
+                        Some(v) if value_type_kind_matches(v, &cell.cell_type) => Some(v.clone()),
+                        Some(v) => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                                cell.id, cell.cell_type, v
+                            )));
+                            None
+                        }
+                        None => None,
+                    };
+
                     let node_id = NodeId::Value(cell.id.clone());
                     let start = Instant::now();
                     self.journal.record(EvalEvent {
@@ -321,21 +338,34 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = if let Some(v) = self.param_overrides.get(&cell.id).cloned() {
+                    let val = if let Some(v) = override_val {
                         v
-                    } else {
-                        // `cell.default_expr` is guaranteed Some by the outer
-                        // `else if` condition.
-                        let expr = cell
-                            .default_expr
-                            .as_ref()
-                            .expect("default_expr presence gated by outer condition");
+                    } else if let Some(ref expr) = cell.default_expr {
                         reify_expr::eval_expr(
                             expr,
                             &reify_expr::EvalContext::new(&values, &functions)
                                 .with_meta(&self.meta_map)
                                 .with_determinacy(&snapshot.values),
                         )
+                    } else {
+                        // No override accepted and no default_expr. This is
+                        // only reachable if the override existed but was
+                        // rejected by the type-kind guard above. Skip the
+                        // cell — mirrors the pre-task-2017 behaviour and
+                        // avoids writing an invalid value into the snapshot.
+                        // Keep the journal well-formed by completing the
+                        // Started event with an Unchanged outcome (no value
+                        // was written; equivalent to a no-op).
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::Completed {
+                                outcome: EvalOutcome::Unchanged,
+                            },
+                            version: VersionId(version_id),
+                            payload: Some(EventPayload::Duration(start.elapsed())),
+                        });
+                        continue;
                     };
                     values.insert(cell.id.clone(), val.clone());
 
