@@ -4494,6 +4494,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validate_pipe_start_tangent_rejects_nan_magnitude() {
+        // Exercises the NaN-safe magnitude guard: any NaN component propagates
+        // through mag_sq = x²+y²+z², making mag_sq NaN, which should produce an
+        // OperationFailed error whose message contains "magnitude".
+        let nan_cases = [
+            ffi::ffi::Point3 { x: f64::NAN, y: 0.0,      z: 1.0 },
+            ffi::ffi::Point3 { x: 0.0,      y: f64::NAN, z: 0.0 },
+        ];
+        for t in nan_cases {
+            let coords = (t.x, t.y, t.z);
+            let result = super::validate_pipe_start_tangent(t);
+            match result {
+                Err(GeometryError::OperationFailed(msg)) => {
+                    assert!(
+                        msg.contains("magnitude"),
+                        "expected error containing 'magnitude' for NaN tangent {coords:?}, got: {msg}"
+                    );
+                }
+                Ok(()) => panic!(
+                    "expected Err for NaN tangent ({coords:?}), got Ok"
+                ),
+                Err(other) => panic!(
+                    "expected OperationFailed for NaN tangent ({coords:?}), got {:?}",
+                    other
+                ),
+            }
+        }
+    }
+
     // --- wire_start_tangent FFI tests ---
 
     #[test]
