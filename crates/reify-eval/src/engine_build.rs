@@ -321,7 +321,11 @@ impl Engine {
                         step_handles.push(handle.id);
                     }
                     Err(e) => {
-                        diagnostics.push(Diagnostic::error(format!("geometry error: {}", e)));
+                        diagnostics.push(
+                            Diagnostic::error(format!("geometry error: {}", e)).with_label(
+                                DiagnosticLabel::new(realization_span, "in this realization"),
+                            ),
+                        );
                         break;
                     }
                 },
