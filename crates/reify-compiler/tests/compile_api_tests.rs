@@ -1079,9 +1079,9 @@ fn compile_pipe_produces_sweep_pipe_kind_with_path_ref() {
         } => {
             assert_eq!(profiles.len(), 1, "pipe should have 1 profile (path)");
             assert_eq!(profiles[0], GeomRef::Step(0), "path should point to Step(0)");
-            assert_eq!(args.len(), 2, "pipe should have 2 named args");
-            assert_eq!(args[0].0, "path", "arg[0] should be path");
-            assert_eq!(args[1].0, "radius", "arg[1] should be radius");
+            // task-383 S6: path was an inert placeholder; only radius remains in args
+            assert_eq!(args.len(), 1, "pipe should have 1 named arg (radius only)");
+            assert_eq!(args[0].0, "radius", "arg[0] should be radius");
         }
         other => panic!("expected Sweep{{Pipe}} at ops[1], got {:?}", other),
     }
