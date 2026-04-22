@@ -330,8 +330,15 @@ mod tests {
     }
 
     /// Build a composed expression representing `outer_name(inner_name(dummy_literal))`.
+    ///
+    /// The dummy literal is typed `Real` to match the `domain_type` of the inner
+    /// field (`Type::Real`) in all current test cases. `check_field_composition_types`
+    /// only validates inter-function wiring (inner.codomain → outer.domain) and does
+    /// not check argument types against the inner field's domain, so the dummy type
+    /// currently has no effect on test outcomes. It is kept consistent with the inner
+    /// domain to avoid spurious failures if argument-type checking is added later.
     fn make_composition_expr(outer_name: &str, inner_name: &str) -> CompiledExpr {
-        let dummy = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let dummy = CompiledExpr::literal(Value::Real(0.0), Type::Real);
         let inner_call = CompiledExpr {
             kind: CompiledExprKind::FunctionCall {
                 function: ResolvedFunction {
