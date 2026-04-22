@@ -45406,23 +45406,21 @@
         "description": "The new post-solver pass in engine_eval.rs:819-827 and 858-866 writes (Undef, Auto) for inactive-branch Auto cells, overwriting values the solver just resolved. Meanwhile `deactivate_if_not_auto` (used by edit_param Phase 1 and the post-wave2 cleanup) PRESERVES the solver's value for Auto cells. This means initial `eval()` and `edit_param()` now produce different observable states for the same guard configuration when an Auto param appears in an inactive branch. The test fixture `edit_param_guard_group_mixed_members_via_edit_param` already had to be rewritten to chase this change from Determined/7mm to Undef/Auto.\n\nDecide which semantics is canonical and make the two paths match, or explicitly document the asymmetry and its rationale in a central place (not just inline comments in each site).\n\nSuggested fix: Either (a) make initial eval use `deactivate_if_not_auto` for inactive-branch Auto cells (preserve solver values, matching edit_param), or (b) update edit_param's deactivation to overwrite Auto cells to (Undef, Auto) (matching new eval). Document the decision in a module-level comment and add a test asserting `eval() → edit_param(no-op)` leaves Auto cells in identical state.\n\nSource: post-merge review suggestion on task 2140.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T09:18:04.114Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T09:16:31.523Z",
-      "taskCount": 2134,
+      "lastModified": "2026-04-22T09:18:04.114Z",
+      "taskCount": 2135,
       "completedCount": 1872,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T09:17:56.284Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T09:17:56.308Z"
+      ]
     }
   }
 }
