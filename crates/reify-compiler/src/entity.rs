@@ -1402,7 +1402,7 @@ pub(crate) fn compile_entity(
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(param.name.clone()),
                         operations: ops,
-                        span: SourceSpan::new(0, 0),
+                        span: param.span,
                     });
                     realization_index += 1;
                 }
@@ -1916,7 +1916,7 @@ fn emit_guarded_geometry_realizations(
                         id: RealizationNodeId::new(deps.entity_name, *sink.realization_index),
                         name: Some(param.name.clone()),
                         operations: ops,
-                        span: SourceSpan::new(0, 0),
+                        span: param.span,
                     });
                     *sink.realization_index += 1;
                 }

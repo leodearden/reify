@@ -1844,6 +1844,62 @@ fn realization_decl_name_matches_let_binding_name() {
 
 // ── RealizationDecl.span tests ────────────────────────────────────────────────
 
+/// Verifies that a Solid-typed param realization's `span` field is populated
+/// from the originating `ParamDecl.span` — i.e., it carries meaningful byte
+/// offsets that point back into the source text.
+///
+/// This test fails after step-2 because line 1370 in `entity.rs` still has
+/// `span: SourceSpan::new(0, 0)` on the `MemberDecl::Param` arm (step-3 TDD pin).
+#[test]
+fn realization_span_populated_from_param_decl_default_span() {
+    // Source is crafted so "param g: Solid" starts well past byte-offset 0.
+    // The "structure def Widget {\n    " prefix guarantees span.start > 0.
+    let source = "structure def Widget {\n    param g: Solid = cylinder(10mm, 20mm)\n}";
+    let compiled = compile_source(source);
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template not found");
+
+    // The Solid param should produce exactly 1 realization.
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 realization for `param g: Solid = cylinder(...)`, \
+         got {}",
+        template.realizations.len()
+    );
+
+    let realization = &template.realizations[0];
+
+    assert!(
+        realization.span.start > 0,
+        "span.start should be > 0 (param g is not at the very beginning of source), \
+         got span.start = {}",
+        realization.span.start
+    );
+    assert!(
+        realization.span.end > realization.span.start,
+        "span.end should be > span.start (non-empty span), \
+         got start={} end={}",
+        realization.span.start,
+        realization.span.end
+    );
+    let slice = &source[realization.span.start as usize..realization.span.end as usize];
+    assert!(
+        slice.contains("g"),
+        "span slice should contain \"g\", got: {:?}",
+        slice
+    );
+    assert!(
+        slice.contains("cylinder"),
+        "span slice should contain \"cylinder\", got: {:?}",
+        slice
+    );
+}
+
 /// Verifies that a geometry-let realization's `span` field is populated from
 /// the originating `LetDecl.span` — i.e., it carries meaningful byte offsets
 /// that point back into the source text.
