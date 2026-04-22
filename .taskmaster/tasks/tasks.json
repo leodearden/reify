@@ -44499,11 +44499,16 @@
         "description": "engine_edit.rs L1435: `new_total != old_roles.len()` compares raw count vs deduped map len. Identical intra-group duplicates in both old/new graphs cause false role-flip. Fix via HashSet dedup on new-side walk, or return pre-dedup count from build_old_role_map. Add regression test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:53:11.529Z"
+        "updatedAt": "2026-04-22T02:01:22.360Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_edit.rs"
+          ]
+        }
       },
       {
         "id": "2101",
@@ -44575,7 +44580,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:01:19.183Z",
+      "lastModified": "2026-04-22T02:01:22.361Z",
       "taskCount": 2097,
       "completedCount": 1836,
       "tags": [
