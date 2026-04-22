@@ -712,42 +712,15 @@ impl Engine {
                         .get(&group.guard_cell)
                         .cloned()
                         .expect("guard cell must have a value after initial evaluation");
-                    let guard_is_true = matches!(&guard_val, Value::Bool(true));
-                    let guard_is_false = matches!(&guard_val, Value::Bool(false));
-
-                    // members active when guard is true; else_members active when guard is false.
-                    for (cells, is_active) in [
-                        (&group.members, guard_is_true),
-                        (&group.else_members, guard_is_false),
-                    ] {
-                        for member_id in cells {
-                            if is_active {
-                                if let Some(node) =
-                                    new_snapshot.graph.value_cells.get(member_id)
-                                    && let Some(ref expr) = node.default_expr
-                                {
-                                    let val = reify_expr::eval_expr(
-                                        expr,
-                                        &reify_expr::EvalContext::new(&values, &functions)
-                                            .with_meta(&self.meta_map),
-                                    );
-                                    values.insert(member_id.clone(), val.clone());
-                                    new_snapshot.values.insert(
-                                        member_id.clone(),
-                                        (val, DeterminacyState::Determined),
-                                    );
-                                }
-                            } else {
-                                // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                                deactivate_if_not_auto(
-                                    &new_snapshot.graph,
-                                    member_id,
-                                    &mut values,
-                                    &mut new_snapshot.values,
-                                );
-                            }
-                        }
-                    }
+                    reelaborate_guarded_group(
+                        &new_snapshot.graph,
+                        &group,
+                        &guard_val,
+                        &mut values,
+                        &mut new_snapshot.values,
+                        &functions,
+                        &self.meta_map,
+                    );
                 }
 
                 // Recompute topology fingerprint to include guard states.
