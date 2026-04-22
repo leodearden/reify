@@ -4615,4 +4615,27 @@ mod tests {
             t.z
         );
     }
+
+    // --- make_line_wire degeneracy threshold tests (task-383 S2) ---
+
+    #[test]
+    fn ffi_make_line_wire_rejects_sub_epsilon_length() {
+        // length = 5e-6 m → dist_sq = 2.5e-11, which is above the old
+        // CPP_AXIS_MAG_SQ_MIN (1e-30) but below the new CPP_LINE_WIRE_MIN_LENGTH_SQ
+        // (1e-10). Confirms that make_line_wire now rejects degenerate lengths
+        // < 1e-5 m (= √(1e-10) m ≈ 10 µm).
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 5e-6, 0.0, 0.0);
+        // Use .err().expect(...) instead of unwrap_err() because UniquePtr<OcctShape>
+        // doesn't implement Debug, so unwrap_err()'s panic message can't format the Ok arm.
+        let err = result.err().expect("make_line_wire with 5µm segment should return Err, got Ok");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("distinct"),
+            "error message should mention 'distinct', got: {msg}"
+        );
+    }
 }
