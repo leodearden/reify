@@ -45394,11 +45394,16 @@
         "description": "Apply the symmetric cross-phase dedup in edit_source that task 2140 applied in edit_param. edit_source in crates/reify-eval/src/engine_edit.rs has analogous Phase 1 (~line 1448) and Phase 3 (~line 1741) guard re-elaboration logic with the same cross-phase redundancy: Phase 3's old_guard_val is pulled from self.eval_state (pre-edit snapshot), so Phase 3 re-does Phase 1's work when a guard value actually flips. The perf-lock test `edit_source_phase1_and_3_skip_unchanged_guarded_groups` in tests/edit_source.rs:1926 currently asserts counter == 2, baking in the redundancy.\n\nDesign (from esc-2140-83):\n- Declare `phase1_reelaborated: HashSet<ValueCellId>` before Phase 1.\n- Insert after `self.last_guard_phase_group_evals += 1;` at ~line 1498.\n- In Phase 3 after the `let Some(guard_val) = ...` guard at ~line 1753, add `if phase1_reelaborated.contains(&group.guard_cell) { continue; }`.\n- Update perf-lock assertion in tests/edit_source.rs:1926 from `counter == 2` to `counter == 1`.\n\nCaveat: edit_source has additional skip conditions (added members, role-flipped guard members) that make per-group skip logic more complex than edit_param's. Account for these when wiring the HashSet population point so groups that were re-elaborated for role-flip or added-member reasons are correctly recorded as phase1_reelaborated.\n\nMemory hints: search for \"task 2140\" to see the edit_param design; see engine_edit.rs:727-753 for the post-wave2 cleanup that uses the phase1_reelaborated set in edit_param.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:16:31.523Z"
+        "updatedAt": "2026-04-22T09:57:08.016Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "e32059cfd93223929353f6f3f273f79b67ba7531"
+          }
+        }
       },
       {
         "id": "2143",
@@ -45482,9 +45487,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T09:54:13.836Z",
+      "lastModified": "2026-04-22T09:57:08.016Z",
       "taskCount": 2139,
-      "completedCount": 1872,
+      "completedCount": 1873,
       "tags": [
         "master"
       ]
