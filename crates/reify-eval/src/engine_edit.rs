@@ -13,7 +13,7 @@ use reify_types::{
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
-use crate::graph::EvaluationGraph;
+use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
@@ -35,6 +35,48 @@ pub(crate) fn deactivate_if_not_auto(
         values.insert(id.clone(), Value::Undef);
         snapshot_values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
     }
+}
+
+/// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
+/// probe in `Engine::edit_source`.
+///
+/// The returned map is keyed by `ValueCellId` and maps to
+/// `(guard_cell, branch_tag)` where `branch_tag` is `0u8` for `members`
+/// (guard = true) and `1u8` for `else_members` (guard = false).
+///
+/// When a `ValueCellId` appears in both `members` and `else_members` of the
+/// **same** group, the `else_members` entry wins (last-write semantics); this
+/// is an observable pattern in valid compiled modules (e.g. a cell that is the
+/// "effective" output regardless of which branch is active).
+///
+/// # Panics (debug builds only)
+///
+/// In debug builds the function panics if any `ValueCellId` appears in two
+/// groups that have **different** `guard_cell`s, i.e. the cell is claimed by
+/// two distinct guards.  Intra-group duplicates (same `guard_cell`) are
+/// permitted and resolved by last-write-wins.
+fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (ValueCellId, u8)> {
+    let capacity: usize = groups.iter().map(|g| g.members.len() + g.else_members.len()).sum();
+    let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
+    for group in groups.iter() {
+        for mid in &group.members {
+            let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
+            debug_assert!(
+                prev.is_none_or(|(prev_guard, _)| prev_guard == group.guard_cell),
+                "ValueCellId {:?} appeared in multiple guarded-group roles",
+                mid
+            );
+        }
+        for mid in &group.else_members {
+            let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
+            debug_assert!(
+                prev.is_none_or(|(prev_guard, _)| prev_guard == group.guard_cell),
+                "ValueCellId {:?} appeared in multiple guarded-group roles",
+                mid
+            );
+        }
+    }
+    old_roles
 }
 
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
@@ -1368,16 +1410,7 @@ impl Engine {
                 false
             } else {
                 // Build old role map once.
-                let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> =
-                    HashMap::with_capacity(old_groups.iter().map(|g| g.members.len() + g.else_members.len()).sum());
-                for group in old_groups.iter() {
-                    for mid in &group.members {
-                        old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
-                    }
-                    for mid in &group.else_members {
-                        old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
-                    }
-                }
+                let old_roles = build_old_role_map(old_groups);
                 // Walk new groups, short-circuit on first mismatch.
                 let mut new_total = 0usize;
                 let mut flipped = false;
@@ -2066,5 +2099,120 @@ mod tests {
             Some(&(Value::Undef, DeterminacyState::Undetermined)),
             "Param cell must be deactivated in snapshot_values"
         );
+    }
+
+    /// Happy-path characterization: two valid groups with non-overlapping
+    /// members produce the expected four-entry role map.
+    #[test]
+    fn build_old_role_map_returns_expected_map_for_valid_groups() {
+        use std::collections::HashMap;
+
+        use crate::graph::GuardedGroupInfo;
+
+        use super::build_old_role_map;
+
+        let g1 = ValueCellId::new("E1", "guard");
+        let g2 = ValueCellId::new("E2", "guard");
+        let a = ValueCellId::new("E1", "a");
+        let b = ValueCellId::new("E1", "b");
+        let c = ValueCellId::new("E2", "c");
+        let d = ValueCellId::new("E2", "d");
+
+        let group1 = GuardedGroupInfo {
+            guard_cell: g1.clone(),
+            members: vec![a.clone()],
+            else_members: vec![b.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let group2 = GuardedGroupInfo {
+            guard_cell: g2.clone(),
+            members: vec![c.clone()],
+            else_members: vec![d.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_old_role_map(&[group1, group2]);
+
+        assert_eq!(map.len(), 4);
+        assert_eq!(map.get(&a), Some(&(g1.clone(), 0u8)));
+        assert_eq!(map.get(&b), Some(&(g1.clone(), 1u8)));
+        assert_eq!(map.get(&c), Some(&(g2.clone(), 0u8)));
+        assert_eq!(map.get(&d), Some(&(g2.clone(), 1u8)));
+    }
+
+    /// Duplicate ValueCellId across two groups must panic in debug builds.
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` because `debug_assert!` is a no-op
+    /// in release mode — without the gate `cargo test --release` would run the
+    /// body, the silent overwrite would not panic, and `#[should_panic]` would
+    /// fail. Pattern mirrors `crates/reify-expr/tests/gradient_tests.rs:4043`.
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "appeared in multiple guarded-group roles")]
+    #[test]
+    fn build_old_role_map_panics_on_duplicate_member() {
+        use crate::graph::GuardedGroupInfo;
+
+        use super::build_old_role_map;
+
+        let g1 = ValueCellId::new("E1", "guard");
+        let g2 = ValueCellId::new("E2", "guard");
+        let shared = ValueCellId::new("E1", "shared");
+
+        let group1 = GuardedGroupInfo {
+            guard_cell: g1.clone(),
+            members: vec![shared.clone()],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let group2 = GuardedGroupInfo {
+            guard_cell: g2.clone(),
+            members: vec![shared.clone()],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        // Must panic: `shared` appears in two groups.
+        build_old_role_map(&[group1, group2]);
+    }
+
+    /// A ValueCellId in both `members` and `else_members` of the *same* group
+    /// must NOT panic: intra-group duplicates are permitted and resolved by
+    /// last-write semantics (else_members entry wins).
+    ///
+    /// This exercises the second `insert` call-site in `build_old_role_map` and
+    /// pins the observable behavior for callers: the cell ends up mapped to
+    /// `(guard_cell, 1u8)` (the else-branch tag) when it appears in both
+    /// branches.  Real compiled modules can produce this pattern (e.g. an
+    /// "effective" output cell that is active in both guard branches).
+    #[test]
+    fn build_old_role_map_intra_group_duplicate_last_write_wins() {
+        use std::collections::HashMap;
+
+        use crate::graph::GuardedGroupInfo;
+
+        use super::build_old_role_map;
+
+        let g1 = ValueCellId::new("E1", "guard");
+        let shared = ValueCellId::new("E1", "shared");
+
+        // `shared` appears in both `members` (branch 0) and `else_members`
+        // (branch 1) of the same group.  Expected: no panic; else_members wins.
+        let group = GuardedGroupInfo {
+            guard_cell: g1.clone(),
+            members: vec![shared.clone()],
+            else_members: vec![shared.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_old_role_map(&[group]);
+
+        // One entry; else_members (branch 1) overwrites members (branch 0).
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&shared), Some(&(g1.clone(), 1u8)));
     }
 }
