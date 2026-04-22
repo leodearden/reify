@@ -121,6 +121,16 @@ constexpr double CPP_DIR_MAG_MIN = 1e-10;
 /// Minimum absolute angle for revolve operations (catches effectively-zero angles).
 constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
 
+/// Minimum squared length for make_line_wire endpoints (m²).
+/// Rejects lengths shorter than √(1e-10) m = 1e-5 m ≈ 10 µm.
+/// Defense-in-depth against degenerate wires: the Rust layer applies a
+/// stricter 1e-12 m² floor (1 µm), and OCCT's own Precision::Confusion
+/// guard is ≈ 1e-7 m (~0.1 µm). This C++ constant sits between the
+/// two, catching inputs that bypass the Rust layer (e.g. direct FFI tests
+/// or future hot-path code) without colliding with the axis-vector
+/// CPP_AXIS_MAG_SQ_MIN sites in make_prism / make_revolve.
+constexpr double CPP_LINE_WIRE_MIN_LENGTH_SQ = 1e-10;
+
 // --- Primitive construction ---
 
 std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
@@ -790,7 +800,7 @@ std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
         gp_Pnt p1(x1, y1, z1);
         gp_Pnt p2(x2, y2, z2);
         double dist_sq = (x2-x1)*(x2-x1) + (y2-y1)*(y2-y1) + (z2-z1)*(z2-z1);
-        if (dist_sq < CPP_AXIS_MAG_SQ_MIN) {
+        if (dist_sq < CPP_LINE_WIRE_MIN_LENGTH_SQ) {
             throw std::runtime_error("make_line_wire: start and end points must be distinct");
         }
         BRepBuilderAPI_MakeEdge edgeBuilder(p1, p2);
