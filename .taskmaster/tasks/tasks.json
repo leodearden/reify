@@ -39341,13 +39341,9 @@
             "crates/reify-eval/tests/value_cell_type_invariants.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "Engine",
-              "Type"
-            ],
+            "entities": [],
             "queries": [
-              "value cell type invariant TypeParam StructureRef Geometry unreachable",
-              "value_type_kind_matches default-reject branch debug_assert"
+              "resolution for: Verify Type::TypeParam/StructureRef/Geometry unreachable in value cells post-compilation"
             ]
           },
           "_causation_id": "86dd833d-661e-45f0-93df-933158f67e8b",
@@ -44824,6 +44820,19 @@
             "crates/reify-eval/src/engine_build.rs"
           ]
         }
+      },
+      {
+        "id": "2116",
+        "title": "Add NaN-Safe Guard for Start-Tangent Magnitude in Pipe Kernel",
+        "description": "Implement a NaN-safe guard for the start-tangent magnitude in the Pipe kernel as suggested in a previous code review.",
+        "details": "In the file `crates/reify-kernel-occt/src/lib.rs`, around lines 588-591, add a check to ensure that the start-tangent magnitude is not NaN. This involves modifying the existing logic to include a conditional statement that verifies the magnitude is a valid number before proceeding with further calculations. Use Rust's `f32::is_nan()` or `f64::is_nan()` method to perform this check, depending on the data type used. If a NaN is detected, handle it gracefully by either setting a default value or logging an error, based on the existing error handling strategy in the module.",
+        "testStrategy": "1. Write unit tests to simulate scenarios where the start-tangent magnitude could be NaN and verify that the guard correctly identifies and handles these cases. 2. Ensure that the tests cover both valid and invalid inputs, confirming that valid inputs are processed normally. 3. Run the full test suite to ensure no regressions are introduced by this change.",
+        "status": "pending",
+        "dependencies": [
+          "2095"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44833,7 +44842,10 @@
       "completedCount": 1842,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T02:58:23.349Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T03:00:38.904Z"
     }
   }
 }
