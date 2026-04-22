@@ -45244,11 +45244,16 @@
         "description": "Replace fragile substring matching in the above-floor assertion of `make_line_wire_rust_guard_boundary` (crates/reify-kernel-occt/src/lib.rs ~4748-4766) with a stable Rust-side marker, eliminating implicit coupling to C++ layer wording.",
         "details": "## Context\nTask 2129 added a behavioral test anchoring the Rust-layer `RUST_LINE_WIRE_MIN_LENGTH_SQ` floor. The above-floor assertion uses negative-substring matching on \"coincident\"/\"zero length\" (NOT present) to verify the Rust guard did not fire. The test's own NOTE comment (lib.rs:4751-4758) documents this fragility: if the C++ rejection message in cpp/occt_wrapper.cpp:812 is ever reworded to include either phrase (e.g. \"coincident endpoints\"), the test reports a false negative.\n\nReviewer (reviewer_comprehensive) flagged this as test_robustness and recommended the Rust-side marker approach over maintaining sentinel-word discipline across two languages. Reviewer also noted (test_coverage) that `OCCT_AVAILABLE` currently gates the entire test, but the below-floor case is independent of OCCT (the Rust guard at lib.rs:693 returns before any FFI call) — so the primary invariant goes uncovered on OCCT-less builds.\n\n## Work\n1. Prefix the Rust-guard `OperationFailed` message at `crates/reify-kernel-occt/src/lib.rs:694-695` with a stable marker, e.g. `\"[rust-guard] line_segment endpoints are coincident (zero length)\"`.\n2. Update the below-floor assertion in `make_line_wire_rust_guard_boundary` to assert on the `[rust-guard]` marker instead of lower-cased substrings.\n3. Update the above-floor assertion to assert the `[rust-guard]` marker is absent (removes the coupling to C++ wording entirely).\n4. Restructure the test so the below-floor case runs unconditionally (no `OCCT_AVAILABLE` gate) — the Rust guard returns before FFI, and the primary invariant is the Rust-side guard. Gate only the above-floor half on `OCCT_AVAILABLE`. Verify `OcctKernel::new()` is safe without OCCT; factor out guard invocation if not.\n5. Remove the NOTE comment once the coupling is gone.\n6. Update/remove any other callers or tests that assert on the plain-text Rust-guard message (grep for \"coincident\" / \"zero length\" across the crate).\n\n## Acceptance\n- The test no longer mentions C++ wording.\n- Reworking the C++ message in occt_wrapper.cpp does not break the Rust-guard test.\n- Below-floor assertion runs on OCCT-less CI.\n\n## Dismissed reviewer suggestions\n- code_duplication (lib.rs:4711,4743 — two `OcctKernel::new()` calls): cosmetic, dismissed as noise. May be folded opportunistically while making the above changes.\n\nmemory_hints: search \"task 2129 make_line_wire rust-guard boundary test\", search \"RUST_LINE_WIRE_MIN_LENGTH_SQ marker token\".",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T06:16:19.833Z"
+        "updatedAt": "2026-04-22T06:49:33.376Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "af5986cc1f548cfd51596f7d59037d3c61014862"
+          }
+        }
       },
       {
         "id": "2136",
@@ -45265,9 +45270,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T06:49:25.022Z",
+      "lastModified": "2026-04-22T06:49:33.376Z",
       "taskCount": 2128,
-      "completedCount": 1866,
+      "completedCount": 1867,
       "tags": [
         "master"
       ]
