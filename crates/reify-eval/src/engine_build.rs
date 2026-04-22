@@ -38,7 +38,6 @@ impl Engine {
         // Execute geometry operations
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-            let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
             let had_realization_ops = module
                 .templates
                 .iter()
@@ -46,6 +45,11 @@ impl Engine {
                 .any(|r| !r.operations.is_empty());
 
             for template in &module.templates {
+                // `named_steps` is scoped per-template so that two structures
+                // that each declare `let body = …` cannot clobber each other's
+                // name → handle entries.  Cross-template GeomRef::Sub references
+                // are intentionally not supported.
+                let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
                 for realization in &template.realizations {
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
@@ -102,7 +106,6 @@ impl Engine {
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-            let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
             let had_realization_ops = module
                 .templates
                 .iter()
@@ -110,6 +113,11 @@ impl Engine {
                 .any(|r| !r.operations.is_empty());
 
             for template in &module.templates {
+                // `named_steps` is scoped per-template so that two structures
+                // that each declare `let body = …` cannot clobber each other's
+                // name → handle entries.  Cross-template GeomRef::Sub references
+                // are intentionally not supported.
+                let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
                 for realization in &template.realizations {
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
@@ -213,9 +221,13 @@ impl Engine {
         };
 
         let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         for template in &module.templates {
+            // `named_steps` is scoped per-template so that two structures
+            // that each declare `let body = …` cannot clobber each other's
+            // name → handle entries.  Cross-template GeomRef::Sub references
+            // are intentionally not supported.
+            let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
             for realization in &template.realizations {
                 let handle_start = step_handles.len();
                 Engine::execute_realization_ops(
@@ -322,7 +334,12 @@ impl Engine {
             // Insertion happens AFTER the rollback check so failed realizations
             // never leave a stale entry that would let later realizations resolve
             // a name whose geometry was never successfully produced.
-            if let Some(&last) = step_handles.last() {
+            //
+            // Use `step_handles[handle_start..]` rather than `step_handles.last()` so
+            // that an empty-ops realization (operations.len() == 0) contributes nothing
+            // to named_steps instead of incorrectly inheriting the final handle of
+            // the previous realization.
+            if let Some(&last) = step_handles[handle_start..].last() {
                 named_steps.insert(name.to_string(), last);
             }
         }

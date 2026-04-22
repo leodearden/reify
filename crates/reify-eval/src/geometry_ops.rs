@@ -229,10 +229,9 @@ pub(crate) fn compile_geometry_op(
     //   Warning diagnostic is emitted here — the caller (execute_realization_ops)
     //   emits a single Error-severity diagnostic per failed op.  This follows the
     //   "no Warning at origin, single Error at caller" convention documented in
-    //   the `compile_geometry_op` doc-comment above (geometry_ops.rs:175-201).
+    //   the `compile_geometry_op` doc-comment above.
     let resolve_geom_ref = |r: &GeomRef,
-                            step_handles: &[GeometryHandleId],
-                            _diagnostics: &mut Vec<Diagnostic>|
+                            step_handles: &[GeometryHandleId]|
      -> Result<GeometryHandleId, String> {
         match r {
             GeomRef::Step(idx) => step_handles
@@ -249,7 +248,7 @@ pub(crate) fn compile_geometry_op(
             // (execute_realization_ops) converts the Err into a single
             // Error-severity diagnostic per failed op, consistent with the
             // "no Warning at origin, single Error at caller" convention
-            // documented in the compile_geometry_op doc-comment (lines 175-201).
+            // documented in the `compile_geometry_op` doc-comment.
             // Pinned by compile_geometry_op_sub_ref_unknown_name_returns_err_no_warning.
             GeomRef::Sub(name) => named_steps
                 .get(name)
@@ -292,8 +291,8 @@ pub(crate) fn compile_geometry_op(
             // Boolean op. Pinned by
             // `build_boolean_{union,difference,intersection}_unresolved_*_no_kernel_error`
             // in `tests/geometry_error_handling.rs`.
-            let left_id = resolve_geom_ref(left, step_handles, diagnostics)?;
-            let right_id = resolve_geom_ref(right, step_handles, diagnostics)?;
+            let left_id = resolve_geom_ref(left, step_handles)?;
+            let right_id = resolve_geom_ref(right, step_handles)?;
             match op {
                 BooleanOp::Union => Ok(reify_types::GeometryOp::Union {
                     left: left_id,
@@ -310,7 +309,7 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
-            let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
+            let target_id = resolve_geom_ref(target, step_handles)?;
             let mut eval_arg = |name: &str| -> Result<reify_types::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
@@ -408,7 +407,7 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
-            let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
+            let target_id = resolve_geom_ref(target, step_handles)?;
             let mut f64_arg = |name: &str| -> Result<f64, String> {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
@@ -470,7 +469,7 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
-            let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
+            let target_id = resolve_geom_ref(target, step_handles)?;
             match kind {
                 reify_compiler::PatternKind::Linear => {
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
@@ -688,7 +687,7 @@ pub(crate) fn compile_geometry_op(
                     // Resolve each profile GeomRef to a handle via step_handles
                     let resolved: Result<Vec<GeometryHandleId>, String> = profiles
                         .iter()
-                        .map(|r| resolve_geom_ref(r, step_handles, diagnostics))
+                        .map(|r| resolve_geom_ref(r, step_handles))
                         .collect();
                     Ok(reify_types::GeometryOp::Loft {
                         profiles: resolved?,
@@ -698,7 +697,6 @@ pub(crate) fn compile_geometry_op(
                     let profile_handle = resolve_geom_ref(
                         profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     let distance = eval_named_arg(
                         "distance",
@@ -745,7 +743,6 @@ pub(crate) fn compile_geometry_op(
                     let profile_handle = resolve_geom_ref(
                         profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
                         eval_named_arg_f64(
@@ -811,12 +808,10 @@ pub(crate) fn compile_geometry_op(
                     let profile_handle = resolve_geom_ref(
                         profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     let path_handle = resolve_geom_ref(
                         profiles.get(1).ok_or_else(|| "no path GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     Ok(reify_types::GeometryOp::Sweep {
                         profile: profile_handle,
@@ -827,7 +822,6 @@ pub(crate) fn compile_geometry_op(
                     let profile_handle = resolve_geom_ref(
                         profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     let distance = eval_named_arg(
                         "distance",
@@ -880,17 +874,14 @@ pub(crate) fn compile_geometry_op(
                     let profile_handle = resolve_geom_ref(
                         profiles.first().ok_or_else(|| "no profile GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     let path_handle = resolve_geom_ref(
                         profiles.get(1).ok_or_else(|| "no path GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     let guide_handle = resolve_geom_ref(
                         profiles.get(2).ok_or_else(|| "no guide GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     Ok(reify_types::GeometryOp::SweepGuided {
                         profile: profile_handle,
@@ -917,10 +908,10 @@ pub(crate) fn compile_geometry_op(
                     let profile_refs = &profiles[..profiles.len() - 1];
                     let resolved_profiles: Result<Vec<GeometryHandleId>, String> = profile_refs
                         .iter()
-                        .map(|r| resolve_geom_ref(r, step_handles, diagnostics))
+                        .map(|r| resolve_geom_ref(r, step_handles))
                         .collect();
                     let resolved_profiles = resolved_profiles?;
-                    let resolved_guide = resolve_geom_ref(guide_ref, step_handles, diagnostics)?;
+                    let resolved_guide = resolve_geom_ref(guide_ref, step_handles)?;
                     Ok(reify_types::GeometryOp::LoftGuided {
                         profiles: resolved_profiles,
                         guides: vec![resolved_guide],
@@ -937,7 +928,6 @@ pub(crate) fn compile_geometry_op(
                     let path_handle = resolve_geom_ref(
                         profiles.first().ok_or_else(|| "no path GeomRef supplied".to_string())?,
                         step_handles,
-                        diagnostics,
                     )?;
                     let radius = eval_named_arg(
                         "radius",

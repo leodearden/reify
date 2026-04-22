@@ -7,9 +7,7 @@
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
 use reify_test_support::*;
-use reify_types::{
-    CompiledExpr, ExportFormat, GeometryHandleId, GeometryOp, ModulePath, Severity, Type,
-};
+use reify_types::{CompiledExpr, ExportFormat, GeometryOp, ModulePath, Severity, Type};
 
 // ---------------------------------------------------------------------------
 // Helper: build a 3-realization module for the Sub-resolution scenario
@@ -110,15 +108,21 @@ fn sketch_with_multiple_named_sub_refs_resolves_correctly() {
 
     // (b) The kernel must have recorded a Difference op with body/hole handles.
     //
-    // MockGeometryKernel assigns handles sequentially starting from 1:
-    //   op 0 (body Box)       → GeometryHandleId(1)
-    //   op 1 (hole Cylinder)  → GeometryHandleId(2)
-    //   op 2 (Difference)     → GeometryHandleId(3)
-    //   op 3 (Fillet)         → GeometryHandleId(4)
-    let body_handle = GeometryHandleId(1);
-    let hole_handle = GeometryHandleId(2);
-
+    // Derive body_handle and hole_handle from the first two recorded ops (the
+    // Box and Cylinder primitives) rather than hardcoding sequential IDs.
+    // MockGeometryKernel's sequential-from-1 allocator policy is an
+    // implementation detail; using result_handle directly means this test
+    // won't break if that policy changes without a real regression.
     let recorded_ops = ops_ref.lock().unwrap().clone();
+    assert!(
+        recorded_ops.len() >= 2,
+        "expected at least 2 recorded ops (body Box, hole Cylinder) before checking Difference; \
+         got {}: {:?}",
+        recorded_ops.len(),
+        recorded_ops.iter().map(|r| format!("{:?}", r.op)).collect::<Vec<_>>()
+    );
+    let body_handle = recorded_ops[0].result_handle;
+    let hole_handle = recorded_ops[1].result_handle;
     let diff_ops: Vec<_> = recorded_ops
         .iter()
         .filter(|rec| matches!(rec.op, GeometryOp::Difference { .. }))
