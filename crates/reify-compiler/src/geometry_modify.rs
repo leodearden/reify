@@ -4,6 +4,7 @@ use super::*;
 ///
 /// Validates that exactly 2 arguments were provided, emits a labeled diagnostic if not,
 /// then builds `CompiledGeometryOp::Modify` with args `[("target", ...), (arg2_name, ...)]`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_modify_2arg(
     name: &str,
     kind: ModifyKind,
