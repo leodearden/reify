@@ -442,10 +442,7 @@ pub(crate) fn compile_entity(
                     .insert(sub.name.clone(), sub.structure_name.clone());
                 // Single lookup: handle deprecation, sub_structure_traits, and
                 // sub_member_types in one pass over compiled_templates.
-                if let Some(child_tmpl) = compiled_templates
-                    .iter()
-                    .find(|t| t.name == sub.structure_name)
-                {
+                if let Some(child_tmpl) = find_template(compiled_templates, &sub.structure_name) {
                     // Deprecation check: warn if the referenced structure is @deprecated.
                     if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
                         emit_deprecation_warning(
