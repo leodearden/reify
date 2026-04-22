@@ -1853,8 +1853,8 @@ fn realization_decl_name_matches_let_binding_name() {
 #[test]
 fn realization_span_populated_from_param_decl_default_span() {
     // Source is crafted so "param g: Solid" starts well past byte-offset 0.
-    // The "structure def Widget {\n    " prefix guarantees span.start > 0.
-    let source = "structure def Widget {\n    param g: Solid = cylinder(10mm, 20mm)\n}";
+    // The "structure Widget {\n    " prefix guarantees span.start > 0.
+    let source = "structure Widget {\n    param g: Solid = cylinder(10mm, 20mm)\n}";
     let compiled = compile_source(source);
 
     let template = compiled
@@ -1877,6 +1877,64 @@ fn realization_span_populated_from_param_decl_default_span() {
     assert!(
         realization.span.start > 0,
         "span.start should be > 0 (param g is not at the very beginning of source), \
+         got span.start = {}",
+        realization.span.start
+    );
+    assert!(
+        realization.span.end > realization.span.start,
+        "span.end should be > span.start (non-empty span), \
+         got start={} end={}",
+        realization.span.start,
+        realization.span.end
+    );
+    let slice = &source[realization.span.start as usize..realization.span.end as usize];
+    assert!(
+        slice.contains("g"),
+        "span slice should contain \"g\", got: {:?}",
+        slice
+    );
+    assert!(
+        slice.contains("cylinder"),
+        "span slice should contain \"cylinder\", got: {:?}",
+        slice
+    );
+}
+
+/// Verifies that a Solid-typed param inside a guarded group (`where <cond> {
+/// param g: Solid = cylinder(...) }`) produces a `RealizationDecl` whose `span`
+/// is populated from the originating `ParamDecl.span` — exercising the
+/// `emit_guarded_geometry_realizations` code path (entity.rs ~line 1886).
+///
+/// Without the fix, this path had `span: SourceSpan::new(0, 0)`, so
+/// `span.start` would be 0 even though `param g` is deep inside the source.
+#[test]
+fn realization_span_populated_from_guarded_param_decl_span() {
+    // Source is crafted so `param g` starts well past byte-offset 0.
+    // The "structure W {\n    param some_cond …\n    where some_cond {\n        "
+    // prefix guarantees span.start > 0.
+    let source = "structure W {\n    param some_cond : Bool = true\n    where some_cond {\n        param g : Solid = cylinder(10mm, 20mm)\n    }\n}";
+    let compiled = compile_source(source);
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W")
+        .expect("W template not found");
+
+    // The guarded Solid param should produce exactly 1 realization.
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 realization for guarded `param g : Solid = cylinder(...)`, \
+         got {}",
+        template.realizations.len()
+    );
+
+    let realization = &template.realizations[0];
+
+    assert!(
+        realization.span.start > 0,
+        "span.start should be > 0 (param g is not at the beginning of source), \
          got span.start = {}",
         realization.span.start
     );
