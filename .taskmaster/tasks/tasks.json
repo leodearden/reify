@@ -44630,7 +44630,7 @@
         "id": "2106",
         "title": "Pipe start-tangent guard: reject NaN, include tolerance in error, add -Z test",
         "description": "Three polish fixes in crates/reify-kernel-occt/src/lib.rs (task-2095 follow-up): NaN guard, error-message tolerance, and -Z test coverage. Additionally, add memory_hints to the task metadata to allow agents to prefetch context at execution time.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "Implement NaN rejection by flipping the guard to `!(t.z >= 1.0 - 1e-6)` or adding an explicit check for finite components. Include tolerance in error messages and ensure -Z test coverage. Add memory hints to facilitate context prefetching.",
@@ -44657,8 +44657,13 @@
               "task 2095 pipe kernel orientation Z-aligned guard lib.rs 588-591"
             ]
           },
-          "_causation_id": "295b905c-95f4-440c-8090-7792215e35ba"
-        }
+          "_causation_id": "295b905c-95f4-440c-8090-7792215e35ba",
+          "done_provenance": {
+            "commit": "d087ef970e761791c29fad2614b33c54f4d562e8",
+            "note": "Branch already merged into main; HEAD of worktree is ancestor of main. Tip commit covers the task-2106 polish series (commits 5be841671..d087ef970)."
+          }
+        },
+        "updatedAt": "2026-04-22T02:47:36.025Z"
       },
       {
         "id": "2107",
@@ -44816,9 +44821,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:41:29.014Z",
+      "lastModified": "2026-04-22T02:47:36.025Z",
       "taskCount": 2107,
-      "completedCount": 1841,
+      "completedCount": 1842,
       "tags": [
         "master"
       ]
