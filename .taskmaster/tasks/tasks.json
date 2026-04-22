@@ -44164,13 +44164,18 @@
         "description": "The tests in crates/reify-eval/tests/edit_source.rs exercise identical-module noop, modified let, added/removed cell, modified/added constraint, param-override preservation and purge, mixed bracket cross-check, guard-expr flip, and added active/inactive members. Gaps to close with cross-check-vs-cold-eval tests:\n\n1. Phase 4 collection count re-elaboration (no edit that changes `count(n) of …` from n to m).\n2. Step-11 module-level table refreshes — function added/removed/modified, objective change, purpose change, meta change. A regression in any of the four refreshes (self.functions / compiled_purposes / meta_map / objectives) would ship silently.\n3. Removed value cell whose dependents' expressions remain shape-compatible with a fallback branch — exercises the `// skipping it would miss dependents` arm in step 6 at engine_edit.rs:1002-1017.\n4. Removed constraint (existing tests cover modified + added only).\n5. Realization diffing at any granularity (added/removed/modified) — symmetric with constraint tests.\n\nEach test should call both `engine.edit_source(&new_module)` and a fresh `engine.eval(&new_module)` from a new Engine instance, and assert matching EvalResult values and diagnostics.\n\nmemory_hints:\n- search: \"edit_source cross-check cold eval\"\n- entity: \"CompiledModule\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2016"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:22:04.245Z"
+        "updatedAt": "2026-04-22T00:20:08.538Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/edit_source.rs"
+          ]
+        }
       },
       {
         "id": "2088",
@@ -44215,7 +44220,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T00:18:08.765Z",
+      "lastModified": "2026-04-22T00:20:08.538Z",
       "taskCount": 2081,
       "completedCount": 1823,
       "tags": [
