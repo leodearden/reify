@@ -260,6 +260,9 @@ mod tests {
             diag.labels[0].span, span_b,
             "labels[0] should point to the duplicate site (span_b)"
         );
+        // Exact-match on label messages: these are the stable wire-format strings
+        // previously duplicated verbatim across four pre_pass branches and consumed
+        // by diagnostic renderers / IDE tooling — cosmetic renames are breaking changes.
         assert_eq!(
             diag.labels[0].message, "structure defined here",
             "labels[0] message should be '{{kind}} defined here'"
