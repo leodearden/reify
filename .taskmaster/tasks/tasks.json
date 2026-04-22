@@ -45466,11 +45466,11 @@
         "description": "The post-wave2 cleanup in crates/reify-eval/src/engine_edit.rs:727-753 only iterates groups that Phase 1 actually re-elaborated (i.e. added to `phase1_reelaborated`). Groups that Phase 1 fired over but skipped via the per-group unchanged-guard short-circuit (line 524) are NOT in the set. Yet wave2 will still re-evaluate any inactive member of such a group whose default_expr reads a resolved auto param — overwriting the cell's prior Undef with a concrete value. Phase 3's per-group skip will then also short-circuit (guard value unchanged), so the corruption never gets repaired.\n\nThe existing test `edit_param_wave2_does_not_corrupt_inactive_members` exercises only the Phase-1-fired-for-this-group path; the Phase-1-skipped-but-dirty-guards path is untested.\n\nSuggested fix: Either (a) broaden the cleanup to iterate ALL guarded groups whose guard value is unchanged (re-assert inactive-branch deactivation regardless of whether Phase 1 ran for them), or (b) add a test that constructs two groups — one whose guard changes and one whose guard is unchanged but has an inactive member reading a resolved auto param — and asserts the unchanged group's inactive member stays Undef. If the intent is that this scenario cannot occur in practice, state the precondition and enforce it with a debug_assert.\n\nSource: post-merge review suggestion on task 2140.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:18:35.026Z",
+        "updatedAt": "2026-04-22T11:55:33.927Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -45496,11 +45496,11 @@
         "description": "At crates/reify-eval/src/engine_edit.rs:728 the post-wave2 cleanup does `new_snapshot.graph.guarded_groups.clone()` to iterate and compare guard_cell against a HashSet. The iteration doesn't mutate the graph, so the clone is only needed because `new_snapshot` is borrowed immutably downstream through `&new_snapshot.graph`. In a structure with many guarded groups this is a wasted allocation per edit_param.\n\nSuggested fix: Re-scope the borrow so the iterator can borrow `&new_snapshot.graph.guarded_groups` directly, or iterate `phase1_reelaborated` itself and look up each group by guard_cell. The latter is also O(|phase1_reelaborated|) rather than O(|guarded_groups|).\n\nSource: post-merge review suggestion on task 2140.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:19:06.438Z",
+        "updatedAt": "2026-04-22T11:55:34.082Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:33.798Z",
+      "lastModified": "2026-04-22T11:55:34.082Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
