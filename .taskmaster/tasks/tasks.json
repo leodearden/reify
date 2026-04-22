@@ -45347,16 +45347,16 @@
         "description": "Two post-merge review suggestions on task 2137 (merge commit c7a6cf62b) to tighten the test-instrumentation feature wire-up in crates/reify-eval.\n\n1. Delete `crates/reify-eval/tests/test_instrumentation_surface.rs`. This file is a standalone compile-time lock asserting that `Engine::last_guard_phase_group_evals()` is reachable from integration tests when `test-instrumentation` is active. However, `tests/edit_source.rs:2012` and `tests/guard_eval.rs:2145` already invoke the accessor with meaningful runtime assertions — if the self-dev-dep entry in Cargo.toml is removed, both of those integration tests will fail to compile just as loudly. The new surface test adds no coverage beyond what already exists; its own module doc even notes that runtime behaviour is locked by guard_eval.rs / edit_source.rs. Removing it trims one test file and one cargo-test target.\n\n2. Add a short `#` comment above line 19 of `crates/reify-eval/Cargo.toml` explaining why the crate depends on itself via `reify-eval = { path = \".\", features = [\"test-instrumentation\"] }`. The self-dev-dep idiom is non-obvious and a future maintainer might try to \"clean it up\" by removing the apparent circular line, which would break integration tests that use the feature-gated `Engine::last_guard_phase_group_evals()` accessor. Suggested comment: `# Self-dev-dep enables `test-instrumentation`-gated accessors (e.g. Engine::last_guard_phase_group_evals) in integration tests; see src/engine_admin.rs`.\n\nVerify with `cargo test -p reify-eval` after each change.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T07:46:39.788Z"
+        "updatedAt": "2026-04-22T08:04:37.251Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T07:46:39.788Z",
+      "lastModified": "2026-04-22T08:04:37.251Z",
       "taskCount": 2133,
       "completedCount": 1870,
       "tags": [
