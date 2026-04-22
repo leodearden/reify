@@ -11351,7 +11351,20 @@
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/stdlib_loader.rs",
             "crates/reify-compiler/tests/prelude_context_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine",
+              "prelude",
+              "compile_with_prelude"
+            ],
+            "queries": [
+              "Engine new prelude functions cache re-clone eval call performance",
+              "prelude_trait_defs unnecessary Vec lifetime anchor static prelude",
+              "compile_with_prelude pre-built prelude context avoid re-flattening enums"
+            ]
+          },
+          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
         },
         "updatedAt": "2026-04-21T21:57:58.755Z"
       },
