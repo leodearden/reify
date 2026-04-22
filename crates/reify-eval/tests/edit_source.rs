@@ -2022,3 +2022,167 @@ fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
         counter
     );
 }
+
+// ── Wave2 interaction: inactive members must stay Undef after cleanup ─────────
+
+/// Regression guard for the post-wave2 cleanup (task 2142):
+/// when Phase 1 deactivates a member and wave2 subsequently rewrites it
+/// (because the member's default_expr reads a resolved auto param), the
+/// post-wave2 cleanup step must re-deactivate it so Phase 3's
+/// `phase1_reelaborated` skip leaves the engine in a correct state.
+///
+/// `auto` params are not expressible in reify source grammar (confirmed
+/// 2026-04-22), so this test uses `TopologyTemplateBuilder` +
+/// `CompiledModuleBuilder` + `SequencedMockConstraintSolver`.
+///
+/// Test design:
+/// - Structure `S`: `param x: Length = 10mm`, `auto depth: Length`,
+///   constraint `depth >= x` (dirty when x changes, so solver re-runs),
+///   guarded group `where x > 5mm { let m = depth }` (m reads auto param).
+/// - Module A: x=10mm → guard=true; solver→depth=10mm; m=10mm.
+/// - Module B: x=3mm → guard=false; solver→depth=3mm.
+/// - edit_source(B) sequence:
+///   (1) Phase 1 fires (guard cell reads x; x in dirty cone); guard goes
+///       false → m deactivated to Undef; phase1_reelaborated = {guard_cell}.
+///   (2) Solver re-runs (constraint depth >= x reads x, so constraint is
+///       dirty); solver returns depth = 3mm.
+///   (3) Wave2 re-evaluates m (m reads depth) → writes m = 3mm,
+///       overwriting Undef ← bug trigger.
+///   (4) Post-wave2 cleanup (fix): inactive branch (members when guard=false)
+///       re-deactivated → m = Undef again.
+///   (5) Phase 3 skips the group via `phase1_reelaborated` (correct: cleanup
+///       already restored the deactivated state).
+/// - Assert: m = Undef after the edit.
+///
+/// Without the post-wave2 cleanup, m would be 3mm (wave2 value) because
+/// Phase 3's dedup would skip the group and never re-deactivate m.
+///
+/// Task 2142 — post-wave2 cleanup for edit_source cross-phase dedup.
+#[test]
+fn edit_source_wave2_does_not_corrupt_inactive_members() {
+    use std::collections::HashMap;
+    use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
+    use reify_test_support::{
+        CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
+        TopologyTemplateBuilder, ge, gt, literal, mm, value_ref,
+    };
+    use reify_types::{ModulePath, SolveResult, SourceSpan, Type};
+
+    let depth_id = ValueCellId::new("S", "depth");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let m_id = ValueCellId::new("S", "m");
+
+    // Guard expression: x > 5mm.  Reads `x`, so guard cell is in dirty_cone(x).
+    let guard_expr = gt(value_ref("S", "x"), literal(mm(5.0)));
+
+    // Member m: let m = depth (non-auto Let cell that reads the auto param).
+    // When guard=false, m must be Undef.  Wave2 will try to overwrite it.
+    let m_decl = ValueCellDecl {
+        id: m_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "depth")), // reads auto param depth
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Module A: x=10mm, guard x>5mm = true → m=depth=10mm.
+    let template_a = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(literal(mm(10.0))))
+        .auto_param("S", "depth", Type::length())
+        // constraint reads both depth and x → dirty when x changes → solver re-runs
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_x"),
+            ge(value_ref("S", "depth"), value_ref("S", "x")),
+        )
+        // guarded group: guard depends on x; member m reads depth (auto param)
+        .guarded_group(
+            guard_expr.clone(),
+            guard_id.clone(),
+            vec![m_decl.clone()], // members (active when guard = true)
+            vec![],               // constraints
+            vec![],               // else_members
+            vec![],               // else_constraints
+        )
+        .build();
+    let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .build();
+
+    // Module B: x=3mm (guard x>5mm = false → m should deactivate to Undef).
+    // Guard expression text unchanged — only x's default value changes.
+    let template_b = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "depth", Type::length())
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_x"),
+            ge(value_ref("S", "depth"), value_ref("S", "x")),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![m_decl],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .build();
+    let module_b = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_b)
+        .build();
+
+    // Sequenced solver: first call → depth = 10mm (eval A);
+    //                   second call → depth = 3mm (edit_source B).
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_id.clone(), mm(10.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_id.clone(), mm(3.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
+    ]);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval: x=10mm, guard=true, solver→depth=10mm, m=depth=10mm.
+    let initial = engine.eval(&module_a);
+    assert!(
+        matches!(initial.values.get(&m_id), Some(Value::Scalar { si_value, .. }) if (*si_value - 0.010).abs() < 1e-10),
+        "initial eval: m should be 10mm (= depth) when guard is true, got {:?}",
+        initial.values.get(&m_id),
+    );
+
+    // edit_source(B): x changes 10mm → 3mm.
+    //   Phase 1: guard cell (__guard_0, reads x) is in dirty_cone; x>5mm with
+    //   x=3mm → false → m deactivated to Undef; phase1_reelaborated = {guard_cell}.
+    //   Solver: constraint depth >= x reads x → dirty → solver returns depth=3mm.
+    //   Wave2: m re-evaluated (reads depth=3mm) → m=3mm (overwrites Undef).
+    //   Post-wave2 cleanup (fix): m re-deactivated to Undef (inactive branch).
+    //   Phase 3: skips group via phase1_reelaborated (cleanup already correct).
+    let edited = engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // m must be Undef: guard is false (x=3mm ≤ 5mm) → members branch inactive.
+    // Without the post-wave2 cleanup, m would be 3mm (wave2 re-evaluation result)
+    // because Phase 3 is skipped by the dedup and never re-deactivates m.
+    assert!(
+        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        "m must be Undef after guard flips false; \
+         if m is a concrete value (e.g. 3mm), wave2 corrupted the inactive member \
+         and the post-wave2 cleanup is missing or broken. Got {:?}",
+        edited.values.get(&m_id),
+    );
+}
