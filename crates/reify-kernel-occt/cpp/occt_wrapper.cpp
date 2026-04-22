@@ -125,11 +125,12 @@ constexpr double CPP_DIR_MAG_MIN = 1e-10;
 constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
 
 /// Minimum squared length for make_line_wire endpoints (m²).
-/// Rejects lengths shorter than √(1e-10) m = 1e-5 m ≈ 10 µm.
+/// Rejects degenerate wires below this threshold (see src/floor_constants.rs
+/// for the exact value; the minimum segment length is its square root).
 /// Defense-in-depth against degenerate wires: the Rust layer applies an
-/// earlier primary floor, and OCCT's own Precision::Confusion guard is
-/// ≈ 1e-7 m (~0.1 µm). This C++ constant sits between the two, catching
-/// inputs that bypass the Rust layer without colliding with the axis-vector
+/// earlier primary floor, and OCCT's own Precision::Confusion guard provides
+/// a final backstop. This C++ constant sits between the two, catching inputs
+/// that bypass the Rust layer without colliding with the axis-vector
 /// CPP_AXIS_MAG_SQ_MIN sites in make_prism / make_revolve.
 ///
 /// SINGLE SOURCE: the canonical value lives in src/floor_constants.rs.
