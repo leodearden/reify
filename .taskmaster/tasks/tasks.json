@@ -38801,11 +38801,11 @@
         "description": "compile_curve_op is the only extracted geometry helper that does not accept sub_ops. All other helpers (compile_transform_op, compile_modify_op, compile_boolean_op) accept and propagate sub_ops. If a future curve constructor is registered in geometry_arg_indices(), the compiled sub-ops would be silently discarded.\n\nFix: Either pass sub_ops to compile_curve_op (prepend to returned vec for consistency) or add debug_assert!(sub_ops.is_empty()) at the call site in geometry.rs:548-549 to catch future mismatches at test time.\n\nmemory_hints:\n- search: \"compile_curve_op sub_ops geometry helper\"\n- entity: compile_curve_op, geometry_arg_indices",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:29.831Z",
+        "updatedAt": "2026-04-22T11:55:42.453Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:41.647Z",
+      "lastModified": "2026-04-22T11:55:42.453Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
