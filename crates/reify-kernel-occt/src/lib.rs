@@ -692,7 +692,7 @@ impl OcctKernel {
                 let dist_sq = dx * dx + dy * dy + dz * dz;
                 if dist_sq < RUST_LINE_WIRE_MIN_LENGTH_SQ {
                     return Err(GeometryError::OperationFailed(
-                        "line_segment endpoints are coincident (zero length)".into(),
+                        "[rust-guard] line_segment endpoints are coincident (zero length)".into(),
                     ));
                 }
                 let shape = ffi::ffi::make_line_wire(*x1, *y1, *z1, *x2, *y2, *z2)
