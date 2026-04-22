@@ -39982,13 +39982,13 @@
         "description": "The `inferred_let_exprs.get(name)` fallback inside the `available_defaults` builder in `crates/reify-compiler/src/conformance.rs:246-251` (task 1834 step-8) currently has no observable end-to-end coverage: `RequirementKind::Let` is unreachable from source because the parser's `lower_let` rejects `let x : T` without a value (documented in `let_with_type_and_no_value_parses_as_empty_trait`). That makes the entire inferred-type → `AvailableDefaultKind::Let` lookup path effectively dormant, so a future regression — e.g., breaking the cache population in the pre-register pass — would not be caught by any source-driven test.\n\nAdd an in-crate (`#[cfg(test)] mod tests` inside `conformance.rs`, since `MergeContext`, `TraitRequirement`, and `TraitDefault` are `pub(crate)`) unit test that calls `check_trait_conformance` with a manually-constructed `ctx.requirements` containing a `RequirementKind::Let(expected_ty)` and a sibling unannotated `DefaultKind::Let { cell_type: None, .. }`. Assert the inferred type from the let's expression satisfies the requirement (no diagnostics).\n\nA second negative case (inferred type incompatible with `expected_ty`) would also pin the `Some(default_type) => type-mismatch diagnostic` branch around line 297-309.\n\nOrigin: esc-1834-67 review suggestion #1 from reviewer_comprehensive (task 1834). Triaged as a follow-up rather than folded into 1834 because it requires an in-crate test module that doesn't exist yet — out of scope for the original task but worth pinning before a future parser change inadvertently surfaces `RequirementKind::Let` from source.\n\nMemory hints: search \"DefaultKind Let cell_type conformance scope registration\", \"MergeContext available_defaults\", entities: DefaultKind, RequirementKind, check_trait_conformance, MergeContext.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1834"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T15:51:39.029Z",
+        "updatedAt": "2026-04-22T17:01:59.574Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -39999,7 +39999,10 @@
           "files": [],
           "modules": [
             "crates/reify-compiler/src/conformance.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "f7e489831c89aa95deb90948e1346b403c8bee69"
+          }
         }
       },
       {
@@ -45665,9 +45668,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T16:58:04.680Z",
+      "lastModified": "2026-04-22T17:01:59.574Z",
       "taskCount": 2142,
-      "completedCount": 1887,
+      "completedCount": 1888,
       "tags": [
         "master"
       ]
