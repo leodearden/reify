@@ -489,6 +489,20 @@ impl Engine {
                     } else {
                         Value::Undef
                     };
+                    // Per-group skip: if this group's guard value is unchanged vs.
+                    // the pre-edit snapshot, its activation state has not flipped
+                    // and its members don't need re-elaboration. edit_param has no
+                    // structural-add or role-flip trigger, so the skip condition is
+                    // purely "guard value unchanged".
+                    let old_guard_val = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                        .map(|(v, _)| v);
+                    if old_guard_val == Some(&guard_val) {
+                        continue;
+                    }
+                    self.last_guard_phase_group_evals += 1;
                     values.insert(group.guard_cell.clone(), guard_val.clone());
                     let guard_det = if matches!(&guard_val, Value::Bool(_)) {
                         DeterminacyState::Determined
@@ -714,6 +728,18 @@ impl Engine {
                         .get(&group.guard_cell)
                         .cloned()
                         .expect("guard cell must have a value after initial evaluation");
+                    // Per-group skip: if this group's guard value is unchanged vs.
+                    // the pre-edit snapshot, its activation state has not flipped
+                    // and its members don't need re-elaboration.
+                    let old_guard_val = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                        .map(|(v, _)| v);
+                    if old_guard_val == Some(&guard_val) {
+                        continue;
+                    }
+                    self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
                         &new_snapshot.graph,
                         &group,
