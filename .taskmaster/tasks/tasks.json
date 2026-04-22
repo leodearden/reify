@@ -44835,6 +44835,19 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-22T03:00:47.679Z"
+      },
+      {
+        "id": "2117",
+        "title": "edit_source tests: extract cross-check helper, scrub stale line-number citations, drop redundant guard",
+        "description": "Post-merge cleanup for crates/reify-eval/tests/edit_source.rs from the Task 2087 review triage. Three independent but tightly coupled improvements:\n\n1. **Extract cross-check helper.** The \"cross-check values entry-for-entry via key-union\" block (build HashSet of &ValueCellId, union, loop asserting incr.values.get == cold.values.get with an identical error message) is copy-pasted across 7 of the 10 new tests added in Task 2087 — at approximately lines 1033-1047, 1141-1153, 1299-1311, 1404-1416, 1518-1530, 1623-1635, and 1714-1726 (~15 lines × 7 ≈ 100 lines of duplicated scaffolding). Extract a local helper `fn assert_values_match(incr: &EvalResult, cold: &EvalResult)` (or file-local macro) and replace each call site with a one-liner. Leave the pre-existing tests above line ~989 alone to limit blast radius.\n\n2. **Scrub line-number citations in test doc-comments.** Several test doc-comments cite specific engine_edit.rs line numbers (e.g. `:1169-1172`, `:1172`, `:1173-1178`, `:1221-1225`, `:1002-1017`, `:1040-1042`, `:1152-1154`, `:1037-1039`) at approximately tests/edit_source.rs:1016, 1089, 1191, 1197, 1298, 1333, 1376, 1389, 1430. The actual Step-11 refresh block lives around engine_edit.rs:1213-1228, so these references are already off by ~40 lines. Replace with symbolic pointers (e.g. \"Step-11: `self.functions = module.functions.clone()` block\", \"added-realization splice in `apply_realization_diffs`\") or drop the pointers entirely — the test name + scenario already identify the code under test.\n\n3. **Delete redundant final call-count guard.** In `edit_source_refreshes_objectives_against_cold_eval` at approximately lines 1543-1553, the trailing `{ let problems = captured.lock().unwrap(); assert_eq!(problems.len(), 2, …); }` re-locks and re-asserts the same condition as the first assertion at ~1482-1489, with no intervening engine call that could have invoked the solver. The comment's \"silent third solver call during edit_source\" scenario would already have been caught by the first assertion. Delete the trailing block and its misleading explanatory comment.\n\nPreserve the existing tests' structure and coverage — this is a refactor-only task. Verify with `cargo test -p reify-eval --test edit_source`.\n\nmemory_hints:\n- search: \"edit_source cross-check cold eval\"\n- search: \"line-number citations in test comments\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2087"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44844,7 +44857,10 @@
       "completedCount": 1842,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T03:02:43.400Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T03:02:43.422Z"
     }
   }
 }
