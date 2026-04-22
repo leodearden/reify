@@ -22,3 +22,5 @@ export type { DefPreviewState, DefPreviewStore } from './defPreviewStore';
 
 export { generateDefaultView, generateAllGeometryView, generatePurposeViews, defaultVisibilityFor } from './autoViewGenerator';
 export type { ViewDefinition } from './autoViewGenerator';
+
+export { loadSidecar, saveSidecar } from './sidecarPersistence';
