@@ -1132,6 +1132,39 @@ fn compile_pipe_omits_path_placeholder() {
 }
 
 #[test]
+fn compile_sweep_guided_emits_empty_args() {
+    // SweepKind::SweepGuided carries its geometry data in `profiles`; `args` should be empty.
+    // (task-2122 red: current compiler incorrectly emits [("profile",...),("path",...),("guide",...)])
+    let source = r#"structure S {
+    let result = sweep_guided(sphere(5mm), sphere(3mm), sphere(2mm))
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_guided_empty_args"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+    let ops = &compiled.templates[0].realizations[0].operations;
+    // ops[3] is Sweep(SweepGuided)
+    match &ops[3] {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::SweepGuided,
+            args,
+            ..
+        } => {
+            assert!(
+                args.is_empty(),
+                "SweepKind::SweepGuided should emit empty args, got {:?}",
+                args.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
+        }
+        other => panic!("expected Sweep(SweepGuided) at ops[3], got {:?}", other),
+    }
+}
+
+#[test]
 fn compile_pipe_wrong_arg_count() {
     // pipe with 1 arg (should need 2)
     let source = r#"structure S {
