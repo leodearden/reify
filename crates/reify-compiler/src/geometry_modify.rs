@@ -120,27 +120,7 @@ pub(crate) fn compile_modify_op(
         }
         // fillet(target, radius)
         "fillet" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "fillet() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Fillet,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("radius".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
+            compile_modify_2arg("fillet", ModifyKind::Fillet, "radius", compiled_args, target, expr_span, diagnostics, sub_ops)
         }
         _ => unreachable!("compile_modify_op called with non-modify name: {}", name),
     }
