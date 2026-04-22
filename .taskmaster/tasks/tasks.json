@@ -39327,13 +39327,13 @@
         "description": "In crates/reify-eval/src/lib.rs (value_type_kind_matches, ~line 101-143), types with no corresponding Value variant (Type::Geometry, Type::StructureRef, Type::TypeParam) fall through to the default-reject path: any non-Undef value returns false and edit_param errors with TypeKindMismatch. This is documented as intentional, but if a value cell's declared type is ever one of these (e.g., during partially-resolved generic monomorphization or test fixtures), a real edit_param call will fail unexpectedly. Add a test or debug_assert confirming that value cells never carry Type::TypeParam / Type::StructureRef / Type::Geometry after compilation, so the default-reject branch is known-unreachable in practice. Source: task 1829 review suggestion (reviewer_comprehensive).",
         "details": "Preferred approach: add a debug_assert in the Engine compilation path (or a dedicated test over the stdlib + existing test fixtures) that iterates all value cells and asserts their declared Type is not TypeParam/StructureRef/Geometry. If this assertion ever fires, the documented \"unreachable\" claim in value_type_kind_matches needs updating. Keep within crates/reify-eval scope.\n<info added on 2026-04-16T21:53:08.841Z>\nEnsure the debug_assert is placed within the Engine module's compilation path to verify that value cells do not carry Type::TypeParam, Type::StructureRef, or Type::Geometry after compilation. This will help confirm the default-reject branch in value_type_kind_matches is indeed unreachable. Additionally, consider adding a dedicated test in crates/reify-eval/tests/value_cell_type_invariants.rs to iterate over all value cells and assert their declared Type is not one of these variants.\n</info added on 2026-04-16T21:53:08.841Z>\n<info added on 2026-04-16T22:02:42.758Z>\nmemory_hints:\n- entity: Engine, Type\n- search: \"value cell type invariant TypeParam StructureRef Geometry unreachable after compilation\"\n- search: \"value_type_kind_matches default-reject branch\"\n\nNote: This task depends on 1869 (lib.rs module-lock sequencing — both tasks touch lib.rs; 1869 does comment-only changes first).\n</info added on 2026-04-16T22:02:42.758Z>",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "1869"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:58:22.951Z",
+        "updatedAt": "2026-04-22T03:01:11.188Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -44838,7 +44838,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T03:00:47.679Z",
+      "lastModified": "2026-04-22T03:01:11.188Z",
       "taskCount": 2108,
       "completedCount": 1842,
       "tags": [
