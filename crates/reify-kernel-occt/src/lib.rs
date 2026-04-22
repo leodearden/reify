@@ -4302,51 +4302,63 @@ mod tests {
     }
 
     #[test]
-    fn kernel_pipe_x_axis_path_degenerate_solid() {
-        // The Pipe kernel arm always creates its circular profile face
-        // in the XY plane at z=0 (+Z normal). `BRepOffsetAPI_MakePipe`
-        // expects the profile plane to align with the path's start-tangent,
-        // so an X-axis path produces a degenerate (zero-volume) solid
-        // rather than a valid circular pipe.
+    fn kernel_pipe_non_z_start_tangent_returns_error() {
+        // This test locks in the explicit-error contract for non-+Z paths
+        // defined in the orientation-constraint section of GeometryOp::Pipe.
+        // Prior to task-2095, these cases silently returned a degenerate
+        // (zero-volume) solid; they now return
+        // GeometryError::OperationFailed with "start-tangent" in the message.
         //
-        // This test pins the current limitation: execute() succeeds (no
-        // GeometryError) but the resulting solid has effectively zero
-        // volume. A future amendment that reorients the profile to the
-        // path's local frame will surface here as a regression on the
-        // `volume < 1e-12` assertion — that would be a good outcome and
-        // the test should be updated to assert the correct analytic
-        // volume at that point. See the orientation-constraint section
-        // of GeometryOp::Pipe for the documented convention.
+        // The three cases cover:
+        //   - +X line segment (start-tangent = +X)
+        //   - +Y line segment (start-tangent = +Y)
+        //   - Arc in the XY plane, start_angle=0 (start-tangent = +Y)
+        //
+        // See `kernel_pipe_straight_path_volume_matches_pi_r2_l` for the
+        // accepted +Z case.
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
             return;
         }
-        let mut kernel = OcctKernel::new();
-        let wire_handle = kernel
-            .execute(&GeometryOp::LineSegment {
-                x1: 0.0, y1: 0.0, z1: 0.0,
-                x2: 0.020, y2: 0.0, z2: 0.0,
-            })
-            .expect("LineSegment execute should succeed");
-        let pipe_handle = kernel
-            .execute(&GeometryOp::Pipe {
+
+        let cases: &[(&str, GeometryOp)] = &[
+            (
+                "+X line segment",
+                GeometryOp::LineSegment {
+                    x1: 0.0, y1: 0.0, z1: 0.0,
+                    x2: 0.020, y2: 0.0, z2: 0.0,
+                },
+            ),
+            (
+                "+Y line segment",
+                GeometryOp::LineSegment {
+                    x1: 0.0, y1: 0.0, z1: 0.0,
+                    x2: 0.0, y2: 0.020, z2: 0.0,
+                },
+            ),
+            (
+                "arc in XY plane",
+                GeometryOp::Arc {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 0.010,
+                    start_angle: 0.0,
+                    end_angle: std::f64::consts::FRAC_PI_2,
+                    axis: [0.0, 0.0, 1.0],
+                },
+            ),
+        ];
+
+        for (label, path_op) in cases {
+            let mut kernel = OcctKernel::new();
+            let wire_handle = kernel
+                .execute(path_op)
+                .unwrap_or_else(|e| panic!("{label}: path execute should succeed, got {e:?}"));
+            let result = kernel.execute(&GeometryOp::Pipe {
                 path: wire_handle.id,
                 radius: Value::Real(0.002),
-            })
-            .expect("Pipe execute should not raise an error (returns a degenerate solid)");
-
-        let vol = kernel
-            .query(&GeometryQuery::Volume(pipe_handle.id))
-            .expect("Volume query should succeed");
-        let v = vol.as_f64().expect("Volume should be numeric");
-        // Current known-limitation behaviour: the orthogonal path
-        // produces a zero-volume solid. If this ever returns
-        // π*r²*L ≈ 2.513e-7, the orientation bug has been fixed —
-        // update this test to assert the correct volume.
-        assert!(
-            v.abs() < 1e-12,
-            "pipe-along-X is expected to yield a degenerate solid (current limitation); got volume={v:.3e}"
-        );
+            });
+            assert_operation_fails_with(result, "start-tangent");
+        }
     }
 
     // --- wire_start_tangent FFI tests ---
