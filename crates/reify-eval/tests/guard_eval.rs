@@ -2306,13 +2306,13 @@ fn edit_param_phase3_fires_for_auto_driven_guard_change() {
 /// - Initial eval: x=10mm, guard=true, solver→depth=10mm, m=10mm.
 /// - edit_param(x, 3mm):
 ///   (1) Phase 1 fires (guard cell in dirty cone); guard goes false →
-///       m is deactivated to Undef; `phase1_reelaborated` = {guard_cell}.
+///   m is deactivated to Undef; `phase1_reelaborated` = {guard_cell}.
 ///   (2) Solver re-runs (constraint is dirty); depth = 3mm.
 ///   (3) Wave2 re-evaluates m (m reads depth) → writes m = 3mm, overwriting Undef.
 ///   (4) Post-wave2 cleanup (fix): inactive branch (members when guard=false)
-///       re-deactivated → m = Undef again.
+///   re-deactivated → m = Undef again.
 ///   (5) Phase 3 skips the group via `phase1_reelaborated` (correct: cleanup
-///       already restored the deactivated state).
+///   already restored the deactivated state).
 /// - Assert: m = Undef after the edit.
 ///
 /// Without the post-wave2 cleanup, m would be 3mm (wave2 value) because
