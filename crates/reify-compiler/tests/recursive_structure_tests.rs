@@ -4,6 +4,7 @@
 //! definitions and tags them with `is_recursive = true`, emitting a warning
 //! diagnostic with the cycle path.
 
+use reify_compiler::find_template;
 use reify_test_support::parse_and_compile;
 use reify_types::Severity;
 
@@ -21,10 +22,7 @@ fn direct_self_reference_tagged_recursive() {
     "#;
     let compiled = parse_and_compile(source);
 
-    let a_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "A")
+    let a_template = find_template(&compiled.templates, "A")
         .expect("should have template A");
 
     assert!(
@@ -62,15 +60,9 @@ fn mutual_recursion_both_tagged() {
     "#;
     let compiled = parse_and_compile(source);
 
-    let a_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "A")
+    let a_template = find_template(&compiled.templates, "A")
         .expect("should have template A");
-    let b_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "B")
+    let b_template = find_template(&compiled.templates, "B")
         .expect("should have template B");
 
     assert!(
@@ -105,20 +97,11 @@ fn indirect_cycle_three_structures_all_tagged() {
     "#;
     let compiled = parse_and_compile(source);
 
-    let a_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "A")
+    let a_template = find_template(&compiled.templates, "A")
         .expect("should have template A");
-    let b_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "B")
+    let b_template = find_template(&compiled.templates, "B")
         .expect("should have template B");
-    let c_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "C")
+    let c_template = find_template(&compiled.templates, "C")
         .expect("should have template C");
 
     assert!(a_template.is_recursive, "A should be recursive in A->B->C->A cycle");
@@ -196,10 +179,10 @@ fn mixed_recursive_and_non_recursive_only_cycle_tagged() {
     "#;
     let compiled = parse_and_compile(source);
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
-    let c_template = compiled.templates.iter().find(|t| t.name == "C").expect("template C");
-    let d_template = compiled.templates.iter().find(|t| t.name == "D").expect("template D");
+    let a_template = find_template(&compiled.templates, "A").expect("template A");
+    let b_template = find_template(&compiled.templates, "B").expect("template B");
+    let c_template = find_template(&compiled.templates, "C").expect("template C");
+    let d_template = find_template(&compiled.templates, "D").expect("template D");
 
     assert!(a_template.is_recursive, "A should be recursive (in A<->B cycle)");
     assert!(b_template.is_recursive, "B should be recursive (in A<->B cycle)");
@@ -225,10 +208,7 @@ fn unknown_structure_reference_no_panic_no_false_positive() {
     let compiled = reify_compiler::compile(&parsed);
 
     // Should not panic — verify it compiled
-    let a_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "A")
+    let a_template = find_template(&compiled.templates, "A")
         .expect("should have template A");
 
     assert!(
@@ -270,9 +250,9 @@ fn multiple_subs_one_cycle_correct_tagging() {
     "#;
     let compiled = parse_and_compile(source);
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
-    let c_template = compiled.templates.iter().find(|t| t.name == "C").expect("template C");
+    let a_template = find_template(&compiled.templates, "A").expect("template A");
+    let b_template = find_template(&compiled.templates, "B").expect("template B");
+    let c_template = find_template(&compiled.templates, "C").expect("template C");
 
     assert!(a_template.is_recursive, "A should be recursive (in A<->B cycle)");
     assert!(b_template.is_recursive, "B should be recursive (in A<->B cycle)");
@@ -314,10 +294,10 @@ fn multi_path_convergence_all_cycle_participants_tagged() {
     "#;
     let compiled = parse_and_compile(source);
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
-    let c_template = compiled.templates.iter().find(|t| t.name == "C").expect("template C");
-    let d_template = compiled.templates.iter().find(|t| t.name == "D").expect("template D");
+    let a_template = find_template(&compiled.templates, "A").expect("template A");
+    let b_template = find_template(&compiled.templates, "B").expect("template B");
+    let c_template = find_template(&compiled.templates, "C").expect("template C");
+    let d_template = find_template(&compiled.templates, "D").expect("template D");
 
     assert!(a_template.is_recursive, "A should be recursive (participates in A→B→C→A cycle)");
     assert!(b_template.is_recursive, "B should be recursive (participates in A→B→C→A cycle)");
@@ -354,10 +334,7 @@ fn no_subs_not_recursive() {
     "#;
     let compiled = parse_and_compile(source);
 
-    let leaf_template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "Leaf")
+    let leaf_template = find_template(&compiled.templates, "Leaf")
         .expect("should have template Leaf");
 
     assert!(
@@ -402,9 +379,9 @@ fn pointer_into_cycle_not_tagged_recursive() {
     "#;
     let compiled = parse_and_compile(source);
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
-    let z_template = compiled.templates.iter().find(|t| t.name == "Z").expect("template Z");
+    let a_template = find_template(&compiled.templates, "A").expect("template A");
+    let b_template = find_template(&compiled.templates, "B").expect("template B");
+    let z_template = find_template(&compiled.templates, "Z").expect("template Z");
 
     assert!(a_template.is_recursive, "A should be recursive (in A<->B cycle)");
     assert!(b_template.is_recursive, "B should be recursive (in A<->B cycle)");
