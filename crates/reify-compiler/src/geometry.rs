@@ -711,15 +711,12 @@ pub(crate) fn compile_geometry_call(
             let path = resolve_named_geom_arg(
                 1, "sweep", "path", args, &geom_refs, diagnostics, step_offset,
             );
-            let mut it = compiled_args.into_iter();
-            let sweep_args: Vec<(String, CompiledExpr)> = vec![
-                ("profile".to_string(), it.next().unwrap()),
-                ("path".to_string(), it.next().unwrap()),
-            ];
+            // SweepKind::Sweep carries all geometry data in `profiles`;
+            // `args` is intentionally empty (task-383 S6).
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Sweep,
                 profiles: vec![profile, path],
-                args: sweep_args,
+                args: vec![],
             };
             sub_ops.push(op);
             Some(sub_ops)
