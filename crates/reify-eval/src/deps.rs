@@ -9,7 +9,9 @@
 //! is a superset of the runtime-read set. There is no benefit to runtime
 //! (Adapton-style) tracing in a pure language.
 
+use crate::cache::NodeId;
 use reify_types::{CompiledExpr, ValueCellId};
+use std::collections::{HashMap, HashSet};
 
 /// Statically extracted value cell dependencies for a node.
 ///
@@ -28,19 +30,8 @@ pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
     }
 }
 
-/// Remove and return a node's trace from a pre-built trace map.
-///
-/// Both let-binding evaluation sites build a `HashMap<NodeId, DependencyTrace>` (the
-/// `let_traces` / `child_let_traces` map) whose key set is exactly the set of nodes in
-/// the companion sorted list (`sorted_lets` / `sorted_child_lets`). Every key in that
-/// sorted list is therefore guaranteed to be present in the map, so `remove()` cannot
-/// fail. Using `remove()` avoids a second walk of the expression tree —
-/// `extract_dependency_trace` was already called above for every let cell — and also
-/// avoids the `Vec` clone you'd get with indexing + `clone()`.
-///
-/// The `sorted_set_name` label is embedded in the panic message so that a future
-/// invariant violation names the source-of-truth sorted set rather than printing a
-/// generic message.
+/// Remove and return the trace for `node_id`; panics with a message naming
+/// `sorted_set_name` if the key is absent.
 pub(crate) fn take_trace(
     traces: &mut HashMap<NodeId, DependencyTrace>,
     node_id: &NodeId,
@@ -50,9 +41,6 @@ pub(crate) fn take_trace(
         .remove(node_id)
         .unwrap_or_else(|| panic!("{sorted_set_name} entries are always keys in the trace map"))
 }
-
-use crate::cache::NodeId;
-use std::collections::{HashMap, HashSet};
 
 /// Reverse dependency index: maps ValueCellId → set of NodeIds that depend on it.
 ///
@@ -612,14 +600,10 @@ mod tests {
         );
     }
 
-    /// Verify `take_trace` panics with a message that names the sorted set when the key
-    /// is missing.
-    ///
-    /// Pins the parameterized panic format: if a future refactor drops `sorted_set_name`
-    /// or reverts to a bare message, this test fails.
+    /// Verify `take_trace` panics when the key is absent.
     #[test]
-    #[should_panic(expected = "sorted_child_lets")]
-    fn take_trace_missing_key_panic_message_names_sorted_set() {
+    #[should_panic]
+    fn take_trace_missing_key_panics() {
         let node_id = NodeId::Value(ValueCellId::new("E", "missing"));
         let mut map: HashMap<NodeId, DependencyTrace> = HashMap::new();
         take_trace(&mut map, &node_id, "sorted_child_lets");

@@ -1170,6 +1170,7 @@ impl Engine {
                 .values
                 .insert(cell_id.clone(), (val.clone(), DeterminacyState::Determined));
 
+            // sorted_lets and let_traces are built from the same key set, so remove() cannot fail.
             let trace = take_trace(&mut let_traces, &node_id, "sorted_lets");
             let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
             let outcome = self.cache.record_evaluation(
