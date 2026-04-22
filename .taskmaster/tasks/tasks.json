@@ -44278,13 +44278,13 @@
         "description": "In crates/reify-eval/src/engine_edit.rs, Phase 1 (lines 1333-1420, inside `if has_dirty_guards`) and Phase 3 (lines 1611-1676, inside `if guard_changed`) both iterate EVERY guarded group and re-evaluate every member once the outer trigger fires. On a module with N unrelated guarded groups where a single guard resolved differently, each phase does O(N · avg_members) redundant expression evaluations. This matches edit_param so it's not a new regression, but the duplicated work compounds because edit_source may run both Phase 1 AND Phase 3 on the same edit.\n\nFix: inside the `for group in ...` loop in each phase, compare the freshly-computed (or current-in-`values`) guard value to the pre-edit snapshot value for that SPECIFIC group and `continue` if unchanged. Keep the outer trigger as an early-exit but let the inner loop skip unaffected groups.\n\nAlso consider applying the same per-group filtering in edit_param for symmetry.\n\nNo new tests strictly required (cross-check tests already guard correctness), but add a perf-oriented assertion: for a module with 10 guarded groups and an edit to 1 guard, count evaluated expressions and assert only the affected group's members were re-evaluated.\n\nmemory_hints:\n- search: \"guarded_groups Phase 1 Phase 3 redundant eval\"\n- entity: \"EvalState\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2016"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:35:02.364Z",
+        "updatedAt": "2026-04-22T05:58:31.313Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_admin.rs",
@@ -45227,7 +45227,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T05:58:29.392Z",
+      "lastModified": "2026-04-22T05:58:31.314Z",
       "taskCount": 2126,
       "completedCount": 1864,
       "tags": [
