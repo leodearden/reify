@@ -23,9 +23,17 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 #[allow(dead_code)]
 mod ffi;
 #[cfg(has_occt)]
+mod floor_constants;
+#[cfg(has_occt)]
 mod handle;
 #[cfg(has_occt)]
 pub use handle::OcctKernelHandle;
+#[cfg(has_occt)]
+use floor_constants::{CPP_LINE_WIRE_MIN_LENGTH_SQ, RUST_LINE_WIRE_MIN_LENGTH_SQ};
+/// Compile-time invariant: the Rust primary floor must stay strictly below the C++ floor.
+/// Changing either constant in `src/floor_constants.rs` re-evaluates this at `cargo check`.
+#[cfg(has_occt)]
+const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ);
 
 #[cfg(not(has_occt))]
 mod stubs;
@@ -63,21 +71,6 @@ struct OcctWarmState {
 ///
 /// Value: 1e-12 → minimum magnitude ~1e-6 → ~1 micrometer.
 const AXIS_MAG_SQ_MIN: f64 = 1e-12;
-
-#[cfg(has_occt)]
-/// Minimum squared length (m²) for `make_line_wire` endpoints — primary Rust-layer floor.
-///
-/// Line segments with squared point-to-point distance below this threshold are rejected
-/// before the FFI call, catching sub-micrometer degenerate wires early.
-///
-/// This guard is the primary/early check; the C++ layer keeps a looser defense-in-depth
-/// floor (`CPP_LINE_WIRE_MIN_LENGTH_SQ` = 1e-10, defined in `cpp/occt_wrapper.cpp`) so
-/// that any input that bypasses Rust still gets rejected at the FFI boundary. The invariant
-/// `RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ` is enforced by the test
-/// `rust_line_wire_floor_strictly_below_cpp_floor`.
-///
-/// Value: 1e-12 m² → minimum segment length ~1 µm.
-const RUST_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-12;
 
 /// Minimum absolute angle (radians) for revolve operations.
 /// Angles below this are treated as effectively zero.
