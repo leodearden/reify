@@ -9,7 +9,7 @@ use reify_types::{
 };
 
 use crate::cache::{CacheStore, CachedResult, NodeId};
-use crate::deps::{DependencyTrace, extract_dependency_trace};
+use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
@@ -556,14 +556,7 @@ fn elaborate_child_lets_only<'t>(
             (val.clone(), DeterminacyState::Determined),
         );
 
-        // Move the trace out of `child_let_traces` (built above from the same key set);
-        // every node in `sorted_child_lets` is guaranteed present, so remove() cannot fail.
-        // Using remove() avoids a second walk of the expression tree — extract_dependency_trace
-        // was already called above for every let cell — and also avoids the Vec clone you'd get
-        // with indexing+clone.
-        let trace = child_let_traces
-            .remove(&child_node_id)
-            .expect("sorted_child_lets entries are always keys in child_let_traces");
+        let trace = take_trace(&mut child_let_traces, &child_node_id, "sorted_child_lets");
         let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
         let outcome =
             cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
