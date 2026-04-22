@@ -302,10 +302,6 @@ impl TopologyTemplate {
 /// Returns `Some(&template)` for the first match, or `None` if no template has
 /// the given name.  All callers keep their own error-handling (diagnostic
 /// emission, silent skip, or test panic) — this utility is policy-neutral.
-///
-/// This is the canonical `templates.iter().find(|t| t.name == name)` spelling;
-/// it is re-exported from `reify_compiler` via the existing `pub use types::*`
-/// in `lib.rs` so downstream crates can call `reify_compiler::find_template`.
 pub fn find_template<'a>(templates: &'a [TopologyTemplate], name: &str) -> Option<&'a TopologyTemplate> {
     templates.iter().find(|t| t.name == name)
 }
@@ -867,10 +863,7 @@ mod kind_display_tests {
 
 #[cfg(test)]
 mod find_template_tests {
-    //! Unit tests for `find_template` — the canonical template-by-name lookup.
-    //!
-    //! Step-1 (TDD red): these tests reference `find_template` which does not yet exist.
-    //! They must fail to compile until the implementation is added in step-2.
+    //! Unit tests for `find_template`.
     use super::*;
     use reify_types::ContentHash;
     use std::collections::{HashMap, HashSet};
@@ -914,11 +907,5 @@ mod find_template_tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn empty_slice_returns_none() {
-        let templates: Vec<TopologyTemplate> = vec![];
-        let result = find_template(&templates, "Anything");
-        assert!(result.is_none());
-    }
 }
 

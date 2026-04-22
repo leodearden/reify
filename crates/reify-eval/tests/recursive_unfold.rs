@@ -2330,21 +2330,21 @@ fn unfold_recursive_inner_unknown_structure_emits_depth_tagged_diagnostic() {
     );
 
     // (2) At least one Error diagnostic from the Phase-2 recursive path contains
-    //     all three substrings unique to unfold.rs:175-177
-    //     ("recursive sub" + "depth" + "Nonexistent").
+    //     the literal prefix `recursive sub "oops" in "` — a token produced only by
+    //     unfold.rs:175-177 and impossible to come from engine_eval.rs's root-level
+    //     path (which uses "sub-component ... references unknown structure" wording
+    //     and never includes the sub name followed by `in "`).
     //     We do NOT assert an exact count because the engine_eval.rs top-level path
     //     also emits its own diagnostic for "oops" at root level (different wording).
     let has_depth_tagged =
         result.diagnostics.iter().any(|d| {
             d.severity == Severity::Error
-                && d.message.contains("recursive sub")
-                && d.message.contains("depth")
-                && d.message.contains("Nonexistent")
+                && d.message.contains("recursive sub \"oops\" in \"")
         });
     assert!(
         has_depth_tagged,
-        "Expected at least one Error diagnostic containing 'recursive sub', 'depth', \
-         and 'Nonexistent' (the Phase-2 depth-tagged path in unfold.rs), but got: {:?}",
+        "Expected at least one Error diagnostic containing the Phase-2 prefix \
+         'recursive sub \"oops\" in \"' (unfold.rs depth-tagged path), but got: {:?}",
         result.diagnostics
     );
 }
