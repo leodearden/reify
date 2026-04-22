@@ -1,5 +1,38 @@
 use super::*;
 
+/// Returns `true` if `ty` is a scalar-like leaf type eligible as the `Q`
+/// (quantity) side of Rules 2a/2b.
+///
+/// The spec's "Q is a single value" framing covers the following leaf kinds:
+/// plain primitives (`Bool`, `Int`, `Real`, `String`), dimensioned scalars
+/// (`Scalar`), enumerations (`Enum`), type parameters (`TypeParam`),
+/// user-defined structure references (`StructureRef`), trait objects
+/// (`TraitObject`), and the geometry sentinel (`Geometry`).
+///
+/// Compound/aggregate types (`Vector`, `Tensor`, `Matrix`, `Point`, `List`,
+/// `Set`, `Map`, `Option`, `Complex`, `Field`, `Range`, `Function`, `Frame`,
+/// `Transform`, `Plane`, `Orientation`, `Axis`, `BoundingBox`) are NOT leaf
+/// types and return `false`.
+///
+/// `Type::Error` is excluded: the anti-cascade guard at the top of
+/// `implicitly_converts_to` short-circuits before any leaf check is reached,
+/// so Error inputs never arrive here.
+fn is_scalar_like_leaf(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Bool
+            | Type::Int
+            | Type::Real
+            | Type::String
+            | Type::Scalar { .. }
+            | Type::Enum(_)
+            | Type::TypeParam(_)
+            | Type::StructureRef(_)
+            | Type::TraitObject(_)
+            | Type::Geometry
+    )
+}
+
 pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
     // Anti-cascade guard — asymmetric error-wildcard contract (task-448 / task-1918).
     //
@@ -80,19 +113,19 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 
         // Rule 2a: Q -> Tensor<0,_,Q>  (N is irrelevant for rank-0)
         //
-        // Guard: `from_ty` must be a scalar-like leaf type (Scalar, Real, Int, Bool, String,
-        // Enum, TypeParam, etc.). Compound types (Vector, Tensor, Matrix) are excluded —
-        // the spec's "Q is a single value" framing does not cover aggregate types.
-        // Rule 2c (above) handles the Tensor<0>↔Tensor<0> case explicitly.
+        // Guard: `from_ty` must be a scalar-like leaf type — see `is_scalar_like_leaf`.
+        // Compound/aggregate types are excluded: the spec's "Q is a single value" framing
+        // covers only leaf kinds (Bool, Int, Real, String, Scalar, Enum, TypeParam,
+        // StructureRef, TraitObject, Geometry). Rule 2c (above) handles Tensor<0>↔Tensor<0>.
         (from_ty, Type::Tensor { rank: 0, quantity: tq, .. })
-            if !matches!(from_ty, Type::Vector { .. } | Type::Tensor { .. } | Type::Matrix { .. })
+            if is_scalar_like_leaf(from_ty)
             => from_ty == tq.as_ref(),
 
         // Rule 2b: Tensor<0,_,Q> -> Q  (N is irrelevant for rank-0)
         //
-        // Guard: `to_ty` must be a scalar-like leaf type. Same rationale as Rule 2a.
+        // Guard: `to_ty` must be a scalar-like leaf type — see `is_scalar_like_leaf`.
         (Type::Tensor { rank: 0, quantity: tq, .. }, to_ty)
-            if !matches!(to_ty, Type::Vector { .. } | Type::Tensor { .. } | Type::Matrix { .. })
+            if is_scalar_like_leaf(to_ty)
             => tq.as_ref() == to_ty,
 
         // Rule 3: Tensor<2,N,Q> -> Matrix<N,N,Q>  (one-way, square matrices only)

@@ -344,6 +344,20 @@ fn rule_2a_rejects_compound_from_tensor2() {
     );
 }
 
+/// Rule 2a must NOT fire when `from_ty` is a compound Point type.
+/// Point<3,Real> -> Tensor<0,3,Point<3,Real>> should be rejected — Point is an
+/// aggregate, not a scalar-like leaf, so it must not serve as the "Q" side.
+/// Covers reviewer suggestion #1 (robustness of the compound-type guard).
+#[test]
+fn rule_2a_rejects_compound_from_point() {
+    let from = Type::point3(Type::Real);
+    let to = Type::tensor(0, 3, Type::point3(Type::Real));
+    assert!(
+        !implicitly_converts_to(&from, &to),
+        "Point<3,Real> -> Tensor<0,3,Point<3,Real>> must be rejected (compound from_ty)"
+    );
+}
+
 /// (g) Rule 2a: any Q -> Tensor<0,_,Q>. Bool -> Tensor<0,1,Bool> is allowed.
 #[test]
 fn bool_to_tensor0_same_quantity_allowed() {
