@@ -116,27 +116,7 @@ pub(crate) fn compile_modify_op(
         }
         // chamfer(target, distance)
         "chamfer" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "chamfer() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Chamfer,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("distance".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
+            compile_modify_2arg("chamfer", ModifyKind::Chamfer, "distance", compiled_args, target, expr_span, diagnostics, sub_ops)
         }
         // fillet(target, radius)
         "fillet" => {
