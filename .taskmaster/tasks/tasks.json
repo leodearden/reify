@@ -31936,7 +31936,10 @@
         "subtasks": [],
         "updatedAt": "2026-04-22T10:01:25.019Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/tests/recursive_detection_tests.rs"
+          ],
           "files": []
         }
       },
@@ -45437,7 +45440,9 @@
       "completedCount": 1874,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T10:09:09.237Z",
+      "description": "Tasks for master context"
     }
   }
 }
