@@ -612,6 +612,19 @@ mod tests {
         );
     }
 
+    /// Verify `take_trace` panics with a message that names the sorted set when the key
+    /// is missing.
+    ///
+    /// Pins the parameterized panic format: if a future refactor drops `sorted_set_name`
+    /// or reverts to a bare message, this test fails.
+    #[test]
+    #[should_panic(expected = "sorted_child_lets")]
+    fn take_trace_missing_key_panic_message_names_sorted_set() {
+        let node_id = NodeId::Value(ValueCellId::new("E", "missing"));
+        let mut map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        take_trace(&mut map, &node_id, "sorted_child_lets");
+    }
+
     /// Verify `take_trace` removes the key from the map and returns its trace.
     ///
     /// Constructs a two-entry map, calls `take_trace` for one key, and asserts:
