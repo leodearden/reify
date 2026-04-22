@@ -1097,7 +1097,8 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
 std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine) {
     try {
         BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
-        maker.Build();
+        // BRepOffsetAPI_MakePipe calls Build() internally in its constructor;
+        // an explicit Build() here is redundant and was removed (task-383 S1).
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_MakePipe failed");
         }
