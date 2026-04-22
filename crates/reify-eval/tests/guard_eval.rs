@@ -10,9 +10,8 @@ use reify_test_support::builders::{gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintSolver, SequencedMockConstraintSolver,
-    TopologyTemplateBuilder, mm,
+    TopologyTemplateBuilder, mm, parse_and_compile,
 };
-use reify_test_support::parse_and_compile;
 use reify_types::*;
 
 use reify_compiler::{CompiledConstraint, ValueCellDecl, ValueCellKind, Visibility};
@@ -2138,19 +2137,19 @@ fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
 
     // (c) Performance lock: only group 3 must be re-elaborated in Phase 1 and
     // Phase 3. The other 9 groups have unchanged guard values (uN=true) and must
-    // be skipped. Expected total: 1 + 1 = 2.
+    // be skipped. edit_param(u3, false) triggers both Phase 1 (u3 in changed
+    // structure_controlling set → has_dirty_guards) and Phase 3 (guard value
+    // flips true→false → guard_changed). Expected total: 1 (Phase 1) + 1
+    // (Phase 3) = exactly 2.
     // Without the skip optimisation this counter would be 10 + 10 = 20.
-    // The lower bound (>= 1) ensures the counter instrumentation is actually in
-    // place — before step-4 adds the increments, the counter stays 0, which
-    // fails this check (counter = 0 is neither "skip works" nor "processing
-    // 20 groups" — it means the counter was never incremented at all).
     let counter = engine.last_guard_phase_group_evals();
-    assert!(
-        counter >= 1 && counter <= 2,
-        "expected between 1 and 2 non-skipped guard-phase group iterations \
-         (1 per phase for the one affected group, 9 per phase skipped); \
-         got {} — if 0, the counter increment is missing from edit_param; \
-         if > 2, the per-group skip is not working",
+    assert_eq!(
+        counter, 2,
+        "expected exactly 2 non-skipped guard-phase group iterations \
+         (1 in Phase 1 + 1 in Phase 3 for the one affected group, \
+         9 per phase skipped); got {} — if 0, the counter increment is \
+         missing from edit_param (instrumentation dropped); \
+         if > 2, the per-group skip is broken",
         counter
     );
 }

@@ -2003,20 +2003,20 @@ fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
 
     // (c) Performance lock: only group 3 must be re-elaborated in Phase 1 and
     // Phase 3. The other 9 groups have unchanged guard values (uN=true in both
-    // modules) and must be skipped. Expected total: 1 + 1 = 2.
+    // modules) and must be skipped. The guard-expression flip (`u3` → `!u3`)
+    // makes the guard cell content_hash-dirty → Phase 1 fires; the boolean
+    // result flips (true→false with u3=true) → Phase 3 fires. Both phases run
+    // and each skips 9 groups, processing only group 3. Expected total:
+    // 1 (Phase 1) + 1 (Phase 3) = exactly 2.
     // Without the skip optimization, this counter would be 10 + 10 = 20.
-    // The lower bound (>= 1) ensures the counter instrumentation is actually in
-    // place — if the `self.last_guard_phase_group_evals += 1;` increments are
-    // dropped from edit_source Phase 1 or Phase 3, the counter stays 0, which
-    // fails this check (counter = 0 is neither "skip works" nor "processing
-    // 20 groups" — it means the counter was never incremented at all).
     let counter = incremental.last_guard_phase_group_evals();
-    assert!(
-        counter >= 1 && counter <= 2,
-        "expected between 1 and 2 non-skipped guard-phase group iterations \
-         (1 per phase for the one affected group, 9 per phase skipped); \
-         got {} — if 0, the counter increment is missing from edit_source \
-         (instrumentation was dropped); if > 2, the per-group skip is not working",
+    assert_eq!(
+        counter, 2,
+        "expected exactly 2 non-skipped guard-phase group iterations \
+         (1 in Phase 1 + 1 in Phase 3 for the one affected group, \
+         9 per phase skipped); got {} — if 0, the counter increment is \
+         missing from edit_source (instrumentation dropped); \
+         if > 2, the per-group skip is broken",
         counter
     );
 }
