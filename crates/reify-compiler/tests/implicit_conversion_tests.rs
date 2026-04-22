@@ -299,6 +299,51 @@ fn tensor0_to_tensor1_rejected() {
     );
 }
 
+// ── Rules 2a/2b compound-type guard tests ─────────────────────────────────
+//
+// Rules 2a/2b use wildcard arms (`from_ty` / `to_ty`). Without a guard, any
+// compound type (Vector, Tensor, Matrix) can match the wildcard and produce a
+// spurious true. These tests pin the required rejection: a compound type must
+// never serve as the "Q" side of a rank-0 tensor conversion rule. Covers
+// review suggestions #2, #7, #17.
+
+/// Rule 2a must NOT fire when `from_ty` is a compound Vector type.
+/// Vector<3,Real> -> Tensor<0,3,Vector<3,Real>> should be rejected.
+#[test]
+fn rule_2a_rejects_compound_from_vector() {
+    let from = Type::vec3(Type::Real);
+    let to = Type::tensor(0, 3, Type::vec3(Type::Real));
+    assert!(
+        !implicitly_converts_to(&from, &to),
+        "Vector<3,Real> -> Tensor<0,3,Vector<3,Real>> must be rejected (compound from_ty)"
+    );
+}
+
+/// Rule 2b must NOT fire when `to_ty` is a compound Vector type.
+/// Tensor<0,3,Vector<3,Real>> -> Vector<3,Real> should be rejected.
+#[test]
+fn rule_2b_rejects_compound_to_vector() {
+    let from = Type::tensor(0, 3, Type::vec3(Type::Real));
+    let to = Type::vec3(Type::Real);
+    assert!(
+        !implicitly_converts_to(&from, &to),
+        "Tensor<0,3,Vector<3,Real>> -> Vector<3,Real> must be rejected (compound to_ty)"
+    );
+}
+
+/// Rule 2a must NOT fire when `from_ty` is a compound Tensor<2> type.
+/// Tensor<2,3,Real> -> Tensor<0,3,Tensor<2,3,Real>> should be rejected —
+/// ensuring Rule 3's Tensor<2>->Matrix asymmetry isn't accidentally subverted.
+#[test]
+fn rule_2a_rejects_compound_from_tensor2() {
+    let from = Type::tensor(2, 3, Type::Real);
+    let to = Type::tensor(0, 3, Type::tensor(2, 3, Type::Real));
+    assert!(
+        !implicitly_converts_to(&from, &to),
+        "Tensor<2,3,Real> -> Tensor<0,3,Tensor<2,3,Real>> must be rejected (compound from_ty)"
+    );
+}
+
 /// (g) Rule 2a: any Q -> Tensor<0,_,Q>. Bool -> Tensor<0,1,Bool> is allowed.
 #[test]
 fn bool_to_tensor0_same_quantity_allowed() {
