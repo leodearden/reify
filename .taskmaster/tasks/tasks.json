@@ -40773,9 +40773,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:07.073Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src/lib.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
