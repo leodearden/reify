@@ -42739,7 +42739,7 @@
         "description": "`CliState::user_overrides: Vec<(ValueCellId, Value)>` exists solely because `Engine::eval()` rebuilds the snapshot from module defaults and does NOT consult the engine's internal `param_overrides` map. The Mcp context therefore tracks overrides twice (once in the engine, once in `CliState`) and re-applies them via `reapply_user_overrides` after every `eval()`. See `crates/reify-cli/src/mcp_context.rs:142-185`.\n\nCleaner long-term fix: teach `Engine::eval()` to consult `param_overrides` (or add `eval_with_overrides`), letting `CliState::user_overrides` and `reapply_user_overrides` be deleted entirely. This also removes the override-leak risk between file switches (see related task on resetting param_overrides on load_file/open_file).\n\nMinimum acceptable: add a FIXME comment in `mcp_context.rs` next to `user_overrides` referencing this follow-up.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42753,9 +42753,12 @@
             "crates/reify-eval/src/engine_admin.rs",
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/eval_param_overrides.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "52b8a8b4a53df9aba0e003913314a37cfccf0b39"
+          }
         },
-        "updatedAt": "2026-04-22T11:55:38.504Z"
+        "updatedAt": "2026-04-22T20:47:45.882Z"
       },
       {
         "id": "2018",
@@ -45667,9 +45670,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T20:28:26.706Z",
+      "lastModified": "2026-04-22T20:47:45.882Z",
       "taskCount": 2142,
-      "completedCount": 1890,
+      "completedCount": 1891,
       "tags": [
         "master"
       ]
