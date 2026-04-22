@@ -183,3 +183,104 @@ fn emit_constraint_def_shadow_warnings(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::build_constraint_def_registry;
+    use crate::CompiledModule;
+    use crate::types::CompiledConstraintDef;
+    use reify_types::{ContentHash, ModulePath, SourceSpan};
+
+    fn mk_cd(name: &str, is_pub: bool, span: SourceSpan) -> CompiledConstraintDef {
+        CompiledConstraintDef {
+            name: name.to_string(),
+            is_pub,
+            type_params: vec![],
+            params: vec![],
+            predicates: vec![],
+            span,
+            content_hash: ContentHash::of_str(""),
+            pragmas: vec![],
+            annotations: vec![],
+            annotations_optimized_target: None,
+        }
+    }
+
+    fn mk_module(path: &str, cds: Vec<CompiledConstraintDef>) -> CompiledModule {
+        CompiledModule {
+            path: ModulePath::single(path),
+            imports: vec![],
+            enum_defs: vec![],
+            functions: vec![],
+            trait_defs: vec![],
+            fields: vec![],
+            compiled_purposes: vec![],
+            templates: vec![],
+            units: vec![],
+            type_aliases: vec![],
+            constraint_defs: cds,
+            pragmas: vec![],
+            diagnostics: vec![],
+            content_hash: ContentHash::of_str(""),
+        }
+    }
+
+    /// Covers the three key invariants of `build_constraint_def_registry`:
+    ///
+    /// 1. First-imported prelude wins: on cross-prelude name collision, the
+    ///    first module in the slice retains its definition.
+    /// 2. Local overrides prelude: a local def with the same name beats any
+    ///    prelude def regardless of insertion order.
+    /// 3. Non-pub prelude defs are excluded from the registry.
+    #[test]
+    fn build_constraint_def_registry_first_imported_prelude_wins_and_local_overrides() {
+        let span_a = SourceSpan::new(1, 1);
+        let span_b = SourceSpan::new(2, 2);
+        let span_local = SourceSpan::new(3, 3);
+
+        // Module 'a': pub MinThickness + non-pub Hidden.
+        let m_a = mk_module(
+            "a",
+            vec![
+                mk_cd("MinThickness", true, span_a),
+                mk_cd("Hidden", false, SourceSpan::new(0, 0)),
+            ],
+        );
+        // Module 'b': pub MinThickness (second-imported — should lose to 'a').
+        let m_b = mk_module("b", vec![mk_cd("MinThickness", true, span_b)]);
+
+        // Local: WallWidth (no collision) + MinThickness override.
+        let local = vec![
+            mk_cd("WallWidth", false, SourceSpan::new(4, 4)),
+            mk_cd("MinThickness", false, span_local),
+        ];
+
+        // With local defs: local MinThickness override wins; WallWidth added; Hidden excluded.
+        let registry = build_constraint_def_registry(&local, &[&m_a, &m_b]);
+        assert!(
+            registry.contains_key("MinThickness"),
+            "MinThickness should be in registry"
+        );
+        assert!(
+            registry.contains_key("WallWidth"),
+            "WallWidth should be in registry"
+        );
+        assert!(
+            !registry.contains_key("Hidden"),
+            "non-pub Hidden should be excluded from registry"
+        );
+        assert_eq!(
+            registry["MinThickness"].span,
+            span_local,
+            "local MinThickness should override prelude (span 3,3)"
+        );
+
+        // Without local defs: first-imported prelude 'a' wins over 'b'.
+        let registry_no_local = build_constraint_def_registry(&[], &[&m_a, &m_b]);
+        assert_eq!(
+            registry_no_local["MinThickness"].span,
+            span_a,
+            "first-imported prelude 'a' should win over 'b' (span 1,1)"
+        );
+    }
+}
