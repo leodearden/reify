@@ -514,7 +514,13 @@ fn elaborate_child_lets_only<'t>(
         let expr = child_let_cells[&child_node_id];
         let child_cell_id = match &child_node_id {
             NodeId::Value(vcid) => vcid,
-            _ => unreachable!(),
+            _ => {
+                diagnostics.push(Diagnostic::error(format!(
+                    "let-binding evaluation: expected NodeId::Value, got {:?}; skipping (entity {})",
+                    child_node_id, scoped_entity,
+                )));
+                continue;
+            }
         };
         let member = &child_cell_id.member;
 

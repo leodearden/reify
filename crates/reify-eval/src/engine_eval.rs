@@ -1131,7 +1131,13 @@ impl Engine {
             let expr = let_cells[&node_id];
             let cell_id = match &node_id {
                 NodeId::Value(vcid) => vcid,
-                _ => unreachable!(),
+                _ => {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "let-binding evaluation: expected NodeId::Value, got {:?}; skipping",
+                        node_id,
+                    )));
+                    continue;
+                }
             };
 
             let start = Instant::now();
