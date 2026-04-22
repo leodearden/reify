@@ -602,11 +602,11 @@ mod tests {
 
     /// Verify `take_trace` panics when the key is absent.
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "sorted_child_lets entries are always keys in child_let_traces")]
     fn take_trace_missing_key_panics() {
         let node_id = NodeId::Value(ValueCellId::new("E", "missing"));
         let mut map: HashMap<NodeId, DependencyTrace> = HashMap::new();
-        take_trace(&mut map, &node_id, "sorted_child_lets");
+        take_trace(&mut map, &node_id, "sorted_child_lets", "child_let_traces");
     }
 
     /// Verify `take_trace` removes the key from the map and returns its trace.
