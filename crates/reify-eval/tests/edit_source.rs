@@ -1212,21 +1212,19 @@ purpose mfg_ready(subject : Structure) {
     cold.eval(&module_b);
     cold.activate_purpose("mfg_ready", "Bracket");
 
-    // Compare graph constraint counts after activation.
+    // Compare graph constraint counts AND constraint identity after activation.
     // Purpose constraints are injected into the snapshot graph by activate_purpose;
-    // the count reflects which module's purpose body was used.
-    let incr_count = incremental
+    // the count and the exact ConstraintNodeId set reflect which module's purpose
+    // body was used.
+    let incr_snap = incremental
         .snapshot()
-        .expect("incremental snapshot must exist after edit_source")
-        .graph
-        .constraints
-        .len();
-    let cold_count = cold
+        .expect("incremental snapshot must exist after edit_source");
+    let cold_snap = cold
         .snapshot()
-        .expect("cold snapshot must exist after eval")
-        .graph
-        .constraints
-        .len();
+        .expect("cold snapshot must exist after eval");
+
+    let incr_count = incr_snap.graph.constraints.len();
+    let cold_count = cold_snap.graph.constraints.len();
 
     assert_eq!(
         incr_count, cold_count,
@@ -1239,6 +1237,21 @@ purpose mfg_ready(subject : Structure) {
         incr_count, 2,
         "both engines should have 2 graph constraints after activating module_B's \
          2-constraint purpose; incremental has {incr_count}"
+    );
+
+    // Pin constraint identity, not just arity: the sets of ConstraintNodeIds must
+    // match exactly.  A regression where the stale purpose body (from module_A) is
+    // used could produce 2 constraints via a different expansion path — the count
+    // check would pass accidentally, but the id-set check would detect the mismatch.
+    let incr_ids: HashSet<ConstraintNodeId> =
+        incr_snap.graph.constraints.keys().cloned().collect();
+    let cold_ids: HashSet<ConstraintNodeId> =
+        cold_snap.graph.constraints.keys().cloned().collect();
+    assert_eq!(
+        incr_ids, cold_ids,
+        "after activate_purpose, incremental and cold graph ConstraintNodeId sets \
+         must be identical — divergence means the stale purpose body was used on \
+         the incremental path"
     );
 }
 
@@ -1520,6 +1533,24 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
         Some(&mm(15.0)),
         "incremental resolved thickness should be mm(15.0) from the sequenced solver"
     );
+
+    // Final call-count guard: the spy's SequencedMockConstraintSolver repeats the
+    // last result on exhaustion rather than panicking, so a silent third solver call
+    // during edit_source would return mm(15.0) again and all preceding assertions
+    // would still pass.  Re-asserting the total call count here catches that case.
+    // The spy is pre-configured with exactly 2 results (vec! above), so any extra
+    // invocation is an unintended re-solve.
+    {
+        let problems = captured.lock().unwrap();
+        assert_eq!(
+            problems.len(),
+            2,
+            "expected exactly 2 solver calls total (eval(A) + edit_source(B)); \
+             got {} — extra calls indicate an unintended re-solve; if intentional, \
+             extend the spy's result sequence accordingly",
+            problems.len()
+        );
+    }
 }
 
 // ── Coverage gap 6: removed cell whose dependents remain ─────────────────────
