@@ -44593,6 +44593,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T02:01:40.813Z"
+      },
+      {
+        "id": "2107",
+        "title": "Pipe start-tangent guard follow-ups: NaN rejection, tolerance in error, -Z test case",
+        "description": "Three polish fixes co-located around the task-2095 Pipe start-tangent guard in crates/reify-kernel-occt/src/lib.rs. All strictly tighten the rejection contract; no behavior change for accepted (+Z) paths.",
+        "details": "Post-merge review of task 2095 (reviewer_comprehensive) flagged three related cleanups on the Pipe start-tangent guard:\n\n1. **NaN rejection (lib.rs:588-591).** The guard `if t.z < 1.0 - 1e-6` silently accepts NaN components because any comparison with NaN is false. `wire_start_tangent` already errors on zero magnitude and OCCT is unlikely to emit NaN, but defense-in-depth: flip to `!(t.z >= 1.0 - 1e-6)` (rejects NaN) or add an explicit `t.x.is_finite() && t.y.is_finite() && t.z.is_finite()` precheck before the tangent comparison.\n\n2. **Include tolerance in the runtime error (lib.rs:593-597).** The docstring says the constraint is \"+Z (within 1e-6)\" but the runtime error string drops the tolerance. Include it so callers hitting FP noise can tell whether their path is close-but-rejected vs. far-off (e.g. extend the message with \"expected tangent.z > 0.999999\").\n\n3. **Add -Z case to kernel_pipe_non_z_start_tangent_returns_error (lib.rs:4343-4368).** The test currently covers +X, +Y, and an XY-plane arc. A start-tangent ≈ (0,0,-1) also fails the `t.z > 1-1e-6` check and is worth pinning: -Z is the single case where a user might reasonably expect pipe() to \"just work\" (profile plane still aligned, direction flipped). Pinning makes the contract explicit; if -Z is ever accepted in a future orientation-generalization pass, this test becomes the forcing function.\n\nTriage context preserved in memory 0bb8ede0-45ea-426f-bbf6-903f7a1a7850 (observations_and_summaries, agent_id=claude-task-2095-steward).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44602,7 +44613,10 @@
       "completedCount": 1836,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T02:03:42.774Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T02:03:42.797Z"
     }
   }
 }
