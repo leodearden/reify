@@ -44426,11 +44426,17 @@
         "description": "The two let-binding evaluation call-sites (engine_eval.rs ~1173-1180 and unfold.rs ~559-566) now share structurally identical logic: topologically sort, then remove the precomputed dependency trace from a HashMap with an expect(). The same multi-line explanatory comment is duplicated verbatim. Introduce a small private helper — e.g. `fn take_trace(traces: &mut HashMap<NodeId, DependencyTrace>, node_id: &NodeId) -> DependencyTrace` — shared between engine_eval.rs and unfold.rs (or an inline closure) so the remove+expect and its rationale live in one place.",
         "details": "Post-merge review suggestion from task 555 (reviewer_comprehensive, code_reuse). Locations: crates/reify-eval/src/engine_eval.rs lines ~1172-1180 and crates/reify-eval/src/unfold.rs lines ~559-566. At minimum deduplicate the 4-line comment block; ideally factor the remove+expect into a helper. Keep the expect() message meaningful (include which sorted set was the source of truth). Run `cargo test -p reify-eval` after refactor.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:18:20.078Z"
+        "updatedAt": "2026-04-22T01:59:55.619Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "4529d9f63a29e903b53a745d7112ea7d6dda903c",
+            "note": "Task branch task/2096 is an ancestor of main; 5 commits (24a326ae3, 210c4d90c, 118519dc5, 99f09a2fb, 4529d9f63) landed via fast-forward."
+          }
+        }
       },
       {
         "id": "2097",
@@ -44559,14 +44565,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:58:43.495Z",
+      "lastModified": "2026-04-22T01:59:55.619Z",
       "taskCount": 2097,
-      "completedCount": 1835,
+      "completedCount": 1836,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T01:59:38.269Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
