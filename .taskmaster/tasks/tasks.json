@@ -42194,8 +42194,13 @@
             "crates/reify-types/src/expr.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-types/src"
+            "crates/reify-eval/src/concurrent.rs",
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-runtime/tests/concurrent_eval.rs"
           ]
         }
       },
@@ -44430,7 +44435,9 @@
       "completedCount": 1834,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:44:14.186Z",
+      "description": "Tasks for master context"
     }
   }
 }
