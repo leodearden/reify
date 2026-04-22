@@ -269,6 +269,7 @@ impl Engine {
     /// After the op loop, if `had_failure` or fewer handles were produced than
     /// there are `operations`, truncates `step_handles` to `handle_start` (discards
     /// all partial handles from this realization).
+    #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
         operations: &[reify_compiler::CompiledGeometryOp],
