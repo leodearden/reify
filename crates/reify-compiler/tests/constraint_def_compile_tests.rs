@@ -1166,6 +1166,89 @@ fn constraint_def_with_prelude_structure_param_type_compiles_cleanly() {
     );
 }
 
+// ── Test 19b: non-pub prelude structure param type compiles cleanly ───────────
+
+/// Companion to test 19 (`constraint_def_with_prelude_structure_param_type_compiles_cleanly`).
+///
+/// Verifies that a non-`pub` structure exported by a prelude module is still
+/// accepted as a constraint-def param type.  `structure_names` is built from
+/// `prelude[i].templates` without filtering by visibility, so the non-pub
+/// structure from module `a` is included when compiling module `b`.
+///
+/// This test documents current behavior explicitly: the "in scope" predicate
+/// for constraint-def param types is visibility-agnostic at the prelude level.
+/// If that policy changes in the future, this test should be updated to match.
+#[test]
+fn constraint_def_with_nonpub_prelude_structure_param_type_compiles_cleanly() {
+    use std::fs;
+
+    let (_tmp, dir) = fresh_project_dir();
+
+    // Module a: non-pub structure Wall (no `pub` keyword).
+    fs::write(
+        dir.join("a.ri"),
+        "structure Wall {\n    param t: Length = 5mm\n}\n",
+    )
+    .unwrap();
+
+    // Module b: imports a, defines a constraint def with Wall as a param type.
+    fs::write(
+        dir.join("b.ri"),
+        concat!(
+            "import a\n",
+            "constraint def FitsWall {\n",
+            "    param w: Wall\n",
+            "    w.t > 0mm\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("b", &resolver);
+
+    assert!(
+        result.is_ok(),
+        "expected compilation to succeed, got: {:?}",
+        result.unwrap_err()
+    );
+
+    let compiled_b = dag.modules.get("b").expect("compiled module 'b' not found");
+
+    // A non-pub structure in the prelude is still in scope for constraint-def
+    // param types — structure_names is built from m.templates without a
+    // visibility filter, so no "unknown type" error should fire.
+    let unknown_type_errors: Vec<_> = compiled_b
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.starts_with("unknown type '")
+                && d.message.contains("Wall")
+        })
+        .collect();
+    assert!(
+        unknown_type_errors.is_empty(),
+        "expected no 'unknown type' error for non-pub prelude structure 'Wall' \
+         as param type in constraint def, got: {:?}",
+        unknown_type_errors
+    );
+
+    // Positive shape assertion: FitsWall must be present in module b's compiled output.
+    let def = compiled_b
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "FitsWall")
+        .expect("FitsWall constraint def must be present in compiled module b");
+    assert_eq!(
+        def.params.len(),
+        1,
+        "expected FitsWall to have 1 param (w), got {}",
+        def.params.len()
+    );
+}
+
 // ── Test 20: unknown type error lists acceptable categories ──────────────────
 
 /// A genuinely unknown param type must still produce an error, AND the error
@@ -1208,19 +1291,16 @@ constraint def Foo {
         errors
     );
 
-    // (ii) The message must list at least two of the accepted categories.
+    // (ii) The message must explicitly mention 'structure' — the new category
+    // that this patch adds to the whitelist.  Pinning this single keyword is
+    // more faithful to the change than a loose "any 2 of 6" threshold: it
+    // guards against a regression that keeps other category words but drops
+    // the one this change introduced.
     let msg = unknown_type_errors[0].message.to_lowercase();
-    let category_keywords = ["builtin", "type parameter", "alias", "enum", "trait", "structure"];
-    let matched: Vec<_> = category_keywords
-        .iter()
-        .filter(|kw| msg.contains(**kw))
-        .collect();
     assert!(
-        matched.len() >= 2,
-        "expected at least 2 category keywords in the error message, \
-         got {} ({:?}). Full message: {:?}",
-        matched.len(),
-        matched,
+        msg.contains("structure"),
+        "expected error message to mention 'structure' as an accepted category \
+         (the new category added by this patch), got: {:?}",
         unknown_type_errors[0].message
     );
 }
