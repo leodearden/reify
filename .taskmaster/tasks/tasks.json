@@ -44276,12 +44276,13 @@
         "description": "In crates/reify-eval/src/engine_edit.rs around lines 1371-1380, the role-flip probe builds `old_roles: HashMap<ValueCellId, (ValueCellId, u8)>` via `old_roles.insert(mid.clone(), ...)`, which silently overwrites if a ValueCellId ever appears in multiple groups/branches in the old graph. The invariant that a cell belongs to at most one (group, branch) is presumably enforced elsewhere, but if it were ever violated the role map would be silently wrong and Phase 1 could skip firing. Blast radius is small but the invariant is currently implicit at this call site.\n\nFix: wrap the two `insert` calls (members and else_members) with `debug_assert!(old_roles.insert(mid.clone(), ...).is_none(), \"ValueCellId {:?} appeared in multiple guarded-group roles\", mid);` (or equivalent) so invariant breaks surface during development with no release runtime cost.\n\nmemory_hints:\n- search: \"guarded_groups role map invariant\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2084"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T00:48:48.168Z"
       },
       {
         "id": "2093",
@@ -44312,7 +44313,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T00:48:47.742Z",
+      "lastModified": "2026-04-22T00:48:48.168Z",
       "taskCount": 2086,
       "completedCount": 1828,
       "tags": [
