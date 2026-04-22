@@ -25105,11 +25105,11 @@
         "description": "Refine the @deprecated use-site warning implementation in crates/reify-compiler/src/lib.rs:\n\n1. **Merge duplicate loops** (L5316-5328 + L5332): The deprecation-check loop and the type-argument-checking loop both iterate `structure.trait_bounds` and look up `trait_registry.get(&trait_bound.name)`. Merge the deprecation check into the existing loop body at L5332 to avoid redundant iteration and hash-map lookups.\n\n2. **Return `&str` from `deprecation_message`** (L4701-4711): Change signature from `fn deprecation_message(annotations: &[Annotation]) -> Option<String>` to `-> Option<&str>`. The annotations outlive every call-site, so return `Some(s.as_str())` for String args and `Some(\"\")` for no-args. Update the ~5 call-sites.\n\n3. **Consistent entity_kind label** (L3645-3654): The purpose-param deprecation check uses `template.entity_kind.to_string().to_lowercase()` while all other call-sites use hardcoded string literals. Match on `template.entity_kind` to produce a known literal for consistency.\n\n4. **Add deprecated occurrence test**: Tests cover structures, functions, traits, purpose params, but not occurrence types. Add a test that defines a `@deprecated` occurrence and references it to confirm warnings are emitted.\n\nmemory_hints: search \"deprecation_message emit_deprecation_warning\" in reify-compiler",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:22.091Z",
+        "updatedAt": "2026-04-22T11:55:29.070Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/annotations.rs",
@@ -25128,11 +25128,11 @@
         "description": "TraitDecl.refinements is currently `Vec<String>` without individual spans. The deprecation warning for trait refinements (L4177-4191 in lib.rs) uses `trait_decl.span` (the entire child trait declaration) rather than pointing at the specific `: Base` refinement reference. This makes the warning highlight too much code.\n\nChange `refinements: Vec<String>` to `refinements: Vec<SpannedIdent>` (or similar span-bearing type) in reify-types, update the parser in reify-syntax to capture per-refinement spans, and update the compiler to use the precise span in the deprecation warning.\n\nmemory_hints: search \"TraitDecl refinements Vec<String>\" in reify-types; get_entity \"TraitDecl\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:04:57.692Z",
+        "updatedAt": "2026-04-22T11:55:29.202Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src",
@@ -28049,11 +28049,11 @@
         "description": "Two issues in the guard compilation fallback at lib.rs:5761-5772:\n\n1. **Misleading cascade**: Setting `guard_expr = None` when guard compilation fails prevents the old \"guard references no Int/Bool param\" cascade, but introduces a new one — the termination check sees `guard_expr: None` and emits \"recursive sub has no termination condition: add a where clause\" even though the user DID write a where clause. Fix: add a `guard_compile_failed: bool` field to `SubComponentDecl` (or use a sentinel like `guard_expr: Some(POISON)`) so the termination check can distinguish \"no guard written\" from \"guard written but broken\" and skip checking entirely for the latter.\n\n2. **Severity filtering**: The `diagnostics.len()` delta approach counts ALL diagnostic severities. If `compile_expr` ever emits a warning for a valid guard, the guard would be incorrectly dropped. Fix: filter by `Severity::Error` instead of comparing total lengths: `diagnostics[diag_count_before..].iter().any(|d| d.severity == Severity::Error)`.\n\nAlso fix while in the area:\n- Update test file line 10 doc comment: \"undef in recursive sub args\" → \"undef in guard-referenced recursive sub args\"\n- Update test comment at line 428 to say \"Must NOT have the specific guard-references-no-param cascading error\" instead of claiming exactly one error\n\nmemory_hints: search \"termination check guard compilation SubComponentDecl\", get_entity \"SubComponentDecl\"\n\nSource: review suggestions S2+S3 from esc-408-1075 (task 408).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:23.445Z",
+        "updatedAt": "2026-04-22T11:55:29.321Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -31961,11 +31961,11 @@
         "description": "Four improvements: (1) lib.rs:634: replace magic ContentHash::of(&[1u8]) with ContentHash::of_str(\"is_recursive\") for domain-tagging and hoist above loop as loop-invariant constant. (2) recursive_detection_tests.rs:571-577: refactor compile_all to call compile_module internally to reduce duplication. (3) recursive_detection_tests.rs:588-623: add comment noting is_recursive_mixed_into_content_hash assumes A's hash doesn't include B's resolved hash transitively.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:25.019Z",
+        "updatedAt": "2026-04-22T11:55:29.467Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
@@ -36927,7 +36927,7 @@
         "description": "Implement two-layer view persistence. Layer 1: localStorage for ephemeral per-file view state. Layer 2: sidecar .ri.views.json for durable/shareable persistence. Entity path exact matching on re-evaluation, stale path preservation for undo/branch-switch restoration, and fuzzy path recovery with user confirmation for renames.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 8 (View Persistence).\n\n### Implementation\n\n1. **localStorage layer** (`stores/viewPersistence.ts`)\n   - Key: `reify:views:{absoluteFilePath}`\n   - Value: JSON-serialized `PersistentViewState`:\n     - `activeViewId: string`\n     - `userViews: ViewDefinition[]` (auto views are NOT persisted — they're regenerated)\n     - `viewportCameras: Map<string, CameraState>`\n     - `timestamp: string` (ISO 8601)\n   - Save: debounced (500ms) after any view state change\n   - Load: on file open, before auto view generation\n   - Priority: sidecar file > localStorage > fresh defaults\n\n2. **Sidecar file layer** (`stores/sidecarPersistence.ts`)\n   - File: `{filename}.ri.views.json` alongside the `.ri` file\n   - Same schema as localStorage value, plus:\n     - `version: string` (schema version for forward compat)\n   - Write: on explicit \"Save views\" action (button in view management UI) + on clean app exit\n   - Read: on file open (takes priority over localStorage)\n   - New Tauri commands:\n     - `read_view_sidecar(ri_path: string) -> Option<PersistentViewState>`\n     - `write_view_sidecar(ri_path: string, state: PersistentViewState) -> Result<()>`\n   - \"Save views\" button in view selector dropdown (next to \"Manage views...\")\n\n3. **Re-evaluation reconciliation** (extend `viewStateStore.ts`)\n   - On entity tree rebuild:\n     1. Exact match: stored paths that exist in new tree → keep visibility state\n     2. New paths: not in any stored view → apply active view's default rules\n     3. Missing paths: in stored view but not in new tree → mark as \"stale\"\n   - Stale entries: kept in view state, greyed out in tree panel (if shown at all)\n   - Auto-restoration: if a stale path reappears (undo, branch switch), its stored state is restored\n\n4. **Fuzzy path recovery** (`stores/fuzzyPathMatcher.ts`)\n   - On re-evaluation, for each stale path, attempt recovery:\n     - **Suffix match**: stale `\"Assembly.flange.geometry\"`, new `\"Assembly.bolt_flange.geometry\"` — match by shared suffix under renamed parent\n     - **Structural match**: same type name + same parent type + similar child structure\n   - Never auto-apply: if fuzzy match found, show a non-blocking notification:\n     - \"Entity 'flange' was renamed. Rebind view settings to 'bolt_flange'? [Yes] [No] [Ignore]\"\n   - \"Yes\" rebinds the stored visibility to the new path\n   - \"No\" keeps the stale entry\n   - \"Ignore\" dismisses without action\n\n5. **Camera state persistence**\n   - Per-viewport camera state saved in the same persistence layers\n   - Restored on file open\n\n### Requirements covered\nP-1, P-2, P-3, P-4, P-5, P-6\n\n### memory_hints\n- search: \"localStorage persist state\"\n- search: \"viewStateStore views active\"\n- search: \"Tauri read write file\"\n- search: \"notification toast UI\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1746",
           "1747",
@@ -36985,7 +36985,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-21T19:43:31.745Z"
+        "updatedAt": "2026-04-22T11:55:29.589Z"
       },
       {
         "id": "1750",
@@ -37199,11 +37199,11 @@
         "description": "Three small robustness/doc improvements in the reify-compiler prelude compilation path, all stemming from the task-1392 refactor:\n\n1. **Block-scope the shared borrow in compile_module** (module_dag.rs ~lines 191-199): compile_project already wraps its collect_import_preludes + compile_with_prelude_refs in an explicit block scope (lines 261-264) so the shared borrow of modules is visually bounded. compile_module relies on a comment instead. Wrap lines 196-199 in a block: `let compiled = { let preludes = collect_import_preludes(&parsed, &self.modules); crate::compile_with_prelude_refs(&parsed, &preludes) };` to make both call sites consistent.\n\n2. **Add debug_assert in collect_import_preludes** (module_dag.rs lines 20-35): The function silently skips imports not found in the modules map. Add `debug_assert!(result.is_some(), \"import '{}' not yet compiled\", import.path);` inside the filter_map to surface invariant violations during development.\n\n3. **Fix misleading doc on compile_with_prelude** (lib.rs ~lines 74-81): The performance note says callers in a hot loop should use compile_with_prelude_refs \"directly\", but that function is pub(crate) so external callers cannot. Amend to: \"crate-internal callers in a hot loop should use compile_with_prelude_refs directly to avoid repeated allocation.\"\n\nmemory_hints: search \"collect_import_preludes block scope borrow\" and \"compile_with_prelude doc\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:25.705Z",
+        "updatedAt": "2026-04-22T11:55:29.712Z",
         "metadata": {
           "modules": [],
           "files": []
@@ -38801,11 +38801,11 @@
         "description": "compile_curve_op is the only extracted geometry helper that does not accept sub_ops. All other helpers (compile_transform_op, compile_modify_op, compile_boolean_op) accept and propagate sub_ops. If a future curve constructor is registered in geometry_arg_indices(), the compiled sub-ops would be silently discarded.\n\nFix: Either pass sub_ops to compile_curve_op (prepend to returned vec for consistency) or add debug_assert!(sub_ops.is_empty()) at the call site in geometry.rs:548-549 to catch future mismatches at test time.\n\nmemory_hints:\n- search: \"compile_curve_op sub_ops geometry helper\"\n- entity: compile_curve_op, geometry_arg_indices",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:28.267Z",
+        "updatedAt": "2026-04-22T11:55:29.831Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -38824,11 +38824,11 @@
         "description": "compile_modify_op_chamfer_preserves_step0 (lib.rs:2282) tests that chamfer's GeomRef::Step(0) bug-compat is preserved through the full compile pipeline. There is no corresponding test for fillet. While they share the same dispatch arm today, a fillet-specific test would guard against accidental divergence if someone later splits the match arms.\n\nAdd compile_modify_op_fillet_preserves_step0 using `fillet(target, radius)` source, structurally parallel to the chamfer test.\n\nmemory_hints:\n- search: \"chamfer fillet Step(0) bug-compat test\"\n- entity: compile_modify_op, GeomRef",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:29.053Z",
+        "updatedAt": "2026-04-22T11:55:29.948Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:28.957Z",
+      "lastModified": "2026-04-22T11:55:29.948Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
