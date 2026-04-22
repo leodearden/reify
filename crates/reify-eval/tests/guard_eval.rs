@@ -1931,12 +1931,15 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
 /// (10mm is still < 100mm), so Block A fires (guard cell is dirty) but Block B
 /// does NOT (guard value unchanged).
 ///
-/// Verifies that the Auto-skip in Block A (engine_edit.rs line 472) preserves
-/// the solver-resolved `thickness` value independently of Block B. If a future
-/// refactor drops the Auto-skip from Block A's call sites (lines 472/492) while
-/// keeping Block B's, this test catches it — the existing
+/// Verifies that the Auto-skip in Block A's members-side call site
+/// (engine_edit.rs line 472) preserves the solver-resolved `thickness` value
+/// independently of Block B. If a future refactor drops the Auto-skip from
+/// Block A's members-side call site (line 472) while keeping Block B's, this
+/// test catches it — the existing
 /// `edit_param_guard_false_preserves_solver_auto_param` test would not, because
-/// that test fires both blocks together.
+/// that test fires both blocks together. The else_members-side Block A call site
+/// (line 492) is covered by `edit_param_guard_group_mixed_members_via_edit_param`
+/// instead (this test uses empty else_members).
 #[test]
 fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
     let count_id = ValueCellId::new("S", "count");
