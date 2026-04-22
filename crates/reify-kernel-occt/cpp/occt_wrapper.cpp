@@ -129,6 +129,10 @@ constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
 /// two, catching inputs that bypass the Rust layer (e.g. direct FFI tests
 /// or future hot-path code) without colliding with the axis-vector
 /// CPP_AXIS_MAG_SQ_MIN sites in make_prism / make_revolve.
+/// The invariant RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ
+/// is enforced by the Rust unit test `rust_line_wire_floor_strictly_below_cpp_floor`
+/// in `crates/reify-kernel-occt/src/lib.rs`; if you change either floor,
+/// check that test still passes.
 constexpr double CPP_LINE_WIRE_MIN_LENGTH_SQ = 1e-10;
 
 // --- Internal floor accessors (drift-guard test support) ---
