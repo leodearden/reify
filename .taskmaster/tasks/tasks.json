@@ -38779,14 +38779,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:06.360Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src/geometry.rs",
-            "crates/reify-compiler/src/geometry_boolean.rs",
-            "crates/reify-compiler/src/geometry_curve.rs",
-            "crates/reify-compiler/src/geometry_modify.rs",
-            "crates/reify-compiler/src/geometry_transform.rs",
-            "crates/reify-compiler/src/lib.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
@@ -38801,9 +38795,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:06.432Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src/lib.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
@@ -39505,16 +39498,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:06.629Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src/entity.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/traits.rs",
-            "crates/reify-compiler/src/type_resolution.rs",
-            "crates/reify-compiler/stdlib/materials_mechanical.ri",
-            "crates/reify-compiler/tests/material_struct_tests.rs",
-            "crates/reify-compiler/tests/materials_mechanical_tests.rs",
-            "examples/m5_geometry_flange.ri"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
