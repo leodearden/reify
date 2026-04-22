@@ -2219,6 +2219,68 @@ mod tests {
         );
     }
 
+    /// Pins the documented "Cells without a `default_expr` … are left unchanged"
+    /// contract for the **active branch** of `reelaborate_guarded_group`.
+    ///
+    /// The member cell IS present in `graph.value_cells` but its `default_expr`
+    /// is `None`, so the inner `if let Some(ref expr) = node.default_expr` guard
+    /// fails and the function must silently skip the cell — leaving both `values`
+    /// and `snapshot_values` empty for it.
+    ///
+    /// A regression that replaced the guarded `if let Some(node) = … && let
+    /// Some(ref expr) = node.default_expr` with an unconditional insert (or that
+    /// silently inserted `Value::Undef` on the missing-expr branch) would be
+    /// caught here.
+    #[test]
+    fn reelaborate_guarded_group_active_member_without_default_expr_is_noop() {
+        use std::collections::HashMap;
+
+        use crate::graph::GuardedGroupInfo;
+
+        use super::reelaborate_guarded_group;
+
+        let guard_id = ValueCellId::new("E", "guard");
+        let member_id = ValueCellId::new("E", "member");
+
+        let mut graph = EvaluationGraph::default();
+        // Guard cell is present (guard itself doesn't need a default_expr).
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        // Member cell IS present in the graph, but has no default_expr.
+        graph.value_cells.insert(member_id.clone(), make_cell(&member_id, ValueCellKind::Param, Type::Int, None));
+
+        let group = GuardedGroupInfo {
+            guard_cell: guard_id.clone(),
+            members: vec![member_id.clone()],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        reelaborate_guarded_group(
+            &graph,
+            &group,
+            &Value::Bool(true),
+            &mut values,
+            &mut snapshot_values,
+            &[],
+            &HashMap::new(),
+        );
+
+        // Active member with no default_expr: must be left entirely untouched.
+        assert!(
+            values.get(&member_id).is_none(),
+            "Active member with default_expr=None must not appear in values"
+        );
+        assert!(
+            snapshot_values.get(&member_id).is_none(),
+            "Active member with default_expr=None must not appear in snapshot_values"
+        );
+    }
+
     /// When `guard_val = Bool(false)`, `reelaborate_guarded_group` must
     /// activate `else_members` and deactivate `members`.
     ///
