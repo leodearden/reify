@@ -1413,4 +1413,336 @@ mod tests {
             "Expected exactly one 'unresolved type' diagnostic"
         );
     }
+
+    /// Pins the `inferred_let_exprs.get(name)` fallback at conformance.rs:358-363
+    /// and the `Some(default_type) if implicitly_converts_to(...)` satisfaction arm
+    /// at conformance.rs:406-410.
+    ///
+    /// `RequirementKind::Let` is not parser-reachable from reify source today
+    /// (see `let_with_type_and_no_value_parses_as_empty_trait` and
+    /// `let_type_disambiguation_tests.rs:470-497`), so only hand-built fixtures
+    /// reach this path.
+    ///
+    /// ## Scenario
+    ///
+    /// - **TraitA**: requires `let x : Length` (hand-built `RequirementKind::Let` — not
+    ///   parser-reachable)
+    /// - **TraitB**: provides unannotated `let x = 80mm` (`DefaultKind::Let { cell_type: None,
+    ///   let_decl.value: QuantityLiteral { 80.0, "mm" } }`) — Pass 2 infers `Type::length()`
+    ///   and caches it in `inferred_let_exprs`
+    /// - **Structure S : TraitA + TraitB { }** — no member overrides
+    ///
+    /// ## Expected behavior
+    ///
+    /// The `available_defaults` builder falls back to `inferred_let_exprs.get("x")`
+    /// → `Type::length()`. The `Some(default_type) if implicitly_converts_to(...)` arm
+    /// finds the types compatible → requirement satisfied → no diagnostics.
+    #[test]
+    fn inferred_let_expr_satisfies_let_requirement() {
+        // TraitA: requires `let x : Length` (hand-built — not parser-reachable)
+        let trait_a = CompiledTrait {
+            name: "TraitA".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "x".to_string(),
+                kind: RequirementKind::Let(Type::length()),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // TraitB: `let x = 80mm` (unannotated; cell_type: None).
+        // Pass 2 compiles QuantityLiteral { value: 80.0, unit: "mm" } →
+        // Type::Scalar { dimension: LENGTH } = Type::length(), finds "x" vacant in scope,
+        // caches in inferred_let_exprs.
+        let trait_b = CompiledTrait {
+            name: "TraitB".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: None,
+                    let_decl: reify_syntax::LetDecl {
+                        name: "x".to_string(),
+                        doc: None,
+                        is_pub: false,
+                        type_expr: None,
+                        value: reify_syntax::Expr {
+                            kind: reify_syntax::ExprKind::QuantityLiteral {
+                                value: 80.0,
+                                unit: "mm".to_string(),
+                            },
+                            span: SourceSpan::empty(0),
+                        },
+                        where_clause: None,
+                        annotations: vec![],
+                        span: SourceSpan::empty(0),
+                        content_hash: ContentHash(0),
+                    },
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // Structure S : TraitA + TraitB { } — no member overrides
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![
+                reify_syntax::TraitBoundRef {
+                    name: "TraitA".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+                reify_syntax::TraitBoundRef {
+                    name: "TraitB".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+            ],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let trait_registry: HashMap<String, &CompiledTrait> = [
+            ("TraitA".to_string(), &trait_a),
+            ("TraitB".to_string(), &trait_b),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let enum_defs: &[reify_types::EnumDef] = &[];
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // No "type mismatch" → inferred Type::length() satisfied RequirementKind::Let(Length)
+        // via the `Some(default_type) if implicitly_converts_to(...)` arm at
+        // conformance.rs:406-410.
+        assert!(
+            diagnostics
+                .iter()
+                .filter(|d| d.message.contains("type mismatch"))
+                .count()
+                == 0,
+            "Expected no 'type mismatch' diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // No "missing required member" → the inferred_let_exprs fallback advertised
+        // `("x", Let) -> Type::length()` so the None arm was never reached.
+        assert!(
+            diagnostics
+                .iter()
+                .filter(|d| d.message.contains("missing required member"))
+                .count()
+                == 0,
+            "Expected no 'missing required member' diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Pins the `Some(default_type) =>` type-mismatch branch at conformance.rs:411-423
+    /// for the `RequirementKind::Let` path when the inferred-let type is incompatible.
+    ///
+    /// `implicitly_converts_to(Type::Real, Type::length())` is false — `Real` and
+    /// `Scalar { LENGTH }` are distinct types with no implicit conversion
+    /// (type_compat.rs:3-96).
+    ///
+    /// ## Scenario
+    ///
+    /// Identical to `inferred_let_expr_satisfies_let_requirement` except the let
+    /// expression is `ExprKind::NumberLiteral(5.5)` (inferred `Type::Real`)
+    /// instead of `QuantityLiteral { 80.0, "mm" }`.
+    ///
+    /// ## Expected behavior
+    ///
+    /// `available_defaults` advertises `("x", Let) -> Type::Real` (via the
+    /// `inferred_let_exprs.get("x")` fallback). The `Some(default_type) =>` arm
+    /// fires → exactly one "type mismatch" + "available default" + "x" diagnostic.
+    /// No "missing required member" for "x" (the default IS present in
+    /// `available_defaults`, just with an incompatible type).
+    #[test]
+    fn inferred_let_expr_incompatible_with_let_requirement() {
+        // TraitA: requires `let x : Length` (hand-built — not parser-reachable)
+        let trait_a = CompiledTrait {
+            name: "TraitA".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "x".to_string(),
+                kind: RequirementKind::Let(Type::length()),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // TraitB: `let x = 5.5` (unannotated; cell_type: None).
+        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" vacant in scope,
+        // caches in inferred_let_exprs.
+        let trait_b = CompiledTrait {
+            name: "TraitB".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: None,
+                    let_decl: reify_syntax::LetDecl {
+                        name: "x".to_string(),
+                        doc: None,
+                        is_pub: false,
+                        type_expr: None,
+                        value: reify_syntax::Expr {
+                            kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                            span: SourceSpan::empty(0),
+                        },
+                        where_clause: None,
+                        annotations: vec![],
+                        span: SourceSpan::empty(0),
+                        content_hash: ContentHash(0),
+                    },
+                },
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // Structure S : TraitA + TraitB { } — no member overrides
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![
+                reify_syntax::TraitBoundRef {
+                    name: "TraitA".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+                reify_syntax::TraitBoundRef {
+                    name: "TraitB".to_string(),
+                    type_args: vec![],
+                    span: SourceSpan::empty(0),
+                },
+            ],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let trait_registry: HashMap<String, &CompiledTrait> = [
+            ("TraitA".to_string(), &trait_a),
+            ("TraitB".to_string(), &trait_b),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let enum_defs: &[reify_types::EnumDef] = &[];
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
+
+        // Assertion 1: exactly one "type mismatch" + "available default" + "x" diagnostic.
+        // This pins the `Some(default_type) =>` branch at conformance.rs:411-423.
+        let mismatch: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("type mismatch")
+                    && d.message.contains("available default")
+                    && d.message.contains('x')
+            })
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "expected exactly one type-mismatch diagnostic from the `Some(default_type) =>` \
+             branch; got: {:?}",
+            diagnostics
+        );
+
+        // Assertion 2: no "missing required member" for "x".
+        // The inferred_let_exprs fallback advertised `("x", Let)` so the None arm was
+        // never reached — the default IS present in available_defaults, just with an
+        // incompatible type.
+        assert!(
+            diagnostics
+                .iter()
+                .filter(|d| d.message.contains("missing required member")
+                    && d.message.contains('x'))
+                .count()
+                == 0,
+            "negative case should hit the Some(default_type) arm, not the None arm; \
+             got: {:?}",
+            diagnostics
+        );
+    }
 }
