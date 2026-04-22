@@ -44905,17 +44905,20 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:253-257` — on an unknown `Sub(name)` lookup the error message is `unresolvable GeomRef::Sub('{name}') — no such named sub-reference in scope`. This is surfaced via `Diagnostic::error(format!(\"failed to compile geometry operation: {}\", err))` with no source span (the caller uses `SourceSpan::new(0,0)` everywhere upstream), so a user with a typo in `difference(body, hoel)` gets no indication of which file/line.\n\nNot specific to `Sub(name)` — all surrounding diagnostics share the same span-less shape. Fix: thread the realization's `span` into `execute_realization_ops` so per-op diagnostics can carry a span. Self-acknowledged follow-up from Task 2011 review (reviewer explicitly marked it out of scope).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T15:00:27.376Z",
+        "updatedAt": "2026-04-22T16:54:38.614Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
             "crates/reify-compiler/tests/let_scope_tests.rs",
             "crates/reify-eval/src/engine_build.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "bdb8eb344dc303e477b78cde1045c8566239f2e3"
+          }
         }
       },
       {
@@ -45659,9 +45662,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T16:49:38.428Z",
+      "lastModified": "2026-04-22T16:54:38.614Z",
       "taskCount": 2142,
-      "completedCount": 1885,
+      "completedCount": 1886,
       "tags": [
         "master"
       ]
