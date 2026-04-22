@@ -43860,7 +43860,7 @@
         "id": "2069",
         "title": "Polish task 424 follow-ups: is_recursive doc count, depth-limit test name, engine_admin comment",
         "description": "Four doc/naming accuracy fixes across reify-compiler and reify-eval — all from post-merge review (tasks 424 and 324):\n\n1. **crates/reify-compiler/src/types.rs:259-279** — `is_recursive` docstring says \"the flag is used in three distinct places\" but enumerates four bullets (termination.rs, unfold.rs, engine_eval.rs, gui/src-tauri/src/engine.rs). Fix: change \"three distinct places\" to \"four distinct places\", or use \"in the following places\" so future additions don't require re-editing the prose.\n\n2. **crates/reify-eval/tests/recursive_unfold.rs** — depth-limit test name fix (from task 424 review).\n\n3. **crates/reify-eval/src/engine_admin.rs** — stale comment fix (from task 424 review).\n\n4. **crates/reify-eval/tests/tube_pipe_e2e.rs:~310** — `pipe_volume_through_full_pipeline_matches_formula` docstring reads \"π*r²*L verified within 5% relative error via a parallel direct OcctKernel query\" but the actual assertion is `rel_err < 1e-6`. Update to: \"π*r²*L verified to floating-point tolerance (rel_err < 1e-6) via a parallel direct OcctKernel query\".\n\nAll items are doc/comment/naming accuracy fixes; no behavior changes.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "details": "## Item 1 — is_recursive doc count (crates/reify-compiler/src/types.rs:259-279)\nChange \"the flag is used in three distinct places\" → \"four distinct places\", or reword to \"in the following places\" to avoid a stale count on future additions.\n\n## Item 2 — depth-limit test name (crates/reify-eval/tests/recursive_unfold.rs)\nApply the depth-limit test rename identified in the task 424 review.\n\n## Item 3 — engine_admin stale comment (crates/reify-eval/src/engine_admin.rs)\nApply the comment fix identified in the task 424 review.\n\n## Item 4 — tube_pipe_e2e tolerance docstring (crates/reify-eval/tests/tube_pipe_e2e.rs:~310)\nFunction `pipe_volume_through_full_pipeline_matches_formula` has docstring:\n  `π*r²*L verified within 5% relative error via a parallel direct OcctKernel query`\nActual assertion: `rel_err < 1e-6`.\nReplace docstring with:\n  `π*r²*L verified to floating-point tolerance (rel_err < 1e-6) via a parallel direct OcctKernel query`\n\nSingle-line change; no behavior change.",
@@ -43875,7 +43875,8 @@
           "curator_action": "combine",
           "curator_justification": "The candidate is a single-line doc fix in crates/reify-eval/tests/tube_pipe_e2e.rs — well under the 300-char tiny-task threshold. Task 2069 is already a bundle of doc/comment/naming accuracy fixes across reify-compiler and reify-eval (is_recursive count, depth-limit test name, engine_admin comment). The candidate fits the same unified concern (\"fix stale doc claims in reify-eval\"), adds no new module-lock key (union stays within crates/reify-compiler + crates/reify-eval), stays well within plann",
           "combined_at": "2026-04-22T00:54:23.931769+00:00"
-        }
+        },
+        "updatedAt": "2026-04-22T02:19:52.766Z"
       },
       {
         "id": "2070",
@@ -44769,7 +44770,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:19:49.131Z",
+      "lastModified": "2026-04-22T02:19:52.766Z",
       "taskCount": 2107,
       "completedCount": 1837,
       "tags": [
