@@ -4345,10 +4345,15 @@ mod tests {
         // (zero-volume) solid; they now return
         // GeometryError::OperationFailed with "start-tangent" in the message.
         //
-        // The three cases cover:
+        // The four cases cover:
         //   - +X line segment (start-tangent = +X)
         //   - +Y line segment (start-tangent = +Y)
         //   - Arc in the XY plane, start_angle=0 (start-tangent = +Y)
+        //   - -Z line segment (start-tangent = -Z)
+        //
+        // The -Z case guards against future refactors that might accidentally
+        // compare t.z.abs() instead of t.z — such a change would still reject
+        // +X and +Y but would incorrectly accept -Z.
         //
         // See `kernel_pipe_straight_path_volume_matches_pi_r2_l` for the
         // accepted +Z case.
@@ -4380,6 +4385,13 @@ mod tests {
                     start_angle: 0.0,
                     end_angle: std::f64::consts::FRAC_PI_2,
                     axis: [0.0, 0.0, 1.0],
+                },
+            ),
+            (
+                "-Z line segment",
+                GeometryOp::LineSegment {
+                    x1: 0.0, y1: 0.0, z1: 0.0,
+                    x2: 0.0, y2: 0.0, z2: -0.020,
                 },
             ),
         ];
