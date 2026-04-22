@@ -118,10 +118,10 @@ std::unique_ptr<OcctShape> make_arc_wire(
 std::unique_ptr<OcctShape> make_helix_wire(
     double radius, double pitch, double height);
 
-/// Create a polyline wire from N points (flat coords array of 3*N doubles, N >= 2).
-/// The resulting wire has N-1 line edges connecting consecutive points.
-/// Use this instead of make_interp_curve when you need a multi-edge wire
-/// (e.g. to exercise BRepAdaptor_CompCurve composite behaviour).
+/// Create a polyline wire from N >= 2 points (flat coords array of 3*N doubles).
+/// Produces N-1 line edges connecting consecutive points.  Stable kernel FFI
+/// primitive: backing wire for planned polygon faces, multi-segment sweep/pipe
+/// paths (make_pipe, make_pipe_shell), and BRepAdaptor_CompCurve composite testing.
 std::unique_ptr<OcctShape> make_polyline_wire(
     rust::Slice<const double> coords, size_t n_points);
 

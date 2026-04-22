@@ -175,8 +175,10 @@ pub mod ffi {
         fn make_helix_wire(
             radius: f64, pitch: f64, height: f64,
         ) -> Result<UniquePtr<OcctShape>>;
-        /// Build a multi-edge wire from N points (flat coords, N >= 2).
-        /// Produces N-1 line edges — exercises BRepAdaptor_CompCurve paths.
+        /// Build a polyline wire from N >= 2 points (flat 3*N coord slice).
+        /// Produces N-1 line edges.  Stable kernel FFI primitive: polygon-face
+        /// backing wires, multi-segment sweep/pipe paths, and
+        /// BRepAdaptor_CompCurve composite-wire testing.
         fn make_polyline_wire(
             coords: &[f64], n_points: usize,
         ) -> Result<UniquePtr<OcctShape>>;
