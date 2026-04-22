@@ -1021,3 +1021,66 @@ constraint def Aligned<T> {
         def.type_params.len()
     );
 }
+
+// ── Test 18: constraint def with local structure param type compiles cleanly ──
+
+/// A constraint def whose param type is a locally-defined structure name must
+/// compile without any "unknown type" error diagnostic.
+///
+/// Regression for the case where `compile_constraint_def` rejected structure
+/// names (only builtins, type params, aliases, enums, and traits were accepted).
+/// Because the resolved type is discarded at def-compile time (entity.rs only
+/// reads param.name and param.default at instantiation time), accepting a
+/// structure-typed param is semantically safe — no downstream type-checking
+/// changes are needed.
+///
+/// This test MUST fail on the unpatched compiler (Wall is not in the accepted
+/// categories) and pass after step-2's `structure_names` guard is added.
+#[test]
+fn constraint_def_with_local_structure_param_type_compiles_cleanly() {
+    let source = r#"
+structure Wall {
+    param thickness: Length = 5mm
+}
+constraint def FitsWall {
+    param w: Wall
+    w.thickness > 0mm
+}
+"#;
+    let module = compile_source(source);
+    let errors = error_diags(&module.diagnostics);
+
+    // No "unknown type" error must be emitted for the structure param type.
+    let unknown_type_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| {
+            d.message.starts_with("unknown type '")
+                && d.message.contains("Wall")
+                && d.message.contains("'w'")
+        })
+        .collect();
+    assert!(
+        unknown_type_errors.is_empty(),
+        "expected no 'unknown type' error for locally-defined structure 'Wall' \
+         as param type in constraint def, got: {:?}",
+        unknown_type_errors
+    );
+
+    // Positive shape assertion: FitsWall must be present in compiled output.
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "FitsWall")
+        .expect("FitsWall constraint def must be present in module.constraint_defs");
+    assert_eq!(
+        def.params.len(),
+        1,
+        "expected FitsWall to have 1 param (w), got {}",
+        def.params.len()
+    );
+    assert_eq!(
+        def.params[0].name, "w",
+        "expected FitsWall param[0] to be named 'w', got '{}'",
+        def.params[0].name
+    );
+}
