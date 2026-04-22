@@ -46,3 +46,33 @@ pub(crate) const RUST_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-12;
 /// This value is emitted into `$OUT_DIR/line_wire_floors.h` by `build.rs` and
 /// consumed by `cpp/occt_wrapper.cpp` via `#include "line_wire_floors.h"`.
 pub(crate) const CPP_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-10;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn below_floor_rejects_with_rust_guard_marker() {
+        // Derive a below-floor dx so that dist_sq = dx² < RUST_LINE_WIRE_MIN_LENGTH_SQ.
+        // Using 0.9 × floor gives a 10% margin that survives fp round-trip.
+        let below_dx = (0.9 * RUST_LINE_WIRE_MIN_LENGTH_SQ).sqrt();
+        debug_assert!(
+            below_dx * below_dx < RUST_LINE_WIRE_MIN_LENGTH_SQ,
+            "below_dx² must be strictly < RUST_LINE_WIRE_MIN_LENGTH_SQ after fp round-trip"
+        );
+
+        let result = line_segment_rust_guard(below_dx, 0.0, 0.0);
+        match result {
+            Err(reify_types::GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains(RUST_GUARD_MARKER),
+                    "below-floor rejection must contain the '[rust-guard]' marker, got: {msg:?}"
+                );
+            }
+            Ok(()) => panic!(
+                "below-floor case (dist_sq = 0.9 × RUST_LINE_WIRE_MIN_LENGTH_SQ) \
+                 should return Err, got Ok"
+            ),
+        }
+    }
+}
