@@ -2485,6 +2485,55 @@ mod tests {
         );
     }
 
+    /// Pins the "absent from the graph" half of the documented "Cells without a
+    /// `default_expr` (or absent from the graph) are left unchanged" contract for
+    /// the **active branch under guard=false** of `reelaborate_guarded_group`.
+    ///
+    /// With `guard_val = Bool(false)`, `else_members` are on the **active branch**.
+    /// The else_member ID is included in `group.else_members` but is NOT inserted
+    /// into `graph.value_cells`, so the outer `if let Some(node) =
+    /// graph.value_cells.get(mid)` guard fails and the function must silently skip
+    /// the cell — leaving both `values` and `snapshot_values` empty for it.
+    ///
+    /// Mirrors `_active_member_absent_from_graph_is_noop`; pins the
+    /// `else_members` side of the symmetric loop at engine_edit.rs:68.
+    ///
+    /// A regression that dropped this guard (e.g. via `&graph.value_cells[mid]`,
+    /// `.unwrap()`, or any unconditional insert keyed on the raw else_member id)
+    /// would be caught here.
+    #[test]
+    fn reelaborate_guarded_group_active_else_member_absent_from_graph_is_noop() {
+        let guard_id = ValueCellId::new("E", "guard");
+        // else_member_id is referenced in the group but intentionally NOT inserted
+        // into graph.value_cells — it is wholly absent from the graph.
+        let else_member_id = ValueCellId::new("E", "else_member");
+
+        let mut graph = EvaluationGraph::default();
+        // Only the guard cell is in the graph.
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+
+        // guard=false → else_members active, members inactive.
+        let group = GuardedGroupInfo {
+            guard_cell: guard_id.clone(),
+            members: vec![],
+            else_members: vec![else_member_id.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let (values, snapshot_values) = run_with_guard_false(graph, group);
+
+        // Active else_member absent from graph: must be left entirely untouched.
+        assert!(
+            values.get(&else_member_id).is_none(),
+            "Active else_member absent from graph must not appear in values"
+        );
+        assert!(
+            snapshot_values.get(&else_member_id).is_none(),
+            "Active else_member absent from graph must not appear in snapshot_values"
+        );
+    }
+
     /// When `guard_val = Bool(false)`, `reelaborate_guarded_group` must
     /// activate `else_members` and deactivate `members`.
     ///
