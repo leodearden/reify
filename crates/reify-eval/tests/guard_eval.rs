@@ -1704,6 +1704,222 @@ fn eval_guard_true_else_member_regular_param_still_undetermined() {
     );
 }
 
+/// Integration test: exercises all four `deactivate_if_not_auto` call sites in
+/// `edit_param` via a guarded group with mixed Auto+Param members in both
+/// `members` and `else_members`.
+///
+/// Two `edit_param` transitions (true→false, false→true) cover:
+/// - Site #1 (Block A members deactivate, guard→false): a1 Auto-skip
+/// - Site #2 (Block A else_members deactivate, guard→true): a2 Auto-skip
+/// - Site #3 (Block B members, guard changed): mirrors site #1
+/// - Site #4 (Block B else_members, guard changed): mirrors site #2
+///
+/// A refactor that drops any one of the four `deactivate_if_not_auto` calls in
+/// `edit_param` (engine_edit.rs lines 472, 492, 723, 746) will break at least
+/// one transition's expected state.
+///
+/// Supersedes the shallow unit test `deactivate_if_not_auto_guard_group_mixed_members`
+/// in `engine_edit.rs::tests`, which only iterates the helper over a slice and
+/// never reaches the real `edit_param` call sites.
+#[test]
+fn edit_param_guard_group_mixed_members_via_edit_param() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let a1_id = ValueCellId::new("S", "a1");
+    let a2_id = ValueCellId::new("S", "a2");
+    let p1_id = ValueCellId::new("S", "p1");
+    let p2_id = ValueCellId::new("S", "p2");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Auto param decls (kind=Auto, no default_expr)
+    let a1_decl = ValueCellDecl {
+        id: a1_id.clone(),
+        kind: ValueCellKind::Auto { free: false },
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+    let a2_decl = ValueCellDecl {
+        id: a2_id.clone(),
+        kind: ValueCellKind::Auto { free: false },
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Regular Param decls (default 11mm = 0.011 SI, 13mm = 0.013 SI)
+    let p1_decl = make_param_decl("S", "p1", Type::length(), Value::length(0.011));
+    let p2_decl = make_param_decl("S", "p2", Type::length(), Value::length(0.013));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        // Top-level Auto params so the resolution phase finds them
+        .auto_param("S", "a1", Type::length())
+        .auto_param("S", "a2", Type::length())
+        // Top-level constraints so the resolution phase can match them
+        .constraint("S", 0, Some("a1_gt_2mm"), gt(value_ref("S", "a1"), literal(mm(2.0))))
+        .constraint("S", 1, Some("a2_gt_3mm"), gt(value_ref("S", "a2"), literal(mm(3.0))))
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![a1_decl, p1_decl], // members (active when guard=true)
+            vec![],                 // constraints
+            vec![a2_decl, p2_decl], // else_members (active when guard=false)
+            vec![],                 // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Mock solver: always returns a1=5mm, a2=7mm
+    let mut solved_values = HashMap::new();
+    solved_values.insert(a1_id.clone(), mm(5.0));
+    solved_values.insert(a2_id.clone(), mm(7.0));
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // ── Phase 1: initial eval (guard=true) ──────────────────────────────────
+    let result1 = engine.eval(&module);
+
+    // a1: active member, solver resolved to 5mm
+    let a1_p1 = result1.values.get(&a1_id);
+    assert!(
+        matches!(a1_p1, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Phase 1: a1 should be 5mm, got {:?}",
+        a1_p1
+    );
+    // p1: active member, default 11mm
+    assert_eq!(
+        result1.values.get(&p1_id),
+        Some(&Value::length(0.011)),
+        "Phase 1: p1 should be 11mm"
+    );
+    // a2: solver resolved to 7mm (else deactivation is Auto-skip; solver still runs at top level)
+    let a2_p1 = result1.values.get(&a2_id);
+    assert!(
+        matches!(a2_p1, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
+        "Phase 1: a2 should be 7mm, got {:?}",
+        a2_p1
+    );
+    let snap1 = engine.snapshot().expect("snapshot after eval");
+    let (_, a2_det1) = snap1.values.get(&a2_id).expect("a2 in snapshot after eval");
+    assert_eq!(
+        *a2_det1,
+        DeterminacyState::Determined,
+        "Phase 1: a2 DeterminacyState should be Determined (solver resolved)"
+    );
+    // p2: else_member deactivated → Undef
+    assert_eq!(
+        result1.values.get(&p2_id),
+        Some(&Value::Undef),
+        "Phase 1: p2 should be Undef (else_member inactive when guard=true)"
+    );
+
+    // ── Phase 2: edit_param(active, false) — guard true→false ──────────────
+    // Block A members deactivate: a1 Auto-skip (site #1), p1→Undef
+    // Block A else_members activate: a2 no default_expr (stays 7mm), p2→13mm
+    // Block B fires (guard changed true→false): same via sites #3/#4
+    let result2 = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param(active=false) should succeed");
+
+    // a1: Auto-skip in members deactivate (site #1) → 5mm preserved
+    let a1_p2 = result2.values.get(&a1_id);
+    assert!(
+        matches!(a1_p2, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Phase 2: a1 should retain 5mm after guard→false (Auto-skip site #1), got {:?}",
+        a1_p2
+    );
+    let snap2 = engine.snapshot().expect("snapshot after guard→false");
+    let (_, a1_det2) = snap2.values.get(&a1_id).expect("a1 in snapshot after guard→false");
+    assert_eq!(
+        *a1_det2,
+        DeterminacyState::Determined,
+        "Phase 2: a1 DeterminacyState must remain Determined after Auto-skip"
+    );
+    // p1: Param in members → Undef after deactivation
+    assert_eq!(
+        result2.values.get(&p1_id),
+        Some(&Value::Undef),
+        "Phase 2: p1 should be Undef after members deactivate"
+    );
+    // a2: else_members activate; Auto with no default_expr → stays 7mm
+    let a2_p2 = result2.values.get(&a2_id);
+    assert!(
+        matches!(a2_p2, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
+        "Phase 2: a2 should retain 7mm after else_members activated (no default_expr), got {:?}",
+        a2_p2
+    );
+    let (_, a2_det2) = snap2.values.get(&a2_id).expect("a2 in snapshot after guard→false");
+    assert_eq!(
+        *a2_det2,
+        DeterminacyState::Determined,
+        "Phase 2: a2 DeterminacyState must remain Determined"
+    );
+    // p2: else_member activates → default 13mm
+    assert_eq!(
+        result2.values.get(&p2_id),
+        Some(&Value::length(0.013)),
+        "Phase 2: p2 should be 13mm after else_members activated"
+    );
+
+    // ── Phase 3: edit_param(active, true) — guard false→true ───────────────
+    // Block A members activate: a1 no default_expr (stays 5mm), p1→11mm
+    // Block A else_members deactivate: a2 Auto-skip (site #2), p2→Undef
+    // Block B fires (guard changed false→true): same via sites #3/#4
+    let result3 = engine
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param(active=true) should succeed");
+
+    // a1: members activate; Auto with no default_expr → stays 5mm
+    let a1_p3 = result3.values.get(&a1_id);
+    assert!(
+        matches!(a1_p3, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Phase 3: a1 should retain 5mm after guard→true (no default_expr), got {:?}",
+        a1_p3
+    );
+    // p1: Param in members → default 11mm after re-activation
+    assert_eq!(
+        result3.values.get(&p1_id),
+        Some(&Value::length(0.011)),
+        "Phase 3: p1 should be 11mm after members re-activated"
+    );
+    // a2: Auto-skip in else_members deactivate (site #2) → 7mm preserved
+    let a2_p3 = result3.values.get(&a2_id);
+    assert!(
+        matches!(a2_p3, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
+        "Phase 3: a2 should retain 7mm after else_members deactivate (Auto-skip site #2), got {:?}",
+        a2_p3
+    );
+    let snap3 = engine.snapshot().expect("snapshot after guard→true");
+    let (_, a2_det3) = snap3.values.get(&a2_id).expect("a2 in snapshot after guard→true");
+    assert_eq!(
+        *a2_det3,
+        DeterminacyState::Determined,
+        "Phase 3: a2 DeterminacyState must remain Determined after else Auto-skip"
+    );
+    // p2: Param in else_members → Undef after deactivation
+    assert_eq!(
+        result3.values.get(&p2_id),
+        Some(&Value::Undef),
+        "Phase 3: p2 should be Undef after else_members deactivated"
+    );
+}
+
 /// Block-A-only Auto-skip regression test (task 750).
 ///
 /// Block A in `edit_param` fires when `has_dirty_guards` — meaning the guard
