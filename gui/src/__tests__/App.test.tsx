@@ -111,11 +111,31 @@ vi.mock('../bridge', () => ({
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
+  readViewSidecar: vi.fn().mockResolvedValue(null),
+  writeViewSidecar: vi.fn().mockResolvedValue(undefined),
 }));
+
+// Mock persistence modules so App.tsx's persistence calls can be intercepted.
+vi.mock('../stores/sidecarPersistence', () => ({
+  loadSidecar: vi.fn().mockResolvedValue(null),
+  saveSidecar: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Partial mock: keep createDebouncedSaver + saveViewPersistence real so debounce
+// behaviour (step-31) can be tested via localStorage and vi.useFakeTimers.
+vi.mock('../stores/viewPersistence', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../stores/viewPersistence')>();
+  return {
+    ...actual,
+    loadViewPersistence: vi.fn().mockReturnValue(null),
+  };
+});
 
 import App from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
+import * as sidecarPersistence from '../stores/sidecarPersistence';
+import * as viewPersistence from '../stores/viewPersistence';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -144,6 +164,10 @@ beforeEach(() => {
   vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
   vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
+  // Persistence module mocks
+  vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue(null);
+  vi.mocked(sidecarPersistence.saveSidecar).mockResolvedValue(undefined);
+  vi.mocked(viewPersistence.loadViewPersistence).mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -3080,5 +3104,89 @@ describe('DualViewport wiring', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Persistence wiring tests (steps 29–38)
+// ---------------------------------------------------------------------------
+
+/** Minimal valid PersistentViewState for test helpers. */
+function makePersistedState(overrides: Partial<import('../types').PersistentViewState> = {}): import('../types').PersistentViewState {
+  return {
+    version: '1',
+    activeViewId: 'user:my-view',
+    userViews: [],
+    explicit: {},
+    viewportCameras: {},
+    timestamp: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('App persistence wiring — file open (step-29)', () => {
+  it('on handleOpen success, loadSidecar(path) is queried first', async () => {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/bracket.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/bracket.ri', content: '' });
+
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+
+    await waitFor(() => {
+      expect(sidecarPersistence.loadSidecar).toHaveBeenCalledWith('/test/bracket.ri');
+    });
+  });
+
+  it('when sidecar returns null, falls back to loadViewPersistence(path)', async () => {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/bracket.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/bracket.ri', content: '' });
+    vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue(null);
+
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+
+    await waitFor(() => {
+      expect(viewPersistence.loadViewPersistence).toHaveBeenCalledWith('/test/bracket.ri');
+    });
+  });
+
+  it('when sidecar returns a valid state, loadViewPersistence is NOT called', async () => {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/bracket.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/bracket.ri', content: '' });
+    vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue(makePersistedState());
+
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+
+    await waitFor(() => {
+      expect(sidecarPersistence.loadSidecar).toHaveBeenCalledWith('/test/bracket.ri');
+    });
+    // Sidecar succeeded — localStorage should not be queried
+    expect(viewPersistence.loadViewPersistence).not.toHaveBeenCalled();
+  });
+
+  it('when both layers return null, app renders without crash', async () => {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/bracket.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/bracket.ri', content: '' });
+    vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue(null);
+    vi.mocked(viewPersistence.loadViewPersistence).mockReturnValue(null);
+
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+
+    await waitFor(() => {
+      expect(sidecarPersistence.loadSidecar).toHaveBeenCalled();
+    });
+
+    // App still renders correctly after null cascade
+    expect(screen.getByTestId('app-layout')).toBeTruthy();
   });
 });
