@@ -79,6 +79,23 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 }
 
 #[cfg(has_occt)]
+/// Validate that `value` is a finite, strictly positive number.
+///
+/// Returns an `OperationFailed` error with the message
+/// `"{label} must be a finite positive value"` if the check fails. `label`
+/// is intended to be a specific dimension name (e.g. `"tube outer radius"`,
+/// `"pipe radius"`) so the caller does not need to construct bespoke error
+/// strings for each dimension.
+fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError> {
+    if !(value.is_finite() && value > 0.0) {
+        return Err(GeometryError::OperationFailed(format!(
+            "{label} must be a finite positive value"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(has_occt)]
 /// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
 ///
 /// Contains `cxx::UniquePtr<OcctShape>` handles which are `!Send`, so the
@@ -205,21 +222,9 @@ impl OcctKernel {
                 let outer = extract_f64(outer_r)?;
                 let inner = extract_f64(inner_r)?;
                 let h = extract_f64(height)?;
-                if !(outer.is_finite() && outer > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "tube outer radius must be a finite positive value".into(),
-                    ));
-                }
-                if !(inner.is_finite() && inner > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "tube inner radius must be a finite positive value".into(),
-                    ));
-                }
-                if !(h.is_finite() && h > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "tube height must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(outer, "tube outer radius")?;
+                validate_positive_finite(inner, "tube inner radius")?;
+                validate_positive_finite(h, "tube height")?;
                 // Both values are already validated finite+positive above,
                 // so `>=` is unambiguous here (no NaN possible).
                 if inner >= outer {
@@ -564,11 +569,7 @@ impl OcctKernel {
             }
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_f64(radius)?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "pipe radius must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(r, "pipe radius")?;
                 // Compose: a circle face in the XY plane at z=0 swept along
                 // the stored path wire via make_pipe. The circle face is a
                 // private kernel-internal detail — user code never sees a
