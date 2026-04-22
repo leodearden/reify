@@ -38,6 +38,7 @@ impl Engine {
         // Execute geometry operations
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+            let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
             let had_realization_ops = module
                 .templates
                 .iter()
@@ -54,6 +55,8 @@ impl Engine {
                         &self.meta_map,
                         &mut step_handles,
                         &mut diagnostics,
+                        &mut named_steps,
+                        realization.name.as_deref(),
                     );
                 }
             }
@@ -99,6 +102,7 @@ impl Engine {
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+            let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
             let had_realization_ops = module
                 .templates
                 .iter()
@@ -115,6 +119,8 @@ impl Engine {
                         &self.meta_map,
                         &mut step_handles,
                         &mut diagnostics,
+                        &mut named_steps,
+                        realization.name.as_deref(),
                     );
                 }
             }
@@ -207,6 +213,7 @@ impl Engine {
         };
 
         let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         for template in &module.templates {
             for realization in &template.realizations {
@@ -219,6 +226,8 @@ impl Engine {
                     meta_map,
                     &mut step_handles,
                     diagnostics,
+                    &mut named_steps,
+                    realization.name.as_deref(),
                 );
 
                 // Tessellate this realization's final handle (if any new handles were produced)
@@ -268,12 +277,11 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         step_handles: &mut Vec<GeometryHandleId>,
         diagnostics: &mut Vec<Diagnostic>,
+        named_steps: &mut HashMap<String, GeometryHandleId>,
+        realization_name: Option<&str>,
     ) {
         let handle_start = step_handles.len();
         let mut had_failure = false;
-        // Temporary empty named_steps: full plumbing wired in step-8 once
-        // execute_realization_ops gains the named_steps parameter.
-        let empty_named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
         for op in operations {
             let geom_op = compile_geometry_op(
                 op,
@@ -281,7 +289,7 @@ impl Engine {
                 &step_handles[handle_start..],
                 functions,
                 meta_map,
-                &empty_named_steps,
+                named_steps,
                 diagnostics,
             );
             match geom_op {
@@ -305,8 +313,17 @@ impl Engine {
             }
         }
         // Discard intermediate handles from partially-failed realizations
-        if had_failure || step_handles.len() - handle_start < operations.len() {
+        let rolled_back = had_failure || step_handles.len() - handle_start < operations.len();
+        if rolled_back {
             step_handles.truncate(handle_start);
+        } else if let Some(name) = realization_name {
+            // Record name → final handle only after a fully successful realization.
+            // Insertion happens AFTER the rollback check so failed realizations
+            // never leave a stale entry that would let later realizations resolve
+            // a name whose geometry was never successfully produced.
+            if let Some(&last) = step_handles.last() {
+                named_steps.insert(name.to_string(), last);
+            }
         }
     }
 
@@ -383,6 +400,7 @@ mod tests {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut step_handles: Vec<GeometryHandleId> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         Engine::execute_realization_ops(
             &mut kernel,
@@ -392,6 +410,8 @@ mod tests {
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
+            &mut named_steps,
+            None,
         );
 
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
@@ -423,6 +443,7 @@ mod tests {
         let pre_existing = GeometryHandleId(0xCAFE);
         let mut step_handles: Vec<GeometryHandleId> = vec![pre_existing];
         let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         Engine::execute_realization_ops(
             &mut kernel,
@@ -432,6 +453,8 @@ mod tests {
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
+            &mut named_steps,
+            None,
         );
 
         assert_eq!(
@@ -481,6 +504,7 @@ mod tests {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut step_handles: Vec<GeometryHandleId> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         Engine::execute_realization_ops(
             &mut kernel,
@@ -490,6 +514,8 @@ mod tests {
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
+            &mut named_steps,
+            None,
         );
 
         assert!(
@@ -550,6 +576,7 @@ mod tests {
         let pre_existing = GeometryHandleId(0xBEEF);
         let mut step_handles: Vec<GeometryHandleId> = vec![pre_existing];
         let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         Engine::execute_realization_ops(
             &mut kernel,
@@ -559,6 +586,8 @@ mod tests {
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
+            &mut named_steps,
+            None,
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -611,6 +640,7 @@ mod tests {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut step_handles: Vec<GeometryHandleId> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
         Engine::execute_realization_ops(
             &mut kernel,
@@ -620,6 +650,8 @@ mod tests {
             &meta_map,
             &mut step_handles,
             &mut diagnostics,
+            &mut named_steps,
+            None,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
