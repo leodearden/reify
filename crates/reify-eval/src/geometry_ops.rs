@@ -241,10 +241,16 @@ pub(crate) fn compile_geometry_op(
                 .filter(|h| *h != GeometryHandleId::INVALID)
                 .ok_or_else(|| format!("unresolvable GeomRef::Step({}) — index out of bounds or INVALID handle", idx)),
             // GeomRef::Sub(name) — look up the handle in the caller-supplied
-            // named_steps map.  Returns Err (not a Warning+fallback) on miss so
-            // the caller can emit a single Error-severity diagnostic.  No
-            // Warning is pushed here: this arm is intentionally "silent at
-            // origin" per the feedback_silent_defaults_pattern convention.
+            // named_steps map.  The map is populated by the engine as each
+            // named realization completes (see execute_realization_ops).
+            //
+            // No Warning diagnostic at origin: on miss this arm returns
+            // Err(String) and emits NO diagnostic.  The caller
+            // (execute_realization_ops) converts the Err into a single
+            // Error-severity diagnostic per failed op, consistent with the
+            // "no Warning at origin, single Error at caller" convention
+            // documented in the compile_geometry_op doc-comment (lines 175-201).
+            // Pinned by compile_geometry_op_sub_ref_unknown_name_returns_err_no_warning.
             GeomRef::Sub(name) => named_steps
                 .get(name)
                 .copied()
