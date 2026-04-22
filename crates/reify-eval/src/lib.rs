@@ -212,6 +212,11 @@ pub struct Engine {
     /// Incremented once per group that is NOT skipped by the guard-value-unchanged
     /// optimisation. Used by tests to assert that the per-group skip is working
     /// correctly (e.g. only the affected group is re-elaborated, not all N groups).
+    ///
+    /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// via `Engine::last_guard_phase_group_evals()` in `engine_admin.rs`.
+    /// The field itself is always present (module-private, no `pub`) so that
+    /// the writer sites in `engine_edit.rs` need no cfg-gating.
     last_guard_phase_group_evals: usize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
