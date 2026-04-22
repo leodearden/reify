@@ -44863,6 +44863,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T03:03:34.395Z"
+      },
+      {
+        "id": "2119",
+        "title": "Pipe start-tangent helper polish: drop wording-pin test, dedupe doc, optional upper-bound guard",
+        "description": "Three small follow-ups from the post-merge review of task 2106 in crates/reify-kernel-occt/src/lib.rs.",
+        "details": "Post-merge review (reviewer_comprehensive) of task-2106's changes to validate_pipe_start_tangent flagged three small polish items:\n\n1. **Delete the wording-pin test** (lib.rs:4444-4460, `validate_pipe_start_tangent_error_mentions_tolerance`). Its sole assertion is `msg.contains(\"tolerance\")`. It exercises no behavior beyond message prose — no tolerance value, no branch selection, no coordinate reporting. Rewording the message (e.g. \"accepted margin %e\") would break the test without changing any contract; conversely a real correctness regression (wrong comparator/branch) would slip past it. The adjacent `validate_pipe_start_tangent_rejects_negative_z` test already covers the not-+Z branch with a stronger assertion. Action: delete the test.\n\n2. **Trim doc duplication** (lib.rs:98-103 + 106-109 + 602-609). The unit-vector residual derivation now lives on `PIPE_START_TANGENT_Z_EPSILON`'s doc comment, the helper's rustdoc, and the inline comment at the Pipe arm call site. Keep the residual derivation on the constant only; let the helper's rustdoc describe behavior; trim the call-site inline comment to a one-line pointer (e.g. \"Reject paths whose start-tangent is not approximately +Z; see validate_pipe_start_tangent.\"). Low priority.\n\n3. **Optional upper-bound guard** (lib.rs:108-124, `validate_pipe_start_tangent`). After filtering NaN/Inf, the comparator `t.z < 1.0 - ε` accepts arbitrarily large finite `t.z` (e.g. 1e100) and does not enforce the unit-vector invariant the doc rationale depends on. Cheap defense against upstream FFI bugs in `wire_start_tangent`: add `|| t.z > 1.0 + PIPE_START_TANGENT_Z_EPSILON` to the guard, or assert `(t.x*t.x + t.y*t.y + t.z*t.z - 1.0).abs() < 1e-3` defensively. Not blocking; pre-refactor code had the same gap.\n\nAll three are co-located polish on the helper landed in commits 5be841671..d087ef970 (task 2106). No behavior change for accepted (+Z) paths.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44872,7 +44883,10 @@
       "completedCount": 1842,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T03:04:30.946Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T03:04:31.018Z"
     }
   }
 }
