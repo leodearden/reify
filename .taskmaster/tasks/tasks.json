@@ -9265,11 +9265,11 @@
         "description": "In `crates/reify-compiler/src/lib.rs`, the `detect_recursive_structures()` function iterates over `st.sccs` twice with an identical `is_cycle` predicate — once to build `in_cycle[]` and emit diagnostics (lines ~2451-2469), and again to build `cyclic_sccs` (lines ~2475-2486). This duplicated predicate creates a divergence risk: if the is_cycle logic is updated in one loop but not the other, `in_cycle` flags and `cyclic_sccs` silently diverge, breaking the contract with the termination-check pass.\n\nFix: Merge both loops into a single pass that simultaneously builds `in_cycle[]`, emits diagnostics, and pushes to `cyclic_sccs`. Compute `is_cycle` exactly once per SCC.\n\nMemory hints: search \"detect_recursive_structures Tarjan SCC\" for implementation context; get_entity \"TopologyTemplate\" for the is_recursive field.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:04:33.516Z",
+        "updatedAt": "2026-04-22T10:05:12.612Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
@@ -45404,7 +45404,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:04:57.692Z",
+      "lastModified": "2026-04-22T10:05:12.612Z",
       "taskCount": 2140,
       "completedCount": 1874,
       "tags": [
