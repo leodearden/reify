@@ -44701,17 +44701,20 @@
         "description": "Restore the informational content of the original panic message in deps.rs::take_trace. The pre-refactor `remove().expect(...)` at the two call sites read e.g. `sorted_lets entries are always keys in let_traces`, naming both the sorted set and the trace map. The current helper's panic only names the sorted set via `sorted_set_name` and hard-codes `the trace map`. Add a second `&'static str` parameter (e.g. `trace_map_name`) and format both into the panic message, e.g. `\"{sorted_set_name} entries are always keys in {trace_map_name}\"`. Update the two call sites in engine_eval.rs and unfold.rs. Run `cargo test -p reify-eval`.",
         "details": "Post-merge review suggestion from task 2096 (reviewer_comprehensive, architecture). Location: crates/reify-eval/src/deps.rs:36-45. Preserves the diagnostic value of the original inline expects while keeping the shared helper. Small, mechanical change.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T04:38:26.227Z",
+        "updatedAt": "2026-04-22T04:51:50.826Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/deps.rs",
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/src/unfold.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "6fe7beca13dae523ca31a5e1255c4a0c1f8334be"
+          }
         }
       },
       {
@@ -45111,9 +45114,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T04:47:31.474Z",
+      "lastModified": "2026-04-22T04:51:50.826Z",
       "taskCount": 2121,
-      "completedCount": 1855,
+      "completedCount": 1856,
       "tags": [
         "master"
       ]
