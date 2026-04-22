@@ -8556,13 +8556,20 @@
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "evaluate_let_bindings",
+              "meta_map",
+              "TopologyTemplate",
+              "extract_dependency_trace"
+            ],
             "queries": [
-              "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
+              "evaluate_let_bindings extract_dependency_trace topological sort redundant computation",
+              "meta_map performance review suggestions task 212 hot-path clones",
+              "task 470 eliminate redundant computation let_bindings TopologyTemplate pre-compute"
             ]
           },
           "files": [],
-          "_causation_id": "887cc4b8-99d3-43d5-8c9c-a0b027cdaca9"
+          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
         },
         "subtasks": [],
         "updatedAt": "2026-04-21T23:09:07.861Z"
