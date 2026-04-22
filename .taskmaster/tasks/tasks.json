@@ -25294,14 +25294,8 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/pragma_compile_tests.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ],
+          "files": [],
+          "modules": [],
           "bundled_from": [
             "1164",
             "1165"
@@ -27992,14 +27986,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:05.688Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ],
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/termination_check_tests.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
