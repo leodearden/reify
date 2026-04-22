@@ -18,6 +18,14 @@ fn assert_module_cells_representable(module: &CompiledModule) {
 }
 
 fn assert_template_cells_representable(template: &TopologyTemplate) {
+    // Walker assumption: every compiled ValueCellDecl lives in
+    // template.value_cells OR a guarded_group members/else_members list.
+    // SubComponentDecl instantiations reference child templates by name;
+    // both parent and child templates appear in module.templates, so the
+    // top-level loop in assert_module_cells_representable covers them without
+    // recursion.  If the compiler ever introduces ValueCellDecls stored off
+    // this path (e.g. extra synthetic cells produced during resolution), this
+    // walker will need to be extended to reach them.
     let check = |cell: &ValueCellDecl| {
         assert!(
             !matches!(
@@ -55,7 +63,11 @@ fn user_fixture_value_cells_are_representable() {
     // Pick a representative .ri example that exercises params + lets +
     // dimensional types across multiple structures. math_linalg.ri is a
     // solid canonical choice already used by m8_stdlib_integration.
-    let source = std::fs::read_to_string("../../examples/math_linalg.ri")
+    // Use CARGO_MANIFEST_DIR so the path is robust to a non-manifest CWD
+    // (convention established by task 348; mirrors m10_combined.rs:18 et al.).
+    const PATH_MATH_LINALG: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/math_linalg.ri");
+    let source = std::fs::read_to_string(PATH_MATH_LINALG)
         .expect("math_linalg.ri fixture");
     let parsed = reify_syntax::parse(&source, ModulePath::single("math_linalg"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);

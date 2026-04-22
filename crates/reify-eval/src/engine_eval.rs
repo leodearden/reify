@@ -1235,31 +1235,37 @@ mod invariant_tests {
         (id, node)
     }
 
+    /// Verify that `assert_value_cell_types_representable` panics with the
+    /// expected message for every unrepresentable `Type` variant.  Uses
+    /// `catch_unwind` to check all three variants in a single test run,
+    /// avoiding three nearly-identical `#[should_panic]` tests that would
+    /// pass even if the variant list diverged from the function under test.
     #[test]
-    #[should_panic(expected = "unrepresentable cell_type")]
-    fn panics_on_type_param() {
-        let mut graph = EvaluationGraph::default();
-        let (id, node) = bad_node(Type::TypeParam("T".into()));
-        graph.value_cells.insert(id, node);
-        super::assert_value_cell_types_representable(&graph);
-    }
-
-    #[test]
-    #[should_panic(expected = "unrepresentable cell_type")]
-    fn panics_on_structure_ref() {
-        let mut graph = EvaluationGraph::default();
-        let (id, node) = bad_node(Type::StructureRef("Bolt".into()));
-        graph.value_cells.insert(id, node);
-        super::assert_value_cell_types_representable(&graph);
-    }
-
-    #[test]
-    #[should_panic(expected = "unrepresentable cell_type")]
-    fn panics_on_geometry() {
-        let mut graph = EvaluationGraph::default();
-        let (id, node) = bad_node(Type::Geometry);
-        graph.value_cells.insert(id, node);
-        super::assert_value_cell_types_representable(&graph);
+    fn panics_on_unrepresentable_cell_types() {
+        use std::panic;
+        for ty in [
+            Type::TypeParam("T".into()),
+            Type::StructureRef("Bolt".into()),
+            Type::Geometry,
+        ] {
+            let mut graph = EvaluationGraph::default();
+            let (id, node) = bad_node(ty);
+            graph.value_cells.insert(id, node);
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                super::assert_value_cell_types_representable(&graph);
+            }));
+            assert!(result.is_err(), "expected panic but helper returned Ok");
+            let err = result.unwrap_err();
+            let msg = err
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| err.downcast_ref::<&str>().copied())
+                .unwrap_or("<non-string panic>");
+            assert!(
+                msg.contains("unrepresentable cell_type"),
+                "panic message did not contain expected substring: {msg}",
+            );
+        }
     }
 
     #[test]
