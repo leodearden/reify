@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::{TopologyTemplate, ValueCellKind};
+use reify_compiler::{find_template, TopologyTemplate, ValueCellKind};
 use reify_types::{
     CompiledFunction, DeterminacyState, Diagnostic, Value, ValueCellId, ValueMap, VersionId,
 };
@@ -155,22 +155,21 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // first (leaves-first ordering). Recomputing from child_template.sub_components (not
     // scope_template's) is critical for mutual recursion: when A→B, the next level must
     // iterate B's subs (not A's), so guard/arg expressions match B's value_cell namespace.
-    let child_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = child_template
+    let next_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = child_template
         .sub_components
         .iter()
         .filter(|s| child_template.is_recursive && s.guard_expr.is_some())
         .collect();
-    let child_recursive_sub_names: Vec<&str> = child_recursive_subs
+    let next_recursive_sub_names: Vec<&str> = next_recursive_subs
         .iter()
         .map(|s| s.name.as_str())
         .collect();
 
-    for next_sub in &child_recursive_subs {
+    for next_sub in &next_recursive_subs {
         // Look up the target template for next_sub from the module's template list.
         // For self-recursion, this finds the same template. For mutual recursion (A→B→A),
         // this alternates: B's sub "a" targets A, A's sub "b" targets B.
-        let next_child_template = match templates.iter().find(|t| t.name == next_sub.structure_name)
-        {
+        let next_child_template = match find_template(templates, &next_sub.structure_name) {
             Some(t) => t,
             None => {
                 diagnostics.push(Diagnostic::error(format!(
@@ -180,6 +179,18 @@ pub(crate) fn unfold_recursive_sub<'t>(
                 continue;
             }
         };
+        // Template-role handoff across recursion levels:
+        //
+        // CURRENT level:  scope_template = (caller's child_template)
+        //                 child_template  = this level's child_template (owns next_sub)
+        //
+        // NEXT level:     scope_template  ← this level's child_template
+        //   because child_template owns next_sub, so its value_cells namespace is the
+        //   right key-space for next_sub's guard_expr / arg expressions.
+        //
+        //                 child_template  ← next_child_template
+        //   (the template named by next_sub.structure_name — the target instantiated
+        //   by next_sub at the next depth).
         unfold_recursive_sub(
             values,
             snapshot,
@@ -187,8 +198,8 @@ pub(crate) fn unfold_recursive_sub<'t>(
             journal,
             cache,
             version_id,
-            child_template, // child_template owns next_sub → becomes scope_template
-            next_child_template, // target template for next_sub's structure
+            child_template,      // this level's child_template → next level's scope_template
+            next_child_template, // target of next_sub → next level's child_template
             next_sub,
             &next_entity,
             depth + 1,
@@ -204,7 +215,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // child_values is enriched inside elaborate_child_lets_only with sub-component
     // values projected from the global map — so cross-level references like
     // `S.child.total` resolve to the already-computed deeper-level value.
-    // Pass child-scoped recursive sub names so BFS walks the correct branches.
+    // Pass next-level recursive sub names so BFS walks the correct branches.
     elaborate_child_lets_only(
         values,
         snapshot,
@@ -216,7 +227,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         &next_entity,
         child_values,
         meta_map,
-        &child_recursive_sub_names,
+        &next_recursive_sub_names,
         templates,
         diagnostics,
     );
@@ -407,7 +418,7 @@ fn elaborate_child_lets_only<'t>(
             .filter_map(|name| {
                 // Look up the sub declaration to find its target template.
                 let sub_decl = child_template.sub_components.iter().find(|s| s.name == *name)?;
-                let target_tmpl = templates.iter().find(|t| t.name == sub_decl.structure_name).or_else(|| {
+                let target_tmpl = find_template(templates, &sub_decl.structure_name).or_else(|| {
                     diagnostics.push(Diagnostic::error(format!(
                         "BFS seed: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping",
                         name, scoped_entity, sub_decl.structure_name
@@ -455,7 +466,7 @@ fn elaborate_child_lets_only<'t>(
                 for sub_decl in &entity_template.sub_components {
                     if sub_decl.guard_expr.is_some() {
                         if let Some(target_tmpl) =
-                            templates.iter().find(|t| t.name == sub_decl.structure_name)
+                            find_template(templates, &sub_decl.structure_name)
                         {
                             queue.push_back((
                                 format!("{}.{}", depth_entity, sub_decl.name),

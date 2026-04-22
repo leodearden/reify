@@ -297,6 +297,15 @@ impl TopologyTemplate {
     }
 }
 
+/// Look up a topology template by name in a slice of compiled templates.
+///
+/// Returns `Some(&template)` for the first match, or `None` if no template has
+/// the given name.  All callers keep their own error-handling (diagnostic
+/// emission, silent skip, or test panic) — this utility is policy-neutral.
+pub fn find_template<'a>(templates: &'a [TopologyTemplate], name: &str) -> Option<&'a TopologyTemplate> {
+    templates.iter().find(|t| t.name == name)
+}
+
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
 #[derive(Debug, Clone)]
 pub struct CompiledConnection {
@@ -850,5 +859,53 @@ mod kind_display_tests {
             (CurveKind::NurbsCurve, "nurbs_curve"),
         ]);
     }
+}
+
+#[cfg(test)]
+mod find_template_tests {
+    //! Unit tests for `find_template`.
+    use super::*;
+    use reify_types::ContentHash;
+    use std::collections::{HashMap, HashSet};
+
+    fn make_template(name: &str) -> TopologyTemplate {
+        TopologyTemplate {
+            name: name.to_string(),
+            entity_kind: EntityKind::Structure,
+            visibility: Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells: vec![],
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: HashSet::new(),
+            objective: None,
+            meta: HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
+
+    #[test]
+    fn existing_name_returns_some() {
+        let templates = vec![make_template("Foo"), make_template("Bar")];
+        let result = find_template(&templates, "Foo");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name, "Foo");
+    }
+
+    #[test]
+    fn missing_name_returns_none() {
+        let templates = vec![make_template("Foo"), make_template("Bar")];
+        let result = find_template(&templates, "Baz");
+        assert!(result.is_none());
+    }
+
 }
 

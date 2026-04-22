@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use reify_compiler::{CompiledGeometryOp, TopologyTemplate, ValueCellKind};
+use reify_compiler::{find_template, CompiledGeometryOp, TopologyTemplate, ValueCellKind};
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
     ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
@@ -161,7 +161,7 @@ impl EvaluationGraph {
 
             // Sub-component elaboration: create scoped ValueCellNode entries
             for sub in &template.sub_components {
-                let child_template = match templates.iter().find(|t| t.name == sub.structure_name) {
+                let child_template = match find_template(templates, &sub.structure_name) {
                     Some(t) => t,
                     None => continue, // skip unknown structures silently
                 };
