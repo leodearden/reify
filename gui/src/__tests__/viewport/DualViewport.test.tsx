@@ -102,7 +102,7 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
       ...(overrides?.['def-preview'] ?? {}),
     },
   };
-  const [state] = createStore({ viewports, splitRatio: overrides?.splitRatio ?? 0.5 });
+  const [state, setState] = createStore({ viewports, splitRatio: overrides?.splitRatio ?? 0.5 });
   return {
     state,
     getViewport: vi.fn(),
@@ -111,7 +111,12 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
     updateCamera: vi.fn(),
     setDefPath: vi.fn(),
     setForceExpanded: vi.fn(),
-    setSplitRatio: vi.fn(() => true),
+    // Real setState side-effect so sequential-drag tests can read the updated ratio.
+    setSplitRatio: vi.fn((ratio: number) => {
+      const clamped = Math.min(0.9, Math.max(0.1, ratio));
+      setState('splitRatio', clamped);
+      return true;
+    }),
   };
 }
 
@@ -516,10 +521,76 @@ describe('DualViewport', () => {
         />
       ));
 
-      // clientHeight defaults to 0 in jsdom — no override needed
+      // Explicitly stub clientHeight to 0 so the guard branch is exercised
+      // regardless of any jsdom default behaviour.
+      const container = screen.getByTestId('dual-viewport');
+      Object.defineProperty(container, 'clientHeight', { configurable: true, value: 0 });
       capturedSplitterPropsByTestId['splitter-dual'].onResize(80);
 
       expect(viewportStore.setSplitRatio).not.toHaveBeenCalled();
+    });
+
+    it('(k3) keyboard arrow delta: onResize(10) with height=400 calls setSplitRatio(0.525)', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      const viewportStore = makeViewportStore();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      const container = screen.getByTestId('dual-viewport');
+      Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 });
+
+      // Arrow key sends delta=10 (Splitter.tsx keyboard path)
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(10);
+
+      // 0.5 + 10/400 = 0.525
+      expect(viewportStore.setSplitRatio).toHaveBeenCalledOnce();
+      expect(viewportStore.setSplitRatio).toHaveBeenCalledWith(0.525);
+    });
+
+    it('(k4) sequential drags accumulate: second drag reads updated splitRatio', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      // makeViewportStore's setSplitRatio spy writes to state so the second drag
+      // reads the post-first-drag ratio.
+      const viewportStore = makeViewportStore();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      const container = screen.getByTestId('dual-viewport');
+      Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 });
+
+      // First drag: 0.5 + 80/400 = 0.7
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(80);
+      // Second drag: 0.7 + 40/400 = 0.8
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(40);
+
+      expect(viewportStore.setSplitRatio).toHaveBeenCalledTimes(2);
+      expect(viewportStore.setSplitRatio).toHaveBeenNthCalledWith(1, 0.7);
+      // 0.7 + 40/400 = 0.7999…99 in IEEE 754; use closeTo for float safety
+      expect(viewportStore.setSplitRatio).toHaveBeenNthCalledWith(2, expect.closeTo(0.8, 10));
     });
 
     it('(l) both viewports active: wrapper flex styles reflect splitRatio', async () => {

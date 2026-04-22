@@ -90,7 +90,7 @@ export function DualViewport(props: DualViewportProps) {
 
   // ── Dual-splitter resize handler ──────────────────────────────────────────
   function handleDualResize(delta: number) {
-    const h = containerRef?.clientHeight ?? 0;
+    const h = containerRef.clientHeight;
     if (h <= 0) return;
     const current = props.viewportStore.state.splitRatio;
     props.viewportStore.setSplitRatio(current + delta / h);
