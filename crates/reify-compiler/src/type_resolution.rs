@@ -478,7 +478,10 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
 
 /// Resolve a type name, also checking type parameter names.
 /// Returns `Type::TypeParam(name)` if the name matches a known type parameter.
-pub(crate) fn resolve_type_with_params(name: &str, type_param_names: &HashSet<String>) -> Option<Type> {
+pub(crate) fn resolve_type_with_params(
+    name: &str,
+    type_param_names: &HashSet<String>,
+) -> Option<Type> {
     if let Some(ty) = resolve_type_name(name) {
         return Some(ty);
     }
@@ -558,7 +561,8 @@ pub(crate) fn resolve_type_alias_expr(
         reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
             // Dimensional binary operator: left OP right
             let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
-            let right_dim = resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
+            let right_dim =
+                resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
             let result_dim = if matches!(op, reify_syntax::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
@@ -571,12 +575,8 @@ pub(crate) fn resolve_type_alias_expr(
         reify_syntax::TypeExprKind::Named { name, type_args } => {
             // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
             if !type_args.is_empty()
-                && let Some(ty) = resolve_parameterized_builtin_type(
-                    name,
-                    type_args,
-                    alias_registry,
-                    diagnostics,
-                )
+                && let Some(ty) =
+                    resolve_parameterized_builtin_type(name, type_args, alias_registry, diagnostics)
             {
                 return Some(ty);
             }
@@ -629,7 +629,8 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
     match &type_expr.kind {
         reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
-            let right_dim = resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
+            let right_dim =
+                resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
             Some(if matches!(op, reify_syntax::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
@@ -675,24 +676,21 @@ pub(crate) fn resolve_type_expr_with_aliases(
     trait_names: &HashSet<String>,
 ) -> Option<Type> {
     let (name, type_args) = match &type_expr.kind {
-        reify_syntax::TypeExprKind::Named { name, type_args } => (name.as_str(), type_args.as_slice()),
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
+            (name.as_str(), type_args.as_slice())
+        }
         reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
     };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
     if !type_args.is_empty()
-        && let Some(ty) = resolve_parameterized_builtin_type(
-            name,
-            type_args,
-            alias_registry,
-            diagnostics,
-        )
+        && let Some(ty) =
+            resolve_parameterized_builtin_type(name, type_args, alias_registry, diagnostics)
     {
         return Some(ty);
     }
 
     // Simple name resolution (builtins, type params, non-parameterized aliases, trait names)
-    if let Some(ty) =
-        resolve_type_with_aliases(name, type_param_names, alias_registry, trait_names)
+    if let Some(ty) = resolve_type_with_aliases(name, type_param_names, alias_registry, trait_names)
     {
         return Some(ty);
     }
@@ -832,8 +830,18 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
     }
     match &type_expr.kind {
         reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
-            let left_dim = resolve_type_alias_expr_to_dim_with_subst(left, alias_registry, subst, diagnostics)?;
-            let right_dim = resolve_type_alias_expr_to_dim_with_subst(right, alias_registry, subst, diagnostics)?;
+            let left_dim = resolve_type_alias_expr_to_dim_with_subst(
+                left,
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            let right_dim = resolve_type_alias_expr_to_dim_with_subst(
+                right,
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
             let result_dim = if matches!(op, reify_syntax::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
@@ -879,11 +887,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     return None;
                 }
                 let mut inner_subst: HashMap<String, Type> = HashMap::new();
-                for (param, arg_expr) in alias_entry
-                    .type_params
-                    .iter()
-                    .zip(type_args.iter())
-                {
+                for (param, arg_expr) in alias_entry.type_params.iter().zip(type_args.iter()) {
                     let resolved = resolve_type_alias_expr_with_subst(
                         arg_expr,
                         alias_registry,
@@ -1022,8 +1026,18 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
 ) -> Option<DimensionVector> {
     match &type_expr.kind {
         reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
-            let left_dim = resolve_type_alias_expr_to_dim_with_subst(left, alias_registry, subst, diagnostics)?;
-            let right_dim = resolve_type_alias_expr_to_dim_with_subst(right, alias_registry, subst, diagnostics)?;
+            let left_dim = resolve_type_alias_expr_to_dim_with_subst(
+                left,
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            let right_dim = resolve_type_alias_expr_to_dim_with_subst(
+                right,
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
             Some(if matches!(op, reify_syntax::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
@@ -1063,10 +1077,12 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
 /// followed by recursed type_args.
 pub(crate) fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec<String> {
     match &type_expr.kind {
-        reify_syntax::TypeExprKind::DimensionalOp { left, right, .. } => collect_type_expr_names(left)
-            .into_iter()
-            .chain(collect_type_expr_names(right))
-            .collect(),
+        reify_syntax::TypeExprKind::DimensionalOp { left, right, .. } => {
+            collect_type_expr_names(left)
+                .into_iter()
+                .chain(collect_type_expr_names(right))
+                .collect()
+        }
         reify_syntax::TypeExprKind::Named { name, type_args } => std::iter::once(name.clone())
             .chain(type_args.iter().flat_map(collect_type_expr_names))
             .collect(),
@@ -1141,7 +1157,9 @@ pub(crate) fn resolve_alias_dfs(
 }
 
 /// Convert parsed TypeParamDecl to compiled TypeParam structs.
-pub(crate) fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types::TypeParam> {
+pub(crate) fn convert_type_params(
+    decls: &[reify_syntax::TypeParamDecl],
+) -> Vec<reify_types::TypeParam> {
     decls
         .iter()
         .map(|d| {
@@ -1159,17 +1177,15 @@ pub(crate) fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<
             // structure names as StructureRef (concrete names, not type variables).
             // DimensionalOp cannot appear as a type-parameter default — the grammar
             // only allows Named nodes in that position, so this arm is unreachable.
-            let default = d.default.as_ref().map(|te| {
-                match &te.kind {
-                    reify_syntax::TypeExprKind::Named { name, .. } => {
-                        resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone()))
-                    }
-                    reify_syntax::TypeExprKind::DimensionalOp { .. } => {
-                        unreachable!(
-                            "dimensional operator cannot appear as a type-parameter default; \
+            let default = d.default.as_ref().map(|te| match &te.kind {
+                reify_syntax::TypeExprKind::Named { name, .. } => {
+                    resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone()))
+                }
+                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+                    unreachable!(
+                        "dimensional operator cannot appear as a type-parameter default; \
                              the parser only emits Named nodes for type-param defaults"
-                        )
-                    }
+                    )
                 }
             });
             reify_types::TypeParam {
@@ -1220,4 +1236,3 @@ mod tests {
         assert_eq!(resolve_enum_type("Direction", &[]), None);
     }
 }
-

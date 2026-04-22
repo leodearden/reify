@@ -163,12 +163,27 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(5);
         let span = SourceSpan::new(0, 0);
-        let result = compile_modify_op("shell", args, target.clone(), span, &mut diagnostics, vec![]);
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let result = compile_modify_op(
+            "shell",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("compile_modify_op shell should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
-            CompiledGeometryOp::Modify { kind: ModifyKind::Shell, target: op_target, args: op_args } => {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Shell,
+                target: op_target,
+                args: op_args,
+            } => {
                 assert_eq!(*op_target, target);
                 let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
                 assert_eq!(names, vec!["target", "thickness", "face_0"]);
@@ -188,17 +203,36 @@ mod tests {
     param dist: Scalar = 2mm
     let result = chamfer(target, dist)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_chamfer_step0"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_chamfer_step0"),
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = crate::compile(&parsed);
-        assert!(compiled.diagnostics.is_empty(), "unexpected diagnostics: {:?}", compiled.diagnostics);
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            compiled.diagnostics
+        );
         let ops = &compiled.templates[0].realizations[0].operations;
         assert_eq!(ops.len(), 1);
         match &ops[0] {
-            CompiledGeometryOp::Modify { kind: ModifyKind::Chamfer, target: op_target, .. } => {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: op_target,
+                ..
+            } => {
                 // Non-geometry target → geom_ref(0) falls back to GeomRef::Step(0)
-                assert_eq!(*op_target, GeomRef::Step(0),
-                    "chamfer with non-geometry target should fall back to GeomRef::Step(0), got {:?}", op_target);
+                assert_eq!(
+                    *op_target,
+                    GeomRef::Step(0),
+                    "chamfer with non-geometry target should fall back to GeomRef::Step(0), got {:?}",
+                    op_target
+                );
             }
             other => panic!("expected Modify(Chamfer), got {:?}", other),
         }

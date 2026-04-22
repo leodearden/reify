@@ -506,7 +506,11 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
     // `<stdlib_root>/units.ri`.
     let stdlib_dir = dir.join("stdlib");
     fs::create_dir_all(&stdlib_dir).unwrap();
-    fs::write(stdlib_dir.join("units.ri"), "pub unit myunit : Length = 1.0").unwrap();
+    fs::write(
+        stdlib_dir.join("units.ri"),
+        "pub unit myunit : Length = 1.0",
+    )
+    .unwrap();
 
     // main.ri: imports std.units then re-declares 'myunit' — stdlib collision.
     fs::write(
@@ -552,8 +556,7 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
     );
     let empty_span = reify_types::SourceSpan::empty(0);
     assert_ne!(
-        dup_diag.labels[0].span,
-        empty_span,
+        dup_diag.labels[0].span, empty_span,
         "first label '{}' must not be SourceSpan::empty(0)",
         dup_diag.labels[0].message
     );
@@ -609,11 +612,14 @@ fn compile_module_prelude_propagates_pub_structure() {
         template.sub_components.len(),
         1,
         "expected 1 sub_component, got {:?}",
-        template.sub_components.iter().map(|s| &s.name).collect::<Vec<_>>()
+        template
+            .sub_components
+            .iter()
+            .map(|s| &s.name)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
-        template.sub_components[0].structure_name,
-        "Part",
+        template.sub_components[0].structure_name, "Part",
         "sub_component structure_name should be 'Part'"
     );
 }
@@ -668,7 +674,11 @@ fn compile_module_multi_import_prelude() {
         template.sub_components.len(),
         2,
         "expected 2 sub_components, got {:?}",
-        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+        template
+            .sub_components
+            .iter()
+            .map(|s| &s.structure_name)
+            .collect::<Vec<_>>()
     );
 
     let structure_names: Vec<&str> = template
@@ -829,7 +839,12 @@ fn compile_project_multi_import_prelude() {
 
     let modules = result.unwrap();
     // Should have 3 modules in topo order: p, q, r
-    assert_eq!(modules.len(), 3, "expected 3 modules (p, q, r), got {}", modules.len());
+    assert_eq!(
+        modules.len(),
+        3,
+        "expected 3 modules (p, q, r), got {}",
+        modules.len()
+    );
 
     // Entry module r is last (topological order: dependencies first)
     let r_module = modules.last().unwrap();
@@ -842,7 +857,11 @@ fn compile_project_multi_import_prelude() {
         template.sub_components.len(),
         2,
         "expected 2 sub_components, got {:?}",
-        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+        template
+            .sub_components
+            .iter()
+            .map(|s| &s.structure_name)
+            .collect::<Vec<_>>()
     );
 
     let structure_names: Vec<&str> = template
@@ -1026,7 +1045,10 @@ fn cycle_error_excludes_non_cycle_ancestors() {
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = ModuleDag::new();
     let result = dag.compile_module("d", &resolver);
-    assert!(result.is_err(), "expected error for cycle a->b->a triggered via d");
+    assert!(
+        result.is_err(),
+        "expected error for cycle a->b->a triggered via d"
+    );
 
     let msg = result
         .unwrap_err()
@@ -1045,8 +1067,7 @@ fn cycle_error_excludes_non_cycle_ancestors() {
     // (b) message is exactly the cycle chain — this positive assertion proves 'd'
     // is absent without fragile per-pattern negative checks.
     assert_eq!(
-        msg,
-        "circular dependency detected: a -> b -> a",
+        msg, "circular dependency detected: a -> b -> a",
         "message should contain exactly the cycle, not non-cycle ancestors"
     );
 }
@@ -1093,7 +1114,10 @@ fn cycle_error_preserves_dfs_traversal_order() {
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = ModuleDag::new();
     let result = dag.compile_module("zebra", &resolver);
-    assert!(result.is_err(), "expected error for cycle zebra->middle->alpha->zebra");
+    assert!(
+        result.is_err(),
+        "expected error for cycle zebra->middle->alpha->zebra"
+    );
 
     let msg = result
         .unwrap_err()
@@ -1105,8 +1129,7 @@ fn cycle_error_preserves_dfs_traversal_order() {
     // DFS traversal order (zebra, middle, alpha) — NOT alphabetical (alpha, middle, zebra).
     // If IndexSet is replaced with HashSet or BTreeSet this assertion will fail.
     assert_eq!(
-        msg,
-        "circular dependency detected: zebra -> middle -> alpha -> zebra",
+        msg, "circular dependency detected: zebra -> middle -> alpha -> zebra",
         "message must reflect DFS insertion order, not alphabetical order"
     );
 }
@@ -1219,7 +1242,8 @@ fn std_module_fallback_adds_transitive_dependencies_to_dag() {
     }
     // The requested module itself must also be in topo_order.
     assert!(
-        dag.topo_order.contains(&"std.materials.mechanical".to_string()),
+        dag.topo_order
+            .contains(&"std.materials.mechanical".to_string()),
         "topo_order must contain \"std.materials.mechanical\""
     );
 }
@@ -1458,12 +1482,10 @@ fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
 
     // (a) topo_order must match the full stdlib prefix in order (no duplicates, no gaps).
     assert_eq!(
-        dag.topo_order,
-        expected_paths,
+        dag.topo_order, expected_paths,
         "topo_order must match stdlib prefix in order (no duplicates, no gaps); \
          got: {:?}, expected: {:?}",
-        dag.topo_order,
-        expected_paths
+        dag.topo_order, expected_paths
     );
 
     // (b) Defense-in-depth: no duplicates in topo_order.

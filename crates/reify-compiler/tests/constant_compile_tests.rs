@@ -124,7 +124,10 @@ fn user_let_pi_shadows_builtin() {
     let pi_expr = get_cell_expr(&compiled, "pi");
     match &pi_expr.kind {
         CompiledExprKind::Literal(Value::Int(42)) => {}
-        other => panic!("expected Literal(Int(42)) for user 'pi' cell, got {:?}", other),
+        other => panic!(
+            "expected Literal(Int(42)) for user 'pi' cell, got {:?}",
+            other
+        ),
     }
 }
 
@@ -142,7 +145,11 @@ fn user_param_pi_shadows_builtin() {
     // x should be a ValueRef to the parameter's cell, NOT the builtin literal.
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
-            assert_eq!(id.member, "pi", "expected ref to 'pi' param cell, got {:?}", id);
+            assert_eq!(
+                id.member, "pi",
+                "expected ref to 'pi' param cell, got {:?}",
+                id
+            );
         }
         CompiledExprKind::Literal(Value::Real(_)) => {
             panic!("x resolved to builtin pi literal — param definition should shadow it");
@@ -159,7 +166,10 @@ fn user_param_pi_shadows_builtin() {
                 v
             );
         }
-        other => panic!("expected Literal(Real(1.5)) for user 'pi' param cell, got {:?}", other),
+        other => panic!(
+            "expected Literal(Real(1.5)) for user 'pi' param cell, got {:?}",
+            other
+        ),
     }
 }
 
@@ -237,13 +247,17 @@ fn assert_suggests_hint(input: &str, expected_hint: &str) {
         input
     );
     assert!(
-        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
         "expected 'unresolved name' with 'did you mean' hint for '{}', got: {:?}",
         input,
         errors
     );
     assert!(
-        errors.iter().any(|d| d.message.contains(&format!("`{}`", expected_hint))),
+        errors
+            .iter()
+            .any(|d| d.message.contains(&format!("`{}`", expected_hint))),
         "expected hint to suggest `{}` for '{}', got: {:?}",
         expected_hint,
         input,
@@ -299,7 +313,11 @@ fn lowercase_pi_no_hint() {
     // redundant "did you mean" iteration guard has been removed.)
     let compiled = compile_source("structure S { let x = pi }");
     let errors = errors_only(&compiled);
-    assert!(errors.is_empty(), "expected no errors for lowercase 'pi', got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for lowercase 'pi', got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -307,7 +325,11 @@ fn lowercase_tau_no_hint() {
     // Same as above for tau.
     let compiled = compile_source("structure S { let x = tau }");
     let errors = errors_only(&compiled);
-    assert!(errors.is_empty(), "expected no errors for lowercase 'tau', got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for lowercase 'tau', got: {:?}",
+        errors
+    );
 }
 
 // ─── task-1806 step-6: user-defined Pi in scope does NOT produce a hint ───────
@@ -320,7 +342,11 @@ fn user_defined_pi_caps_in_scope_no_hint() {
     let src = "structure S {\n  let Pi = 42\n  let x = Pi\n}";
     let compiled = compile_source(src);
     let errors = errors_only(&compiled);
-    assert!(errors.is_empty(), "expected no errors when user defines 'Pi' and uses it, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors when user defines 'Pi' and uses it, got: {:?}",
+        errors
+    );
 }
 
 // ─── step-7: pi works under #no_prelude ─────────────────────────────────────

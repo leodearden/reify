@@ -100,7 +100,10 @@ fn dimensional_op_mul_force_length_resolves_to_energy() {
         .find(|a| a.name == "MyEnergy")
         .expect("alias should be compiled");
 
-    let resolved = alias.resolved_type.as_ref().expect("alias should be resolved");
+    let resolved = alias
+        .resolved_type
+        .as_ref()
+        .expect("alias should be resolved");
     assert!(
         matches!(resolved, Type::Scalar { dimension } if *dimension == DimensionVector::ENERGY),
         "Force * Length should resolve to ENERGY dimension, got: {:?}",
@@ -135,9 +138,14 @@ fn dimensional_op_nested_mass_length_over_time_resolves() {
         .find(|a| a.name == "Momentum")
         .expect("alias should be compiled");
 
-    let resolved = alias.resolved_type.as_ref().expect("alias should be resolved");
+    let resolved = alias
+        .resolved_type
+        .as_ref()
+        .expect("alias should be resolved");
     // Momentum = kg⋅m/s = Mass * Length / Time
-    let expected = DimensionVector::MASS.mul(&DimensionVector::LENGTH).div(&DimensionVector::TIME);
+    let expected = DimensionVector::MASS
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::TIME);
     assert!(
         matches!(resolved, Type::Scalar { dimension } if *dimension == expected),
         "(Mass * Length) / Time should resolve to momentum dimension, got: {:?}",
@@ -364,7 +372,9 @@ fn assert_one_error_containing(compiled: &reify_compiler::CompiledModule, substr
     );
     let matching: Vec<_> = errors
         .iter()
-        .filter(|d| d.message.contains(substr) || d.labels.iter().any(|l| l.message.contains(substr)))
+        .filter(|d| {
+            d.message.contains(substr) || d.labels.iter().any(|l| l.message.contains(substr))
+        })
         .collect();
     assert!(
         !matching.is_empty(),

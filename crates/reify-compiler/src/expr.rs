@@ -327,13 +327,9 @@ pub(crate) fn compile_expr_guarded(
                     if let Some(ce) = crate::constants::resolve_builtin_constant(name) {
                         return ce;
                     }
-                    let msg = if let Some(canonical) =
-                        crate::constants::builtin_constant_hint(name)
+                    let msg = if let Some(canonical) = crate::constants::builtin_constant_hint(name)
                     {
-                        format!(
-                            "unresolved name: {} (did you mean `{}`?)",
-                            name, canonical
-                        )
+                        format!("unresolved name: {} (did you mean `{}`?)", name, canonical)
                     } else {
                         format!("unresolved name: {}", name)
                     };
@@ -616,10 +612,7 @@ pub(crate) fn compile_expr_guarded(
                             "some() requires exactly 1 argument, got {}",
                             args.len()
                         ))
-                        .with_label(DiagnosticLabel::new(
-                            expr.span,
-                            "wrong number of arguments",
-                        )),
+                        .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
                     );
                     // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                     return make_poison_literal(diagnostics, n);
@@ -662,17 +655,12 @@ pub(crate) fn compile_expr_guarded(
                     // Exactly one user fn matches — emit UserFunctionCall
                     // Deprecation check: warn if the called function is @deprecated.
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
-                        emit_deprecation_warning(
-                            "function",
-                            name,
-                            &msg,
-                            expr.span,
-                            diagnostics,
-                        );
+                        emit_deprecation_warning("function", name, &msg, expr.span, diagnostics);
                     }
                     let result_type = matched_fn.return_type.clone();
                     let content_hash = {
-                        let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL]).combine(ContentHash::of_str(name));
+                        let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
+                            .combine(ContentHash::of_str(name));
                         for arg in &compiled_args {
                             h = h.combine(arg.content_hash);
                         }
@@ -858,10 +846,7 @@ pub(crate) fn compile_expr_guarded(
                         let structure_name = scope.sub_component_types[member.as_str()].clone();
                         let scoped_entity = format!("{}.{}", scope.entity_name, member);
                         let sub_id = ValueCellId::new(&scoped_entity, "__self");
-                        return CompiledExpr::value_ref(
-                            sub_id,
-                            Type::StructureRef(structure_name),
-                        );
+                        return CompiledExpr::value_ref(sub_id, Type::StructureRef(structure_name));
                     }
                     // Collection sub accessed through self: delegate to the same helper used
                     // by the bare-ident collection-sub resolution in the Identifier arm of
@@ -879,14 +864,8 @@ pub(crate) fn compile_expr_guarded(
                         None => {
                             let n = diagnostics.len();
                             diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unknown member '{}' on self",
-                                    member
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unknown member",
-                                )),
+                                Diagnostic::error(format!("unknown member '{}' on self", member))
+                                    .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                             );
                             // Anti-cascade (task-448/task-1921): route through
                             // make_poison_literal so the debug_assert enforces
@@ -952,10 +931,7 @@ pub(crate) fn compile_expr_guarded(
                                     "unknown member '{}' on collection sub '{}'",
                                     member, sub_name
                                 ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unknown member",
-                                )),
+                                .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                             );
                         }
                         // Use the member's actual type as fallback so downstream expressions
@@ -1755,7 +1731,8 @@ pub(crate) fn compile_expr_guarded(
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "@{} expects exactly 1 argument (a string name), got {}",
-                                selector, args.len()
+                                selector,
+                                args.len()
                             ))
                             .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
                         );
@@ -1763,8 +1740,7 @@ pub(crate) fn compile_expr_guarded(
                         return make_poison_literal(diagnostics, n);
                     }
                     // Check that the argument is a string literal (type check)
-                    if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind
-                    {
+                    if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind {
                         let n = diagnostics.len();
                         diagnostics.push(
                             Diagnostic::error(format!(
@@ -1824,9 +1800,7 @@ pub(crate) fn compile_expr_guarded(
             let compiled_base = match &base.kind {
                 reify_syntax::ExprKind::Ident(name) => {
                     // Validate: must be a known port or a scope variable (e.g. forall var)
-                    if !scope.port_names.contains(name.as_str())
-                        && scope.resolve(name).is_none()
-                    {
+                    if !scope.port_names.contains(name.as_str()) && scope.resolve(name).is_none() {
                         let n = diagnostics.len();
                         diagnostics.push(
                             Diagnostic::error(format!(
@@ -1850,16 +1824,26 @@ pub(crate) fn compile_expr_guarded(
                     } else {
                         // Complex base expression — compile normally
                         compile_expr_guarded(
-                            base, scope, enum_defs, functions, diagnostics,
-                            current_guard, lambda_counter,
+                            base,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
                         )
                     }
                 }
                 _ => {
                     // Anything else — compile normally
                     compile_expr_guarded(
-                        base, scope, enum_defs, functions, diagnostics,
-                        current_guard, lambda_counter,
+                        base,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
                     )
                 }
             };
@@ -1942,10 +1926,7 @@ pub(crate) fn compile_expr_guarded(
                              conformance checking should report the missing member separately",
                             trait_name, member,
                         ))
-                        .with_label(DiagnosticLabel::new(
-                            expr.span,
-                            "member not found in scope",
-                        )),
+                        .with_label(DiagnosticLabel::new(expr.span, "member not found in scope")),
                     );
                     CompiledExpr::literal(Value::Undef, Type::Real)
                 }
@@ -2014,10 +1995,7 @@ pub(crate) fn compile_expr_guarded(
                     let n = diagnostics.len();
                     diagnostics.push(
                         Diagnostic::error(format!("unknown sub-component '{}'", sub_name))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "unknown sub-component",
-                            )),
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown sub-component")),
                     );
                     // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                     return make_poison_literal(diagnostics, n);
@@ -2166,4 +2144,3 @@ mod tests {
         let _ = make_poison_type(&[], 0);
     }
 }
-

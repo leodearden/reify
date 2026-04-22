@@ -5,7 +5,9 @@
 //! otherwise performing no compilation work — that happens in the later
 //! phase modules.
 
-use reify_syntax::{Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl};
+use reify_syntax::{
+    Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl,
+};
 use reify_types::{Diagnostic, DiagnosticLabel};
 
 use crate::CompiledModule;
@@ -127,11 +129,7 @@ pub(crate) fn collect_decl_refs<'a>(
             Declaration::Constraint(constraint) => {
                 // Constraints reserve names in the entity namespace (spec §4.2.1)
                 // even though constraint compilation is not yet implemented.
-                ctx.record_or_report_duplicate(
-                    &constraint.name,
-                    constraint.span,
-                    "constraint",
-                );
+                ctx.record_or_report_duplicate(&constraint.name, constraint.span, "constraint");
             }
             Declaration::Unit(unit_decl) => {
                 refs.unit_refs.push(unit_decl);

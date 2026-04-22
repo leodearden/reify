@@ -45,8 +45,14 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
         let sources: Vec<(&str, &str)> = vec![
             ("std.units", include_str!("../stdlib/units.ri")),
             ("std.si_units", si_units_source.as_str()),
-            ("std.materials.mechanical", include_str!("../stdlib/materials_mechanical.ri")),
-            ("std.structural.physical", include_str!("../stdlib/structural_physical.ri")),
+            (
+                "std.materials.mechanical",
+                include_str!("../stdlib/materials_mechanical.ri"),
+            ),
+            (
+                "std.structural.physical",
+                include_str!("../stdlib/structural_physical.ri"),
+            ),
             ("std.analysis", include_str!("../stdlib/analysis.ri")),
             ("std.tolerancing", include_str!("../stdlib/tolerancing.ri")),
         ];

@@ -68,7 +68,10 @@ pub(crate) fn validate_annotations(
                 // Valid on any context — no warning.
             }
             reify_types::TEST_ANNOTATION => {
-                if !matches!(context, "structure" | "occurrence" | "function" | "constraint_def") {
+                if !matches!(
+                    context,
+                    "structure" | "occurrence" | "function" | "constraint_def"
+                ) {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @test is not valid on {context} declarations"
@@ -91,8 +94,7 @@ pub(crate) fn validate_annotations(
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
                     );
-                } else if context == "constraint_def" && !is_valid_optimized(ann)
-                {
+                } else if context == "constraint_def" && !is_valid_optimized(ann) {
                     // @optimized without a string-literal target on a constraint_def
                     // silently routes to the language-level checker, which confuses
                     // users who think they wired up an optimized impl. Warn explicitly.
@@ -152,8 +154,7 @@ pub(crate) fn validate_annotations(
     if context == "constraint_def" {
         let mut seen_valid_optimized = false;
         for ann in annotations {
-            if is_valid_optimized(ann)
-            {
+            if is_valid_optimized(ann) {
                 if seen_valid_optimized {
                     diagnostics.push(
                         Diagnostic::warning(
@@ -173,7 +174,10 @@ pub(crate) fn validate_annotations(
 /// i.e. its name is `"optimized"` and its first argument is a string literal.
 pub(crate) fn is_valid_optimized(ann: &reify_types::Annotation) -> bool {
     ann.name == reify_types::OPTIMIZED_ANNOTATION
-        && matches!(ann.args.first(), Some(reify_types::AnnotationArg::String(_)))
+        && matches!(
+            ann.args.first(),
+            Some(reify_types::AnnotationArg::String(_))
+        )
 }
 
 /// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown names.
@@ -319,10 +323,8 @@ pub(crate) fn emit_deprecation_warning(
     } else {
         format!("use of deprecated {entity_kind} '{entity_name}': {message}")
     };
-    diagnostics.push(
-        Diagnostic::warning(text)
-            .with_label(DiagnosticLabel::new(span, "deprecated")),
-    );
+    diagnostics
+        .push(Diagnostic::warning(text).with_label(DiagnosticLabel::new(span, "deprecated")));
 }
 
 #[cfg(test)]
@@ -341,7 +343,9 @@ mod tests {
     fn is_valid_optimized_true_for_string_arg() {
         let a = ann(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("kernel::foo".to_string())],
+            vec![reify_types::AnnotationArg::String(
+                "kernel::foo".to_string(),
+            )],
         );
         assert!(is_valid_optimized(&a));
     }
@@ -354,7 +358,10 @@ mod tests {
 
     #[test]
     fn is_valid_optimized_false_for_int_arg() {
-        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![reify_types::AnnotationArg::Int(123)]);
+        let a = ann(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::Int(123)],
+        );
         assert!(!is_valid_optimized(&a));
     }
 
@@ -382,8 +389,10 @@ mod tests {
 
     #[test]
     fn is_valid_optimized_false_for_bool_arg() {
-        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![reify_types::AnnotationArg::Bool(true)]);
+        let a = ann(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::Bool(true)],
+        );
         assert!(!is_valid_optimized(&a));
     }
 }
-

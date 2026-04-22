@@ -41,60 +41,60 @@ pub(crate) fn check_trait_conformance(
     // poison the downstream requirement check whenever the trait requires a non-Real type
     // (e.g. Length), generating a misleading second diagnostic and obscuring the actual
     // problem for the user.
-    let resolve_member_annotation_type =
-        |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
-            match &te.kind {
-                reify_syntax::TypeExprKind::Named { name, type_args } => {
-                    resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
-                        .or_else(|| {
-                            enum_names.contains(name.as_str()).then(|| {
-                                if !type_args.is_empty() {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!(
-                                            "enum `{}` does not accept type arguments",
-                                            name
-                                        ))
-                                        .with_label(DiagnosticLabel::new(
-                                            te.span,
-                                            "enum types are not generic",
-                                        )),
-                                    );
-                                }
-                                Type::Enum(name.to_string())
-                            })
+    let resolve_member_annotation_type = |te: &reify_syntax::TypeExpr,
+                                          diagnostics: &mut Vec<Diagnostic>|
+     -> Type {
+        match &te.kind {
+            reify_syntax::TypeExprKind::Named { name, type_args } => {
+                resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
+                    .or_else(|| {
+                        enum_names.contains(name.as_str()).then(|| {
+                            if !type_args.is_empty() {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "enum `{}` does not accept type arguments",
+                                        name
+                                    ))
+                                    .with_label(
+                                        DiagnosticLabel::new(te.span, "enum types are not generic"),
+                                    ),
+                                );
+                            }
+                            Type::Enum(name.to_string())
                         })
-                        .unwrap_or_else(|| {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type in conformance check: {}",
-                                    name
-                                ))
-                                .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                            );
-                            // Return Type::Error (poison sentinel) so the downstream
-                            // `implicitly_converts_to` / `type_compatible` producer-side
-                            // wildcard (type_compat.rs:3-26, :119-130) suppresses the
-                            // cascade "type mismatch for trait member" diagnostic.
-                            // The diagnostic emitted on the preceding line is the root
-                            // cause; a second mismatch diagnostic would mislead the user.
-                            Type::Error
-                        })
-                }
-                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "unresolved type in conformance check: {}",
-                            te
-                        ))
-                        .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
-                    );
-                    // Return Type::Error (poison sentinel) — same rationale as the Named
-                    // arm above: suppress downstream "type mismatch for trait member"
-                    // cascade via the type_compat.rs producer-side wildcard.
-                    Type::Error
-                }
+                    })
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved type in conformance check: {}",
+                                name
+                            ))
+                            .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                        );
+                        // Return Type::Error (poison sentinel) so the downstream
+                        // `implicitly_converts_to` / `type_compatible` producer-side
+                        // wildcard (type_compat.rs:3-26, :119-130) suppresses the
+                        // cascade "type mismatch for trait member" diagnostic.
+                        // The diagnostic emitted on the preceding line is the root
+                        // cause; a second mismatch diagnostic would mislead the user.
+                        Type::Error
+                    })
             }
-        };
+            reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                        .with_label(DiagnosticLabel::new(
+                            te.span,
+                            "unexpected dimensional expression",
+                        )),
+                );
+                // Return Type::Error (poison sentinel) — same rationale as the Named
+                // arm above: suppress downstream "type mismatch for trait member"
+                // cascade via the type_compat.rs producer-side wildcard.
+                Type::Error
+            }
+        }
+    };
 
     let structure_members: HashMap<String, Type> = structure
         .members
@@ -123,7 +123,10 @@ pub(crate) fn check_trait_conformance(
                 // check will report "missing required member" rather than a spurious
                 // "no type annotation" error.
                 let te = l.type_expr.as_ref()?;
-                Some((l.name.clone(), resolve_member_annotation_type(te, diagnostics)))
+                Some((
+                    l.name.clone(),
+                    resolve_member_annotation_type(te, diagnostics),
+                ))
             }
             _ => None,
         })
@@ -268,7 +271,9 @@ pub(crate) fn check_trait_conformance(
                     ..
                 } => annotation_ty.clone(),
                 // Deferred to Pass 2 — needs Pass 1's scope to compile against.
-                DefaultKind::Let { cell_type: None, .. } => continue,
+                DefaultKind::Let {
+                    cell_type: None, ..
+                } => continue,
                 DefaultKind::Constraint(_) => continue,
             };
             // First-seen type wins. `ty` is moved into `register_if_absent`; on
@@ -696,7 +701,11 @@ pub(crate) fn check_trait_arg_conformance(
     };
 
     // Find the declared param cell for this arg name.
-    let Some(cell) = target.value_cells.iter().find(|vc| vc.id.member == arg_name) else {
+    let Some(cell) = target
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == arg_name)
+    else {
         return; // Arg name not found — skip (positional arg or existing error).
     };
 
@@ -730,11 +739,7 @@ pub(crate) fn check_trait_arg_conformance(
             let Some(arg_template) = template_registry.get(struct_name.as_str()) else {
                 return; // Arg structure not compiled yet — skip.
             };
-            if !satisfies_trait_bound(
-                &arg_template.trait_bounds,
-                required_trait,
-                trait_registry,
-            ) {
+            if !satisfies_trait_bound(&arg_template.trait_bounds, required_trait, trait_registry) {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "type '{}' does not conform to trait '{}' required by param '{}'",
@@ -1217,9 +1222,7 @@ mod tests {
         // fires and emits the correct "missing required member" diagnostic.
         let missing_diags: Vec<_> = diagnostics
             .iter()
-            .filter(|d| {
-                d.message.contains("missing required member") && d.message.contains("x")
-            })
+            .filter(|d| d.message.contains("missing required member") && d.message.contains("x"))
             .collect();
         assert_eq!(
             missing_diags.len(),
@@ -1404,6 +1407,10 @@ mod tests {
             .iter()
             .filter(|d| d.message.contains("unresolved type"))
             .collect();
-        assert_eq!(unresolved.len(), 1, "Expected exactly one 'unresolved type' diagnostic");
+        assert_eq!(
+            unresolved.len(),
+            1,
+            "Expected exactly one 'unresolved type' diagnostic"
+        );
     }
 }

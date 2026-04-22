@@ -131,9 +131,9 @@ structure def Vehicle : HasEngine {
         module.diagnostics
     );
 
-    let has_msg = errors
-        .iter()
-        .any(|d| d.message.contains("missing required sub-component") && d.message.contains("engine"));
+    let has_msg = errors.iter().any(|d| {
+        d.message.contains("missing required sub-component") && d.message.contains("engine")
+    });
     assert!(
         has_msg,
         "expected 'missing required sub-component' mentioning 'engine', got: {:?}",
@@ -213,9 +213,9 @@ structure def S : HasX + HasXInt {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("conflicting trait requirements") && d.message.contains("x")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("conflicting trait requirements") && d.message.contains("x"));
     assert!(
         has_msg,
         "expected 'conflicting trait requirements' mentioning 'x', got: {:?}",
@@ -299,9 +299,9 @@ structure def S : ProvidesLength + ProvidesMass {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("conflicting trait") && d.message.contains("size")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("conflicting trait") && d.message.contains("size"));
     assert!(
         has_msg,
         "expected 'conflicting trait' error mentioning 'size', got: {:?}",
@@ -338,7 +338,8 @@ structure def S {
     );
 
     let has_msg = errors.iter().any(|d| {
-        d.message.contains("unknown constraint definition") && d.message.contains("NoSuchConstraint")
+        d.message.contains("unknown constraint definition")
+            && d.message.contains("NoSuchConstraint")
     });
     assert!(
         has_msg,
@@ -378,9 +379,9 @@ structure def S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("unknown argument") && d.message.contains("bogus")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("unknown argument") && d.message.contains("bogus"));
     assert!(
         has_msg,
         "expected 'unknown argument' mentioning 'bogus', got: {:?}",
@@ -420,9 +421,9 @@ structure def S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("missing argument") && d.message.contains("b")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("missing argument") && d.message.contains("b"));
     assert!(
         has_msg,
         "expected 'missing argument' mentioning 'b', got: {:?}",
@@ -458,9 +459,9 @@ structure def Assembly { sub part = Box<Bolt, Bolt>() }
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("too many type arguments") && d.message.contains("Box")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("too many type arguments") && d.message.contains("Box"));
     assert!(
         has_msg,
         "expected 'too many type arguments' mentioning 'Box', got: {:?}",
@@ -493,9 +494,9 @@ structure def Assembly { sub part = Box() }
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("missing type argument") && d.message.contains("T")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("missing type argument") && d.message.contains("T"));
     assert!(
         has_msg,
         "expected 'missing type argument' mentioning 'T', got: {:?}",
@@ -529,9 +530,9 @@ structure def Assembly { sub part = Box<Widget>() }
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("does not satisfy bound") && d.message.contains("Widget")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("does not satisfy bound") && d.message.contains("Widget"));
     assert!(
         has_msg,
         "expected 'does not satisfy bound' mentioning 'Widget', got: {:?}",
@@ -567,9 +568,9 @@ structure S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("no termination condition")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("no termination condition"));
     assert!(
         has_msg,
         "expected 'no termination condition' error, got: {:?}",
@@ -604,7 +605,8 @@ structure S {
     );
 
     let has_msg = errors.iter().any(|d| {
-        d.message.contains("guard does not reference any Int or Bool")
+        d.message
+            .contains("guard does not reference any Int or Bool")
     });
     assert!(
         has_msg,
@@ -639,9 +641,9 @@ structure S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("undef is not allowed")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("undef is not allowed"));
     assert!(
         has_msg,
         "expected 'undef is not allowed' error, got: {:?}",
@@ -675,9 +677,9 @@ structure S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("does not decrement parameter") && d.message.contains("n")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("does not decrement parameter") && d.message.contains("n"));
     assert!(
         has_msg,
         "expected 'does not decrement parameter' mentioning 'n', got: {:?}",
@@ -862,9 +864,9 @@ structure def Widget {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("duplicate entity definition") && d.message.contains("Widget")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("duplicate entity definition") && d.message.contains("Widget"));
     assert!(
         has_msg,
         "expected 'duplicate entity definition' mentioning 'Widget', got: {:?}",
@@ -898,9 +900,9 @@ unit myunit : Length
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("duplicate unit declaration") && d.message.contains("myunit")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("duplicate unit declaration") && d.message.contains("myunit"));
     assert!(
         has_msg,
         "expected 'duplicate unit declaration' mentioning 'myunit', got: {:?}",
@@ -1009,9 +1011,9 @@ structure def S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("meta block has no key") && d.message.contains("part_number")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("meta block has no key") && d.message.contains("part_number"));
     assert!(
         has_msg,
         "expected 'meta block has no key' mentioning 'part_number', got: {:?}",
@@ -1051,9 +1053,9 @@ structure def Widget {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("duplicate entity definition") && d.message.contains("Widget")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("duplicate entity definition") && d.message.contains("Widget"));
     assert!(
         has_msg,
         "expected 'duplicate entity definition' mentioning 'Widget', got: {:?}",
@@ -1095,9 +1097,9 @@ structure def S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("duplicate port name") && d.message.contains("mount")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("duplicate port name") && d.message.contains("mount"));
     assert!(
         has_msg,
         "expected 'duplicate port name' mentioning 'mount', got: {:?}",

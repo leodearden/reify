@@ -623,7 +623,11 @@ structure def S : A {
 
     // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
     let x_cell = assert_single_value_cell(&template, "x", "diamond_satisfies_once");
-    assert_eq!(x_cell.cell_type, Type::length(), "diamond_satisfies_once: x must be Length");
+    assert_eq!(
+        x_cell.cell_type,
+        Type::length(),
+        "diamond_satisfies_once: x must be Length"
+    );
 }
 
 /// Task-189 step-3: Missing member in deep diamond produces exactly 1 error.
@@ -802,7 +806,11 @@ structure def S : A {
 
     // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
     let d_cell = assert_single_value_cell(&template, "d", "diamond_default_from_D_once");
-    assert_eq!(d_cell.cell_type, Type::length(), "diamond_default_from_D_once: d must be Length");
+    assert_eq!(
+        d_cell.cell_type,
+        Type::length(),
+        "diamond_default_from_D_once: d must be Length"
+    );
 }
 
 /// Task-189 step-11: Let default from D injected exactly once in deep diamond.
