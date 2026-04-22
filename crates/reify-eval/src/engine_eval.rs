@@ -1182,3 +1182,72 @@ impl Engine {
         }
     }
 }
+
+#[cfg(test)]
+mod invariant_tests {
+    use reify_compiler::ValueCellKind;
+    use reify_types::{ContentHash, Type, ValueCellId};
+
+    use crate::graph::{EvaluationGraph, ValueCellNode};
+
+    fn bad_node(cell_type: Type) -> (ValueCellId, ValueCellNode) {
+        let id = ValueCellId::new("E", "t");
+        let node = ValueCellNode {
+            id: id.clone(),
+            kind: ValueCellKind::Param,
+            cell_type,
+            default_expr: None,
+            content_hash: ContentHash(0),
+        };
+        (id, node)
+    }
+
+    #[test]
+    #[should_panic(expected = "unrepresentable cell_type")]
+    fn panics_on_type_param() {
+        let mut graph = EvaluationGraph::default();
+        let (id, node) = bad_node(Type::TypeParam("T".into()));
+        graph.value_cells.insert(id, node);
+        super::assert_value_cell_types_representable(&graph);
+    }
+
+    #[test]
+    #[should_panic(expected = "unrepresentable cell_type")]
+    fn panics_on_structure_ref() {
+        let mut graph = EvaluationGraph::default();
+        let (id, node) = bad_node(Type::StructureRef("Bolt".into()));
+        graph.value_cells.insert(id, node);
+        super::assert_value_cell_types_representable(&graph);
+    }
+
+    #[test]
+    #[should_panic(expected = "unrepresentable cell_type")]
+    fn panics_on_geometry() {
+        let mut graph = EvaluationGraph::default();
+        let (id, node) = bad_node(Type::Geometry);
+        graph.value_cells.insert(id, node);
+        super::assert_value_cell_types_representable(&graph);
+    }
+
+    #[test]
+    fn accepts_representable_types() {
+        let mut graph = EvaluationGraph::default();
+        for (entity, member, ty) in [
+            ("E", "a", Type::Int),
+            ("E", "b", Type::Real),
+            ("E", "c", Type::Bool),
+            ("E", "d", Type::List(Box::new(Type::Int))),
+        ] {
+            let id = ValueCellId::new(entity, member);
+            let node = ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: ty,
+                default_expr: None,
+                content_hash: ContentHash(0),
+            };
+            graph.value_cells.insert(id, node);
+        }
+        super::assert_value_cell_types_representable(&graph);
+    }
+}
