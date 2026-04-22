@@ -1984,6 +1984,31 @@ mod tests {
         (values, snapshot_values)
     }
 
+    /// Run [`reelaborate_guarded_group`] with `guard_val = Bool(false)` and
+    /// empty functions / meta on the supplied graph and group, returning the
+    /// resulting `(values, snapshot_values)` maps.
+    ///
+    /// Shared by active-branch `else_members` tests and inactive-branch `members`
+    /// tests under guard=false.  Collapses the 7-line call-site boilerplate into
+    /// a single line, leaving each test as a thin assertion-only wrapper.
+    fn run_with_guard_false(
+        graph: EvaluationGraph,
+        group: GuardedGroupInfo,
+    ) -> (ValueMap, PersistentMap<ValueCellId, (Value, DeterminacyState)>) {
+        let mut values = ValueMap::default();
+        let mut snapshot_values = PersistentMap::default();
+        reelaborate_guarded_group(
+            &graph,
+            &group,
+            &Value::Bool(false),
+            &mut values,
+            &mut snapshot_values,
+            &[],
+            &HashMap::new(),
+        );
+        (values, snapshot_values)
+    }
+
     #[test]
     fn deactivate_if_not_auto_skips_auto_cell() {
         let id = ValueCellId::new("E", "auto_param");
@@ -2407,6 +2432,56 @@ mod tests {
             snapshot_values.get(&else_member_id),
             Some(&(Value::Undef, DeterminacyState::Undetermined)),
             "Absent else_member must be Undetermined in snapshot_values on the inactive branch"
+        );
+    }
+
+    /// Pins the documented "Cells without a `default_expr` … are left unchanged"
+    /// contract for the **active branch under guard=false** of
+    /// `reelaborate_guarded_group`.
+    ///
+    /// With `guard_val = Bool(false)`, `else_members` are on the **active branch**.
+    /// The else_member cell IS present in `graph.value_cells` but its `default_expr`
+    /// is `None`, so the inner `if let Some(ref expr) = node.default_expr` guard
+    /// fails and the function must silently skip the cell — leaving both `values`
+    /// and `snapshot_values` empty for it.
+    ///
+    /// Mirrors `_active_member_without_default_expr_is_noop`; pins the
+    /// `else_members` side of the symmetric loop at engine_edit.rs:68.
+    ///
+    /// A regression that replaced the guarded `if let Some(node) = … && let
+    /// Some(ref expr) = node.default_expr` with an unconditional insert (or that
+    /// silently inserted `Value::Undef` on the missing-expr branch) would be
+    /// caught here on the else-members active path.
+    #[test]
+    fn reelaborate_guarded_group_active_else_member_without_default_expr_is_noop() {
+        let guard_id = ValueCellId::new("E", "guard");
+        let else_member_id = ValueCellId::new("E", "else_member");
+
+        let mut graph = EvaluationGraph::default();
+        // Guard cell is present (guard itself doesn't need a default_expr).
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        // else_member cell IS present in the graph, but has no default_expr.
+        graph.value_cells.insert(else_member_id.clone(), make_cell(&else_member_id, ValueCellKind::Param, Type::Int, None));
+
+        // guard=false → else_members active, members inactive.
+        let group = GuardedGroupInfo {
+            guard_cell: guard_id.clone(),
+            members: vec![],
+            else_members: vec![else_member_id.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let (values, snapshot_values) = run_with_guard_false(graph, group);
+
+        // Active else_member with no default_expr: must be left entirely untouched.
+        assert!(
+            values.get(&else_member_id).is_none(),
+            "Active else_member with default_expr=None must not appear in values"
+        );
+        assert!(
+            snapshot_values.get(&else_member_id).is_none(),
+            "Active else_member with default_expr=None must not appear in snapshot_values"
         );
     }
 
