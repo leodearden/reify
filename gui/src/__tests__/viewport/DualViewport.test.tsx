@@ -593,6 +593,28 @@ describe('DualViewport', () => {
       expect(viewportStore.setSplitRatio).toHaveBeenNthCalledWith(2, expect.closeTo(0.8, 10));
     });
 
+    it('(k5) makeViewportStore mock setSplitRatio rejects NaN/Infinity — returns false, preserves state', () => {
+      // Constructs a fresh store (no render needed) and verifies mock fidelity
+      // against the real store's Number.isFinite guard at viewportStore.ts:188.
+      const store = makeViewportStore();
+      expect(store.state.splitRatio).toBe(0.5);
+
+      // NaN: must return false and leave state unchanged
+      const nanResult = store.setSplitRatio(NaN);
+      expect(nanResult).toBe(false);
+      expect(store.state.splitRatio).toBe(0.5);
+
+      // Infinity: must return false and leave state unchanged
+      const infResult = store.setSplitRatio(Infinity);
+      expect(infResult).toBe(false);
+      expect(store.state.splitRatio).toBe(0.5);
+
+      // -Infinity: must return false and leave state unchanged
+      const negInfResult = store.setSplitRatio(-Infinity);
+      expect(negInfResult).toBe(false);
+      expect(store.state.splitRatio).toBe(0.5);
+    });
+
     it('(l) both viewports active: wrapper flex styles reflect splitRatio', async () => {
       const { DualViewport } = await importDualViewport();
       const engineStore = makeEngineStore(['mesh/A']);
