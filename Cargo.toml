@@ -62,3 +62,6 @@ tree-sitter-language = "0.1"
 tree-sitter-reify = { path = "tree-sitter-reify" }
 
 tracing = "0.1"
+
+strum = "0.26"
+strum_macros = "0.26"
