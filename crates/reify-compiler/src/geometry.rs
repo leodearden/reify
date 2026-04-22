@@ -745,6 +745,11 @@ pub(crate) fn compile_geometry_call(
                 2, "sweep_guided", "guide", args, &geom_refs, diagnostics, step_offset,
             );
             let mut it = compiled_args.into_iter();
+            // TODO(task-383-followup): SweepGuided still emits inert geom-ref placeholder
+            // args (profile, path, guide) that eval resolves through `profiles` indices.
+            // This is the same half-migrated pattern removed from SweepKind::Sweep (task-383
+            // S6). A follow-up should drop these three entries and emit `args: vec![]` here,
+            // and update the sweep_guided_e2e.rs fixture accordingly.
             let sweep_args: Vec<(String, CompiledExpr)> = vec![
                 ("profile".to_string(), it.next().unwrap()),
                 ("path".to_string(), it.next().unwrap()),
@@ -774,11 +779,10 @@ pub(crate) fn compile_geometry_call(
             let path_ref = resolve_named_geom_arg(
                 0, "pipe", "path", args, &geom_refs, diagnostics, step_offset,
             );
-            let mut it = compiled_args.into_iter();
             // SweepKind::Pipe: the path is resolved through `profiles[0]` (GeomRef);
             // only the scalar "radius" belongs in args (task-383 S6).
-            let _path_expr = it.next().unwrap(); // consumed but not stored in args
-            let radius_expr = it.next().unwrap();
+            // Use nth(1) to skip the first (path) expression cleanly.
+            let radius_expr = compiled_args.into_iter().nth(1).unwrap();
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Pipe,
                 profiles: vec![path_ref],

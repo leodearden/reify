@@ -904,6 +904,16 @@ fn compile_sweep_rejects_three_args() {
         !compiled.diagnostics.is_empty(),
         "expected diagnostics for too many args"
     );
+    // The arity diagnostic must name the specific check path, not just "no op produced".
+    let has_arity_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("sweep() expects exactly 2 arguments"));
+    assert!(
+        has_arity_diag,
+        "expected 'sweep() expects exactly 2 arguments' diagnostic, got: {:?}",
+        compiled.diagnostics
+    );
     // No Sweep(Sweep) op should be produced
     let has_sweep = compiled.templates.iter().any(|t| {
         t.realizations.iter().any(|r| {
