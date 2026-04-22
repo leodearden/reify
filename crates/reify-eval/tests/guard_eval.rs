@@ -1574,3 +1574,125 @@ fn multi_guard_fingerprint_disambiguates_by_guard_identity() {
          not just the multiset of guard values"
     );
 }
+
+/// Block-A-only Auto-skip regression test (task 750).
+///
+/// Block A in `edit_param` fires when `has_dirty_guards` — meaning the guard
+/// cell is in the dirty cone via a dependency edit, even when the guard VALUE
+/// does not change. Block B fires only when the guard *value* changes.
+///
+/// This test isolates the Block-A path by using a numeric comparison guard
+/// (`count > 100mm`): editing `count` from 5mm → 10mm keeps the guard false
+/// (10mm is still < 100mm), so Block A fires (guard cell is dirty) but Block B
+/// does NOT (guard value unchanged).
+///
+/// Verifies that the Auto-skip in Block A (engine_edit.rs line 472) preserves
+/// the solver-resolved `thickness` value independently of Block B. If a future
+/// refactor drops the Auto-skip from Block A's call sites (lines 472/492) while
+/// keeping Block B's, this test catches it — the existing
+/// `edit_param_guard_false_preserves_solver_auto_param` test would not, because
+/// that test fires both blocks together.
+#[test]
+fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
+    let count_id = ValueCellId::new("S", "count");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    // Guard expression: count > 100mm — false when count = 5mm or 10mm
+    let guard_expr = gt(
+        value_ref_typed("S", "count", Type::length()),
+        literal(mm(100.0)),
+    );
+
+    // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
+    let thickness_decl = ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto { free: false },
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "count",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(5.0), Type::length())),
+        )
+        // Top-level auto_param so the resolution phase finds it
+        .auto_param("S", "thickness", Type::length())
+        // Top-level constraint so the resolution phase can match it
+        .constraint(
+            "S",
+            0,
+            Some("thickness_gt_2mm"),
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![thickness_decl], // members (active only when count > 100mm, i.e. guard=true)
+            vec![],               // constraints
+            vec![],               // else_members
+            vec![],               // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Mock solver: always resolves thickness to 5mm (0.005 SI)
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval with guard=false (count=5mm < 100mm); solver still resolves thickness
+    let initial_result = engine.eval(&module);
+    let thickness_val = initial_result.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "thickness should be 0.005 SI (5mm) after initial eval, got {:?}",
+        thickness_val
+    );
+
+    // edit_param(count, 10mm) — still < 100mm, guard remains false.
+    // __guard_0 enters the dirty cone via count's reverse index → Block A fires.
+    // guard value (false → false) → Block B does NOT fire.
+    let edit_result = engine
+        .edit_param(count_id.clone(), mm(10.0))
+        .expect("edit_param should succeed");
+
+    // Auto param must retain solver-resolved value (Block A Auto-skip at line 472).
+    let thickness_after = edit_result.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_after, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Auto param 'thickness' should retain 0.005 SI after Block-A-only guard update, got {:?}",
+        thickness_after
+    );
+
+    // DeterminacyState in snapshot must remain Determined (Block A Auto-skip must apply)
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot should exist after edit_param");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&thickness_id)
+        .expect("thickness in snapshot after Block-A-only guard update");
+    assert!(
+        matches!(snap_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "thickness should retain 0.005 SI in snapshot, got {:?}",
+        snap_val
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Determined,
+        "Auto param DeterminacyState must remain Determined after Block-A-only path"
+    );
+}
