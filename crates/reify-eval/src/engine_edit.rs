@@ -85,6 +85,49 @@ fn reelaborate_guarded_group(
     }
 }
 
+/// Re-deactivate inactive-branch members for every guarded group that Phase 1
+/// re-elaborated during the current edit call.
+///
+/// After wave2, the constraint solver may have re-evaluated inactive-branch
+/// members (whose `default_expr` reads a resolved auto param) that Phase 1
+/// previously deactivated (`Undef`). This cleanup restores Phase 1's
+/// deactivation state so that Phase 3's `phase1_reelaborated` skip yields
+/// a correct final result.
+///
+/// Called from both `edit_param` post-wave2 (task 2140) and `edit_source`
+/// post-wave2 (task 2142). Does nothing when `phase1_reelaborated` is empty.
+/// By taking `graph` and `snapshot_values` as separate parameters the caller
+/// can use field-level borrow splitting — no `.clone()` of `guarded_groups`
+/// is required at either call site.
+fn reapply_phase1_deactivations(
+    graph: &EvaluationGraph,
+    phase1_reelaborated: &HashSet<ValueCellId>,
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+) {
+    if phase1_reelaborated.is_empty() {
+        return;
+    }
+    for group in &graph.guarded_groups {
+        if !phase1_reelaborated.contains(&group.guard_cell) {
+            continue;
+        }
+        let guard_val = values
+            .get(&group.guard_cell)
+            .cloned()
+            .expect("guard cell must have a value after Phase 1");
+        let is_true = matches!(&guard_val, Value::Bool(true));
+        let is_false = matches!(&guard_val, Value::Bool(false));
+        for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)] {
+            if !is_active {
+                for mid in cells {
+                    deactivate_if_not_auto(graph, mid, values, snapshot_values);
+                }
+            }
+        }
+    }
+}
+
 /// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
 /// probe in `Engine::edit_source`.
 ///
@@ -718,39 +761,16 @@ impl Engine {
                     }
                 }
 
-                // Post-wave2 cleanup for cross-phase dedup safety (task 2140):
-                // wave2 unconditionally re-evaluates any cell in the demand cone
-                // whose default_expr reads a resolved auto param — including
-                // inactive-branch members that Phase 1 already deactivated (Undef).
-                // For each group Phase 1 processed, re-deactivate its inactive
-                // branch so Phase 3's `phase1_reelaborated` skip stays correct.
-                if !phase1_reelaborated.is_empty() {
-                    for group in new_snapshot.graph.guarded_groups.clone() {
-                        if !phase1_reelaborated.contains(&group.guard_cell) {
-                            continue;
-                        }
-                        let guard_val = values
-                            .get(&group.guard_cell)
-                            .cloned()
-                            .expect("guard cell must have a value after Phase 1");
-                        let is_true = matches!(&guard_val, Value::Bool(true));
-                        let is_false = matches!(&guard_val, Value::Bool(false));
-                        for (cells, is_active) in
-                            [(&group.members, is_true), (&group.else_members, is_false)]
-                        {
-                            if !is_active {
-                                for mid in cells {
-                                    deactivate_if_not_auto(
-                                        &new_snapshot.graph,
-                                        mid,
-                                        &mut values,
-                                        &mut new_snapshot.values,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+                // Post-wave2 cleanup (task 2140): wave2 can re-evaluate
+                // inactive-branch members Phase 1 deactivated; restore
+                // those deactivations so Phase 3's phase1_reelaborated
+                // skip stays correct.  See `reapply_phase1_deactivations`.
+                reapply_phase1_deactivations(
+                    &new_snapshot.graph,
+                    &phase1_reelaborated,
+                    &mut values,
+                    &mut new_snapshot.values,
+                );
             }
         }
 
@@ -1791,42 +1811,19 @@ impl Engine {
                     }
                 }
 
-                // Post-wave2 cleanup for cross-phase dedup safety (task 2142):
-                // wave2 unconditionally re-evaluates any cell in the demand cone
-                // whose default_expr reads a resolved auto param — including
-                // inactive-branch members that Phase 1 already deactivated (Undef).
-                // For each group Phase 1 processed, re-deactivate its inactive
-                // branch so Phase 3's `phase1_reelaborated` skip yields a correct
-                // final state. Mirrors edit_param's cleanup at lines 721-753 (task 2140).
-                // edit_source's wave2 uses local new_reverse_index / new_trace_map /
-                // new_demand, so no `if let Some(es) = ...` wrapping is needed here.
-                if !phase1_reelaborated.is_empty() {
-                    for group in new_snapshot.graph.guarded_groups.clone() {
-                        if !phase1_reelaborated.contains(&group.guard_cell) {
-                            continue;
-                        }
-                        let guard_val = values
-                            .get(&group.guard_cell)
-                            .cloned()
-                            .expect("guard cell must have a value after Phase 1");
-                        let is_true = matches!(&guard_val, Value::Bool(true));
-                        let is_false = matches!(&guard_val, Value::Bool(false));
-                        for (cells, is_active) in
-                            [(&group.members, is_true), (&group.else_members, is_false)]
-                        {
-                            if !is_active {
-                                for mid in cells {
-                                    deactivate_if_not_auto(
-                                        &new_snapshot.graph,
-                                        mid,
-                                        &mut values,
-                                        &mut new_snapshot.values,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+                // Post-wave2 cleanup (task 2142): wave2 can re-evaluate
+                // inactive-branch members Phase 1 deactivated; restore
+                // those deactivations so Phase 3's phase1_reelaborated
+                // skip stays correct.  See `reapply_phase1_deactivations`.
+                // edit_source's wave2 uses local new_reverse_index /
+                // new_trace_map / new_demand (not self.eval_state), so
+                // the call lives directly inside `if !all_resolved_ids…`.
+                reapply_phase1_deactivations(
+                    &new_snapshot.graph,
+                    &phase1_reelaborated,
+                    &mut values,
+                    &mut new_snapshot.values,
+                );
             }
         }
 
