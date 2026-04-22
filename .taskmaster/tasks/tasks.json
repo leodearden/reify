@@ -44450,13 +44450,13 @@
         "description": "The role-flip probe in `Engine::edit_source` (crates/reify-eval/src/engine_edit.rs around line 1435) ends with `flipped || new_total != old_roles.len()`, where `new_total` is a raw per-member iteration count (no dedup) while `old_roles.len()` reflects a deduped HashMap. When both old and new guarded-groups contain the *same* intra-group duplicate (same ValueCellId in both members and else_members of one group — an affirmatively-supported shape per `build_old_role_map`'s docstring), `new_total` counts it twice but `old_roles.len()` counts it once, so the probe falsely reports a role-flip and forces an unnecessary guard re-eval.\n\nSpotted by reviewer_comprehensive after task 2092's intra-group-duplicate test (`build_old_role_map_intra_group_duplicate_last_write_wins`) pinned the helper's last-write-wins contract — that test documents the helper but sidesteps this callsite mismatch.\n\nFix options (pick one):\n  (a) Track a HashSet<ValueCellId> of seen IDs during the new-groups walk and compare `seen.len() != old_roles.len()` after the loop (apples-to-apples dedup).\n  (b) Have `build_old_role_map` return `(map, pre_dedup_insert_count)` so the probe compares raw-vs-raw counts.\n\nAdd a regression test that constructs old and new graphs each containing the identical intra-group duplicate and asserts the probe does NOT report a role-flip (currently it would).\n\nmemory_hints:\n- search: \"build_old_role_map intra-group duplicate last-write-wins\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [
           "2092"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:50:48.095Z",
+        "updatedAt": "2026-04-22T02:18:57.885Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44469,13 +44469,13 @@
         "description": "The role-flip probe in `Engine::edit_source` (crates/reify-eval/src/engine_edit.rs around line 1435) ends with `flipped || new_total != old_roles.len()`, where `new_total` is a raw per-member iteration count (no dedup) while `old_roles.len()` reflects a deduped HashMap. When both old and new guarded-groups contain the same intra-group duplicate (same ValueCellId in both members and else_members of one group — an affirmatively-supported shape per `build_old_role_map`'s docstring), `new_total` counts it twice but `old_roles.len()` counts it once, so the probe falsely reports a role-flip and forces an unnecessary guard re-eval.\n\nSpotted by reviewer_comprehensive after task 2092's intra-group-duplicate test pinned the helper's last-write-wins contract.\n\nFix options: (a) track HashSet of seen IDs during new-groups walk, compare seen.len() vs old_roles.len(); or (b) have build_old_role_map return (map, pre_dedup_count) so probe compares raw-vs-raw.\n\nAdd regression test with identical intra-group duplicate in both old and new graphs; assert probe does NOT report role-flip.\n\nmemory_hints:\n- search: \"build_old_role_map intra-group duplicate last-write-wins\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [
           "2092"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:51:50.057Z",
+        "updatedAt": "2026-04-22T02:18:57.950Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44488,11 +44488,11 @@
         "description": "In `Engine::edit_source` role-flip probe (crates/reify-eval/src/engine_edit.rs ~L1435): `flipped || new_total != old_roles.len()`. `new_total` is raw iter count, `old_roles.len()` is deduped. Identical intra-group duplicates on both sides (supported per build_old_role_map docstring) cause false role-flip reports.\n\nFix: dedupe new-side via HashSet, or return pre-dedup count from build_old_role_map. Add regression test with identical intra-group duplicate in both graphs asserting no false flip.\n\nSpotted by reviewer_comprehensive on task 2092 review.\n\nmemory_hints:\n- search: \"build_old_role_map intra-group duplicate\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:52:23.146Z",
+        "updatedAt": "2026-04-22T02:18:58.009Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44505,11 +44505,11 @@
         "description": "engine_edit.rs L1435: `new_total != old_roles.len()` compares raw count vs deduped map len. Identical intra-group duplicates in both old/new graphs cause false role-flip. Fix via HashSet dedup on new-side walk, or return pre-dedup count from build_old_role_map. Add regression test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:01:22.360Z",
+        "updatedAt": "2026-04-22T02:18:58.079Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44522,11 +44522,11 @@
         "description": "engine_edit.rs ~L1435 `flipped || new_total != old_roles.len()` compares raw iteration count vs deduped map len; identical intra-group duplicates in both old and new graphs cause false role-flip. Fix via HashSet dedup in new-side walk or return pre-dedup count from build_old_role_map. Add regression test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:53:46.534Z",
+        "updatedAt": "2026-04-22T02:18:58.153Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44539,11 +44539,11 @@
         "description": "engine_edit.rs ~L1435: `new_total != old_roles.len()` compares raw count vs deduped len; identical intra-group dups on both sides produce false role-flip. Spawned from task 2092 review.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:04:53.139Z",
+        "updatedAt": "2026-04-22T02:18:58.217Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44556,11 +44556,11 @@
         "description": "Fix L1435 count mismatch (raw vs deduped) on intra-group duplicates. From task 2092 review. See memory 092192b7 for details.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:02:05.304Z",
+        "updatedAt": "2026-04-22T02:18:58.277Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44766,14 +44766,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:12:28.445Z",
+      "lastModified": "2026-04-22T02:18:58.277Z",
       "taskCount": 2107,
       "completedCount": 1836,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T02:13:20.830Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
