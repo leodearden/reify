@@ -45282,11 +45282,17 @@
         "description": "`Engine::last_guard_phase_group_evals()` (crates/reify-eval/src/engine_admin.rs:209 + field at lib.rs:215) is a pub accessor whose sole purpose is test instrumentation for the per-group skip optimisation added in task 2088. Exposing a performance counter on the public API couples callers to an internal optimisation and risks external users treating it as a supported metric.\n\nFix: gate the accessor behind `#[cfg(any(test, feature = \"test-instrumentation\"))]` or downgrade to `pub(crate)` with a test-only re-export, OR rename to something general (e.g. `last_guard_reelaboration_count`) and document it as a stable inspection metric rather than a skip-optimisation probe. Reviewer (reviewer_comprehensive) prefers option (a).\n\nAffected sites: same treatment for the `last_guard_phase_group_evals: usize` field declaration and any doc-comment updates.\n\nSource: post-merge review suggestion on task 2088 (merge commit 90804da34).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T07:23:10.254Z"
+        "updatedAt": "2026-04-22T07:45:46.463Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "c7a6cf62b058708a15e4da28d3c8be729cd008dc",
+            "commit_input": "c7a6cf62b"
+          }
+        }
       },
       {
         "id": "2138",
@@ -45338,14 +45344,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T07:24:59.200Z",
+      "lastModified": "2026-04-22T07:45:46.463Z",
       "taskCount": 2132,
-      "completedCount": 1869,
+      "completedCount": 1870,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T07:34:14.305Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
