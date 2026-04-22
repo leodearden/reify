@@ -5,6 +5,7 @@ import { createRoot, createComputed } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { ViewStateStore } from '../stores';
+import type { PersistentViewState } from '../types';
 import { makeNode, makeTree, makeTreeWithTwoSubtrees, makeTreeWithGeometryA } from './test-utils';
 
 describe('viewStateStore — default rules', () => {
@@ -2438,6 +2439,144 @@ describe('viewStateStore — getStalePaths (step-19)', () => {
       // Path returns → no longer stale
       store.setTree(treeWith('Root.movable'));
       expect((store as any).getStalePaths()).not.toContain('Root.movable');
+
+      dispose();
+    });
+  });
+});
+
+// applyPersistedState / serializePersistedState — step-21 tests (fail until step-22 adds the methods)
+describe('viewStateStore — applyPersistedState / serializePersistedState (step-21)', () => {
+  /** Helper: a minimal valid persisted state with one user view. */
+  function makePersistedState(
+    overrides: Partial<Omit<PersistentViewState, 'viewportCameras' | 'timestamp'>> = {},
+  ): Omit<PersistentViewState, 'viewportCameras' | 'timestamp'> {
+    const userView: ViewDefinition = {
+      id: 'user:saved-abc',
+      name: 'My Saved View',
+      auto: false,
+      modified: false,
+      visibility: { 'Root.geo': 'show', 'Root.strut': 'hidden' },
+    };
+    return {
+      version: '1',
+      activeViewId: 'user:saved-abc',
+      userViews: [userView],
+      explicit: { 'Root.geo': 'show', 'Root.strut': 'hidden' },
+      ...overrides,
+    };
+  }
+
+  it('(a) apply seeds userViews into state.views without clobbering auto views', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // Prime auto views first
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root', kind: 'structure' })]);
+      expect(store.state.views['auto:default']).toBeTruthy();
+
+      const persisted = makePersistedState();
+      (store as any).applyPersistedState(persisted);
+
+      // User view was seeded
+      expect(store.state.views['user:saved-abc']).toBeTruthy();
+      expect(store.state.views['user:saved-abc'].name).toBe('My Saved View');
+      // Auto view is still present
+      expect(store.state.views['auto:default']).toBeTruthy();
+
+      dispose();
+    });
+  });
+
+  it('(b) apply sets activeViewId and restores explicit map from the persisted user view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      const persisted = makePersistedState();
+      (store as any).applyPersistedState(persisted);
+
+      expect(store.state.activeViewId).toBe('user:saved-abc');
+      expect(store.state.explicit['Root.geo']).toBe('show');
+      expect(store.state.explicit['Root.strut']).toBe('hidden');
+
+      dispose();
+    });
+  });
+
+  it('(c) apply ignores persisted entries whose id starts with "auto:" (auto views regenerated separately)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      const autoView: ViewDefinition = {
+        id: 'auto:default',
+        name: 'Default',
+        auto: true,
+        modified: false,
+        visibility: {},
+      };
+      const persisted = makePersistedState({
+        userViews: [
+          // Mix of auto: (should be ignored) and user: (should be seeded)
+          autoView,
+          {
+            id: 'user:legitimate',
+            name: 'Legit',
+            auto: false,
+            modified: false,
+            visibility: {},
+          },
+        ],
+        activeViewId: 'user:legitimate',
+        explicit: {},
+      });
+
+      (store as any).applyPersistedState(persisted);
+
+      // auto:default from the persisted list must NOT overwrite real auto views
+      // (the store started with no auto views here; if we did seed it would have
+      //  auto: false overrides which is wrong — we simply must not seed it at all)
+      expect(store.state.views['user:legitimate']).toBeTruthy();
+      // The store should NOT have seeded the persisted autoView as a view at all
+      // (it may or may not exist from regenerateAutoViews, but the persisted one
+      //  should be dropped — we check name to distinguish)
+      const maybeAuto = store.state.views['auto:default'];
+      if (maybeAuto) {
+        // It was there before (shouldn't be here in this test), or was seeded legitimately —
+        // the key point is the persisted auto view (with auto:true, name="Default") was not
+        // applied incorrectly. Since we didn't call regenerateAutoViews, any auto:default
+        // present must have come from the persisted list — which is the bug. Verify it didn't.
+        expect(maybeAuto).toBeUndefined();
+      }
+
+      dispose();
+    });
+  });
+
+  it('(d) serialize returns only user views (filters auto), activeViewId, explicit snapshot, and version "1"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      // Prime with auto views + a user view
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root', kind: 'structure' })]);
+      const userId = store.createView('Manual');
+      store.switchView(userId);
+      store.setVisibility('Root', 'ghost', false);
+
+      const serialized: Omit<PersistentViewState, 'viewportCameras' | 'timestamp'> =
+        (store as any).serializePersistedState();
+
+      expect(serialized.version).toBe('1');
+      expect(serialized.activeViewId).toBe(userId);
+
+      // Only user views in userViews — no auto:*
+      expect(serialized.userViews.every((v: ViewDefinition) => !v.id.startsWith('auto:'))).toBe(true);
+      expect(serialized.userViews.some((v: ViewDefinition) => v.id === userId)).toBe(true);
+
+      // explicit snapshot captured
+      expect(serialized.explicit['Root']).toBe('ghost');
+
+      // No viewportCameras or timestamp (those are composed at App.tsx layer)
+      expect('viewportCameras' in serialized).toBe(false);
+      expect('timestamp' in serialized).toBe(false);
 
       dispose();
     });
