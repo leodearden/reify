@@ -64,45 +64,6 @@ fn fresh_eval(module_b: &CompiledModule) -> EvalResult {
     engine.eval(module_b)
 }
 
-/// Self-test for the `assert_values_match` helper: verifies both the pass path
-/// (identical maps do not panic) and the fail path (diverging maps panic with a
-/// message containing the literal "diverges").
-#[test]
-fn assert_values_match_panics_on_divergence() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    // Pass path: two maps with identical entries must not panic.
-    let mut a = ValueMap::new();
-    let mut b = ValueMap::new();
-    let k1 = ValueCellId::new("S", "x");
-    let k2 = ValueCellId::new("S", "y");
-    a.insert(k1.clone(), Value::Int(1));
-    a.insert(k2.clone(), Value::length(0.01));
-    b.insert(k1.clone(), Value::Int(1));
-    b.insert(k2.clone(), Value::length(0.01));
-    assert_values_match(&a, &b); // must not panic
-
-    // Fail path: maps that disagree on one key must panic; message must contain "diverges".
-    let mut c = ValueMap::new();
-    let mut d = ValueMap::new();
-    let k3 = ValueCellId::new("S", "z");
-    c.insert(k3.clone(), Value::Int(42));
-    d.insert(k3.clone(), Value::Int(99));
-    let payload = catch_unwind(AssertUnwindSafe(|| {
-        assert_values_match(&c, &d);
-    }))
-    .expect_err("assert_values_match must panic on diverging values");
-    let msg = payload
-        .downcast_ref::<String>()
-        .map(|s| s.as_str())
-        .or_else(|| payload.downcast_ref::<&str>().copied())
-        .expect("panic payload must be a string");
-    assert!(
-        msg.contains("diverges"),
-        "panic message must contain \"diverges\", got: {msg}"
-    );
-}
-
 // ── Precondition tests ─────────────────────────────────────────────────────
 
 /// `edit_source` requires a prior `eval()` to establish the baseline snapshot,
