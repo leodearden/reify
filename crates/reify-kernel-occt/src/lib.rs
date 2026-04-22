@@ -113,19 +113,9 @@ const PIPE_START_TANGENT_Z_EPSILON: f64 = 1e-6;
 #[cfg(has_occt)]
 /// Validate that a pipe start-tangent is approximately +Z and all-finite.
 ///
-/// Returns `OperationFailed` if:
-/// 1. The magnitude is NaN (any NaN component propagates through `mag_sq = x²+y²+z²`).
-/// 2. Any component is non-finite (±Infinity).
-/// 3. `t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON` (tangent not close enough to +Z).
+/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity) or if
+/// `t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON` (tangent not close enough to +Z).
 fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError> {
-    let mag_sq = t.x * t.x + t.y * t.y + t.z * t.z;
-    if mag_sq.is_nan() {
-        return Err(GeometryError::OperationFailed(format!(
-            "pipe start-tangent has non-finite (NaN) magnitude \
-             (got tangent ({:.3}, {:.3}, {:.3}))",
-            t.x, t.y, t.z
-        )));
-    }
     if !t.x.is_finite() || !t.y.is_finite() || !t.z.is_finite() {
         return Err(GeometryError::OperationFailed(format!(
             "pipe start-tangent has non-finite component (got ({:.3}, {:.3}, {:.3}))",
@@ -4506,9 +4496,10 @@ mod tests {
 
     #[test]
     fn validate_pipe_start_tangent_rejects_nan_magnitude() {
-        // Exercises the NaN-safe magnitude guard: any NaN component propagates
-        // through mag_sq = x²+y²+z², making mag_sq NaN, which should produce an
-        // OperationFailed error whose message contains "magnitude".
+        // Exercises the non-finite guard with NaN inputs: any NaN component is
+        // caught by the is_finite() check and should produce a "non-finite" error.
+        // Covers the NaN-in-y case ({0, NaN, 0}) which is absent from
+        // validate_pipe_start_tangent_rejects_non_finite_components.
         let nan_cases = [
             ffi::ffi::Point3 { x: f64::NAN, y: 0.0,      z: 1.0 },
             ffi::ffi::Point3 { x: 0.0,      y: f64::NAN, z: 0.0 },
@@ -4519,8 +4510,8 @@ mod tests {
             match result {
                 Err(GeometryError::OperationFailed(msg)) => {
                     assert!(
-                        msg.contains("magnitude"),
-                        "expected error containing 'magnitude' for NaN tangent {coords:?}, got: {msg}"
+                        msg.contains("non-finite"),
+                        "expected error containing 'non-finite' for NaN tangent {coords:?}, got: {msg}"
                     );
                 }
                 Ok(()) => panic!(
