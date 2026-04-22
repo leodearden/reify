@@ -314,6 +314,27 @@ describe('viewportStore', () => {
         dispose();
       });
     });
+
+    it('(g) setSplitRatio(NaN) returns false and does not corrupt state', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setSplitRatio(NaN);
+        expect(result).toBe(false);
+        // splitRatio must remain at the initial value — NaN must not be stored
+        expect(store.state.splitRatio).toBe(0.5);
+        dispose();
+      });
+    });
+
+    it('(h) setSplitRatio(Infinity) returns false and does not corrupt state', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setSplitRatio(Infinity);
+        expect(result).toBe(false);
+        expect(store.state.splitRatio).toBe(0.5);
+        dispose();
+      });
+    });
   });
 
   describe('store isolation', () => {

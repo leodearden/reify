@@ -180,9 +180,12 @@ export function createViewportStore(
   /**
    * Set the split ratio (fraction of container height for the def-preview viewport).
    * Clamps the value to [0.1, 0.9] so neither viewport collapses to zero.
-   * Always returns `true`.
+   * Returns `false` when `ratio` is not a finite number (NaN, ±Infinity) — no
+   * mutation occurs in that case, preventing NaN from corrupting the layout.
+   * Returns `true` on success.
    */
   function setSplitRatio(ratio: number): boolean {
+    if (!Number.isFinite(ratio)) return false;
     const clamped = Math.min(0.9, Math.max(0.1, ratio));
     setState('splitRatio', clamped);
     return true;
