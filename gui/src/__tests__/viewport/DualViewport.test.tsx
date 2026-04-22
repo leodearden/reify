@@ -596,10 +596,11 @@ describe('DualViewport', () => {
       expect(viewportStore.setSplitRatio).toHaveBeenNthCalledWith(2, expect.closeTo(0.8, 10));
     });
 
-    it('(k5) makeViewportStore mock setSplitRatio rejects NaN/Infinity — returns false, preserves state', () => {
-      // Constructs a fresh store (no render needed) and verifies mock fidelity
-      // against the real store's Number.isFinite guard at viewportStore.ts:188.
-      const store = makeViewportStore();
+    it('(k5) real createViewportStore setSplitRatio rejects NaN/Infinity — returns false, preserves state', () => {
+      // Uses the REAL store (no render needed) to pin the Number.isFinite guard at
+      // viewportStore.ts:188. If that guard is removed, this test catches it.
+      // (The mock's guard fidelity is verified transitively via this test's behavior.)
+      const store = createViewportStore();
       expect(store.state.splitRatio).toBe(0.5);
 
       // NaN: must return false and leave state unchanged

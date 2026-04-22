@@ -90,7 +90,9 @@ export function DualViewport(props: DualViewportProps) {
 
   // ── Dual-splitter resize handler ──────────────────────────────────────────
   function handleDualResize(delta: number) {
-    if (!containerRef) return;  // defensive: guards SSR / deferred-callback scenarios
+    if (!containerRef) return;  // SSR: Solid assigns `let ref!` synchronously at DOM mount;
+                                 //       in SSR (no DOM), the ref stays undefined — accessing
+                                 //       .clientHeight without this guard would throw a TypeError.
     const h = containerRef.clientHeight;
     if (h <= 0) return;
     const current = props.viewportStore.state.splitRatio;
