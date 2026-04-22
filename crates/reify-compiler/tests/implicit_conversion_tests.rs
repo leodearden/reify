@@ -435,6 +435,63 @@ fn type_compatible_matrix_tensor2_symmetric() {
     );
 }
 
+// ── type_compatible() identity regression guard (step-9 prerequisite) ─────
+//
+// These tests pin type_compatible(T, T) == true for representative types.
+// type_compatible currently returns true for identical types via an explicit
+// `if param_ty == arg_ty { return true; }` guard. Step 9 removes that guard
+// as redundant (implicitly_converts_to already has its own identity check at
+// type_compat.rs:29). These tests ensure the removal does not regress identity
+// behavior for any representative type. Covers suggestions #5 and #20.
+
+/// type_compatible(Real, Real) == true.
+#[test]
+fn type_compatible_identity_real() {
+    assert!(
+        type_compatible(&Type::Real, &Type::Real),
+        "type_compatible(Real, Real) must be true (identity)"
+    );
+}
+
+/// type_compatible(Int, Int) == true.
+#[test]
+fn type_compatible_identity_int() {
+    assert!(
+        type_compatible(&Type::Int, &Type::Int),
+        "type_compatible(Int, Int) must be true (identity)"
+    );
+}
+
+/// type_compatible(Vector<3,Real>, Vector<3,Real>) == true.
+#[test]
+fn type_compatible_identity_vector() {
+    let t = Type::vec3(Type::Real);
+    assert!(
+        type_compatible(&t, &t),
+        "type_compatible(Vector<3,Real>, Vector<3,Real>) must be true (identity)"
+    );
+}
+
+/// type_compatible(Tensor<2,3,Real>, Tensor<2,3,Real>) == true.
+#[test]
+fn type_compatible_identity_tensor2() {
+    let t = Type::tensor(2, 3, Type::Real);
+    assert!(
+        type_compatible(&t, &t),
+        "type_compatible(Tensor<2,3,Real>, Tensor<2,3,Real>) must be true (identity)"
+    );
+}
+
+/// type_compatible(Matrix<3,3,Real>, Matrix<3,3,Real>) == true.
+#[test]
+fn type_compatible_identity_matrix() {
+    let t = Type::matrix(3, 3, Type::Real);
+    assert!(
+        type_compatible(&t, &t),
+        "type_compatible(Matrix<3,3,Real>, Matrix<3,3,Real>) must be true (identity)"
+    );
+}
+
 // ── Type::Error wildcard contract (task-1912) ──────────────────────────────
 //
 // Task 448 introduced a `Type::Error` poison-value sentinel and added
