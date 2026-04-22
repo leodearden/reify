@@ -238,6 +238,42 @@ mod tests {
             "duplicate span should return false"
         );
         assert_eq!(ctx.diagnostics.len(), 1, "exactly one diagnostic on duplicate");
+
+        // Anchor the wire format of the duplicate diagnostic so a silent
+        // regression (e.g. swapping label order, dropping "here", changing the
+        // message template) is caught at the unit level rather than only via
+        // distant integration tests.
+        let diag = &ctx.diagnostics[0];
+
+        // 1. Top-level message contains the stable substring.
+        assert!(
+            diag.message.contains("duplicate entity definition 'Widget'"),
+            "message should contain the stable duplicate-diagnostic substring, got: {:?}",
+            diag.message,
+        );
+
+        // 2. Exactly two labels (duplicate site + first-seen site).
+        assert_eq!(diag.labels.len(), 2, "duplicate diagnostic must have exactly two labels");
+
+        // 3. labels[0] = duplicate site (span_b, "structure defined here").
+        assert_eq!(
+            diag.labels[0].span, span_b,
+            "labels[0] should point to the duplicate site (span_b)"
+        );
+        assert_eq!(
+            diag.labels[0].message, "structure defined here",
+            "labels[0] message should be '{{kind}} defined here'"
+        );
+
+        // 4. labels[1] = first-seen site (span_a, "first defined as structure here").
+        assert_eq!(
+            diag.labels[1].span, span_a,
+            "labels[1] should point to the first-seen site (span_a)"
+        );
+        assert_eq!(
+            diag.labels[1].message, "first defined as structure here",
+            "labels[1] message should be 'first defined as {{first_kind}} here'"
+        );
     }
 
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec
