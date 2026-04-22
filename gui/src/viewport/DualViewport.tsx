@@ -58,6 +58,9 @@ export interface DualViewportProps extends PassthroughProps, RefProps {
 // ---------------------------------------------------------------------------
 
 export function DualViewport(props: DualViewportProps) {
+  // ── Container ref for resize calculations ─────────────────────────────────
+  let containerRef!: HTMLDivElement;
+
   // ── Stable ref proxies ────────────────────────────────────────────────────
   // These closures capture the inner fn registered by the mounted Viewport.
   // They are installed unconditionally at setup time so the parent always
@@ -82,6 +85,17 @@ export function DualViewport(props: DualViewportProps) {
   );
 
 
+  // True when both viewports are simultaneously visible (wrapper flex styles apply)
+  const bothActive = createMemo(() => defPreviewEffective() && designEffective());
+
+  // ── Dual-splitter resize handler ──────────────────────────────────────────
+  function handleDualResize(delta: number) {
+    const h = containerRef.clientHeight;
+    if (h <= 0) return;
+    const current = props.viewportStore.state.splitRatio;
+    props.viewportStore.setSplitRatio(current + delta / h);
+  }
+
   // Label for the def-preview strip
   const defPreviewLabel = createMemo(() => {
     const name = props.defName();
@@ -90,6 +104,7 @@ export function DualViewport(props: DualViewportProps) {
 
   return (
     <div
+      ref={containerRef}
       class={styles.container}
       data-testid={props['data-testid'] ?? 'dual-viewport'}
     >
@@ -114,7 +129,11 @@ export function DualViewport(props: DualViewportProps) {
             </div>
           }
         >
-          <div class={styles.viewportWrapper}>
+          <div
+            class={styles.viewportWrapper}
+            data-testid="dual-viewport-def-preview-wrapper"
+            style={bothActive() ? { flex: `${props.viewportStore.state.splitRatio} 0 0%` } : undefined}
+          >
             <Viewport
               viewportId="def-preview"
               viewportStore={props.viewportStore}
@@ -127,7 +146,7 @@ export function DualViewport(props: DualViewportProps) {
         <Show when={defPreviewEffective() && designEffective()}>
           <Splitter
             orientation="horizontal"
-            onResize={() => {}}
+            onResize={handleDualResize}
             data-testid="splitter-dual"
           />
         </Show>
@@ -145,7 +164,11 @@ export function DualViewport(props: DualViewportProps) {
             </div>
           }
         >
-          <div class={styles.viewportWrapper}>
+          <div
+            class={styles.viewportWrapper}
+            data-testid="dual-viewport-design-wrapper"
+            style={bothActive() ? { flex: `${1 - props.viewportStore.state.splitRatio} 0 0%` } : undefined}
+          >
             <Viewport
               viewportId="design-main"
               viewportStore={props.viewportStore}
