@@ -4380,6 +4380,41 @@ mod tests {
         }
     }
 
+    // --- validate_pipe_start_tangent helper unit tests ---
+
+    #[test]
+    fn validate_pipe_start_tangent_rejects_non_finite_components() {
+        // Calls the pure helper directly with NaN / Infinity inputs.
+        // The helper does not exist yet (step 2 adds it); this test is the
+        // failing red state that step 2 makes green.
+        let non_finite_cases = [
+            ffi::ffi::Point3 { x: f64::NAN,       y: 0.0,            z: 1.0 },
+            ffi::ffi::Point3 { x: 0.0,            y: f64::INFINITY,  z: 1.0 },
+            ffi::ffi::Point3 { x: 0.0,            y: 0.0,            z: f64::NEG_INFINITY },
+        ];
+        for t in non_finite_cases {
+            let result = super::validate_pipe_start_tangent(t);
+            match result {
+                Err(GeometryError::OperationFailed(msg)) => {
+                    assert!(
+                        msg.contains("non-finite"),
+                        "expected error containing 'non-finite' for {:?}, got: {msg}",
+                        (t.x, t.y, t.z)
+                    );
+                }
+                Ok(()) => panic!(
+                    "expected Err for non-finite tangent ({:?}), got Ok",
+                    (t.x, t.y, t.z)
+                ),
+                Err(other) => panic!(
+                    "expected OperationFailed for non-finite tangent ({:?}), got {:?}",
+                    (t.x, t.y, t.z),
+                    other
+                ),
+            }
+        }
+    }
+
     // --- wire_start_tangent FFI tests ---
 
     #[test]
