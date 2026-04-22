@@ -685,6 +685,25 @@ export function createViewStateStore() {
     }));
   }
 
+  /**
+   * Returns all paths present in `state.explicit` that are absent from the
+   * current tree (i.e. paths whose entity has been removed or renamed since
+   * the last `regenerateAutoViews` / `setTree` call).
+   *
+   * PRD §8.2: stale entries are intentionally preserved so that undo /
+   * branch-switch can restore them automatically when the path returns.
+   * This accessor lets callers enumerate those entries for display or
+   * fuzzy-rebind logic.
+   */
+  function getStalePaths(): string[] {
+    // When no tree has been loaded yet, there are no "stale" paths — every
+    // explicit entry is simply a pre-tree seed and should not be treated as
+    // stale.  A path is only stale when a tree was previously loaded and the
+    // path is now absent from it.
+    if (nodeByPath.size === 0) return [];
+    return Object.keys(state.explicit).filter((p) => !nodeByPath.has(p));
+  }
+
   function hasOverride(path: string): boolean {
     const exp = state.explicit[path];
     if (exp == null) return false;
@@ -739,6 +758,7 @@ export function createViewStateStore() {
     getAllEffective,
     hasOverride,
     getOrderedViewIds,
+    getStalePaths,
     // Mutations
     setVisibility,
     setVisibilityWithoutCascade,
