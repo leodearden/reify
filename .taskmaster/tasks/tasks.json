@@ -45526,11 +45526,11 @@
         "description": "The `phase1_reelaborated` HashSet in both edit_param (task 2140) and edit_source (task 2142) dedup assumes Phase 1's re-elaboration is idempotent *for a given guard value*. If the guard cell itself reads a resolved auto param, wave2 can flip the guard between Phase 1 and Phase 3. `reapply_phase1_deactivations` uses the *current* guard_val to deactivate newly-inactive members (correct), but never evaluates the default_expr of newly-active else_members whose default_expr does not read a resolved auto param. Phase 3 then skips the group via `phase1_reelaborated`, leaving those cells Undef when they should be Determined.\n\nScope: crates/reify-eval/src/engine_edit.rs — applies symmetrically to both edit_source (lines ~1860-1868, ~1583-1590) and edit_param (task 2140 path, comment at 1442-1445).\n\nSuggested fix options:\n(a) Track guard value at insert time: replace `HashSet<ValueCellId>` with `HashMap<ValueCellId, Value>` and in Phase 3 don't dedup when the current guard value differs from the recorded one (fall through to full re-elaboration, including active-branch default_expr evaluation).\n(b) Have `reapply_phase1_deactivations` detect a guard flip versus Phase 1's recorded value and, on flip, fall through to full re-elaboration rather than only re-deactivating.\n\nAdd a targeted regression test: source edit that changes a non-guard constraint input, guard reads a resolved auto param, guard flips because of the resolver, else_members' default_exprs are literals (not reading auto params). Verify the newly-active else_members transition from Undef to Determined and match cold-eval results.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive). Inherited from task 2140 — predates this diff.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:53:11.783Z",
+        "updatedAt": "2026-04-22T11:55:34.212Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -45553,11 +45553,11 @@
         "description": "In edit_source Phase 1 (crates/reify-eval/src/engine_edit.rs:1583-1590), the insert into `phase1_reelaborated` sits AFTER the `old_guard_val == Some(&guard_val) && !has_added_in_group && !has_role_flipped_guard_member` skip. Consequently groups reached via the role-flip or added-member triggers — whose guard value did not change — still land in the dedup set, and Phase 3 will skip them.\n\nThe new test added with task 2142 only exercises the guard-value-changed path (x=10mm → 3mm). The role-flip/added-member interaction with the new dedup set and the post-wave2 cleanup is not covered by this diff's tests. The existing role-flip test `edit_source_role_flipped_guard_member_matches_cold_eval` predates the dedup.\n\nSuggested fix: Add a regression test that combines a role-flipped guard member + resolver re-evaluation (wave2) + Phase 3 trigger, asserting results remain cold-eval-equivalent. At minimum verify `last_guard_phase_group_evals` matches the expected count. A cheap alternative: extend the existing role-flip cold-eval-equivalence test to also run under a source edit that triggers wave2.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:54:13.836Z",
+        "updatedAt": "2026-04-22T11:55:34.339Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:34.082Z",
+      "lastModified": "2026-04-22T11:55:34.339Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
