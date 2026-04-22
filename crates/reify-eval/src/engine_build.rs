@@ -282,18 +282,10 @@ impl Engine {
     /// there are `operations`, truncates `step_handles` to `handle_start` (discards
     /// all partial handles from this realization).
     ///
-    /// **Duplicate `realization_name` within a template (shadowing):** if two
-    /// realizations within the same template share the same `realization_name`
-    /// (e.g. a Reify source with two sibling `let body = …` geometry bindings —
-    /// the compiler does not reject these; see `CompilationScope::register` in
-    /// `crates/reify-compiler/src/scope.rs`), the later realization *shadows*
-    /// the earlier one in `named_steps`: the entry is overwritten on insertion,
-    /// so subsequent `GeomRef::Sub(name)` lookups resolve to the most-recent
-    /// successful binding.  This is last-write-wins semantics, mirroring
-    /// source-level let-shadowing.  Pinned by
-    /// `execute_realization_ops_duplicate_name_shadows_previous` in the tests
-    /// module below; a regression flipping `HashMap::insert` to a
-    /// first-write-wins variant must fail that test.
+    /// **Duplicate `realization_name` within a template:** last-write-wins —
+    /// a later realization with the same name shadows the earlier one in
+    /// `named_steps`.  Pinned by
+    /// `execute_realization_ops_duplicate_name_shadows_previous`.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
@@ -866,7 +858,9 @@ mod tests {
             &mut named_steps,
             Some("body"),
         );
-        let h1 = step_handles[0];
+        // Snapshot via the contract-visible map entry, not by positional index,
+        // so the snapshot stays correct if internal handle-slot layout changes.
+        let h1 = named_steps["body"];
 
         // Second binding: let body = cylinder(…) — same name, different primitive
         Engine::execute_realization_ops(
@@ -880,7 +874,7 @@ mod tests {
             &mut named_steps,
             Some("body"),
         );
-        let h2 = step_handles[1];
+        let h2 = named_steps["body"];
 
         // The kernel must have issued distinct handles so the test is non-trivial
         assert_ne!(
@@ -910,6 +904,93 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "no errors expected for two valid realizations"
+        );
+    }
+
+    /// Pins the rollback-vs-shadowing interaction: when a named realization
+    /// fails (compile error → rollback path), the function must NOT overwrite
+    /// a prior successful binding for the same name in `named_steps`.  This
+    /// covers the intersection between the shadowing semantics tested above and
+    /// the rollback invariant tested in
+    /// `execute_realization_ops_rollback_does_not_leak_into_named_steps`.
+    ///
+    /// If the guard inside `execute_realization_ops` (the `else if` branch that
+    /// only inserts into `named_steps` after a fully successful realization)
+    /// were removed, a failed second binding would silently clear or overwrite
+    /// the first successful one, causing later `GeomRef::Sub("body")` lookups
+    /// to fail or resolve to invalid geometry.
+    #[test]
+    fn execute_realization_ops_failed_shadow_does_not_overwrite_previous() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CompiledExpr, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let box_ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+        // A realization that will fail to compile: OOB step reference forces the
+        // compile-error path → had_failure = true → rollback.
+        let fail_ops = vec![CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(99),
+            right: GeomRef::Step(99),
+        }];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+
+        // First binding: let body = box(…) — succeeds, populates named_steps.
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &box_ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+            &mut named_steps,
+            Some("body"),
+        );
+        let h1 = named_steps["body"];
+        assert!(diagnostics.is_empty(), "first realization must succeed cleanly");
+
+        // Second binding: let body = <invalid> — fails (rollback path).
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &fail_ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+            &mut named_steps,
+            Some("body"),
+        );
+
+        // The failed shadow must NOT have overwritten the successful binding.
+        assert_eq!(
+            named_steps.get("body").copied(),
+            Some(h1),
+            "rollback guard: a failed shadow must not overwrite the previous \
+             successful binding — named_steps[\"body\"] must still resolve to h1"
+        );
+
+        // The second call must have emitted a diagnostic (compile failure).
+        assert!(
+            !diagnostics.is_empty(),
+            "expected a diagnostic from the failed second realization"
         );
     }
 }
