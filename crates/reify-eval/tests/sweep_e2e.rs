@@ -33,14 +33,13 @@ fn sweep_through_full_eval_pipeline() {
         args: vec![("radius".into(), mm_literal(3.0))],
     };
 
-    // Op 2: Sweep referencing Step(0) as profile, Step(1) as path
+    // Op 2: Sweep referencing Step(0) as profile, Step(1) as path.
+    // SweepKind::Sweep carries all data in `profiles`; args is intentionally
+    // empty — eval reads only profiles[0]/profiles[1] (task-383 S4b/S6).
     let sweep_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Sweep,
         profiles: vec![GeomRef::Step(0), GeomRef::Step(1)],
-        args: vec![
-            ("profile".into(), mm_literal(5.0)),
-            ("path".into(), mm_literal(3.0)),
-        ],
+        args: vec![],
     };
 
     let template = TopologyTemplateBuilder::new(e)

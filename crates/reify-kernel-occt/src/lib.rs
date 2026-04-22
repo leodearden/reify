@@ -2709,11 +2709,19 @@ mod tests {
             })
             .unwrap();
 
-        // Query volume — should be positive
+        // Query volume — should fall between the smallest-enclosing cylinder
+        // (π·r_min²·h_total = π·16·30 ≈ 1508) and the largest-enclosing
+        // cylinder (π·r_max²·h_total = π·100·30 ≈ 9425). Expected OCCT result
+        // for this four-circle frustum stack is ≈ 4900, comfortably inside.
+        // Pattern mirrors loft_two_different_circles_cone_like (task-383 S4c).
         let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
-                assert!(v > 0.0, "loft volume should be positive, got {v}");
+                assert!(
+                    v > 1508.0 && v < 9425.0,
+                    "loft frustum volume should be between 1508 (smallest cylinder) \
+                     and 9425 (largest cylinder), got {v}"
+                );
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
@@ -4613,6 +4621,29 @@ mod tests {
             (t.z - 1.0).abs() < 1e-6,
             "composite +Z wire: start-tangent z should be ≈ 1.0, got {}",
             t.z
+        );
+    }
+
+    // --- make_line_wire degeneracy threshold tests (task-383 S2) ---
+
+    #[test]
+    fn ffi_make_line_wire_rejects_sub_epsilon_length() {
+        // length = 5e-6 m → dist_sq = 2.5e-11, which is above the old
+        // CPP_AXIS_MAG_SQ_MIN (1e-30) but below the new CPP_LINE_WIRE_MIN_LENGTH_SQ
+        // (1e-10). Confirms that make_line_wire now rejects degenerate lengths
+        // < 1e-5 m (= √(1e-10) m ≈ 10 µm).
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 5e-6, 0.0, 0.0);
+        // Use .err().expect(...) instead of unwrap_err() because UniquePtr<OcctShape>
+        // doesn't implement Debug, so unwrap_err()'s panic message can't format the Ok arm.
+        let err = result.err().expect("make_line_wire with 5µm segment should return Err, got Ok");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("distinct"),
+            "error message should mention 'distinct', got: {msg}"
         );
     }
 }

@@ -813,10 +813,12 @@ fn compile_intersection_nested_calls_produces_three_ops() {
 
 #[test]
 fn compile_sweep_produces_sweep_kind() {
-    // sweep(profile, path) = 2 args, both geometry refs
+    // sweep(profile, path) = 2 args, both geometry refs resolved to distinct inline ops.
+    // Inline sub-expressions (sphere + line_segment) appear as Steps 0 and 1 within the
+    // same realization, so GeomRef resolution exercises the named-step path, not the
+    // silent Scalar fallback (task-383 S4a). Mirror of compile_pipe_produces_sweep_pipe_kind.
     let source = r#"structure S {
-    param p: Scalar = 5mm
-    let result = sweep(p, p)
+    let result = sweep(sphere(5mm), line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm))
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep"));
     assert!(
@@ -825,13 +827,21 @@ fn compile_sweep_produces_sweep_kind() {
         parsed.errors
     );
     let compiled = compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
     let template = &compiled.templates[0];
     assert_eq!(
         template.realizations.len(),
         1,
         "expected 1 realization for sweep call"
     );
-    let op = &template.realizations[0].operations[0];
+    let ops = &template.realizations[0].operations;
+    // Expected: [0]=Primitive(Sphere), [1]=Curve(LineSegment), [2]=Sweep(Sweep)
+    assert_eq!(ops.len(), 3, "expected 3 ops (sphere + line_segment + sweep), got {}", ops.len());
+    let op = &ops[2];
     assert!(
         matches!(
             op,
@@ -840,10 +850,10 @@ fn compile_sweep_produces_sweep_kind() {
                 ..
             }
         ),
-        "expected Sweep(Sweep), got {:?}",
+        "expected Sweep(Sweep) at ops[2], got {:?}",
         op
     );
-    // Both profile and path should be in profiles as GeomRefs
+    // Both profile and path should be in profiles as GeomRefs pointing to real steps
     if let CompiledGeometryOp::Sweep { profiles, .. } = op {
         assert_eq!(
             profiles.len(),
@@ -851,8 +861,8 @@ fn compile_sweep_produces_sweep_kind() {
             "sweep should have 2 profiles (profile + path), got {}",
             profiles.len()
         );
-        assert_eq!(profiles[0], GeomRef::Step(0));
-        assert_eq!(profiles[1], GeomRef::Step(1));
+        assert_eq!(profiles[0], GeomRef::Step(0), "profile should point to Step(0) (sphere)");
+        assert_eq!(profiles[1], GeomRef::Step(1), "path should point to Step(1) (line_segment)");
     }
 }
 
@@ -874,6 +884,84 @@ fn compile_sweep_wrong_arg_count() {
         !compiled.diagnostics.is_empty(),
         "expected diagnostics for wrong arg count"
     );
+}
+
+#[test]
+fn compile_sweep_rejects_three_args() {
+    // sweep with 3 args (should need exactly 2) — regression guard for over-count (task-383 S4d)
+    let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = sweep(p, p, p)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_3args"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "expected diagnostics for too many args"
+    );
+    // The arity diagnostic must name the specific check path, not just "no op produced".
+    let has_arity_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("sweep() expects exactly 2 arguments"));
+    assert!(
+        has_arity_diag,
+        "expected 'sweep() expects exactly 2 arguments' diagnostic, got: {:?}",
+        compiled.diagnostics
+    );
+    // No Sweep(Sweep) op should be produced
+    let has_sweep = compiled.templates.iter().any(|t| {
+        t.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    CompiledGeometryOp::Sweep {
+                        kind: SweepKind::Sweep,
+                        ..
+                    }
+                )
+            })
+        })
+    });
+    assert!(!has_sweep, "no Sweep(Sweep) op should be produced for 3-arg sweep call");
+}
+
+#[test]
+fn compile_sweep_emits_empty_args() {
+    // SweepKind::Sweep carries its geometry data in `profiles`; `args` should be empty.
+    // (task-383 S6 red: current compiler incorrectly emits [("profile",...),("path",...)])
+    let source = r#"structure S {
+    let result = sweep(sphere(5mm), line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm))
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_empty_args"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+    let ops = &compiled.templates[0].realizations[0].operations;
+    // ops[2] is Sweep(Sweep)
+    match &ops[2] {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Sweep,
+            args,
+            ..
+        } => {
+            assert!(
+                args.is_empty(),
+                "SweepKind::Sweep should emit empty args, got {:?}",
+                args.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
+        }
+        other => panic!("expected Sweep(Sweep) at ops[2], got {:?}", other),
+    }
 }
 
 // --- Tube and pipe compound-shape compiler tests (task-324) ---
@@ -1001,9 +1089,43 @@ fn compile_pipe_produces_sweep_pipe_kind_with_path_ref() {
         } => {
             assert_eq!(profiles.len(), 1, "pipe should have 1 profile (path)");
             assert_eq!(profiles[0], GeomRef::Step(0), "path should point to Step(0)");
-            assert_eq!(args.len(), 2, "pipe should have 2 named args");
-            assert_eq!(args[0].0, "path", "arg[0] should be path");
-            assert_eq!(args[1].0, "radius", "arg[1] should be radius");
+            // task-383 S6: path was an inert placeholder; only radius remains in args
+            assert_eq!(args.len(), 1, "pipe should have 1 named arg (radius only)");
+            assert_eq!(args[0].0, "radius", "arg[0] should be radius");
+        }
+        other => panic!("expected Sweep{{Pipe}} at ops[1], got {:?}", other),
+    }
+}
+
+#[test]
+fn compile_pipe_omits_path_placeholder() {
+    // SweepKind::Pipe should carry only ("radius", ...) in args; the inert
+    // "path" placeholder should be removed (task-383 S6 red).
+    let source = r#"structure S {
+    let r = pipe(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm), 2mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_pipe_no_path_arg"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+    let ops = &compiled.templates[0].realizations[0].operations;
+    match &ops[1] {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Pipe,
+            args,
+            ..
+        } => {
+            assert_eq!(
+                args.len(),
+                1,
+                "pipe args should contain only 'radius', got {:?}",
+                args.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
+            assert_eq!(args[0].0, "radius", "sole arg should be 'radius', got {:?}", args[0].0);
         }
         other => panic!("expected Sweep{{Pipe}} at ops[1], got {:?}", other),
     }
