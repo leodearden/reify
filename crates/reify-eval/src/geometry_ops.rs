@@ -4130,4 +4130,61 @@ mod tests {
             diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
+
+    // ── named_steps / GeomRef::Sub resolution tests ───────────────────────────
+
+    /// Happy path: compile_geometry_op resolves GeomRef::Sub("body") and
+    /// GeomRef::Sub("hole") from the named_steps map and produces the correct
+    /// Difference op.
+    ///
+    /// This test intentionally fails to compile until step-2 adds the
+    /// `named_steps` parameter to `compile_geometry_op`.
+    #[test]
+    fn compile_geometry_op_sub_ref_resolved_via_named_steps() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+
+        let handle_a = GeometryHandleId(10);
+        let handle_b = GeometryHandleId(20);
+
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".into(), handle_a);
+        named_steps.insert("hole".into(), handle_b);
+
+        let op = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Difference,
+            left: GeomRef::Sub("body".into()),
+            right: GeomRef::Sub("hole".into()),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &ValueMap::new(),
+            &[], // no step handles — Sub refs must resolve via named_steps
+            &[],
+            &HashMap::new(),
+            &named_steps,
+            &mut diagnostics,
+        );
+
+        let geom_op = result.expect("Sub refs with known names should resolve successfully");
+        match geom_op {
+            reify_types::GeometryOp::Difference { left, right } => {
+                assert_eq!(left, handle_a, "left should be body handle");
+                assert_eq!(right, handle_b, "right should be hole handle");
+            }
+            other => panic!("expected Difference, got {:?}", other),
+        }
+
+        // No warnings should be emitted — named_steps lookup is silent-success
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_types::Severity::Warning)
+            .collect();
+        assert!(
+            warnings.is_empty(),
+            "no Warning diagnostics expected for successful Sub resolution, got: {:?}",
+            warnings
+        );
+    }
 }
