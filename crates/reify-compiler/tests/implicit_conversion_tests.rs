@@ -258,6 +258,36 @@ fn tensor_rank3_to_vector_rejected() {
     );
 }
 
+// ── Rule 2c: Tensor<0,M,Q> <-> Tensor<0,N,Q> (same Q, different N, rank-0) ──
+//
+// Spec: N is irrelevant for rank-0. By transitivity (Q → Tensor<0,M,Q> and
+// Q → Tensor<0,N,Q> both work via Rule 2a), direct Tensor<0,M,Q> ↔ Tensor<0,N,Q>
+// conversion must also be supported. Without Rule 2c, a trait requiring
+// Tensor<0,5,Real> would reject a structure providing Tensor<0,3,Real> despite
+// them being semantically identical. Covers suggestions #14 and #18.
+
+/// Tensor<0,3,Real> -> Tensor<0,5,Real> should be allowed (rule 2c: same Q, any N).
+#[test]
+fn tensor0_different_n_same_quantity_convertible_forward() {
+    let from = Type::tensor(0, 3, Type::Real);
+    let to = Type::tensor(0, 5, Type::Real);
+    assert!(
+        implicitly_converts_to(&from, &to),
+        "Tensor<0,3,Real> should convert to Tensor<0,5,Real> (N irrelevant for rank-0)"
+    );
+}
+
+/// Tensor<0,5,Real> -> Tensor<0,3,Real> should be allowed (rule 2c: symmetric, any N).
+#[test]
+fn tensor0_different_n_same_quantity_convertible_reverse() {
+    let from = Type::tensor(0, 5, Type::Real);
+    let to = Type::tensor(0, 3, Type::Real);
+    assert!(
+        implicitly_converts_to(&from, &to),
+        "Tensor<0,5,Real> should convert to Tensor<0,3,Real> (N irrelevant for rank-0)"
+    );
+}
+
 /// (f) Tensor<0,3,Real> -> Tensor<1,3,Real> is NOT allowed (different ranks, no rule covers this).
 #[test]
 fn tensor0_to_tensor1_rejected() {
