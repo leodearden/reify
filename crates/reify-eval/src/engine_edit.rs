@@ -1350,31 +1350,57 @@ impl Engine {
                 group.members.iter().any(|m| added.contains(m))
                     || group.else_members.iter().any(|m| added.contains(m))
             });
-            // Build a map from ValueCellId to (guard_cell_id, branch_tag) for
-            // a slice of guarded groups. branch_tag 0 = members, 1 = else_members.
-            let role_map = |groups: &[crate::graph::GuardedGroupInfo]| {
-                let mut map: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::new();
-                for group in groups {
+            // Detect role flips with a short-circuiting probe: build one
+            // HashMap for the old graph keyed by ValueCellId → (guard_cell_id,
+            // branch_tag), then walk the new groups once, breaking as soon as
+            // any mismatch is found. Skip entirely when both sides are empty so
+            // the common no-guarded-group case is free. branch_tag 0 = members,
+            // 1 = else_members.
+            let old_groups = &self
+                .eval_state
+                .as_ref()
+                .unwrap()
+                .snapshot
+                .graph
+                .guarded_groups;
+            let new_groups = &graph.guarded_groups;
+            let has_role_flipped_guard_member = if old_groups.is_empty() && new_groups.is_empty() {
+                false
+            } else {
+                // Build old role map once.
+                let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> =
+                    HashMap::with_capacity(old_groups.iter().map(|g| g.members.len() + g.else_members.len()).sum());
+                for group in old_groups.iter() {
                     for mid in &group.members {
-                        map.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
+                        old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
                     }
                     for mid in &group.else_members {
-                        map.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
+                        old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
                     }
                 }
-                map
+                // Walk new groups, short-circuit on first mismatch.
+                let mut new_total = 0usize;
+                let mut flipped = false;
+                'outer: for group in new_groups.iter() {
+                    for (mid, tag) in group
+                        .members
+                        .iter()
+                        .map(|m| (m, 0u8))
+                        .chain(group.else_members.iter().map(|m| (m, 1u8)))
+                    {
+                        new_total += 1;
+                        match old_roles.get(mid) {
+                            Some((gc, t)) if gc == &group.guard_cell && *t == tag => {}
+                            _ => {
+                                flipped = true;
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+                // Also flip if new graph has fewer members than old (a cell left a group).
+                flipped || new_total != old_roles.len()
             };
-            let old_roles = role_map(
-                &self
-                    .eval_state
-                    .as_ref()
-                    .unwrap()
-                    .snapshot
-                    .graph
-                    .guarded_groups,
-            );
-            let new_roles = role_map(&graph.guarded_groups);
-            let has_role_flipped_guard_member = old_roles != new_roles;
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             }) || has_added_guard_member

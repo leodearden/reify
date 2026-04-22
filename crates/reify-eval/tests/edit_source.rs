@@ -978,4 +978,14 @@ fn edit_source_role_flipped_guard_member_matches_cold_eval() {
          incremental={:?}, cold={:?}",
         incr_val, cold_val
     );
+    // Positive lock: with `use_thick = true`, `moving` moved from the active
+    // branch to the inactive else branch, so cold eval must deactivate it to
+    // Undef. If this assertion fails, cold eval itself regressed — both the
+    // relative check above and this anchor are needed so a "both wrong"
+    // regression does not slip through.
+    assert!(
+        matches!(cold_val, Some(Value::Undef)),
+        "cold eval should deactivate inactive-branch member to Undef, got {:?}",
+        cold_val
+    );
 }
