@@ -44973,6 +44973,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T04:03:47.513Z"
+      },
+      {
+        "id": "2124",
+        "title": "DualViewport internal Splitter has no-op onResize — drags are silent",
+        "description": "In gui/src/viewport/DualViewport.tsx:130, the horizontal Splitter rendered between the def-preview and design-main viewports passes `onResize={() => {}}`. The Splitter component (gui/src/components/Splitter.tsx:32,57) calls `props.onResize(delta)` on both mousedown-drag and ArrowDown/ArrowUp keypresses; with a no-op handler the splitter looks draggable (cursor changes, role=separator, focusable) but does nothing.\n\nEvery other Splitter in the app wires a real handler (App.tsx:770 handleLeftResize, App.tsx:791 handleRightResize, App.tsx:816 handleSideResize). The DualViewport one is the only no-op, which creates a UX inconsistency: a user grabbing it gets the drag cursor and accomplishes nothing.\n\nTwo reasonable fixes:\n1. Wire a real handler that adjusts the def-preview / design-main row split (probably storing the ratio in viewportStore) so the splitter actually resizes.\n2. If the dual-viewport row split is intentionally fixed for v0.1, hide or visually disable the Splitter (drop role=separator, drop tabindex, drop the cursor-change CSS) so it does not advertise interactivity.\n\nModules: gui/src/viewport/DualViewport.tsx, gui/src/viewport, gui/src/components/Splitter.tsx, gui/src/stores/viewportStore.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44984,7 +44995,8 @@
         "master"
       ],
       "created": "2026-04-22T04:14:22.469Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T04:19:24.750Z"
     }
   }
 }
