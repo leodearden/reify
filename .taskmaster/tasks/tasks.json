@@ -44849,6 +44849,19 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T03:02:47.552Z"
+      },
+      {
+        "id": "2118",
+        "title": "edit_source tests cleanup: extract cross-check helper, scrub stale line-number citations, drop redundant guard",
+        "description": "Post-merge cleanup for crates/reify-eval/tests/edit_source.rs from Task 2087 review triage. Three refactor-only items:\n\n1. Extract `fn assert_values_match(incr: &EvalResult, cold: &EvalResult)` (or file-local macro). The \"cross-check values via key-union\" block (build HashSet of &ValueCellId, union, loop asserting incr.values.get == cold.values.get) is copy-pasted across 7 of the 10 new tests at approximately lines 1033-1047, 1141-1153, 1299-1311, 1404-1416, 1518-1530, 1623-1635, and 1714-1726 (~15 × 7 ≈ 100 lines). Replace each call site with a one-liner. Leave tests above ~line 989 alone to limit blast radius.\n\n2. Scrub engine_edit.rs line-number citations in test doc-comments at approximately tests/edit_source.rs:1016, 1089, 1191, 1197, 1298, 1333, 1376, 1389, 1430 (`:1169-1172`, `:1172`, `:1173-1178`, `:1221-1225`, `:1002-1017`, `:1040-1042`, `:1152-1154`, `:1037-1039` — already off by ~40 lines from the current Step-11 block at engine_edit.rs:1213-1228). Replace with symbolic pointers (e.g. \"Step-11 `self.functions = module.functions.clone()` refresh\") or drop entirely.\n\n3. Delete the redundant trailing `{ let problems = captured.lock().unwrap(); assert_eq!(problems.len(), 2, …); }` guard in `edit_source_refreshes_objectives_against_cold_eval` at ~lines 1543-1553. The first assertion at ~1482 already covers the same condition — there is no intervening engine call that could have invoked the solver. The comment's \"silent third solver call during edit_source\" is misleading.\n\nVerify with `cargo test -p reify-eval --test edit_source`.\n\nmemory_hints:\n- search: \"edit_source cross-check cold eval\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2087"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44858,7 +44871,10 @@
       "completedCount": 1842,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T03:03:28.214Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T03:03:28.235Z"
     }
   }
 }
