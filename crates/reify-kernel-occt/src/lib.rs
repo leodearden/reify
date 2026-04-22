@@ -4640,10 +4640,6 @@ mod tests {
         // CPP_AXIS_MAG_SQ_MIN (1e-30) but below the new CPP_LINE_WIRE_MIN_LENGTH_SQ
         // (1e-10). Confirms that make_line_wire now rejects degenerate lengths
         // < 1e-5 m (= √(1e-10) m ≈ 10 µm).
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 5e-6, 0.0, 0.0);
         // Use .err().expect(...) instead of unwrap_err() because UniquePtr<OcctShape>
         // doesn't implement Debug, so unwrap_err()'s panic message can't format the Ok arm.
@@ -4658,21 +4654,19 @@ mod tests {
     #[test]
     fn cpp_line_wire_floor_matches_rust_const() {
         // Behavioral anchor: verifies the C++ layer honours the Rust-defined
-        // CPP_LINE_WIRE_MIN_LENGTH_SQ constant by bracketing the floor.
+        // CPP_LINE_WIRE_MIN_LENGTH_SQ constant by bracketing the floor tightly.
         // Inputs are derived from the Rust const so this test auto-tracks any
         // future change to the canonical value in src/floor_constants.rs.
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
+        // Multipliers 0.99× / 1.01× give squared distances 0.9801× / 1.0201× of
+        // the floor — tight enough that drift >~2% in the C++ floor will fail.
         let floor_len = crate::CPP_LINE_WIRE_MIN_LENGTH_SQ.sqrt();
         // Just below the C++ floor — must be rejected.
-        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, floor_len * 0.9, 0.0, 0.0);
+        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, floor_len * 0.99, 0.0, 0.0);
         result
             .err()
             .expect("make_line_wire just below CPP floor should return Err, got Ok");
         // Just above the C++ floor — must succeed.
-        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, floor_len * 2.0, 0.0, 0.0);
+        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, floor_len * 1.01, 0.0, 0.0);
         result.expect("make_line_wire just above CPP floor should succeed");
     }
 
