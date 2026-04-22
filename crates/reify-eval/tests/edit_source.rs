@@ -14,7 +14,9 @@ use reify_eval::{Engine, EngineError, EvalResult};
 use reify_test_support::{bracket_compiled_module, parse_and_compile};
 
 use reify_compiler::CompiledModule;
-use reify_types::{ConstraintNodeId, Satisfaction, SnapshotProvenance, Value, ValueCellId};
+use reify_types::{
+    ConstraintNodeId, RealizationNodeId, Satisfaction, SnapshotProvenance, Value, ValueCellId,
+};
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -987,5 +989,808 @@ fn edit_source_role_flipped_guard_member_matches_cold_eval() {
         matches!(cold_val, Some(Value::Undef)),
         "cold eval should deactivate inactive-branch member to Undef, got {:?}",
         cold_val
+    );
+}
+
+// ── Coverage gap 1: Phase 4 collection count re-elaboration ──────────────────
+
+/// Incrementally changing a collection-count param from 4 → 6 must re-elaborate
+/// the collection, producing exactly 6 bolt-instance cells and a refreshed
+/// synthetic `__list_bolts__diameter` list — matching a cold `eval(B)`.
+///
+/// Exercises `engine_edit.rs` Phase 4 (collection count re-elaboration).
+/// Task 2087 — coverage gap 1.
+#[test]
+fn edit_source_collection_count_re_elaborates_against_cold_eval() {
+    // Module A: S with n=4 bolts.
+    let module_a_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    // Module B: same but n=6.  `edit_source` must re-elaborate the collection
+    // so the incremental result matches a cold eval of module_b.
+    let module_b_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 6
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check values entry-for-entry via key-union.
+    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.values.get(key);
+        let cold_val = cold_result.values.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // (b) __count_bolts == Int(6) on the incremental engine.
+    let count_id = ValueCellId::new("S", "__count_bolts");
+    assert_eq!(
+        incr.values.get(&count_id),
+        Some(&Value::Int(6)),
+        "__count_bolts should be Int(6) after count increase to 6"
+    );
+
+    // (c) S.bolts[0..6].diameter == length(0.01) — all 6 instances present.
+    for i in 0..6_usize {
+        let bolt_id = ValueCellId::new(format!("S.bolts[{}]", i), "diameter");
+        assert_eq!(
+            incr.values.get(&bolt_id),
+            Some(&Value::length(0.01)),
+            "S.bolts[{}].diameter should be 10mm = 0.01 m after count re-elaboration to 6",
+            i
+        );
+    }
+
+    // (d) S.bolts[6].diameter is absent — no overrun past the new count.
+    let overrun_id = ValueCellId::new("S.bolts[6]", "diameter");
+    assert!(
+        incr.values.get(&overrun_id).is_none(),
+        "S.bolts[6].diameter must be absent: the new count is 6, so indices 0-5 are valid"
+    );
+
+    // (e) __list_bolts__diameter is a Value::List with 6 entries.
+    let list_id = ValueCellId::new("S", "__list_bolts__diameter");
+    match incr.values.get(&list_id) {
+        Some(Value::List(items)) => assert_eq!(
+            items.len(),
+            6,
+            "__list_bolts__diameter should have 6 entries after re-elaboration, got {}",
+            items.len()
+        ),
+        other => panic!(
+            "__list_bolts__diameter should be a Value::List with 6 entries, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── Coverage gap 2: Step-11 functions table refresh ───────────────────────────
+
+/// Changing a user-function body AND adding a call site that references the new
+/// body must yield the updated result on the incremental path — matching a cold
+/// `eval(B)`.  The added call-site cell is classified `added` (no prior cache
+/// entry), so it must freshly evaluate against the refreshed `self.functions`
+/// table installed by Step-11 of `edit_source`.
+///
+/// If Step-11's `self.functions = ...` refresh at `engine_edit.rs:1169-1172`
+/// were skipped, the incremental engine would compute `3.0 * 4.0 = 12.0`
+/// (module_A's body) while cold eval would compute `3.0 + 4.0 = 7.0`.
+///
+/// Task 2087 — coverage gap 2.
+#[test]
+fn edit_source_refreshes_functions_table_against_cold_eval() {
+    // Module A: fn foo multiplies; Panel has NO call site for foo.
+    let module_a_src = r#"
+fn foo(x: Real, y: Real) -> Real { x * y }
+structure Panel {
+    param width : Real = 3.0
+    param height : Real = 4.0
+}
+"#;
+    // Module B: fn foo now adds (body change); Panel has a NEW `let result`
+    // call site classified `added` — forces a fresh eval against self.functions.
+    let module_b_src = r#"
+fn foo(x: Real, y: Real) -> Real { x + y }
+structure Panel {
+    param width : Real = 3.0
+    param height : Real = 4.0
+    let result = foo(width, height)
+}
+"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check values entry-for-entry via key-union.
+    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.values.get(key);
+        let cold_val = cold_result.values.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // Anchor: `result` must be Int(7) = 3 + 4 (refreshed sum body).
+    // A missing functions-table refresh would produce Int(12) = 3 * 4 from module_A's
+    // multiply body; seeing Int(7) on both paths confirms the '+' body is used.
+    let result_id = ValueCellId::new("Panel", "result");
+    assert_eq!(
+        incr.values.get(&result_id),
+        Some(&Value::Int(7)),
+        "Panel.result should be Int(7) = foo(width, height) with the refreshed '+' body; \
+         got {:?} — likely the functions table was not refreshed",
+        incr.values.get(&result_id)
+    );
+    assert_eq!(
+        cold_result.values.get(&result_id),
+        Some(&Value::Int(7)),
+        "cold Panel.result should also be Int(7)"
+    );
+}
+
+// ── Coverage gap 3: Step-11 compiled_purposes table refresh ───────────────────
+
+/// Changing a purpose body (adding a constraint) and then activating the purpose
+/// on the incremental engine must inject module_B's constraints — matching the
+/// cold path.  If Step-11's `self.compiled_purposes = ...` refresh at
+/// `engine_edit.rs:1172` were skipped, incremental would inject module_A's
+/// 1-constraint purpose while cold injects module_B's 2-constraint purpose.
+///
+/// Task 2087 — coverage gap 3.
+#[test]
+fn edit_source_refreshes_compiled_purposes_against_cold_eval() {
+    // Module A: Bracket (no structure-level constraints), purpose with 1 constraint.
+    let module_a_src = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+purpose mfg_ready(subject : Structure) {
+    constraint 1 > 0
+}
+"#;
+    // Module B: same Bracket, purpose body changed to 2 constraints.
+    let module_b_src = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+purpose mfg_ready(subject : Structure) {
+    constraint 1 > 0
+    constraint 2 > 0
+}
+"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A), edit_source(B), activate_purpose.
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+    incremental.activate_purpose("mfg_ready", "Bracket");
+
+    // Cold: eval(B), activate_purpose.
+    let mut cold = fresh_engine();
+    cold.eval(&module_b);
+    cold.activate_purpose("mfg_ready", "Bracket");
+
+    // Compare graph constraint counts after activation.
+    // Purpose constraints are injected into the snapshot graph by activate_purpose;
+    // the count reflects which module's purpose body was used.
+    let incr_count = incremental
+        .snapshot()
+        .expect("incremental snapshot must exist after edit_source")
+        .graph
+        .constraints
+        .len();
+    let cold_count = cold
+        .snapshot()
+        .expect("cold snapshot must exist after eval")
+        .graph
+        .constraints
+        .len();
+
+    assert_eq!(
+        incr_count, cold_count,
+        "after activate_purpose, incremental ({incr_count}) and cold ({cold_count}) \
+         graph constraint counts must match — divergence means compiled_purposes \
+         was not refreshed in edit_source"
+    );
+    // Anchor: module_B's purpose has 2 constraints, so both should have 2.
+    assert_eq!(
+        incr_count, 2,
+        "both engines should have 2 graph constraints after activating module_B's \
+         2-constraint purpose; incremental has {incr_count}"
+    );
+}
+
+// ── Coverage gap 4: Step-11 meta_map refresh ──────────────────────────────────
+
+/// Adding a new `let` cell that reads `meta.key` forces a fresh eval of that
+/// added cell against the refreshed `meta_map` installed by Step-11.  If the
+/// refresh is skipped, the incremental engine reads module_A's meta value
+/// ("A widget") while cold eval reads module_B's ("A gadget"), and the
+/// cross-check fails.
+///
+/// Note: `meta.key` access hashes entity+key only (not the meta value), so a
+/// meta-dict-value change alone does not dirty an existing cell.  Pairing the
+/// meta change with an ADDED reading cell guarantees that the refreshed
+/// `self.meta_map` at `engine_edit.rs:1173-1178` is actually consulted.
+///
+/// Task 2087 — coverage gap 4.
+#[test]
+fn edit_source_refreshes_meta_map_against_cold_eval() {
+    // Module A: Widget with meta only — no reading cells so there is no stable-hash
+    // cell that would carry over a stale meta value.  (`meta.key` access sites hash
+    // entity+key only, not the meta value, so changing the dict value alone does NOT
+    // dirty an existing reading cell.)
+    let module_a_src = r#"
+structure def Widget {
+    meta {
+        description = "A widget"
+    }
+}
+"#;
+    // Module B: meta value changed to "A gadget" AND two NEW reading cells — `desc`
+    // and `tag` are both ADDED (no prior cache entries) and must evaluate against the
+    // refreshed `self.meta_map` installed by Step-11 of `edit_source`.
+    let module_b_src = r#"
+structure def Widget {
+    meta {
+        description = "A gadget"
+    }
+    let desc : String = meta.description
+    let tag : String = meta.description
+}
+"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check values entry-for-entry via key-union.
+    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.values.get(key);
+        let cold_val = cold_result.values.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // Anchor: both added cells must read the refreshed meta_map on both paths.
+    // If Step-11's `self.meta_map` refresh were skipped, `desc` and `tag` on the
+    // incremental path would read module_A's meta ("A widget") instead of module_B's.
+    let desc_id = ValueCellId::new("Widget", "desc");
+    let tag_id = ValueCellId::new("Widget", "tag");
+    assert_eq!(
+        incr.values.get(&desc_id),
+        Some(&Value::String("A gadget".to_string())),
+        "Widget.desc (added cell) should read the refreshed meta_map ('A gadget'); \
+         got {:?} — likely meta_map was not refreshed",
+        incr.values.get(&desc_id)
+    );
+    assert_eq!(
+        incr.values.get(&tag_id),
+        Some(&Value::String("A gadget".to_string())),
+        "Widget.tag (added cell) should read the refreshed meta_map ('A gadget'); \
+         got {:?} — likely meta_map was not refreshed",
+        incr.values.get(&tag_id)
+    );
+    assert_eq!(
+        cold_result.values.get(&desc_id),
+        Some(&Value::String("A gadget".to_string())),
+        "cold Widget.desc should also be 'A gadget'"
+    );
+    assert_eq!(
+        cold_result.values.get(&tag_id),
+        Some(&Value::String("A gadget".to_string())),
+        "cold Widget.tag should also be 'A gadget'"
+    );
+}
+
+// ── Coverage gap 5 (objectives refresh) is deferred ──────────────────────────
+//
+// Step-5 requires a custom constraint solver (auto params are not in the source
+// grammar; all resolution tests use `TopologyTemplateBuilder.auto_param(...)`
+// with a `SequencedMockConstraintSolver`).  The SimpleConstraintChecker used
+// throughout this file does not implement `solve`, so objective changes have no
+// observable effect without a real solver.  A follow-up task will implement
+// this test using the builder API + a mock solver.
+
+// ── Coverage gap 6: removed cell whose dependents remain ─────────────────────
+
+/// Removing an intermediate `let` binding (`fudge`) while keeping the dependent
+/// cell (`volume`, now rewritten to inline the expression) must produce the
+/// correct re-evaluated `volume` — matching a cold `eval(B)`.
+///
+/// Scenario: Module A has `fudge = thickness * 2.0`, `volume = width * height * fudge`.
+/// Module B removes `fudge` and rewrites `volume = width * height * thickness * 2.0`.
+/// The cross-check forces the "removed-cell dependents" invariant: whether the
+/// dirty-set inclusion or the `old_reverse_index` defensive arm caught `volume`,
+/// the final state must be correct.
+///
+/// Task 2087 — coverage gap 6.
+#[test]
+fn edit_source_removed_cell_with_dependent_matches_cold_eval() {
+    // Module A: two-step chain thickness → fudge → volume.
+    let module_a_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+    let fudge = thickness * 2.0
+    let volume = width * height * fudge
+}"#;
+    // Module B: `fudge` removed; `volume` now inlines the expression.
+    // The removed-cell defensive arm at engine_edit.rs:1002-1017 ensures
+    // `volume` is re-evaluated even though its new expression no longer
+    // references `fudge`.
+    let module_b_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+    let volume = width * height * thickness * 2.0
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check values entry-for-entry via key-union.
+    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.values.get(key);
+        let cold_val = cold_result.values.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // (a) volume must match cold (dependent recomputed correctly).
+    let volume_id = ValueCellId::new("Bracket", "volume");
+    assert_eq!(
+        incr.values.get(&volume_id),
+        cold_result.values.get(&volume_id),
+        "Bracket.volume must match cold eval after removing the fudge intermediate cell"
+    );
+
+    // (b) fudge is absent from incremental's values map.
+    let fudge_id = ValueCellId::new("Bracket", "fudge");
+    assert!(
+        incr.values.get(&fudge_id).is_none(),
+        "Bracket.fudge should be absent from incremental values after its removal"
+    );
+}
+
+// ── Coverage gap 7: removed constraint ────────────────────────────────────────
+
+/// Removing a constraint must (a) shrink `constraint_results` by one,
+/// (b) invalidate cached constraint entries, and (c) produce results
+/// matching cold eval — symmetric with the existing added/modified tests.
+///
+/// Module A has two constraints (thickness > 2mm AND thickness < 20mm).
+/// Module B keeps only the first.  The cross-check pins the removed-constraint
+/// diff path in `engine_edit.rs`.
+///
+/// Task 2087 — coverage gap 7.
+#[test]
+fn edit_source_removed_constraint_invalidates_and_matches_cold_eval() {
+    // Module A: two constraints.
+    let module_a_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+
+    let volume = width * height * thickness
+
+    constraint thickness > 2mm
+    constraint thickness < 20mm
+}"#;
+    // Module B: second constraint REMOVED.
+    let module_b_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+
+    let volume = width * height * thickness
+
+    constraint thickness > 2mm
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let mut cold = fresh_engine();
+    cold.eval(&module_b);
+
+    // Collect constraint results from both paths via check_snapshot.
+    let incr_check = incremental
+        .check_snapshot(&module_b)
+        .expect("check_snapshot must succeed after edit_source");
+    let cold_check = cold
+        .check_snapshot(&module_b)
+        .expect("check_snapshot must succeed after cold eval");
+
+    // (a) Cross-check values via key-union.
+    let incr_keys: HashSet<&ValueCellId> =
+        incr_check.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> =
+        cold_check.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr_check.values.get(key);
+        let cold_val = cold_check.values.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // (b) constraint_results.len() == 1 on both (removed constraint is gone).
+    assert_eq!(
+        incr_check.constraint_results.len(),
+        1,
+        "incremental should have 1 constraint result after removal, got: {:?}",
+        incr_check.constraint_results
+    );
+    assert_eq!(
+        cold_check.constraint_results.len(),
+        1,
+        "cold should have 1 constraint result, got: {:?}",
+        cold_check.constraint_results
+    );
+
+    // (c) Constraint satisfaction normalised by ConstraintNodeId must match.
+    let incr_by_id: std::collections::HashMap<_, _> = incr_check
+        .constraint_results
+        .iter()
+        .map(|e| (e.id.clone(), e.satisfaction))
+        .collect();
+    let cold_by_id: std::collections::HashMap<_, _> = cold_check
+        .constraint_results
+        .iter()
+        .map(|e| (e.id.clone(), e.satisfaction))
+        .collect();
+    assert_eq!(
+        incr_by_id, cold_by_id,
+        "constraint satisfaction diverges between incremental and cold after constraint removal"
+    );
+
+    // (d) last_eval_set must NOT contain the removed constraint (Bracket#1).
+    let eval_set = incremental.last_eval_set();
+    assert!(
+        !eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new("Bracket", 1))),
+        "last_eval_set must NOT contain the removed constraint Bracket#1; \
+         removed nodes should only be invalidated from cache, not re-demanded. \
+         Got: {:?}",
+        eval_set
+    );
+}
+
+// ── Coverage gap 8: added realization ─────────────────────────────────────────
+
+/// Adding a second geometry `let` must add a new `RealizationNodeId` to the
+/// snapshot graph and place it in `last_eval_set()` — matching cold eval.
+///
+/// Exercises the `for rid in &added_realizations` splice at
+/// `engine_edit.rs:1040-1042`.  Task 2087 — coverage gap 8.
+#[test]
+fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
+    // Module A: one realization `let body = box(...)`.
+    let module_a_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+
+    let body = box(width, height, thickness)
+}"#;
+    // Module B: ADDS a second geometry let (two realizations).
+    let module_b_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+
+    let body = box(width, height, thickness)
+    let body2 = box(width, height, thickness)
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check values entry-for-entry via key-union.
+    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.values.get(key);
+        let cold_val = cold_result.values.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // (a) Both engines should have 2 realizations in the graph.
+    let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
+    let cold_snap = cold.snapshot().expect("cold snapshot must exist");
+    assert_eq!(
+        incr_snap.graph.realizations.len(),
+        2,
+        "incremental: expected 2 realizations after adding body2, got {}",
+        incr_snap.graph.realizations.len()
+    );
+    assert_eq!(
+        cold_snap.graph.realizations.len(),
+        2,
+        "cold: expected 2 realizations, got {}",
+        cold_snap.graph.realizations.len()
+    );
+
+    // (b) Incremental snapshot contains the added realization Bracket#1.
+    assert!(
+        incr_snap
+            .graph
+            .realizations
+            .contains_key(&RealizationNodeId::new("Bracket", 1)),
+        "incremental snapshot must contain Bracket#realization[1] after adding body2"
+    );
+
+    // (c) The added realization must appear in last_eval_set (added path).
+    let eval_set = incremental.last_eval_set();
+    assert!(
+        eval_set.contains(&NodeId::Realization(RealizationNodeId::new("Bracket", 1))),
+        "last_eval_set must contain the added Bracket#realization[1]; \
+         got: {:?}",
+        eval_set
+    );
+}
+
+// ── Coverage gap 9: removed realization ───────────────────────────────────────
+
+/// Dropping a geometry `let` must remove its `RealizationNodeId` from the
+/// snapshot graph — matching cold eval.
+///
+/// Exercises cache invalidation at `engine_edit.rs:1152-1154`.
+/// Task 2087 — coverage gap 9.
+#[test]
+fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
+    // Module A: TWO geometry lets (two realizations).
+    let module_a_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+
+    let body = box(width, height, thickness)
+    let body2 = box(width, height, thickness)
+}"#;
+    // Module B: `body2` REMOVED (one realization).
+    let module_b_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+
+    let body = box(width, height, thickness)
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check values entry-for-entry via key-union.
+    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.values.get(key);
+        let cold_val = cold_result.values.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // (a) Both engines should have exactly 1 realization.
+    let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
+    let cold_snap = cold.snapshot().expect("cold snapshot must exist");
+    assert_eq!(
+        incr_snap.graph.realizations.len(),
+        1,
+        "incremental: expected 1 realization after dropping body2, got {}",
+        incr_snap.graph.realizations.len()
+    );
+    assert_eq!(
+        cold_snap.graph.realizations.len(),
+        1,
+        "cold: expected 1 realization, got {}",
+        cold_snap.graph.realizations.len()
+    );
+
+    // (b) The removed realization must no longer be in the incremental snapshot.
+    assert!(
+        !incr_snap
+            .graph
+            .realizations
+            .contains_key(&RealizationNodeId::new("Bracket", 1)),
+        "incremental snapshot must NOT contain Bracket#realization[1] after removing body2"
+    );
+}
+
+// ── Coverage gap 10: modified realization ─────────────────────────────────────
+
+/// Swapping argument order in a geometry `let` produces a different
+/// `RealizationNodeData::content_hash` — the modified realization must appear
+/// in `last_eval_set()` and its content_hash must match cold eval.
+///
+/// Exercises the `for rid in &changed_realizations` splice at
+/// `engine_edit.rs:1037-1039`.  Task 2087 — coverage gap 10.
+#[test]
+fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
+    // Module A: `let body = box(width, height, thickness)`.
+    let module_a_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+
+    let body = box(width, height, thickness)
+}"#;
+    // Module B: argument order swapped — same cell name, different content_hash
+    // (classified `changed`, not added/removed).
+    let module_b_src = r#"structure Bracket {
+    param width : Scalar = 80mm
+    param height : Scalar = 100mm
+    param thickness : Scalar = 5mm
+
+    let body = box(height, width, thickness)
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check values entry-for-entry via key-union.
+    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.values.get(key);
+        let cold_val = cold_result.values.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
+
+    // (a) Both engines should have exactly 1 realization.
+    let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
+    let cold_snap = cold.snapshot().expect("cold snapshot must exist");
+    assert_eq!(
+        incr_snap.graph.realizations.len(),
+        1,
+        "incremental: expected 1 realization after modifying body, got {}",
+        incr_snap.graph.realizations.len()
+    );
+    assert_eq!(
+        cold_snap.graph.realizations.len(),
+        1,
+        "cold: expected 1 realization, got {}",
+        cold_snap.graph.realizations.len()
+    );
+
+    // (b) The realization's content_hash in incremental must match cold (not stale).
+    let rid = RealizationNodeId::new("Bracket", 0);
+    let incr_rnode = incr_snap
+        .graph
+        .realizations
+        .get(&rid)
+        .expect("Bracket#realization[0] must exist in incremental snapshot");
+    let cold_rnode = cold_snap
+        .graph
+        .realizations
+        .get(&rid)
+        .expect("Bracket#realization[0] must exist in cold snapshot");
+    assert_eq!(
+        incr_rnode.content_hash, cold_rnode.content_hash,
+        "Bracket#realization[0] content_hash must match between incremental and cold \
+         after modifying the geometry arguments"
+    );
+
+    // (c) The modified realization must be in last_eval_set (changed path).
+    let eval_set = incremental.last_eval_set();
+    assert!(
+        eval_set.contains(&NodeId::Realization(RealizationNodeId::new("Bracket", 0))),
+        "last_eval_set must contain the modified Bracket#realization[0]; \
+         got: {:?}",
+        eval_set
     );
 }
