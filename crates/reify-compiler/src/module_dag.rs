@@ -107,6 +107,28 @@ pub struct ModuleDag {
     stdlib_mode: Option<StdlibMode>,
 }
 
+/// Build a "partial stdlib overlay: filesystem-over-embedded" [`Diagnostic`].
+///
+/// Both check sites in `compile_module` — the entry guard (Embedded already committed
+/// when a new filesystem path arrives) and the deferred-commit block (a transitive
+/// `std.*` import committed Embedded during recursion) — produce a structurally
+/// identical diagnostic that differs only in the middle clause. This helper keeps
+/// the two sites from drifting.
+fn partial_overlay_fs_over_embedded_diag(
+    module_path: &str,
+    context: &str,
+    stdlib_root: &Path,
+) -> Diagnostic {
+    Diagnostic::error(format!(
+        "partial stdlib overlay: '{}' resolved on the filesystem but {}; \
+         either populate all stdlib modules under '{}' or remove that directory \
+         to use the embedded stdlib exclusively",
+        module_path,
+        context,
+        stdlib_root.display(),
+    ))
+}
+
 impl Default for ModuleDag {
     fn default() -> Self {
         Self::new()
@@ -145,6 +167,16 @@ impl ModuleDag {
     /// fully or remove it to use the embedded stdlib exclusively. This prevents
     /// silent type/trait mismatches that arise when the embedded stdlib modules are
     /// mixed with a partial filesystem overlay.
+    ///
+    /// **One-shot-on-error semantics:**
+    ///
+    /// When `compile_module` returns `Err`, the `ModuleDag` is left in a partially-
+    /// populated state: any modules compiled *before* the error remain in
+    /// `self.modules` and `self.topo_order`, and `stdlib_mode` reflects whatever
+    /// was committed during the failed subtree. Callers should treat a `ModuleDag`
+    /// that has ever returned `Err` as one-shot — discard it and construct a fresh
+    /// `ModuleDag::new()` for subsequent attempts rather than retrying on the same
+    /// instance.
     pub fn compile_module(
         &mut self,
         module_path: &str,
@@ -195,14 +227,11 @@ impl ModuleDag {
                 // All-or-nothing invariant: if a prior std.* was served from the
                 // embedded stdlib, mixing in a filesystem-resolved module is unsafe.
                 if self.stdlib_mode == Some(StdlibMode::Embedded) {
-                    return Err(vec![Diagnostic::error(format!(
-                        "partial stdlib overlay: '{}' resolved on the filesystem but earlier \
-                         std.* imports were served from the embedded stdlib; either populate \
-                         all stdlib modules under '{}' or remove that directory to use the \
-                         embedded stdlib exclusively",
+                    return Err(vec![partial_overlay_fs_over_embedded_diag(
                         module_path,
-                        resolver.stdlib_root.display(),
-                    ))]);
+                        "earlier std.* imports were served from the embedded stdlib",
+                        &resolver.stdlib_root,
+                    )]);
                 }
                 // Defer committing filesystem mode until after successful compile so
                 // that a parse/compile failure does not taint the mode (a failed
@@ -353,14 +382,11 @@ impl ModuleDag {
             // silently mix stdlib sources — exactly the partial-overlay scenario
             // the all-or-nothing invariant exists to reject.
             if self.stdlib_mode == Some(StdlibMode::Embedded) {
-                return Err(vec![Diagnostic::error(format!(
-                    "partial stdlib overlay: '{}' resolved on the filesystem but a transitive \
-                     std.* import was served from the embedded stdlib; either populate all \
-                     stdlib modules under '{}' or remove that directory to use the embedded \
-                     stdlib exclusively",
+                return Err(vec![partial_overlay_fs_over_embedded_diag(
                     module_path,
-                    resolver.stdlib_root.display(),
-                ))]);
+                    "a transitive std.* import was served from the embedded stdlib",
+                    &resolver.stdlib_root,
+                )]);
             }
             self.stdlib_mode = Some(StdlibMode::FileSystem);
         }
