@@ -11219,12 +11219,8 @@
         "subtasks": [],
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-compiler/src/lib.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/src"
-          ]
+          "files": [],
+          "modules": []
         },
         "updatedAt": "2026-04-20T12:20:04.276Z"
       },
