@@ -155,17 +155,17 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // first (leaves-first ordering). Recomputing from child_template.sub_components (not
     // scope_template's) is critical for mutual recursion: when A→B, the next level must
     // iterate B's subs (not A's), so guard/arg expressions match B's value_cell namespace.
-    let child_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = child_template
+    let next_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = child_template
         .sub_components
         .iter()
         .filter(|s| child_template.is_recursive && s.guard_expr.is_some())
         .collect();
-    let child_recursive_sub_names: Vec<&str> = child_recursive_subs
+    let next_recursive_sub_names: Vec<&str> = next_recursive_subs
         .iter()
         .map(|s| s.name.as_str())
         .collect();
 
-    for next_sub in &child_recursive_subs {
+    for next_sub in &next_recursive_subs {
         // Look up the target template for next_sub from the module's template list.
         // For self-recursion, this finds the same template. For mutual recursion (A→B→A),
         // this alternates: B's sub "a" targets A, A's sub "b" targets B.
@@ -203,7 +203,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // child_values is enriched inside elaborate_child_lets_only with sub-component
     // values projected from the global map — so cross-level references like
     // `S.child.total` resolve to the already-computed deeper-level value.
-    // Pass child-scoped recursive sub names so BFS walks the correct branches.
+    // Pass next-level recursive sub names so BFS walks the correct branches.
     elaborate_child_lets_only(
         values,
         snapshot,
@@ -215,7 +215,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         &next_entity,
         child_values,
         meta_map,
-        &child_recursive_sub_names,
+        &next_recursive_sub_names,
         templates,
         diagnostics,
     );
