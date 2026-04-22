@@ -40887,11 +40887,11 @@
         "description": "The renamed test `compile_modify_op_chamfer_non_geometry_target_fallback` (crates/reify-compiler/src/lib.rs:2395) compiles at the top level with step_offset=0, so asserting `GeomRef::Step(0)` is indistinguishable from the old bug-preserving behavior. Add a companion test that places `chamfer(scalar_param, dist)` in a context where step_offset > 0 (e.g. nested inside a boolean op / let chain after prior ops in the same realization) and assert the target is `GeomRef::Step(step_offset)`, not `Step(0)`. This will catch a future regression where geom_ref fell back to `Step(0)` unconditionally. Follow-up from task 1823 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:35.783Z",
+        "updatedAt": "2026-04-22T11:55:30.431Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -41183,11 +41183,11 @@
         "description": "The two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` (task 1834/1907) suppresses duplicate Let-cell injection only when an *unannotated* Let loses to a Param/annotated-Let in Pass 1 (via `pass2_skipped`). The symmetric case — an annotated Let whose name was already claimed in Pass 1 by a Param registered earlier in the same Pass 1 loop — still causes the injection loop to emit both a Param cell and an annotated-Let cell for the same `(entity, member)` pair.\n\nThe `cross_kind_pre_registration_preserves_first_type` test (updated in commit 7a7c7127d) pins 1 cell in the Param + unannotated-Let case, but a Param + annotated-Let case is not covered by any test and still produces 2 cells. Pre-existing behavior, but inconsistent with the design comment at ~197-215 that frames the split as restoring symmetry.\n\nMemory hints: search \"task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells\"; entities: DefaultKind, AvailableDefaultKind.",
         "details": "Two options (reviewer proposed both):\n\nOption A (symmetric fix) — Extend Pass 1's Occupied path to mark annotated-Let conflicts in a new `pass1_skipped: HashSet<String>` set consumed by the injection loop the same way `pass2_skipped` is. This makes the two arms (Pass 1 / Pass 2) behaviorally identical: first-seen wins, and the loser's cell injection is suppressed regardless of kind.\n\nOption B (documented asymmetry) — Explicitly call out in the design comment at ~197-215 that annotated-Let + Param name collisions still emit duplicate cells. Add a follow-up task link. Pin current behavior with a test so future refactors don't silently flip it.\n\nRecommendation: Option A. The injection loop already reads `pass2_skipped`; adding a parallel `pass1_skipped` consumed at the same checkpoint is a small surgical change and removes a reviewer-accessible surprise. Option B effectively documents \"we know this is inconsistent\" and adds no mechanical guarantee.\n\nAdd test in `crates/reify-compiler/tests/trait_merge_tests.rs` mirroring `cross_kind_pre_registration_preserves_first_type` but using annotated-Let + Param (both with explicit types). Assert exactly 1 cell for the shared name (whichever default Pass 1 sees first wins).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 3).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:37.770Z",
+        "updatedAt": "2026-04-22T11:55:30.554Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -41477,11 +41477,11 @@
         "description": "The new \"unknown type\" diagnostic in compile_constraint_def (crates/reify-compiler/src/lib.rs ~113-132) only whitelists builtins (via resolve_type_expr_with_aliases), type parameters, aliases, and enums. It does NOT recognize structure/entity/trait names in scope. If a user writes `constraint def Foo { param s: MyStructure ... }`, they now get an error at def-compile time even though previously the raw ConstraintDef was just cloned into the registry and no such check ran.\n\nOptions: (a) broaden the whitelist to also accept structure/entity/trait names in scope; (b) keep the current strictness but reword the error to explicitly list acceptable categories (\"expected a builtin scalar, type param, alias, or enum\") so users see the restriction isn't arbitrary. Pick one and add a regression test.",
         "details": "Analogue precedent: compile_function has the same blind spot. If (a) is chosen, consider whether compile_function should be updated in parallel.\n\nmemory_hints: search \"constraint def unknown type param diagnostic\" for task 872 review context; search \"compile_function unknown type\" for the analogue.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:19.183Z",
+        "updatedAt": "2026-04-22T11:55:30.671Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:30.308Z",
+      "lastModified": "2026-04-22T11:55:30.671Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
