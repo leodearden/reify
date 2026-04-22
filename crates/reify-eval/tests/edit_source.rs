@@ -1144,8 +1144,8 @@ structure S {
 /// entry), so it must freshly evaluate against the refreshed `self.functions`
 /// table installed by Step-11 of `edit_source`.
 ///
-/// If Step-11's `self.functions = ...` refresh at `engine_edit.rs:1169-1172`
-/// were skipped, the incremental engine would compute `3.0 * 4.0 = 12.0`
+/// If Step-11's `self.functions = module.functions.clone()` refresh were skipped,
+/// the incremental engine would compute `3.0 * 4.0 = 12.0`
 /// (module_A's body) while cold eval would compute `3.0 + 4.0 = 7.0`.
 ///
 /// Task 2087 — coverage gap 2.
@@ -1206,8 +1206,8 @@ structure Panel {
 
 /// Changing a purpose body (adding a constraint) and then activating the purpose
 /// on the incremental engine must inject module_B's constraints — matching the
-/// cold path.  If Step-11's `self.compiled_purposes = ...` refresh at
-/// `engine_edit.rs:1172` were skipped, incremental would inject module_A's
+/// cold path.  If Step-11's `self.compiled_purposes` refresh were skipped,
+/// incremental would inject module_A's
 /// 1-constraint purpose while cold injects module_B's 2-constraint purpose.
 ///
 /// Task 2087 — coverage gap 3.
@@ -1301,8 +1301,8 @@ purpose mfg_ready(subject : Structure) {
 ///
 /// Note: `meta.key` access hashes entity+key only (not the meta value), so a
 /// meta-dict-value change alone does not dirty an existing cell.  Pairing the
-/// meta change with an ADDED reading cell guarantees that the refreshed
-/// `self.meta_map` at `engine_edit.rs:1173-1178` is actually consulted.
+/// meta change with an ADDED reading cell guarantees that Step-11's
+/// `self.meta_map` refresh is actually consulted.
 ///
 /// Task 2087 — coverage gap 4.
 #[test]
@@ -1383,8 +1383,8 @@ structure def Widget {
 /// `edit_source` to forward the *new* `Maximize` objective to the solver —
 /// matching a cold `eval(B)`.
 ///
-/// If Step-11's `self.objectives.clear(); self.objectives.insert(...)` refresh at
-/// `engine_edit.rs:1221-1225` were skipped, `self.objectives` would still carry
+/// If Step-11's `self.objectives.clear(); self.objectives.insert(...)` refresh
+/// were skipped, `self.objectives` would still carry
 /// the stale `Minimize` objective from `eval(A)`, and the solver would receive
 /// `Minimize` instead of `Maximize` during the `edit_source(B)` resolution phase.
 /// The spy assertion on `captured_problems[1].objective` catches this divergence.
@@ -1602,9 +1602,9 @@ fn edit_source_removed_cell_with_dependent_matches_cold_eval() {
     let volume = width * height * fudge
 }"#;
     // Module B: `fudge` removed; `volume` now inlines the expression.
-    // The removed-cell defensive arm at engine_edit.rs:1002-1017 ensures
-    // `volume` is re-evaluated even though its new expression no longer
-    // references `fudge`.
+    // The removed-cell defensive arm (Step 6 — `old_reverse_index` dependents
+    // traversal) ensures `volume` is re-evaluated even though its new expression
+    // no longer references `fudge`.
     let module_b_src = r#"structure Bracket {
     param width : Scalar = 80mm
     param height : Scalar = 100mm
@@ -1745,8 +1745,8 @@ fn edit_source_removed_constraint_invalidates_and_matches_cold_eval() {
 /// Adding a second geometry `let` must add a new `RealizationNodeId` to the
 /// snapshot graph and place it in `last_eval_set()` — matching cold eval.
 ///
-/// Exercises the `for rid in &added_realizations` splice at
-/// `engine_edit.rs:1040-1042`.  Task 2087 — coverage gap 8.
+/// Exercises the `for rid in &added_realizations` splice into `dirty_cone` (Step 6b).
+/// Task 2087 — coverage gap 8.
 #[test]
 fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
     // Module A: one realization `let body = box(...)`.
@@ -1821,7 +1821,7 @@ fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
 /// Dropping a geometry `let` must remove its `RealizationNodeId` from the
 /// snapshot graph — matching cold eval.
 ///
-/// Exercises cache invalidation at `engine_edit.rs:1152-1154`.
+/// Exercises the `for rid in &removed_realizations` cache invalidation (Step 9).
 /// Task 2087 — coverage gap 9.
 #[test]
 fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
@@ -1889,8 +1889,8 @@ fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
 /// `RealizationNodeData::content_hash` — the modified realization must appear
 /// in `last_eval_set()` and its content_hash must match cold eval.
 ///
-/// Exercises the `for rid in &changed_realizations` splice at
-/// `engine_edit.rs:1037-1039`.  Task 2087 — coverage gap 10.
+/// Exercises the `for rid in &changed_realizations` splice into `dirty_cone` (Step 6b).
+/// Task 2087 — coverage gap 10.
 #[test]
 fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
     // Module A: `let body = box(width, height, thickness)`.
