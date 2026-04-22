@@ -726,19 +726,8 @@ fn edit_source_matches_cold_eval_on_mixed_bracket_edit() {
     let mut cold = fresh_engine();
     let cold_check = cold.check(&module_b);
 
-    // The union of keys across both maps must agree.
-    let incr_keys: HashSet<&ValueCellId> = incr_edit.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_check.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr_edit.values.get(key);
-        let cold_val = cold_check.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr_edit.values, &cold_check.values);
 
     // Constraint check results must match entry-for-entry. Normalise by
     // `ConstraintNodeId` since ordering is implementation-defined. HashMap
