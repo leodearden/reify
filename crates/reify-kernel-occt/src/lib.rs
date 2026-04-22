@@ -4348,4 +4348,60 @@ mod tests {
             "pipe-along-X is expected to yield a degenerate solid (current limitation); got volume={v:.3e}"
         );
     }
+
+    // --- wire_start_tangent FFI tests ---
+
+    #[test]
+    fn ffi_wire_start_tangent_returns_unit_z_for_z_line() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let wire = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 0.0, 0.0, 0.020)
+            .expect("make_line_wire should succeed");
+        let t = ffi::ffi::wire_start_tangent(&wire)
+            .expect("wire_start_tangent should succeed for Z line");
+        assert!(
+            t.x.abs() < 1e-6,
+            "start-tangent x should be ≈ 0 for Z line, got {}",
+            t.x
+        );
+        assert!(
+            t.y.abs() < 1e-6,
+            "start-tangent y should be ≈ 0 for Z line, got {}",
+            t.y
+        );
+        assert!(
+            (t.z - 1.0).abs() < 1e-6,
+            "start-tangent z should be ≈ 1 for Z line, got {}",
+            t.z
+        );
+    }
+
+    #[test]
+    fn ffi_wire_start_tangent_returns_unit_x_for_x_line() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let wire = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 0.020, 0.0, 0.0)
+            .expect("make_line_wire should succeed");
+        let t = ffi::ffi::wire_start_tangent(&wire)
+            .expect("wire_start_tangent should succeed for X line");
+        assert!(
+            (t.x - 1.0).abs() < 1e-6,
+            "start-tangent x should be ≈ 1 for X line, got {}",
+            t.x
+        );
+        assert!(
+            t.y.abs() < 1e-6,
+            "start-tangent y should be ≈ 0 for X line, got {}",
+            t.y
+        );
+        assert!(
+            t.z.abs() < 1e-6,
+            "start-tangent z should be ≈ 0 for X line, got {}",
+            t.z
+        );
+    }
 }
