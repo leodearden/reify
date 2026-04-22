@@ -44583,23 +44583,21 @@
         "description": "Three polish fixes in crates/reify-kernel-occt/src/lib.rs (task-2095 follow-up): NaN guard, error-message tolerance, and -Z test coverage.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T02:01:40.813Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:01:22.361Z",
-      "taskCount": 2097,
+      "lastModified": "2026-04-22T02:01:40.813Z",
+      "taskCount": 2098,
       "completedCount": 1836,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T02:01:22.926Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T02:01:22.981Z"
+      ]
     }
   }
 }
