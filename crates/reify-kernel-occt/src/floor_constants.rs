@@ -26,6 +26,10 @@
 /// is enforced at compile time by `const _: () = assert!(...)` in `lib.rs`.
 ///
 /// Value: 1e-12 m² → minimum segment length ~1 µm.
+// `build.rs` includes this file via `#[path]` but only uses `CPP_LINE_WIRE_MIN_LENGTH_SQ`;
+// `RUST_LINE_WIRE_MIN_LENGTH_SQ` is used in `lib.rs` but appears dead to the build-script
+// compiler. Allow here so the build-script dead_code lint does not fire.
+#[allow(dead_code)]
 pub(crate) const RUST_LINE_WIRE_MIN_LENGTH_SQ: f64 = 1e-12;
 
 /// Minimum squared length (m²) for `make_line_wire` endpoints — C++ defense-in-depth floor.
