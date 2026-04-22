@@ -45481,7 +45481,21 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "phase1_reelaborated",
+              "edit_source.rs",
+              "has_role_flipped_guard_member",
+              "has_added_in_group"
+            ],
+            "queries": [
+              "role-flip added-member guard phase1_reelaborated dedup set edit_source insert condition",
+              "has_role_flipped_guard_member has_added_in_group phase1 skip insert dedup set",
+              "role flipped guard member wave2 re-evaluation Phase 3 skip cold-eval equivalence test",
+              "edit_source_role_flipped_guard_member_matches_cold_eval test extend wave2 trigger"
+            ]
+          }
         }
       }
     ],
