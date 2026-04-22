@@ -41617,11 +41617,11 @@
         "description": "The new \"unknown type\" diagnostic in compile_constraint_def (crates/reify-compiler/src/lib.rs ~113-132) only whitelists builtins (via resolve_type_expr_with_aliases), type parameters, aliases, and enums. It does NOT recognize structure/entity/trait names in scope. If a user writes `constraint def Foo { param s: MyStructure ... }`, they now get an error at def-compile time even though previously the raw ConstraintDef was cloned into the registry with no such check.\n\nOptions: (a) broaden the whitelist to also accept structure/entity/trait names in scope; (b) keep current strictness but reword the error to list acceptable categories (\"expected a builtin scalar, type param, alias, or enum\") so users see the restriction isn't arbitrary. Pick one and add a regression test. compile_function has the same blind spot — consider updating it in parallel if (a) is chosen.\n\nmemory_hints: search \"constraint def unknown type param diagnostic\" for task 872 review context.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:19.450Z",
+        "updatedAt": "2026-04-22T10:08:44.435Z",
         "metadata": {
           "files": [],
           "modules": [
@@ -45425,14 +45425,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:08:39.881Z",
+      "lastModified": "2026-04-22T10:08:44.435Z",
       "taskCount": 2139,
       "completedCount": 1874,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T10:08:43.588Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
