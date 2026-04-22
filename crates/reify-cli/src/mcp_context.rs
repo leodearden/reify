@@ -1372,6 +1372,117 @@ structure Bracket {
         );
     }
 
+    /// Regression guard: when multiple overrides are active and one of them
+    /// encounters a type mismatch on `update_source`, the surviving override(s)
+    /// must still be applied and the mismatched one must emit exactly one WARN.
+    ///
+    /// This pins **per-override independence** after the Vec-clone removal.  A
+    /// regression that short-circuits on the first mismatch, applies overrides in
+    /// a broken order, or fails to call `set_param_and_invalidate` for the
+    /// surviving entries would cause assertion (3) below to fail.
+    ///
+    /// Scenario:
+    ///  - width override `0.12` (`Scalar[LENGTH]`)  ← will mismatch with `Int`
+    ///  - thickness override `0.004` (`Scalar[LENGTH]`) ← compatible; must apply
+    ///  - `update_source(BRACKET_INT_WIDTH)` changes `width` to `Int = 80`
+    ///
+    /// Assertions:
+    ///  1. `update_source` returns `success = true`.
+    ///  2. WARN delta == 1 — only `width`'s mismatch warns; `thickness` applies cleanly.
+    ///  3. `thickness` reads back at its overridden value (not the module default).
+    ///  4. `width` reflects the new Int default (80) — override was not applied.
+    #[test]
+    fn reapply_user_overrides_partial_mismatch_preserves_surviving_overrides_and_warns_for_mismatched(
+    ) {
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        // Capture the expected thickness value string by setting the override in a
+        // fresh context and reading it back via get_parameters — avoids hard-coding
+        // the Display format of Value::Scalar { si_value: 0.004, dimension: LENGTH }.
+        let expected_thickness = {
+            let probe = fresh_ctx();
+            probe
+                .load_file(BRACKET_PATH)
+                .expect("probe load_file should succeed");
+            probe
+                .set_parameter("Bracket.thickness", "0.004")
+                .expect("probe set_parameter thickness should succeed");
+            probe
+                .get_parameters()
+                .expect("probe get_parameters should succeed")
+                .into_iter()
+                .find(|p| p.name == "thickness")
+                .expect("probe: bracket.ri should have a 'thickness' param")
+                .value
+        };
+
+        // Set up the counting subscriber before creating the main context.
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify::mcp_context")
+            .build();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let counter = counters[&tracing::Level::WARN].clone();
+
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
+
+        // Set both overrides: width will mismatch (Scalar[LENGTH] vs new Int),
+        // thickness will succeed (still Scalar[LENGTH]).
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("set_parameter width should succeed");
+        ctx.set_parameter("Bracket.thickness", "0.004")
+            .expect("set_parameter thickness should succeed");
+
+        let before = counter.load(Ordering::Acquire);
+
+        // (1) update_source must succeed (parse/compile passes even if override fails).
+        let result = ctx
+            .update_source(BRACKET_PATH, BRACKET_INT_WIDTH)
+            .expect("update_source should return Ok even on override mismatch");
+        assert!(
+            result.success,
+            "update_source should succeed (parse/compile passed)"
+        );
+
+        // (2) Exactly one WARN from reify::mcp_context — only width mismatches.
+        let warn_delta = counter.load(Ordering::Acquire) - before;
+        assert_eq!(
+            warn_delta, 1,
+            "exactly one warn expected: width mismatches (TypeKindMismatch), \
+             thickness applies cleanly; got warn_delta={warn_delta}"
+        );
+
+        let params = ctx.get_parameters().expect("get_parameters should succeed");
+
+        // (3) thickness survived at its overridden value.
+        let thickness_value = params
+            .iter()
+            .find(|p| p.name == "thickness")
+            .expect("thickness should exist after update_source")
+            .value
+            .clone();
+        assert_eq!(
+            thickness_value, expected_thickness,
+            "thickness override must survive despite width's TypeKindMismatch"
+        );
+
+        // (4) width reflects the new Int default (80) — override was not applied.
+        let width_value = params
+            .iter()
+            .find(|p| p.name == "width")
+            .expect("width should exist after update_source")
+            .value
+            .clone();
+        assert_eq!(
+            width_value, "80",
+            "width must reflect the Int default (80) since the Scalar[LENGTH] override \
+             was incompatible"
+        );
+    }
+
     /// Verify that `load_file` clears prior parameter overrides.  Because
     /// `load_file` semantically starts over with a fresh file, overrides
     /// set before it must not leak into the re-evaluated snapshot.
