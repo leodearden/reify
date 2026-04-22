@@ -477,13 +477,8 @@ fn elaborate_child_lets_only<'t>(
     let child_let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = child_template
         .value_cells
         .iter()
-        .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-        .map(|c| {
-            (
-                NodeId::Value(c.id.clone()),
-                c.default_expr.as_ref().unwrap(),
-            )
-        })
+        .filter(|c| c.kind == ValueCellKind::Let)
+        .filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))
         .collect();
 
     let child_let_node_ids: HashSet<NodeId> = child_let_cells.keys().cloned().collect();
