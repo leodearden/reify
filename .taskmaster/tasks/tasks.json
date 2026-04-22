@@ -44614,7 +44614,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:03:57.670Z"
+        "updatedAt": "2026-04-22T02:03:57.670Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-kernel-occt/src/lib.rs"
+          ]
+        }
       },
       {
         "id": "2108",
