@@ -1069,7 +1069,6 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
     use reify_eval::cache::NodeId;
     use reify_test_support::builders::{binop, literal};
     use reify_types::{BinOp, ModulePath, Type, Value, ValueCellId};
-    use std::collections::HashSet;
 
     // let a = 1        (no reads — literal)
     // let b = 2        (no reads — literal)
@@ -1115,28 +1114,28 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
     let cache_c = cache
         .get(&node_c)
         .expect("S.c should be in cache after eval");
-    let reads_c: HashSet<&ValueCellId> = cache_c.dependency_trace.reads.iter().collect();
-    let expected_c: HashSet<ValueCellId> = [ValueCellId::new("S", "a"), ValueCellId::new("S", "b")]
-        .into_iter()
-        .collect();
-    let expected_c_refs: HashSet<&ValueCellId> = expected_c.iter().collect();
+    let mut reads_c = cache_c.dependency_trace.reads.clone();
+    reads_c.sort();
+    let mut expected_c = vec![ValueCellId::new("S", "a"), ValueCellId::new("S", "b")];
+    expected_c.sort();
     assert_eq!(
-        reads_c, expected_c_refs,
-        "S.c dependency_trace.reads should be {{S.a, S.b}}, got {:?}",
+        reads_c, expected_c,
+        "S.c dependency_trace.reads should be [S.a, S.b] (sorted), got {:?}",
         cache_c.dependency_trace.reads,
     );
 
-    // S.d should have reads = {S.c} (chain: topologically later node)
+    // S.d should have reads = [S.c] (chain: topologically later node)
     let node_d = NodeId::Value(ValueCellId::new("S", "d"));
     let cache_d = cache
         .get(&node_d)
         .expect("S.d should be in cache after eval");
-    let reads_d: HashSet<&ValueCellId> = cache_d.dependency_trace.reads.iter().collect();
-    let expected_d: HashSet<ValueCellId> = [ValueCellId::new("S", "c")].into_iter().collect();
-    let expected_d_refs: HashSet<&ValueCellId> = expected_d.iter().collect();
+    let mut reads_d = cache_d.dependency_trace.reads.clone();
+    reads_d.sort();
+    let mut expected_d = vec![ValueCellId::new("S", "c")];
+    expected_d.sort();
     assert_eq!(
-        reads_d, expected_d_refs,
-        "S.d dependency_trace.reads should be {{S.c}}, got {:?}",
+        reads_d, expected_d,
+        "S.d dependency_trace.reads should be [S.c] (sorted), got {:?}",
         cache_d.dependency_trace.reads,
     );
 
