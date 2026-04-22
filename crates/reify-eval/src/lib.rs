@@ -654,6 +654,23 @@ mod tests {
         );
     }
 
+    /// `Value::Bool` paired with `Type::Bool` must return `true`.
+    ///
+    /// Positive-path regression lock for the `Value::Bool(_) => matches!(ty, Type::Bool)` arm
+    /// in `value_type_kind_matches`.  Paired with the Bool→Int negative lock above (~line 625)
+    /// and the Int→Bool negative lock immediately preceding this test, this triplet ensures the
+    /// Bool arm cannot be silently broken by a future refactor without failing at least one lock.
+    #[test]
+    fn value_type_kind_matches_bool_value_into_bool_type_returns_true() {
+        use reify_types::{Type, Value};
+        let v = Value::Bool(true);
+        let t = Type::Bool;
+        assert!(
+            value_type_kind_matches(&v, &t),
+            "Value::Bool against Type::Bool must return true (Bool arm positive path)"
+        );
+    }
+
     // execute_realization_ops_* tests moved to engine_build.rs
 
     // ── Engine.functions accumulation regression (task 506 / 1873) ───────────
