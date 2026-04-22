@@ -281,6 +281,19 @@ impl Engine {
     /// After the op loop, if `had_failure` or fewer handles were produced than
     /// there are `operations`, truncates `step_handles` to `handle_start` (discards
     /// all partial handles from this realization).
+    ///
+    /// **Duplicate `realization_name` within a template (shadowing):** if two
+    /// realizations within the same template share the same `realization_name`
+    /// (e.g. a Reify source with two sibling `let body = …` geometry bindings —
+    /// the compiler does not reject these; see `CompilationScope::register` in
+    /// `crates/reify-compiler/src/scope.rs`), the later realization *shadows*
+    /// the earlier one in `named_steps`: the entry is overwritten on insertion,
+    /// so subsequent `GeomRef::Sub(name)` lookups resolve to the most-recent
+    /// successful binding.  This is last-write-wins semantics, mirroring
+    /// source-level let-shadowing.  Pinned by
+    /// `execute_realization_ops_duplicate_name_shadows_previous` in the tests
+    /// module below; a regression flipping `HashMap::insert` to a
+    /// first-write-wins variant must fail that test.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
