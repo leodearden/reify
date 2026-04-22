@@ -56,7 +56,7 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
         for mid in &group.members {
             let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
             debug_assert!(
-                prev.map_or(true, |(prev_guard, _)| prev_guard == group.guard_cell),
+                prev.is_none_or(|(prev_guard, _)| prev_guard == group.guard_cell),
                 "ValueCellId {:?} appeared in multiple guarded-group roles",
                 mid
             );
@@ -64,7 +64,7 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
         for mid in &group.else_members {
             let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
             debug_assert!(
-                prev.map_or(true, |(prev_guard, _)| prev_guard == group.guard_cell),
+                prev.is_none_or(|(prev_guard, _)| prev_guard == group.guard_cell),
                 "ValueCellId {:?} appeared in multiple guarded-group roles",
                 mid
             );
