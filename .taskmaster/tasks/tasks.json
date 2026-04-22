@@ -44514,23 +44514,21 @@
         "description": "Fix L1435 count mismatch (raw vs deduped) on intra-group duplicates. From task 2092 review. See memory 092192b7 for details.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T01:54:53.454Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:54:22.096Z",
-      "taskCount": 2094,
+      "lastModified": "2026-04-22T01:54:53.454Z",
+      "taskCount": 2095,
       "completedCount": 1835,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T01:54:43.673Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T01:54:43.696Z"
+      ]
     }
   }
 }
