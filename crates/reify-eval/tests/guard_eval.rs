@@ -10,7 +10,7 @@ use reify_test_support::builders::{gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintSolver, SequencedMockConstraintSolver,
-    TopologyTemplateBuilder, mm,
+    TopologyTemplateBuilder, mm, parse_and_compile,
 };
 use reify_types::*;
 
@@ -2042,5 +2042,114 @@ fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
         *snap_det,
         DeterminacyState::Determined,
         "Auto param DeterminacyState must remain Determined after Block-A-only path"
+    );
+}
+
+// ── Phase 1 & 3 performance: skip unchanged guarded groups (edit_param) ──────
+
+/// Performance lock for `edit_param`: when a single guard param flips, only the
+/// affected guarded group must be re-elaborated in Phase 1 and Phase 3.
+///
+/// Test design:
+/// - Module: structure S with 10 independent `where uN { let xN = 1mm }` groups,
+///   each guarded by `uN: Bool = true`. eval(module) → all x0..x9 = 1mm.
+/// - edit_param(u3, Bool(false)): flips u3 from true → false. Group 3's guard
+///   expression evaluates to false → x3 deactivates to Undef. Groups 0,1,2,4..9
+///   are unaffected (their guard params uN remain true).
+///
+/// `has_dirty_guards` fires (Phase 1) because group 3's guard cell is in the
+/// dirty cone of the edit. `guard_changed` fires (Phase 3) because group 3's
+/// guard value changes from true to false. With the per-group skip, only group 3
+/// is re-elaborated in both phases → counter = 2.
+///
+/// Without the fix: counter = 10 (Phase 1) + 10 (Phase 3) = 20.
+/// With the fix:    counter = 1  (Phase 1) + 1  (Phase 3) = 2.
+///
+/// Task 2088 — edit_param Phase 1 & 3 per-group skip.
+#[test]
+fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
+    let module_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    param u2: Bool = true
+    param u3: Bool = true
+    param u4: Bool = true
+    param u5: Bool = true
+    param u6: Bool = true
+    param u7: Bool = true
+    param u8: Bool = true
+    param u9: Bool = true
+    where u0 { let x0 = 1mm }
+    where u1 { let x1 = 1mm }
+    where u2 { let x2 = 1mm }
+    where u3 { let x3 = 1mm }
+    where u4 { let x4 = 1mm }
+    where u5 { let x5 = 1mm }
+    where u6 { let x6 = 1mm }
+    where u7 { let x7 = 1mm }
+    where u8 { let x8 = 1mm }
+    where u9 { let x9 = 1mm }
+}"#;
+    let module = parse_and_compile(module_src);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval: all u0..u9 = true → all guards true → all x0..x9 = 1mm.
+    let initial = engine.eval(&module);
+
+    // Snapshot the pre-edit values of the unaffected cells (x0,x1,x2,x4..x9).
+    let unaffected_ids: Vec<ValueCellId> = (0..10)
+        .filter(|&n| n != 3)
+        .map(|n| ValueCellId::new("S", format!("x{}", n)))
+        .collect();
+    let pre_edit_values: Vec<Option<Value>> = unaffected_ids
+        .iter()
+        .map(|id| initial.values.get(id).cloned())
+        .collect();
+
+    // Flip u3 from true → false. Phase 1 fires (group 3's guard cell is in the
+    // dirty cone); Phase 3 fires (group 3's guard value changes true → false).
+    let u3_id = ValueCellId::new("S", "u3");
+    let edited = engine
+        .edit_param(u3_id, Value::Bool(false))
+        .expect("edit_param must succeed");
+
+    // (a) x3 deactivates to Undef (guard = !true = false, members branch inactive).
+    let x3_id = ValueCellId::new("S", "x3");
+    assert!(
+        matches!(edited.values.get(&x3_id), Some(Value::Undef)),
+        "x3 must deactivate to Undef when guard u3=false; got {:?}",
+        edited.values.get(&x3_id)
+    );
+
+    // (b) Unaffected cells retain their pre-edit values.
+    for (id, pre_val) in unaffected_ids.iter().zip(pre_edit_values.iter()) {
+        let post_val = edited.values.get(id);
+        assert_eq!(
+            post_val,
+            pre_val.as_ref(),
+            "unaffected cell {id} must retain pre-edit value after edit_param(u3, false); \
+             pre={:?}, post={:?}",
+            pre_val, post_val
+        );
+    }
+
+    // (c) Performance lock: only group 3 must be re-elaborated in Phase 1 and
+    // Phase 3. The other 9 groups have unchanged guard values (uN=true) and must
+    // be skipped. edit_param(u3, false) triggers both Phase 1 (u3 in changed
+    // structure_controlling set → has_dirty_guards) and Phase 3 (guard value
+    // flips true→false → guard_changed). Expected total: 1 (Phase 1) + 1
+    // (Phase 3) = exactly 2.
+    // Without the skip optimisation this counter would be 10 + 10 = 20.
+    let counter = engine.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 2,
+        "expected exactly 2 non-skipped guard-phase group iterations \
+         (1 in Phase 1 + 1 in Phase 3 for the one affected group, \
+         9 per phase skipped); got {} — if 0, the counter increment is \
+         missing from edit_param (instrumentation dropped); \
+         if > 2, the per-group skip is broken",
+        counter
     );
 }

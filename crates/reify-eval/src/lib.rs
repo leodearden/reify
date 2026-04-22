@@ -206,6 +206,13 @@ pub struct Engine {
     next_version_id: u64,
     /// The eval set from the last edit_param() or eval() call.
     last_eval_set: Vec<NodeId>,
+    /// Count of non-skipped guarded-group iterations across Phase 1 and Phase 3
+    /// of the most recent `edit_source` or `edit_param` call. Reset to 0 at
+    /// the start of each `edit_source` / `edit_param` call (before Phase 1).
+    /// Incremented once per group that is NOT skipped by the guard-value-unchanged
+    /// optimisation. Used by tests to assert that the per-group skip is working
+    /// correctly (e.g. only the affected group is re-elaborated, not all N groups).
+    last_guard_phase_group_evals: usize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.
