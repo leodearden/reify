@@ -44263,12 +44263,13 @@
         "description": "Task 2084's lock `edit_source_role_flipped_guard_member_matches_cold_eval` in crates/reify-eval/tests/edit_source.rs only covers the active→inactive direction of the role flip (a member that was Determined becoming Undef). The symmetric case — a member previously suppressed to Undef on the inactive branch becoming a live Determined value on the active branch — is not pinned.\n\nSince the fix relies on Phase 1 running the full activation/deactivation pass for the whole group, the symmetric case exercises a different path in `deactivate_if_not_auto` / activation that is worth a dedicated lock.\n\nAdd a companion test where `moving` starts on the else-branch (Undef under `use_thick=true`), then in module B moves to the where-branch. Assert cold and incremental agree on the now-Determined value. Reuse `parse_and_compile` / `fresh_engine` for minimal extra code. Mirror the dual-assertion pattern (relative + positive anchor) from the existing test so a \"both wrong\" regression cannot slip through.\n\nmemory_hints:\n- search: \"edit_source role-flipped guard member test\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2084"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T00:48:48.616Z"
       },
       {
         "id": "2092",
@@ -44290,12 +44291,13 @@
         "description": "In crates/reify-eval/src/engine_edit.rs around lines 1367-1407, `has_role_flipped_guard_member` is computed eagerly before the `||` chain at line 1404-1407, so the HashMap build + walk over old/new guarded_groups runs on every edit even when the `structure_controlling` dirtiness branch or `has_added_guard_member` would already set `has_dirty_guards=true`. On models with many guarded-group members this is wasted work on the hot edit path.\n\nFix: defer the role-flip probe to run only when earlier triggers did not fire. Restructure so the probe runs via an inline closure/IIFE after the cheaper `structure_controlling_dirty || has_added_guard_member` check short-circuits. Preserves correctness; task 2084's lock `edit_source_role_flipped_guard_member_matches_cold_eval` still pins behavior.\n\nScope note: distinct from task 2088 (which filters inside the Phase 1/3 loops by per-group guard value); this is about the outer trigger evaluation only.\n\nmemory_hints:\n- search: \"has_role_flipped_guard_member Phase 1 guarded_groups\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2084"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T00:48:49.236Z"
       },
       {
         "id": "2094",
@@ -44313,7 +44315,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T00:48:48.168Z",
+      "lastModified": "2026-04-22T00:48:49.236Z",
       "taskCount": 2086,
       "completedCount": 1828,
       "tags": [
