@@ -1959,22 +1959,23 @@ mod tests {
         }
     }
 
-    /// Run [`reelaborate_guarded_group`] with `guard_val = Bool(true)` and
+    /// Run [`reelaborate_guarded_group`] with `guard_val = Bool(guard)` and
     /// empty functions / meta on the supplied graph and group, returning the
     /// resulting `(values, snapshot_values)` maps.
     ///
-    /// Used by the active-branch unit tests to collapse the call-site boilerplate
-    /// into a single line, leaving each test as a thin assertion-only wrapper.
-    fn run_active_case(
+    /// Collapses the 7-line call-site boilerplate into a single line, leaving
+    /// each test as a thin setup + assertion wrapper.
+    fn run_with_guard(
         graph: EvaluationGraph,
         group: GuardedGroupInfo,
+        guard: bool,
     ) -> (ValueMap, PersistentMap<ValueCellId, (Value, DeterminacyState)>) {
         let mut values = ValueMap::default();
         let mut snapshot_values = PersistentMap::default();
         reelaborate_guarded_group(
             &graph,
             &group,
-            &Value::Bool(true),
+            &Value::Bool(guard),
             &mut values,
             &mut snapshot_values,
             &[],
@@ -2203,7 +2204,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // Active member: evaluated default_expr → Int(42), Determined.
         assert_eq!(values.get(&member_id), Some(&Value::Int(42)));
@@ -2258,7 +2259,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // Active member with no default_expr: must be left entirely untouched.
         assert!(
@@ -2302,7 +2303,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // Active member absent from graph: must be left entirely untouched.
         assert!(
@@ -2348,7 +2349,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // deactivate_if_not_auto does not check default_expr; Param → Undef/Undetermined.
         assert_eq!(
@@ -2394,7 +2395,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let (values, snapshot_values) = run_active_case(graph, group);
+        let (values, snapshot_values) = run_with_guard(graph, group, true);
 
         // Missing cell → non-Auto treatment → Undef/Undetermined.
         assert_eq!(
@@ -2407,6 +2408,66 @@ mod tests {
             Some(&(Value::Undef, DeterminacyState::Undetermined)),
             "Absent else_member must be Undetermined in snapshot_values on the inactive branch"
         );
+    }
+
+    /// Pins the symmetric behavior of the shared
+    /// `for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]`
+    /// loop at engine_edit.rs:68 across both guard values in a single test.
+    ///
+    /// Under `guard=true`: `members` are on the active branch — cells without a
+    /// `default_expr` (present or absent) are left untouched; `else_members` are
+    /// on the inactive branch — all non-Auto cells become `Value::Undef /
+    /// Undetermined`.
+    ///
+    /// Under `guard=false`: roles flip — `else_members` become active (→ no-op),
+    /// `members` become inactive (→ `Value::Undef / Undetermined`).
+    ///
+    /// A hypothetical refactor that unrolls the loop and breaks one side
+    /// asymmetrically would fail at least one assertion here.
+    #[test]
+    fn reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values() {
+        let guard_id = ValueCellId::new("E", "guard");
+        let member_present_id = ValueCellId::new("E", "member_present");
+        let member_absent_id = ValueCellId::new("E", "member_absent");
+        let else_present_id = ValueCellId::new("E", "else_present");
+        let else_absent_id = ValueCellId::new("E", "else_absent");
+
+        let mut graph = EvaluationGraph::default();
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        // Both present cells have no default_expr so the active-branch no-op path is exercised.
+        graph.value_cells.insert(member_present_id.clone(), make_cell(&member_present_id, ValueCellKind::Param, Type::Int, None));
+        graph.value_cells.insert(else_present_id.clone(), make_cell(&else_present_id, ValueCellKind::Param, Type::Int, None));
+        // member_absent_id and else_absent_id are intentionally NOT inserted.
+
+        let group = GuardedGroupInfo {
+            guard_cell: guard_id.clone(),
+            members: vec![member_present_id.clone(), member_absent_id.clone()],
+            else_members: vec![else_present_id.clone(), else_absent_id.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        // ── guard=true: members active (no-op), else_members inactive (→ Undef) ──
+        let (values, snap) = run_with_guard(graph.clone(), group.clone(), true);
+        assert!(values.get(&member_present_id).is_none(), "active member (no default_expr) must not appear in values");
+        assert!(snap.get(&member_present_id).is_none(), "active member (no default_expr) must not appear in snapshot_values");
+        assert!(values.get(&member_absent_id).is_none(), "active absent member must not appear in values");
+        assert!(snap.get(&member_absent_id).is_none(), "active absent member must not appear in snapshot_values");
+        assert_eq!(values.get(&else_present_id), Some(&Value::Undef), "inactive else_member must be Undef");
+        assert_eq!(snap.get(&else_present_id), Some(&(Value::Undef, DeterminacyState::Undetermined)), "inactive else_member must be Undetermined");
+        assert_eq!(values.get(&else_absent_id), Some(&Value::Undef), "inactive absent else_member must be Undef");
+        assert_eq!(snap.get(&else_absent_id), Some(&(Value::Undef, DeterminacyState::Undetermined)), "inactive absent else_member must be Undetermined");
+
+        // ── guard=false: else_members active (no-op), members inactive (→ Undef) ──
+        let (values, snap) = run_with_guard(graph, group, false);
+        assert!(values.get(&else_present_id).is_none(), "active else_member (no default_expr) must not appear in values");
+        assert!(snap.get(&else_present_id).is_none(), "active else_member (no default_expr) must not appear in snapshot_values");
+        assert!(values.get(&else_absent_id).is_none(), "active absent else_member must not appear in values");
+        assert!(snap.get(&else_absent_id).is_none(), "active absent else_member must not appear in snapshot_values");
+        assert_eq!(values.get(&member_present_id), Some(&Value::Undef), "inactive member must be Undef");
+        assert_eq!(snap.get(&member_present_id), Some(&(Value::Undef, DeterminacyState::Undetermined)), "inactive member must be Undetermined");
+        assert_eq!(values.get(&member_absent_id), Some(&Value::Undef), "inactive absent member must be Undef");
+        assert_eq!(snap.get(&member_absent_id), Some(&(Value::Undef, DeterminacyState::Undetermined)), "inactive absent member must be Undetermined");
     }
 
     /// When `guard_val = Bool(false)`, `reelaborate_guarded_group` must
