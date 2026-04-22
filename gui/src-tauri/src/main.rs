@@ -422,6 +422,21 @@ async fn claude_clear_session(state: tauri::State<'_, AppState>) -> Result<(), S
 
 /// Return the current kernel availability status.
 #[tauri::command]
+fn read_view_sidecar(
+    ri_path: String,
+) -> Result<Option<reify_gui::types::PersistentViewState>, String> {
+    reify_gui::commands::read_view_sidecar_impl(&ri_path)
+}
+
+#[tauri::command]
+fn write_view_sidecar(
+    ri_path: String,
+    state: reify_gui::types::PersistentViewState,
+) -> Result<(), String> {
+    reify_gui::commands::write_view_sidecar_impl(&ri_path, &state)
+}
+
+#[tauri::command]
 fn get_kernel_status() -> reify_gui::kernel_status::KernelStatus {
     reify_gui::kernel_status::current_kernel_status()
 }
@@ -538,6 +553,8 @@ fn main() {
             is_debug_enabled,
             debug_response,
             get_kernel_status,
+            read_view_sidecar,
+            write_view_sidecar,
         ])
         .on_window_event(|window, event| {
             // Gracefully shut down the sidecar when the window closes.
