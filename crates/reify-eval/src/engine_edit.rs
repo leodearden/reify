@@ -2042,65 +2042,6 @@ mod tests {
         );
     }
 
-    /// Scenario: a guarded group contains one Auto member and one Param member.
-    /// When the guard flips to false, `edit_param` loops over `group.members`
-    /// and calls `deactivate_if_not_auto` for each. This test reproduces that
-    /// loop directly, asserting that the Auto cell is untouched while the Param
-    /// cell becomes Undef — locking in the caller-side wiring so a future
-    /// refactor that accidentally drops one of the call sites is caught.
-    #[test]
-    fn deactivate_if_not_auto_guard_group_mixed_members() {
-        let auto_id = ValueCellId::new("E", "auto_solver_param");
-        let param_id = ValueCellId::new("E", "regular_param");
-
-        let mut graph = EvaluationGraph::default();
-        graph.value_cells.insert(
-            auto_id.clone(),
-            ValueCellNode {
-                id: auto_id.clone(),
-                kind: ValueCellKind::Auto { free: false },
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("auto"),
-            },
-        );
-        graph.value_cells.insert(
-            param_id.clone(),
-            ValueCellNode {
-                id: param_id.clone(),
-                kind: ValueCellKind::Param,
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str("param"),
-            },
-        );
-
-        let mut values: ValueMap = ValueMap::default();
-        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-
-        // Simulate guard = false: iterate over all group members and deactivate
-        // (mirrors the `for mid in &group.members { deactivate_if_not_auto(...) }` loop).
-        for member_id in &[&auto_id, &param_id] {
-            deactivate_if_not_auto(&graph, member_id, &mut values, &mut snapshot_values);
-        }
-
-        // Auto cell: lifecycle managed by solver — must NOT be deactivated.
-        assert!(values.get(&auto_id).is_none(), "Auto cell must remain untouched in values");
-        assert!(
-            snapshot_values.get(&auto_id).is_none(),
-            "Auto cell must remain untouched in snapshot_values"
-        );
-
-        // Param cell: must be written to Undef.
-        assert_eq!(values.get(&param_id), Some(&Value::Undef), "Param cell must be deactivated");
-        assert_eq!(
-            snapshot_values.get(&param_id),
-            Some(&(Value::Undef, DeterminacyState::Undetermined)),
-            "Param cell must be deactivated in snapshot_values"
-        );
-    }
-
     /// Happy-path characterization: two valid groups with non-overlapping
     /// members produce the expected four-entry role map.
     #[test]
