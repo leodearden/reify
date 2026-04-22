@@ -216,17 +216,23 @@ pub(crate) fn compile_geometry_op(
     step_handles: &[GeometryHandleId],
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    named_steps: &HashMap<String, GeometryHandleId>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_types::GeometryOp, String> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
-    // Helper: resolve a GeomRef to a handle. GeomRef::Sub(name) currently
-    // resolves to the most recent step handle (last()), ignoring the name.
-    // This is approximate — proper name-based sub-reference resolution is
-    // not yet implemented. A diagnostic is emitted so callers are aware.
+    // Helper: resolve a GeomRef to a handle.
+    //
+    // GeomRef::Step(idx) — looks up in the per-realization step_handles slice.
+    // GeomRef::Sub(name) — looks up in named_steps (name → handle built by the
+    //   engine as each named realization completes).  On miss returns Err; no
+    //   Warning diagnostic is emitted here — the caller (execute_realization_ops)
+    //   emits a single Error-severity diagnostic per failed op.  This follows the
+    //   "no Warning at origin, single Error at caller" convention documented in
+    //   the `compile_geometry_op` doc-comment above (geometry_ops.rs:175-201).
     let resolve_geom_ref = |r: &GeomRef,
                             step_handles: &[GeometryHandleId],
-                            diagnostics: &mut Vec<Diagnostic>|
+                            _diagnostics: &mut Vec<Diagnostic>|
      -> Result<GeometryHandleId, String> {
         match r {
             GeomRef::Step(idx) => step_handles
@@ -234,18 +240,16 @@ pub(crate) fn compile_geometry_op(
                 .copied()
                 .filter(|h| *h != GeometryHandleId::INVALID)
                 .ok_or_else(|| format!("unresolvable GeomRef::Step({}) — index out of bounds or INVALID handle", idx)),
-            GeomRef::Sub(name) => {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "GeomRef::Sub('{}') resolved to most recent step handle \
-                     (name-based sub-reference resolution not yet implemented)",
-                    name
-                )));
-                step_handles
-                    .last()
-                    .copied()
-                    .filter(|h| *h != GeometryHandleId::INVALID)
-                    .ok_or_else(|| format!("unresolvable GeomRef::Sub('{}') — no previous step handle available", name))
-            }
+            // GeomRef::Sub(name) — look up the handle in the caller-supplied
+            // named_steps map.  Returns Err (not a Warning+fallback) on miss so
+            // the caller can emit a single Error-severity diagnostic.  No
+            // Warning is pushed here: this arm is intentionally "silent at
+            // origin" per the feedback_silent_defaults_pattern convention.
+            GeomRef::Sub(name) => named_steps
+                .get(name)
+                .copied()
+                .filter(|h| *h != GeometryHandleId::INVALID)
+                .ok_or_else(|| format!("unresolvable GeomRef::Sub('{}') — no such named sub-reference in scope", name)),
         }
     };
 
@@ -1186,6 +1190,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         let result = result.expect("compile_geometry_op should return Ok for Scale");
@@ -1223,6 +1228,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -1267,6 +1273,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         let result = result.expect("compile_geometry_op should return Ok for Loft");
@@ -1299,6 +1306,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -1375,6 +1383,7 @@ mod tests {
                 &step_handles,
                 &[],
                 &HashMap::new(),
+                &HashMap::new(),
                 &mut diagnostics,
             );
             assert!(
@@ -1423,6 +1432,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         assert!(
@@ -1450,6 +1460,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         assert!(result.is_err(), "NaN extrude distance should return None");
@@ -1472,6 +1483,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -1496,6 +1508,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -1543,6 +1556,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
         assert!(
@@ -1587,6 +1601,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
         assert!(result.is_err(), "NaN rotation axis should return None");
@@ -1628,6 +1643,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -1671,6 +1687,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         let result =
@@ -1712,6 +1729,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -1756,6 +1774,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
         assert!(
@@ -1796,6 +1815,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -1838,6 +1858,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         assert!(
@@ -1863,6 +1884,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -1911,6 +1933,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         assert!(result.is_err(), "missing axis_z should return None");
@@ -1939,6 +1962,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -1975,6 +1999,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         assert!(
@@ -2005,6 +2030,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -2056,6 +2082,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2119,6 +2146,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         match result {
@@ -2166,6 +2194,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         match result {
@@ -2207,6 +2236,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2252,6 +2282,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2302,6 +2333,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         match result {
@@ -2345,6 +2377,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -2403,6 +2436,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         match result {
@@ -2445,6 +2479,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         assert!(result.is_err(), "missing spacing2 should return None");
@@ -2471,6 +2506,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -2503,6 +2539,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2557,6 +2594,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2613,6 +2651,7 @@ mod tests {
             &[],
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
         assert!(result.is_ok(), "Box with all args should return Some");
@@ -2635,6 +2674,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2668,6 +2708,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
         assert!(
@@ -2699,6 +2740,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
         assert!(
@@ -2723,6 +2765,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2754,6 +2797,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
         assert!(result.is_ok(), "Revolve with all args should return Some");
@@ -2784,6 +2828,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2844,6 +2889,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -2896,6 +2942,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -2962,6 +3009,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3004,6 +3052,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3048,6 +3097,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3090,6 +3140,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3149,6 +3200,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut Vec::new(),
         );
         let result_ok = result_ok
@@ -3183,6 +3235,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut Vec::new(),
         );
@@ -3221,6 +3274,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3286,6 +3340,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3327,6 +3382,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3382,6 +3438,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3436,6 +3493,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3480,6 +3538,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3523,6 +3582,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3576,6 +3636,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3639,6 +3700,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3693,6 +3755,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3749,6 +3812,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3804,6 +3868,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3865,6 +3930,7 @@ mod tests {
             &step_handles,
             &[],
             &HashMap::new(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -3907,6 +3973,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -3954,6 +4021,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );
@@ -4007,6 +4075,7 @@ mod tests {
             &values,
             &step_handles,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
         );

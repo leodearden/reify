@@ -271,6 +271,9 @@ impl Engine {
     ) {
         let handle_start = step_handles.len();
         let mut had_failure = false;
+        // Temporary empty named_steps: full plumbing wired in step-8 once
+        // execute_realization_ops gains the named_steps parameter.
+        let empty_named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
         for op in operations {
             let geom_op = compile_geometry_op(
                 op,
@@ -278,6 +281,7 @@ impl Engine {
                 &step_handles[handle_start..],
                 functions,
                 meta_map,
+                &empty_named_steps,
                 diagnostics,
             );
             match geom_op {
