@@ -70,8 +70,9 @@ const AXIS_MAG_SQ_MIN: f64 = 1e-12;
 /// Line segments with squared point-to-point distance below this threshold are rejected
 /// before the FFI call, catching sub-micrometer degenerate wires early.
 ///
-/// This guard is **stricter** than the C++-layer defense-in-depth floor
-/// `CPP_LINE_WIRE_MIN_LENGTH_SQ` (1e-10) defined in `cpp/occt_wrapper.cpp`. The invariant
+/// This guard is the primary/early check; the C++ layer keeps a looser defense-in-depth
+/// floor (`CPP_LINE_WIRE_MIN_LENGTH_SQ` = 1e-10, defined in `cpp/occt_wrapper.cpp`) so
+/// that any input that bypasses Rust still gets rejected at the FFI boundary. The invariant
 /// `RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ` is enforced by the test
 /// `rust_line_wire_floor_strictly_below_cpp_floor`.
 ///
@@ -4671,10 +4672,6 @@ mod tests {
         // Rust floor — fix by adjusting the offending constant so the layered
         // invariant Rust < C++ < Precision::Confusion is restored. Do NOT simply
         // delete this test.
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let cpp_floor = ffi::ffi::cpp_line_wire_min_length_sq();
         assert!(
             crate::RUST_LINE_WIRE_MIN_LENGTH_SQ < cpp_floor,

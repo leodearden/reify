@@ -123,8 +123,8 @@ constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
 
 /// Minimum squared length for make_line_wire endpoints (m²).
 /// Rejects lengths shorter than √(1e-10) m = 1e-5 m ≈ 10 µm.
-/// Defense-in-depth against degenerate wires: the Rust layer applies a
-/// stricter 1e-12 m² floor (1 µm), and OCCT's own Precision::Confusion
+/// Defense-in-depth against degenerate wires: the Rust layer applies an
+/// earlier 1e-12 m² primary floor (1 µm), and OCCT's own Precision::Confusion
 /// guard is ≈ 1e-7 m (~0.1 µm). This C++ constant sits between the
 /// two, catching inputs that bypass the Rust layer (e.g. direct FFI tests
 /// or future hot-path code) without colliding with the axis-vector

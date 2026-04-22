@@ -265,7 +265,9 @@ pub mod ffi {
         // --- Tessellation ---
         fn tessellate_shape(shape: &OcctShape, tolerance: f64) -> Result<TessResult>;
 
-        // --- Internal floor accessors (drift-guard test support) ---
+        // --- Internal floor accessors (drift-guard test support — TEST-ONLY) ---
+        // Called only by `rust_line_wire_floor_strictly_below_cpp_floor` in lib.rs.
+        // Do not call from production code.
         fn cpp_line_wire_min_length_sq() -> f64;
     }
 }
