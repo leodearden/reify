@@ -69,10 +69,9 @@ pub(crate) fn is_solid_geometry_param(
 /// Boolean ops are excluded — they handle geometry args with their own recursive block.
 fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
-        "translate" | "rotate" | "scale" | "rotate_around"
-        | "circular_pattern" | "linear_pattern" | "mirror"
-        | "extrude" | "extrude_symmetric" | "revolve" | "revolve_full"
-        | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
+        "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
+        | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
+        | "revolve_full" | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -294,7 +293,10 @@ pub(crate) fn compile_geometry_call(
 
     // Silent fallback for single-geom-arg ops — see module-level note on silent-fallback vs. labelled-per-arg.
     let geom_ref = |idx: usize| -> GeomRef {
-        geom_refs.get(&idx).cloned().unwrap_or(GeomRef::Step(step_offset))
+        geom_refs
+            .get(&idx)
+            .cloned()
+            .unwrap_or(GeomRef::Step(step_offset))
     };
 
     match name {
@@ -670,10 +672,8 @@ pub(crate) fn compile_geometry_call(
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
             // Inject literal 2π for the angle
-            let tau_expr = CompiledExpr::literal(
-                Value::Real(std::f64::consts::TAU),
-                reify_types::Type::Real,
-            );
+            let tau_expr =
+                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_types::Type::Real);
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
@@ -706,10 +706,22 @@ pub(crate) fn compile_geometry_call(
             }
             // Labelled per-arg diagnostic — see module-level note on silent-fallback vs. labelled-per-arg.
             let profile = resolve_named_geom_arg(
-                0, "sweep", "profile", args, &geom_refs, diagnostics, step_offset,
+                0,
+                "sweep",
+                "profile",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
             );
             let path = resolve_named_geom_arg(
-                1, "sweep", "path", args, &geom_refs, diagnostics, step_offset,
+                1,
+                "sweep",
+                "path",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
             );
             // SweepKind::Sweep carries all geometry data in `profiles`;
             // `args` is intentionally empty (task-383 S6).
@@ -736,13 +748,31 @@ pub(crate) fn compile_geometry_call(
             }
             // Labelled per-arg diagnostic — see module-level note on silent-fallback vs. labelled-per-arg.
             let profile = resolve_named_geom_arg(
-                0, "sweep_guided", "profile", args, &geom_refs, diagnostics, step_offset,
+                0,
+                "sweep_guided",
+                "profile",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
             );
             let path = resolve_named_geom_arg(
-                1, "sweep_guided", "path", args, &geom_refs, diagnostics, step_offset,
+                1,
+                "sweep_guided",
+                "path",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
             );
             let guide = resolve_named_geom_arg(
-                2, "sweep_guided", "guide", args, &geom_refs, diagnostics, step_offset,
+                2,
+                "sweep_guided",
+                "guide",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
             );
             // SweepKind::SweepGuided carries all geometry data in `profiles`;
             // `args` is intentionally empty (task-2122, following task-383 S6).
@@ -768,7 +798,13 @@ pub(crate) fn compile_geometry_call(
             }
             // Labelled per-arg diagnostic — path is the only geom arg; radius is scalar.
             let path_ref = resolve_named_geom_arg(
-                0, "pipe", "path", args, &geom_refs, diagnostics, step_offset,
+                0,
+                "pipe",
+                "path",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
             );
             // SweepKind::Pipe: the path is resolved through `profiles[0]` (GeomRef);
             // only the scalar "radius" belongs in args (task-383 S6).
@@ -789,9 +825,14 @@ pub(crate) fn compile_geometry_call(
         // --- Modify extensions ---
         // All five modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "thicken" | "draft" | "chamfer" | "fillet" => {
-            compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
-        }
+        "shell" | "thicken" | "draft" | "chamfer" | "fillet" => compile_modify_op(
+            name,
+            compiled_args,
+            geom_ref(0),
+            expr.span,
+            diagnostics,
+            sub_ops,
+        ),
         // --- Curve constructors ---
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             compile_curve_op(name, compiled_args, diagnostics, sub_ops)
@@ -914,8 +955,13 @@ mod tests {
     /// Boolean set-operation functions — handled by the early-return path to
     /// `compile_boolean_op` in `compile_geometry_call` before the main dispatch
     /// match.  `geometry_arg_indices` is never consulted for these.
-    const BOOLEAN_OP_FUNCTIONS: &[&str] =
-        &["union", "intersection", "difference", "union_all", "intersection_all"];
+    const BOOLEAN_OP_FUNCTIONS: &[&str] = &[
+        "union",
+        "intersection",
+        "difference",
+        "union_all",
+        "intersection_all",
+    ];
 
     /// Variadic solid-construction function handled via a dedicated arm in the
     /// main dispatch match.  `geometry_arg_indices` returns empty for loft
@@ -1068,9 +1114,7 @@ mod tests {
 
             let wildcard_msg = unsupported_geometry_fn_message(name);
             assert!(
-                !diagnostics
-                    .iter()
-                    .any(|d| d.message == wildcard_msg),
+                !diagnostics.iter().any(|d| d.message == wildcard_msg),
                 "registry name {:?} reached the wildcard arm in compile_geometry_call \
                  (\"{}: {}\" diagnostic was emitted) — \
                  add a dispatch arm for this name or remove it from the registry lists",
@@ -1090,10 +1134,7 @@ mod tests {
     param profile: Scalar = 5mm
     let result = extrude_symmetric(profile)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_extsym1"),
-        );
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_extsym1"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1125,10 +1166,7 @@ mod tests {
     param dist: Scalar = 10mm
     let result = extrude_symmetric(profile, dist, dist)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_extsym3"),
-        );
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_extsym3"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1160,10 +1198,7 @@ mod tests {
     param b: Scalar = 1mm
     let result = sweep_guided(a, b)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_swg2"),
-        );
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_swg2"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1197,10 +1232,7 @@ mod tests {
     param d: Scalar = 1mm
     let result = sweep_guided(a, b, c, d)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_swg4"),
-        );
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_swg4"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1234,10 +1266,8 @@ mod tests {
     param c: Scalar = 1mm
     let result = sweep_guided(a, b, c)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_swg_nongeom"),
-        );
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_swg_nongeom"));
         let compiled = crate::compile(&parsed);
         // Expect three per-arg diagnostics mentioning the arg labels.
         let profile_diag = compiled
@@ -1279,11 +1309,12 @@ mod tests {
     let guide = sphere(2mm)
     let result = sweep_guided(profile, path, guide)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_swg_ok"),
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_swg_ok"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
         );
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         // Each `let sphere(...)` creates its own realization; the final
@@ -1319,11 +1350,12 @@ mod tests {
     param dist: Scalar = 10mm
     let result = extrude_symmetric(profile, dist)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_extsym2"),
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_extsym2"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
         );
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(
@@ -1361,10 +1393,7 @@ mod tests {
     let p2 = sphere(3mm)
     let result = loft_guided(p1, p2)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_lg2"),
-        );
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_lg2"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1398,11 +1427,12 @@ mod tests {
     let guide = sphere(2mm)
     let result = loft_guided(p1, p2, guide)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_lg3"),
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_lg3"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
         );
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         // Find the Sweep(LoftGuided) op across all realizations.
@@ -1456,11 +1486,12 @@ mod tests {
     let guide = sphere(2mm)
     let result = loft_guided(p1, p2, p3, guide)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_lg4"),
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_lg4"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
         );
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let op = template
@@ -1508,10 +1539,8 @@ mod tests {
     param c: Scalar = 1mm
     let result = loft_guided(a, b, c)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_lg_nongeom"),
-        );
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_lg_nongeom"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         // An op should still be produced with fallback GeomRef::Step refs
@@ -1566,12 +1595,7 @@ mod tests {
         // below.  Using identical 1.0 markers for every slot would hide such regressions.
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
-                .map(|i| {
-                    CompiledExpr::literal(
-                        Value::Real(i as f64),
-                        reify_types::Type::Real,
-                    )
-                })
+                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_types::Type::Real))
                 .collect()
         }
 
@@ -1605,7 +1629,9 @@ mod tests {
                             "loft: named_args[{i}] has marker {f}, expected {i} — ordering broken"
                         );
                     }
-                    other => panic!("loft: named_args[{i}].kind is {other:?}, expected Literal(Real)"),
+                    other => {
+                        panic!("loft: named_args[{i}].kind is {other:?}, expected Literal(Real)")
+                    }
                 }
             }
         }
@@ -1640,7 +1666,9 @@ mod tests {
                             "loft_guided: named_args[{i}] has marker {f}, expected {i} — ordering broken"
                         );
                     }
-                    other => panic!("loft_guided: named_args[{i}].kind is {other:?}, expected Literal(Real)"),
+                    other => panic!(
+                        "loft_guided: named_args[{i}].kind is {other:?}, expected Literal(Real)"
+                    ),
                 }
             }
         }
@@ -1741,7 +1769,11 @@ mod tests {
                 profiles,
                 ..
             } => {
-                assert_eq!(profiles.len(), 2, "sweep should have 2 profiles (profile, path)");
+                assert_eq!(
+                    profiles.len(),
+                    2,
+                    "sweep should have 2 profiles (profile, path)"
+                );
                 assert_eq!(
                     profiles[0],
                     GeomRef::Step(3),

@@ -87,7 +87,10 @@ type B = A
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors.iter().find(|d| d.message.contains("circular type alias")).unwrap();
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("circular type alias"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -118,7 +121,10 @@ type X = X
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors.iter().find(|d| d.message.contains("circular type alias")).unwrap();
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("circular type alias"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -150,7 +156,10 @@ type Velocity = NotARealDim / Time
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors.iter().find(|d| d.message.contains("cannot resolve")).unwrap();
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("cannot resolve"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -184,7 +193,10 @@ structure def S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors.iter().find(|d| d.message.contains("dimension mismatch in")).unwrap();
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("dimension mismatch in"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -218,7 +230,10 @@ structure def S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors.iter().find(|d| d.message.contains("dimension mismatch in range")).unwrap();
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("dimension mismatch in range"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -371,9 +386,9 @@ structure def S : HasX + HasXInt {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("conflicting trait requirements") && d.message.contains("x")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("conflicting trait requirements") && d.message.contains("x"));
     assert!(
         has_msg,
         "expected 'conflicting trait requirements' mentioning 'x', got: {:?}",
@@ -460,9 +475,9 @@ structure def S : ProvidesLength + ProvidesMass {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("conflicting trait") && d.message.contains("size")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("conflicting trait") && d.message.contains("size"));
     assert!(
         has_msg,
         "expected 'conflicting trait' error mentioning 'size', got: {:?}",
@@ -544,9 +559,9 @@ structure def S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("unknown argument") && d.message.contains("bogus")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("unknown argument") && d.message.contains("bogus"));
     assert!(
         has_msg,
         "expected 'unknown argument' mentioning 'bogus', got: {:?}",
@@ -588,9 +603,9 @@ structure def S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("missing argument") && d.message.contains("b")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("missing argument") && d.message.contains("b"));
     assert!(
         has_msg,
         "expected 'missing argument' mentioning 'b', got: {:?}",
@@ -664,9 +679,9 @@ structure S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("does not decrement parameter") && d.message.contains("n")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("does not decrement parameter") && d.message.contains("n"));
     assert!(
         has_msg,
         "expected 'does not decrement parameter' mentioning 'n', got: {:?}",
@@ -753,7 +768,9 @@ structure def S {
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("entity has no meta block") || d.message.contains("no meta block"))
+        .find(|d| {
+            d.message.contains("entity has no meta block") || d.message.contains("no meta block")
+        })
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
@@ -783,9 +800,9 @@ structure def S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("meta block has no key") && d.message.contains("part_number")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("meta block has no key") && d.message.contains("part_number"));
     assert!(
         has_msg,
         "expected 'meta block has no key' mentioning 'part_number', got: {:?}",
@@ -824,9 +841,9 @@ structure def Widget {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("duplicate entity definition") && d.message.contains("Widget")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("duplicate entity definition") && d.message.contains("Widget"));
     assert!(
         has_msg,
         "expected 'duplicate entity definition' mentioning 'Widget', got: {:?}",
@@ -860,9 +877,9 @@ unit myunit : Length
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("duplicate unit declaration") && d.message.contains("myunit")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("duplicate unit declaration") && d.message.contains("myunit"));
     assert!(
         has_msg,
         "expected 'duplicate unit declaration' mentioning 'myunit', got: {:?}",
@@ -906,7 +923,9 @@ unit mm : Length = 0.001
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("already defined in stdlib prelude") && d.message.contains("mm"))
+        .find(|d| {
+            d.message.contains("already defined in stdlib prelude") && d.message.contains("mm")
+        })
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
@@ -942,7 +961,9 @@ type Foo = Real
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("duplicate type alias declaration") && d.message.contains("Foo"))
+        .find(|d| {
+            d.message.contains("duplicate type alias declaration") && d.message.contains("Foo")
+        })
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
@@ -977,9 +998,9 @@ structure def S {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("duplicate port name") && d.message.contains("mount")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("duplicate port name") && d.message.contains("mount"));
     assert!(
         has_msg,
         "expected 'duplicate port name' mentioning 'mount', got: {:?}",
@@ -1063,9 +1084,9 @@ structure S {
         module.diagnostics
     );
 
-    let has_msg = warnings.iter().any(|d| {
-        d.message.contains("differently-guarded cell") && d.message.contains("x")
-    });
+    let has_msg = warnings
+        .iter()
+        .any(|d| d.message.contains("differently-guarded cell") && d.message.contains("x"));
     assert!(
         has_msg,
         "expected 'differently-guarded cell' warning mentioning 'x', got: {:?}",
@@ -1108,7 +1129,9 @@ structure S {
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("not yet supported") && d.message.to_lowercase().contains("sub"))
+        .find(|d| {
+            d.message.contains("not yet supported") && d.message.to_lowercase().contains("sub")
+        })
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
@@ -1143,7 +1166,9 @@ structure S {
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("not yet supported") && d.message.to_lowercase().contains("minimize"))
+        .find(|d| {
+            d.message.contains("not yet supported") && d.message.to_lowercase().contains("minimize")
+        })
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
@@ -1170,9 +1195,9 @@ fn annotation_test_on_field_is_invalid_context() {
         module.diagnostics
     );
 
-    let has_msg = warnings.iter().any(|d| {
-        d.message.contains("@test is not valid on") && d.message.contains("field")
-    });
+    let has_msg = warnings
+        .iter()
+        .any(|d| d.message.contains("@test is not valid on") && d.message.contains("field"));
     assert!(
         has_msg,
         "expected '@test is not valid on' warning mentioning 'field', got: {:?}",
@@ -1207,9 +1232,9 @@ fn unknown_annotation_foobar_warning() {
         module.diagnostics
     );
 
-    let has_msg = warnings.iter().any(|d| {
-        d.message.contains("unknown annotation") && d.message.contains("foobar")
-    });
+    let has_msg = warnings
+        .iter()
+        .any(|d| d.message.contains("unknown annotation") && d.message.contains("foobar"));
     assert!(
         has_msg,
         "expected 'unknown annotation' warning mentioning 'foobar', got: {:?}",
@@ -1319,9 +1344,9 @@ fn unknown_module_pragma_warning() {
         module.diagnostics
     );
 
-    let has_msg = warnings.iter().any(|d| {
-        d.message.contains("unknown pragma") && d.message.contains("optimize")
-    });
+    let has_msg = warnings
+        .iter()
+        .any(|d| d.message.contains("unknown pragma") && d.message.contains("optimize"));
     assert!(
         has_msg,
         "expected 'unknown pragma' warning mentioning 'optimize', got: {:?}",
@@ -1350,9 +1375,9 @@ fn unknown_structure_pragma_warning() {
         module.diagnostics
     );
 
-    let has_msg = warnings.iter().any(|d| {
-        d.message.contains("unknown pragma") && d.message.contains("turbo")
-    });
+    let has_msg = warnings
+        .iter()
+        .any(|d| d.message.contains("unknown pragma") && d.message.contains("turbo"));
     assert!(
         has_msg,
         "expected 'unknown pragma' warning mentioning 'turbo', got: {:?}",
@@ -1381,9 +1406,9 @@ fn unknown_trait_pragma_warning() {
         module.diagnostics
     );
 
-    let has_msg = warnings.iter().any(|d| {
-        d.message.contains("unknown pragma") && d.message.contains("fast")
-    });
+    let has_msg = warnings
+        .iter()
+        .any(|d| d.message.contains("unknown pragma") && d.message.contains("fast"));
     assert!(
         has_msg,
         "expected 'unknown pragma' warning mentioning 'fast', got: {:?}",
@@ -1419,9 +1444,9 @@ purpose p(s : Structure) {
         module.diagnostics
     );
 
-    let has_msg = warnings.iter().any(|d| {
-        d.message.contains("unknown pragma") && d.message.contains("accel")
-    });
+    let has_msg = warnings
+        .iter()
+        .any(|d| d.message.contains("unknown pragma") && d.message.contains("accel"));
     assert!(
         has_msg,
         "expected 'unknown pragma' warning mentioning 'accel', got: {:?}",
@@ -1459,9 +1484,9 @@ structure def Assembly { sub part = Box<Bolt, Bolt>() }
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("too many type arguments") && d.message.contains("Box")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("too many type arguments") && d.message.contains("Box"));
     assert!(
         has_msg,
         "expected 'too many type arguments' mentioning 'Box', got: {:?}",
@@ -1496,9 +1521,9 @@ structure def Assembly { sub part = Box() }
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("missing type argument") && d.message.contains("T")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("missing type argument") && d.message.contains("T"));
     assert!(
         has_msg,
         "expected 'missing type argument' mentioning 'T', got: {:?}",
@@ -1534,9 +1559,9 @@ structure def Assembly { sub part = Box<Widget>() }
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("does not satisfy bound") && d.message.contains("Widget")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("does not satisfy bound") && d.message.contains("Widget"));
     assert!(
         has_msg,
         "expected 'does not satisfy bound' mentioning 'Widget', got: {:?}",
@@ -1575,9 +1600,10 @@ structure S {
         module.diagnostics
     );
 
-    let has_msg = errors
-        .iter()
-        .any(|d| d.message.contains("guard does not reference any Int or Bool"));
+    let has_msg = errors.iter().any(|d| {
+        d.message
+            .contains("guard does not reference any Int or Bool")
+    });
     assert!(
         has_msg,
         "expected 'guard does not reference any Int or Bool' error, got: {:?}",
@@ -1586,7 +1612,10 @@ structure S {
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("guard does not reference any Int or Bool"))
+        .find(|d| {
+            d.message
+                .contains("guard does not reference any Int or Bool")
+        })
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
@@ -1662,9 +1691,9 @@ occurrence def Gadget {
         module.diagnostics
     );
 
-    let has_msg = errors.iter().any(|d| {
-        d.message.contains("duplicate entity definition") && d.message.contains("Gadget")
-    });
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("duplicate entity definition") && d.message.contains("Gadget"));
     assert!(
         has_msg,
         "expected 'duplicate entity definition' mentioning 'Gadget', got: {:?}",

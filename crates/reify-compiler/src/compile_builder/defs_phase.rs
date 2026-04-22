@@ -17,11 +17,11 @@ use std::collections::{HashMap, HashSet};
 use reify_syntax::ParsedModule;
 use reify_types::{Diagnostic, DiagnosticLabel};
 
+use crate::CompiledModule;
 use crate::annotations::{
     lower_annotations, optimized_target, validate_annotations, validate_pragmas,
 };
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::CompiledModule;
 use crate::type_resolution::{
     TypeAliasRegistry, convert_type_params, resolve_enum_type, resolve_type_expr_with_aliases,
 };
@@ -198,11 +198,12 @@ fn emit_constraint_def_shadow_warnings(
         for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
             if let Some(prev_path) = prelude_source.get(&cd.name) {
                 if *prev_path != module_path_str {
-                    ctx.diagnostics.push(Diagnostic::warning(format_shadow_warning(
-                        &cd.name,
-                        prev_path,
-                        &module_path_str,
-                    )));
+                    ctx.diagnostics
+                        .push(Diagnostic::warning(format_shadow_warning(
+                            &cd.name,
+                            prev_path,
+                            &module_path_str,
+                        )));
                 }
                 // First-import wins: do not record a second source.
             } else {

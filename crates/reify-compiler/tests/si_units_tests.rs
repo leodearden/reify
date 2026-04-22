@@ -33,9 +33,15 @@ fn resolve_dimension_type_recognizes_new_names() {
         ("pub unit u4 : Frequency = 1", DimensionVector::FREQUENCY),
         ("pub unit u5 : Voltage = 1", DimensionVector::VOLTAGE),
         ("pub unit u6 : Charge = 1", DimensionVector::CHARGE),
-        ("pub unit u7 : Capacitance = 1", DimensionVector::CAPACITANCE),
+        (
+            "pub unit u7 : Capacitance = 1",
+            DimensionVector::CAPACITANCE,
+        ),
         ("pub unit u8 : Resistance = 1", DimensionVector::RESISTANCE),
-        ("pub unit u9 : Conductance = 1", DimensionVector::CONDUCTANCE),
+        (
+            "pub unit u9 : Conductance = 1",
+            DimensionVector::CONDUCTANCE,
+        ),
         ("pub unit u10 : Inductance = 1", DimensionVector::INDUCTANCE),
         (
             "pub unit u11 : MagneticFlux = 1",
@@ -49,7 +55,10 @@ fn resolve_dimension_type_recognizes_new_names() {
             "pub unit u13 : LuminousFlux = 1",
             DimensionVector::LUMINOUS_FLUX,
         ),
-        ("pub unit u14 : Illuminance = 1", DimensionVector::ILLUMINANCE),
+        (
+            "pub unit u14 : Illuminance = 1",
+            DimensionVector::ILLUMINANCE,
+        ),
         (
             "pub unit u15 : AbsorbedDose = 1",
             DimensionVector::ABSORBED_DOSE,
@@ -79,11 +88,7 @@ fn resolve_dimension_type_recognizes_new_names() {
         // Unit name is "uN" — second word in "pub unit uN : ...".
         let name = src.split_whitespace().nth(2).unwrap();
         let dim = unit_dim(src, name);
-        assert_eq!(
-            dim, *expected_dim,
-            "dimension mismatch for source: {}",
-            src
-        );
+        assert_eq!(dim, *expected_dim, "dimension mismatch for source: {}", src);
     }
 }
 
@@ -292,11 +297,7 @@ fn task_test_prefixed_bases_resolve_via_stdlib() {
 
     // 1pg = 1e-15 kg
     let (v, d) = stdlib_param_si_value("Mass", "1pg");
-    assert!(
-        (v - 1e-15).abs() < 1e-20,
-        "1pg should be 1e-15, got {}",
-        v
-    );
+    assert!((v - 1e-15).abs() < 1e-20, "1pg should be 1e-15, got {}", v);
     assert_eq!(d, DimensionVector::MASS);
 }
 
@@ -422,7 +423,12 @@ fn task_test_derived_units_and_prefixed_resolve_via_stdlib() {
         ("Inductance", "1H", 1.0, DimensionVector::INDUCTANCE),
         // Magnetic flux + density.
         ("MagneticFlux", "1Wb", 1.0, DimensionVector::MAGNETIC_FLUX),
-        ("MagneticFluxDensity", "1T", 1.0, DimensionVector::MAGNETIC_FLUX_DENSITY),
+        (
+            "MagneticFluxDensity",
+            "1T",
+            1.0,
+            DimensionVector::MAGNETIC_FLUX_DENSITY,
+        ),
         // Luminous flux + illuminance.
         ("LuminousFlux", "1lm", 1.0, DimensionVector::LUMINOUS_FLUX),
         ("Illuminance", "1lx", 1.0, DimensionVector::ILLUMINANCE),
@@ -443,7 +449,12 @@ fn task_test_derived_units_and_prefixed_resolve_via_stdlib() {
             DimensionVector::ANGULAR_VELOCITY,
         ),
         // Dynamic viscosity.
-        ("DynamicViscosity", "1Pa_s", 1.0, DimensionVector::DYNAMIC_VISCOSITY),
+        (
+            "DynamicViscosity",
+            "1Pa_s",
+            1.0,
+            DimensionVector::DYNAMIC_VISCOSITY,
+        ),
         // Solid angle.
         ("SolidAngle", "1sr", 1.0, DimensionVector::SOLID_ANGLE),
         // RF/IC engineering: femtofarad, pico/femtosiemens.
@@ -492,11 +503,23 @@ fn all_derived_units_have_correct_dimension_vectors() {
         ("Capacitance", "1F", DimensionVector::CAPACITANCE),
         ("Inductance", "1H", DimensionVector::INDUCTANCE),
         ("MagneticFlux", "1Wb", DimensionVector::MAGNETIC_FLUX),
-        ("MagneticFluxDensity", "1T", DimensionVector::MAGNETIC_FLUX_DENSITY),
+        (
+            "MagneticFluxDensity",
+            "1T",
+            DimensionVector::MAGNETIC_FLUX_DENSITY,
+        ),
         ("Frequency", "1Hz", DimensionVector::FREQUENCY),
         ("AngularVelocity", "1rpm", DimensionVector::ANGULAR_VELOCITY),
-        ("AngularVelocity", "1rad_per_s", DimensionVector::ANGULAR_VELOCITY),
-        ("DynamicViscosity", "1Pa_s", DimensionVector::DYNAMIC_VISCOSITY),
+        (
+            "AngularVelocity",
+            "1rad_per_s",
+            DimensionVector::ANGULAR_VELOCITY,
+        ),
+        (
+            "DynamicViscosity",
+            "1Pa_s",
+            DimensionVector::DYNAMIC_VISCOSITY,
+        ),
         ("LuminousFlux", "1lm", DimensionVector::LUMINOUS_FLUX),
         ("Illuminance", "1lx", DimensionVector::ILLUMINANCE),
         ("Frequency", "1Bq", DimensionVector::FREQUENCY),
@@ -596,11 +619,8 @@ fn existing_units_ri_still_has_m_kg_s_rad_deg_degC_degF_imperial() {
     assert_eq!(d, DimensionVector::LENGTH);
 
     // Imperial length.
-    let imperial_lengths: &[(&str, f64)] = &[
-        ("1in", 0.0254),
-        ("1ft", 0.3048),
-        ("1thou", 0.0000254),
-    ];
+    let imperial_lengths: &[(&str, f64)] =
+        &[("1in", 0.0254), ("1ft", 0.3048), ("1thou", 0.0000254)];
     for (literal, expected) in imperial_lengths {
         let (v, d) = stdlib_param_si_value("Length", literal);
         assert!(
@@ -777,19 +797,31 @@ fn si_prefix_bases_restricted_entries_only_generate_specified_prefixes() {
         .iter()
         .filter(|(p, _)| src.contains(&format!("pub unit {}K ", p)))
         .count();
-    assert_eq!(k_count, 3, "K must emit exactly 3 prefixed units (n, u, m); got {}", k_count);
+    assert_eq!(
+        k_count, 3,
+        "K must emit exactly 3 prefixed units (n, u, m); got {}",
+        k_count
+    );
 
     let cd_count = si_units::SI_PREFIXES
         .iter()
         .filter(|(p, _)| src.contains(&format!("pub unit {}cd ", p)))
         .count();
-    assert_eq!(cd_count, 2, "cd must emit exactly 2 prefixed units (m, u); got {}", cd_count);
+    assert_eq!(
+        cd_count, 2,
+        "cd must emit exactly 2 prefixed units (m, u); got {}",
+        cd_count
+    );
 
     let rad_count = si_units::SI_PREFIXES
         .iter()
         .filter(|(p, _)| src.contains(&format!("pub unit {}rad ", p)))
         .count();
-    assert_eq!(rad_count, 3, "rad must emit exactly 3 prefixed units (m, u, n); got {}", rad_count);
+    assert_eq!(
+        rad_count, 3,
+        "rad must emit exactly 3 prefixed units (m, u, n); got {}",
+        rad_count
+    );
 }
 
 // ── PrefixSet field on SiDerivedUnit ─────────────────────────────────────────
@@ -807,7 +839,17 @@ fn si_derived_units_use_prefix_set_only() {
     }
 
     // (2) Units with no prefixed variants must have PrefixSet::Only(&[]).
-    for name in &["lm", "lx", "Bq", "bar", "mbar", "rpm", "rad_per_s", "Pa_s", "sr"] {
+    for name in &[
+        "lm",
+        "lx",
+        "Bq",
+        "bar",
+        "mbar",
+        "rpm",
+        "rad_per_s",
+        "Pa_s",
+        "sr",
+    ] {
         let unit = si_units::SI_DERIVED_UNITS
             .iter()
             .find(|u| u.name == *name)

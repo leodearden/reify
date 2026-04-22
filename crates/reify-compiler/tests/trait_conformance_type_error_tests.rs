@@ -193,14 +193,16 @@ fn assert_unresolved_annotation_suppresses_cascade(source: &str) {
 /// producer-side wildcard in `type_compat.rs:3–26` suppresses the cascade.
 #[test]
 fn param_unresolved_annotation_suppresses_conformance_cascade() {
-    assert_unresolved_annotation_suppresses_cascade(r#"
+    assert_unresolved_annotation_suppresses_cascade(
+        r#"
 trait T {
     param x : Length
 }
 structure def S : T {
     param x : UnknownType
 }
-"#);
+"#,
+    );
 }
 
 // ── Scenario D: unresolved annotation on let (Named path, Let arm) ────────────
@@ -214,14 +216,16 @@ structure def S : T {
 /// accidentally re-introduces `Type::Real` on only one of them.
 #[test]
 fn let_unresolved_annotation_suppresses_conformance_cascade() {
-    assert_unresolved_annotation_suppresses_cascade(r#"
+    assert_unresolved_annotation_suppresses_cascade(
+        r#"
 trait T {
     let x : Length
 }
 structure def S : T {
     let x : UnknownType = 5mm
 }
-"#);
+"#,
+    );
 }
 
 // ── Severity-robustness regression test ──────────────────────────────────────

@@ -207,7 +207,10 @@ fn type_error_dimension_mismatch() {
                     name: "thickness".into(),
                     doc: None,
                     type_expr: Some(TypeExpr {
-                        kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                        kind: TypeExprKind::Named {
+                            name: "Scalar".into(),
+                            type_args: vec![],
+                        },
                         span: SourceSpan::new(0, 6),
                     }),
                     default: Some(Expr {
@@ -296,7 +299,10 @@ fn constraint_non_bool_produces_warning() {
                     name: "width".into(),
                     doc: None,
                     type_expr: Some(TypeExpr {
-                        kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                        kind: TypeExprKind::Named {
+                            name: "Scalar".into(),
+                            type_args: vec![],
+                        },
                         span: SourceSpan::new(0, 6),
                     }),
                     default: Some(Expr {
@@ -315,7 +321,10 @@ fn constraint_non_bool_produces_warning() {
                     name: "height".into(),
                     doc: None,
                     type_expr: Some(TypeExpr {
-                        kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                        kind: TypeExprKind::Named {
+                            name: "Scalar".into(),
+                            type_args: vec![],
+                        },
                         span: SourceSpan::new(20, 26),
                     }),
                     default: Some(Expr {
@@ -554,7 +563,10 @@ structure def S {
         ValueCellKind::Auto { free: true },
         "port auto(free) param should compile to Auto {{ free: true }}"
     );
-    assert!(foo.default_expr.is_none(), "auto(free) port param should have no default_expr");
+    assert!(
+        foo.default_expr.is_none(),
+        "auto(free) port param should have no default_expr"
+    );
 }
 
 /// Guarded param with `auto(free)` default → guarded member ValueCellDecl has kind Auto { free: true }.
@@ -697,7 +709,10 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     name: "width".into(),
                     doc: None,
                     type_expr: Some(TypeExpr {
-                        kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                        kind: TypeExprKind::Named {
+                            name: "Scalar".into(),
+                            type_args: vec![],
+                        },
                         span: SourceSpan::new(0, 6),
                     }),
                     default: Some(Expr {
@@ -716,7 +731,10 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     name: "height".into(),
                     doc: None,
                     type_expr: Some(TypeExpr {
-                        kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                        kind: TypeExprKind::Named {
+                            name: "Scalar".into(),
+                            type_args: vec![],
+                        },
                         span: SourceSpan::new(20, 26),
                     }),
                     default: Some(Expr {
@@ -1736,7 +1754,10 @@ fn scalar_plus_int_type_error() {
                     name: "width".into(),
                     doc: None,
                     type_expr: Some(TypeExpr {
-                        kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                        kind: TypeExprKind::Named {
+                            name: "Scalar".into(),
+                            type_args: vec![],
+                        },
                         span: SourceSpan::new(0, 6),
                     }),
                     default: Some(Expr {

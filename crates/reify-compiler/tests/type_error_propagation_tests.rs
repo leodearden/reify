@@ -8,8 +8,8 @@
 
 use reify_test_support::{compile_source, get_let_expr};
 use reify_types::{
-    CompiledExpr, CompiledExprKind, CompiledMatchArm, QuantifierKind, SelectorKind, Severity,
-    Type, Value, ValueCellId,
+    CompiledExpr, CompiledExprKind, CompiledMatchArm, QuantifierKind, SelectorKind, Severity, Type,
+    Value, ValueCellId,
 };
 
 /// Walk a `CompiledExpr` tree and return the first node whose `result_type`
@@ -41,9 +41,7 @@ fn find_node<'a>(
             find_node(left, pred).or_else(|| find_node(right, pred))
         }
         CompiledExprKind::UnOp { operand, .. } => find_node(operand, pred),
-        CompiledExprKind::FunctionCall { args, .. } => {
-            args.iter().find_map(|a| find_node(a, pred))
-        }
+        CompiledExprKind::FunctionCall { args, .. } => args.iter().find_map(|a| find_node(a, pred)),
         CompiledExprKind::Conditional {
             condition,
             then_branch,
@@ -57,20 +55,17 @@ fn find_node<'a>(
             args.iter().find_map(|a| find_node(a, pred))
         }
         CompiledExprKind::Lambda { body, .. } => find_node(body, pred),
-        CompiledExprKind::ListLiteral(elements) => {
-            elements.iter().find_map(|e| find_node(e, pred))
-        }
-        CompiledExprKind::SetLiteral(elements) => {
-            elements.iter().find_map(|e| find_node(e, pred))
-        }
+        CompiledExprKind::ListLiteral(elements) => elements.iter().find_map(|e| find_node(e, pred)),
+        CompiledExprKind::SetLiteral(elements) => elements.iter().find_map(|e| find_node(e, pred)),
         CompiledExprKind::MapLiteral(entries) => entries
             .iter()
             .find_map(|(k, v)| find_node(k, pred).or_else(|| find_node(v, pred))),
         CompiledExprKind::IndexAccess { object, index } => {
             find_node(object, pred).or_else(|| find_node(index, pred))
         }
-        CompiledExprKind::MethodCall { object, args, .. } => find_node(object, pred)
-            .or_else(|| args.iter().find_map(|a| find_node(a, pred))),
+        CompiledExprKind::MethodCall { object, args, .. } => {
+            find_node(object, pred).or_else(|| args.iter().find_map(|a| find_node(a, pred)))
+        }
         CompiledExprKind::Quantifier {
             collection,
             predicate,
@@ -81,8 +76,9 @@ fn find_node<'a>(
             .as_deref()
             .and_then(|lo| find_node(lo, pred))
             .or_else(|| upper.as_deref().and_then(|hi| find_node(hi, pred))),
-        CompiledExprKind::AdHocSelector { base, args, .. } => find_node(base, pred)
-            .or_else(|| args.iter().find_map(|a| find_node(a, pred))),
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            find_node(base, pred).or_else(|| args.iter().find_map(|a| find_node(a, pred)))
+        }
     }
 }
 
@@ -166,7 +162,10 @@ structure S {
     let module = compile_source(source);
     let expr = get_let_expr(&module, "broken");
     let CompiledExprKind::Quantifier { predicate, .. } = &expr.kind else {
-        panic!("expected Quantifier at top of let-expr, got {:?}", expr.kind);
+        panic!(
+            "expected Quantifier at top of let-expr, got {:?}",
+            expr.kind
+        );
     };
     // Search the entire predicate subtree for any node with Type::Error.
     // This finds the bound variable `x` regardless of how `x > 0` is shaped
@@ -331,18 +330,12 @@ fn find_node_compound_variant_coverage() {
         // ListLiteral — error in an element.
         (
             "ListLiteral element",
-            CompiledExpr::list_literal(
-                vec![error_leaf()],
-                Type::List(Box::new(Type::Error)),
-            ),
+            CompiledExpr::list_literal(vec![error_leaf()], Type::List(Box::new(Type::Error))),
         ),
         // SetLiteral — error in an element.
         (
             "SetLiteral element",
-            CompiledExpr::set_literal(
-                vec![error_leaf()],
-                Type::Set(Box::new(Type::Error)),
-            ),
+            CompiledExpr::set_literal(vec![error_leaf()], Type::Set(Box::new(Type::Error))),
         ),
         // MapLiteral — error in the key position.
         (
@@ -363,10 +356,7 @@ fn find_node_compound_variant_coverage() {
         // OptionSome — error in the inner expression.
         (
             "OptionSome inner",
-            CompiledExpr::option_some(
-                error_leaf(),
-                Type::Option(Box::new(Type::Error)),
-            ),
+            CompiledExpr::option_some(error_leaf(), Type::Option(Box::new(Type::Error))),
         ),
         // UserFunctionCall — error in an argument.
         (
@@ -383,7 +373,10 @@ fn find_node_compound_variant_coverage() {
             "Match discriminant",
             CompiledExpr::match_expr(
                 error_leaf(),
-                vec![CompiledMatchArm { patterns: vec!["_".to_string()], body: bool_leaf() }],
+                vec![CompiledMatchArm {
+                    patterns: vec!["_".to_string()],
+                    body: bool_leaf(),
+                }],
                 Type::Bool,
             ),
         ),
@@ -392,7 +385,10 @@ fn find_node_compound_variant_coverage() {
             "Match arm body",
             CompiledExpr::match_expr(
                 bool_leaf(),
-                vec![CompiledMatchArm { patterns: vec!["_".to_string()], body: error_leaf() }],
+                vec![CompiledMatchArm {
+                    patterns: vec!["_".to_string()],
+                    body: error_leaf(),
+                }],
                 Type::Bool,
             ),
         ),
@@ -421,24 +417,12 @@ fn find_node_compound_variant_coverage() {
         // RangeConstructor — error in the lower bound.
         (
             "RangeConstructor lower",
-            CompiledExpr::range_constructor(
-                Some(error_leaf()),
-                None,
-                true,
-                true,
-                Type::Bool,
-            ),
+            CompiledExpr::range_constructor(Some(error_leaf()), None, true, true, Type::Bool),
         ),
         // RangeConstructor — error in the upper bound.
         (
             "RangeConstructor upper",
-            CompiledExpr::range_constructor(
-                None,
-                Some(error_leaf()),
-                true,
-                true,
-                Type::Bool,
-            ),
+            CompiledExpr::range_constructor(None, Some(error_leaf()), true, true, Type::Bool),
         ),
         // AdHocSelector — error in the base expression.
         (

@@ -5,9 +5,7 @@
 
 mod common;
 
-use reify_compiler::{
-    UnitEntry, UnitRegistry, compile, compile_with_prelude, compile_with_stdlib,
-};
+use reify_compiler::{UnitEntry, UnitRegistry, compile, compile_with_prelude, compile_with_stdlib};
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 use reify_types::{DimensionVector, ModulePath, SourceSpan};
 
@@ -367,9 +365,8 @@ fn evaluate_const_binop_divide() {
 #[test]
 fn evaluate_const_quantity_literal_cross_ref() {
     // thou = 0.0254mm uses a QuantityLiteral referencing mm from registry
-    let module = compile_source(
-        "unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm",
-    );
+    let module =
+        compile_source("unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -516,7 +513,10 @@ fn quantity_literal_uses_registry_unit() {
         .find(|c| c.id.member == "width")
         .expect("width not found");
     // Default value should be 10 * 0.0000254 = 0.000254
-    let default_expr = width_cell.default_expr.as_ref().expect("width cell has no default_expr");
+    let default_expr = width_cell
+        .default_expr
+        .as_ref()
+        .expect("width cell has no default_expr");
     let (si_value, _dimension) = common::expect_scalar(default_expr);
     assert!(
         (si_value - 0.000254).abs() < common::UNIT_EPSILON,
@@ -594,9 +594,8 @@ fn duplicate_unit_name_emits_error() {
 #[test]
 fn unit_cross_ref_in_conversion_expr() {
     // thou = 0.0254mm: should resolve mm from registry -> factor = 0.0254 * 0.001 = 0.0000254
-    let module = compile_source(
-        "unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm",
-    );
+    let module =
+        compile_source("unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -670,7 +669,10 @@ fn integration_unit_in_structure_param() {
         .iter()
         .find(|c| c.id.member == "width")
         .expect("width not found");
-    let default_expr = width_cell.default_expr.as_ref().expect("width has no default_expr");
+    let default_expr = width_cell
+        .default_expr
+        .as_ref()
+        .expect("width has no default_expr");
     let (si_value, _dimension) = common::expect_scalar(default_expr);
     assert!(
         (si_value - 0.05).abs() < common::UNIT_EPSILON,
@@ -1249,7 +1251,10 @@ structure def Bracket {
         .iter()
         .find(|c| c.id.member == "width")
         .expect("width not found");
-    let expr = width.default_expr.as_ref().expect("width has no default_expr");
+    let expr = width
+        .default_expr
+        .as_ref()
+        .expect("width has no default_expr");
     let (si_value, _dimension) = common::expect_scalar(expr);
     assert!(
         (si_value - 0.01).abs() < common::UNIT_EPSILON,
@@ -1336,7 +1341,10 @@ structure def Plate {
         .iter()
         .find(|c| c.id.member == "thickness")
         .expect("thickness not found");
-    let expr = thickness.default_expr.as_ref().expect("thickness has no default_expr");
+    let expr = thickness
+        .default_expr
+        .as_ref()
+        .expect("thickness has no default_expr");
     let (si_value, _dimension) = common::expect_scalar(expr);
     assert!(
         (si_value - 0.01).abs() < common::UNIT_EPSILON,
@@ -1516,8 +1524,7 @@ fn prelude_unit_collision_diagnostic_mentions_stdlib() {
     );
     let empty_span = reify_types::SourceSpan::empty(0);
     assert_ne!(
-        dup_diag.labels[0].span,
-        empty_span,
+        dup_diag.labels[0].span, empty_span,
         "first label '{}' must not be SourceSpan::empty(0)",
         dup_diag.labels[0].message
     );
@@ -1781,7 +1788,10 @@ fn prelude_module_unit_collision_emits_warning() {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Warning)
         .collect();
-    let collision_warns: Vec<_> = warnings.iter().filter(|w| w.message.contains("foo")).collect();
+    let collision_warns: Vec<_> = warnings
+        .iter()
+        .filter(|w| w.message.contains("foo"))
+        .collect();
     assert_eq!(
         collision_warns.len(),
         1,
@@ -1824,10 +1834,7 @@ fn prelude_module_unit_collision_emits_warning() {
 
     // Last-wins: mod_b's foo (factor 2.0 SI) wins, so bar's factor = 2.0
     let bar = user_module.units.iter().find(|u| u.name == "bar");
-    assert!(
-        bar.is_some(),
-        "'bar' should be compiled successfully"
-    );
+    assert!(bar.is_some(), "'bar' should be compiled successfully");
     let bar = bar.unwrap();
     assert!(
         (bar.factor - 2.0).abs() < common::UNIT_EPSILON,
@@ -1863,7 +1870,11 @@ fn three_prelude_collision_emits_two_chained_warnings() {
         "unit bar : Length = 1foo",
         ModulePath::single("user_module"),
     );
-    assert!(user_parsed.errors.is_empty(), "parse errors in user: {:?}", user_parsed.errors);
+    assert!(
+        user_parsed.errors.is_empty(),
+        "parse errors in user: {:?}",
+        user_parsed.errors
+    );
 
     let user_module = compile_with_prelude(&user_parsed, &[mod_a, mod_b, mod_c]);
 
@@ -1881,7 +1892,9 @@ fn three_prelude_collision_emits_two_chained_warnings() {
     );
 
     // (b) Warning #1 names mod_a and mod_b (the first collision pair)
-    let warn1 = warnings.iter().find(|w| w.message.contains("mod_a") && w.message.contains("mod_b"));
+    let warn1 = warnings
+        .iter()
+        .find(|w| w.message.contains("mod_a") && w.message.contains("mod_b"));
     assert!(
         warn1.is_some(),
         "expected a warning naming both 'mod_a' and 'mod_b', warnings: {:?}",
@@ -1889,7 +1902,9 @@ fn three_prelude_collision_emits_two_chained_warnings() {
     );
 
     // (c) Warning #2 names mod_b and mod_c (the second collision pair)
-    let warn2 = warnings.iter().find(|w| w.message.contains("mod_b") && w.message.contains("mod_c"));
+    let warn2 = warnings
+        .iter()
+        .find(|w| w.message.contains("mod_b") && w.message.contains("mod_c"));
     assert!(
         warn2.is_some(),
         "expected a warning naming both 'mod_b' and 'mod_c', warnings: {:?}",
@@ -1898,7 +1913,11 @@ fn three_prelude_collision_emits_two_chained_warnings() {
 
     // No Error-severity diagnostics — user compilation succeeds
     let errors = errors_only(&user_module);
-    assert!(errors.is_empty(), "user compilation should succeed, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "user compilation should succeed, got: {:?}",
+        errors
+    );
 
     // (d) Last-wins: mod_c's foo (factor 3.0) is the final winner
     let bar = user_module.units.iter().find(|u| u.name == "bar");

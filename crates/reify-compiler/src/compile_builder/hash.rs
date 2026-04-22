@@ -37,7 +37,10 @@ pub(crate) fn compute_module_hash(
     });
 
     // Function content hashes
-    let function_hashes = ctx.functions.iter().map(|f: &CompiledFunction| f.content_hash);
+    let function_hashes = ctx
+        .functions
+        .iter()
+        .map(|f: &CompiledFunction| f.content_hash);
 
     // Trait content hashes
     let trait_hashes = ctx.trait_defs.iter().map(|t| t.content_hash);

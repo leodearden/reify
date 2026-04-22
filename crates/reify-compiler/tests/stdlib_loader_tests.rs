@@ -244,9 +244,10 @@ fn compile_with_prelude_injects_trait_constraints() {
 
     // Structurally verify the constraint encodes uts >= yield_strength.
     // Pattern-match on CompiledExprKind variants rather than relying on Debug formatting.
-    let ge_constraint = template.constraints.iter().find(|c| {
-        matches!(&c.expr.kind, CompiledExprKind::BinOp { op: BinOp::Ge, .. })
-    });
+    let ge_constraint = template
+        .constraints
+        .iter()
+        .find(|c| matches!(&c.expr.kind, CompiledExprKind::BinOp { op: BinOp::Ge, .. }));
     assert!(
         ge_constraint.is_some(),
         "expected a >= constraint from Strong trait, got constraint kinds: {:?}",
@@ -361,11 +362,7 @@ fn prelude_definitions_excluded_from_output_module() {
     assert!(
         compiled.units.is_empty(),
         "output module should not contain prelude units, but found: {:?}",
-        compiled
-            .units
-            .iter()
-            .map(|u| &u.name)
-            .collect::<Vec<_>>()
+        compiled.units.iter().map(|u| &u.name).collect::<Vec<_>>()
     );
 
     // User content (Steel template) SHOULD be present.
@@ -384,10 +381,7 @@ fn hardness_scale_enum_present_in_stdlib() {
     let modules = stdlib_loader::load_stdlib();
 
     // Collect all enum_defs across all stdlib modules.
-    let all_enums: Vec<_> = modules
-        .iter()
-        .flat_map(|m| m.enum_defs.iter())
-        .collect();
+    let all_enums: Vec<_> = modules.iter().flat_map(|m| m.enum_defs.iter()).collect();
 
     let hardness = all_enums
         .iter()
@@ -498,7 +492,10 @@ structure def S {
     // FunctionCall is reserved for built-in stdlib functions resolved at compile time.
     match &default_expr.kind {
         CompiledExprKind::UserFunctionCall { function_name, .. } => {
-            assert_eq!(function_name, "double", "expected resolved call to 'double'");
+            assert_eq!(
+                function_name, "double",
+                "expected resolved call to 'double'"
+            );
         }
         other => {
             panic!(
@@ -512,6 +509,10 @@ structure def S {
     assert!(
         compiled.functions.is_empty(),
         "output module should not contain prelude function 'double', but found: {:?}",
-        compiled.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        compiled
+            .functions
+            .iter()
+            .map(|f| &f.name)
+            .collect::<Vec<_>>()
     );
 }

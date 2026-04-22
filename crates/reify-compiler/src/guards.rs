@@ -152,7 +152,12 @@ pub(crate) fn register_guarded_names<'a>(
                 };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets (mirrors entity.rs pre-pass, step-4).
-                if is_solid_geometry_param(&ty, param.default.as_ref(), functions, known_geometry_lets) {
+                if is_solid_geometry_param(
+                    &ty,
+                    param.default.as_ref(),
+                    functions,
+                    known_geometry_lets,
+                ) {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -174,8 +179,26 @@ pub(crate) fn register_guarded_names<'a>(
                 // if the aliased name appeared in the if-branch. Fixing this would
                 // require snapshotting both `scope` and `known_geometry_lets` atomically
                 // for each branch — a larger change that is deferred until needed.
-                register_guarded_names(&g.members, scope, functions, diagnostics, type_param_names, alias_registry, trait_names, known_geometry_lets);
-                register_guarded_names(&g.else_members, scope, functions, diagnostics, type_param_names, alias_registry, trait_names, known_geometry_lets);
+                register_guarded_names(
+                    &g.members,
+                    scope,
+                    functions,
+                    diagnostics,
+                    type_param_names,
+                    alias_registry,
+                    trait_names,
+                    known_geometry_lets,
+                );
+                register_guarded_names(
+                    &g.else_members,
+                    scope,
+                    functions,
+                    diagnostics,
+                    type_param_names,
+                    alias_registry,
+                    trait_names,
+                    known_geometry_lets,
+                );
             }
             _ => {}
         }
@@ -333,18 +356,21 @@ pub(crate) fn compile_guarded_members(
 
                 // Solid-typed params with a geometry-call default are lowered as
                 // realizations (not scalar cells) — mirrors entity.rs main loop (step-6).
-                if is_solid_geometry_param(&cell_type, param.default.as_ref(), functions, known_geometry_lets) {
+                if is_solid_geometry_param(
+                    &cell_type,
+                    param.default.as_ref(),
+                    functions,
+                    known_geometry_lets,
+                ) {
                     continue;
                 }
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
                 // Lower and validate annotations on this guarded param
-                let lowered_annotations =
-                    lower_annotations(&param.annotations, diagnostics);
+                let lowered_annotations = lower_annotations(&param.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "param", diagnostics);
-                let solver_hints =
-                    extract_solver_hints(&lowered_annotations, diagnostics);
+                let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
 
                 let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
@@ -417,11 +443,9 @@ pub(crate) fn compile_guarded_members(
                 };
 
                 // Lower and validate annotations on this guarded let
-                let lowered_annotations =
-                    lower_annotations(&let_decl.annotations, diagnostics);
+                let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "let", diagnostics);
-                let solver_hints =
-                    extract_solver_hints(&lowered_annotations, diagnostics);
+                let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
 
                 members.push(ValueCellDecl {
                     id,
@@ -488,10 +512,8 @@ pub(crate) fn compile_guarded_members(
             }
             reify_syntax::MemberDecl::Sub(s) => {
                 diagnostics.push(
-                    Diagnostic::error(
-                        "sub declarations in guarded blocks are not yet supported",
-                    )
-                    .with_label(DiagnosticLabel::new(s.span, "not yet supported")),
+                    Diagnostic::error("sub declarations in guarded blocks are not yet supported")
+                        .with_label(DiagnosticLabel::new(s.span, "not yet supported")),
                 );
             }
             reify_syntax::MemberDecl::Minimize(m) => {
@@ -597,4 +619,3 @@ pub(crate) fn compile_per_decl_constraint_guard(
         parent_guard: None,
     });
 }
-

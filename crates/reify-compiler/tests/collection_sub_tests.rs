@@ -464,7 +464,10 @@ fn compile_indexed_member_access_multi_member_child() {
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.entity, "S.bolts[0]", "entity should be S.bolts[0]");
-            assert_eq!(id.member, "grade", "member should be grade (the second member)");
+            assert_eq!(
+                id.member, "grade",
+                "member should be grade (the second member)"
+            );
         }
         other => panic!("expected ValueRef(S.bolts[0].grade), got {:?}", other),
     }
@@ -494,7 +497,10 @@ fn compile_indexed_member_access_multi_member_child() {
     match &d_expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.entity, "S.bolts[0]", "entity should be S.bolts[0]");
-            assert_eq!(id.member, "diameter", "member should be diameter (the first member)");
+            assert_eq!(
+                id.member, "diameter",
+                "member should be diameter (the first member)"
+            );
         }
         other => panic!("expected ValueRef(S.bolts[0].diameter), got {:?}", other),
     }
@@ -628,7 +634,10 @@ fn mixed_sub_types_instance_qualified_access() {
                 id.entity, "Outer.part",
                 "d1 should reference sub-scope Outer.part"
             );
-            assert_eq!(id.member, "diameter", "d1 should reference member 'diameter'");
+            assert_eq!(
+                id.member, "diameter",
+                "d1 should reference member 'diameter'"
+            );
         }
         other => panic!("expected ValueRef for d1, got {:?}", other),
     }
@@ -654,7 +663,10 @@ fn mixed_sub_types_instance_qualified_access() {
                 id.entity, "Outer.parts",
                 "d2 should reference sub-scope Outer.parts"
             );
-            assert_eq!(id.member, "diameter", "d2 should reference member 'diameter'");
+            assert_eq!(
+                id.member, "diameter",
+                "d2 should reference member 'diameter'"
+            );
         }
         other => panic!("expected ValueRef for d2, got {:?}", other),
     }
@@ -725,7 +737,10 @@ fn compile_collection_identifier_after_noncollection_sub() {
     // Result type should be List
     match &expr.result_type {
         reify_types::Type::List(_) => {}
-        other => panic!("expected List type for bare collection identifier, got {:?}", other),
+        other => panic!(
+            "expected List type for bare collection identifier, got {:?}",
+            other
+        ),
     }
 }
 

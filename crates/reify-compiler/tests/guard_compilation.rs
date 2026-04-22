@@ -68,7 +68,11 @@ structure def S {
         group.members.is_empty(),
         "chain inside guarded block should produce no compiled members in the guard, \
          got: {:?}",
-        group.members.iter().map(|m| m.id.member.as_str()).collect::<Vec<_>>()
+        group
+            .members
+            .iter()
+            .map(|m| m.id.member.as_str())
+            .collect::<Vec<_>>()
     );
     assert!(
         group.constraints.is_empty(),
@@ -77,7 +81,6 @@ structure def S {
         group.constraints
     );
 }
-
 
 /// Parse `param x : Scalar = 5mm where active` — the per-declaration where clause
 /// should compile into a CompiledGuardedGroup with x as a guarded member.

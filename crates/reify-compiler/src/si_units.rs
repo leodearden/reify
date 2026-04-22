@@ -99,17 +99,49 @@ pub struct SiPrefixBase {
 ///   - `PrefixSet::Only(list)` — restrict to listed prefixes only
 ///     (K, cd, rad have practical ranges; larger/smaller combos are nonsensical).
 pub const SI_PREFIX_BASES: &[SiPrefixBase] = &[
-    SiPrefixBase { name: "m",   dimension: "Length",           prefix_combos: PrefixSet::All },
-    SiPrefixBase { name: "g",   dimension: "Mass",             prefix_combos: PrefixSet::All },
-    SiPrefixBase { name: "s",   dimension: "Time",             prefix_combos: PrefixSet::All },
-    SiPrefixBase { name: "A",   dimension: "Current",          prefix_combos: PrefixSet::All },
+    SiPrefixBase {
+        name: "m",
+        dimension: "Length",
+        prefix_combos: PrefixSet::All,
+    },
+    SiPrefixBase {
+        name: "g",
+        dimension: "Mass",
+        prefix_combos: PrefixSet::All,
+    },
+    SiPrefixBase {
+        name: "s",
+        dimension: "Time",
+        prefix_combos: PrefixSet::All,
+    },
+    SiPrefixBase {
+        name: "A",
+        dimension: "Current",
+        prefix_combos: PrefixSet::All,
+    },
     // Kelvin: cryogenics/quantum use nK/uK/mK; QK/qK are nonsensical.
-    SiPrefixBase { name: "K",   dimension: "Temperature",      prefix_combos: PrefixSet::Only(&["n", "u", "m"]) },
-    SiPrefixBase { name: "mol", dimension: "AmountOfSubstance", prefix_combos: PrefixSet::All },
+    SiPrefixBase {
+        name: "K",
+        dimension: "Temperature",
+        prefix_combos: PrefixSet::Only(&["n", "u", "m"]),
+    },
+    SiPrefixBase {
+        name: "mol",
+        dimension: "AmountOfSubstance",
+        prefix_combos: PrefixSet::All,
+    },
     // Candela: mcd/ucd used in photometry; sub-micro or super-kilo are unused.
-    SiPrefixBase { name: "cd",  dimension: "LuminousIntensity", prefix_combos: PrefixSet::Only(&["m", "u"]) },
+    SiPrefixBase {
+        name: "cd",
+        dimension: "LuminousIntensity",
+        prefix_combos: PrefixSet::Only(&["m", "u"]),
+    },
     // Radian: mrad/urad/nrad for optics/precision; Qrad/qrad nonsensical.
-    SiPrefixBase { name: "rad", dimension: "Angle",            prefix_combos: PrefixSet::Only(&["m", "u", "n"]) },
+    SiPrefixBase {
+        name: "rad",
+        dimension: "Angle",
+        prefix_combos: PrefixSet::Only(&["m", "u", "n"]),
+    },
 ];
 
 /// One SI (or SI-factor-derived) derived-unit entry.
@@ -433,7 +465,11 @@ fn format_power_of_ten(n: i32) -> String {
 /// - Output is a string of the form `\d+` or `\d+\.\d+` (matches grammar).
 /// - Round-tripping through `str::parse::<f64>` recovers the original f64.
 fn format_f64_as_decimal(x: f64) -> String {
-    assert!(x.is_finite() && x > 0.0, "format_f64_as_decimal expects positive finite input, got {}", x);
+    assert!(
+        x.is_finite() && x > 0.0,
+        "format_f64_as_decimal expects positive finite input, got {}",
+        x
+    );
 
     // Choose precision: 17 significant digits of f64 round-trip precision,
     // expressed relative to the value's decimal magnitude.
@@ -502,14 +538,13 @@ mod tests {
             let s = format_f64_as_decimal(original);
             // Shape must match grammar: one or more digits, optional .digits.
             assert!(
-                s.chars()
-                    .all(|c| c.is_ascii_digit() || c == '.'),
+                s.chars().all(|c| c.is_ascii_digit() || c == '.'),
                 "format output `{}` contains invalid chars",
                 s
             );
-            let parsed: f64 = s.parse().unwrap_or_else(|e| {
-                panic!("failed to re-parse `{}`: {}", s, e)
-            });
+            let parsed: f64 = s
+                .parse()
+                .unwrap_or_else(|e| panic!("failed to re-parse `{}`: {}", s, e));
             assert_eq!(
                 parsed.to_bits(),
                 original.to_bits(),
@@ -595,7 +630,10 @@ mod tests {
             assert!(
                 factor_a < factor_b,
                 "SI_PREFIXES out of order: `{}` ({}) must be < `{}` ({})",
-                sym_a, factor_a, sym_b, factor_b
+                sym_a,
+                factor_a,
+                sym_b,
+                factor_b
             );
         }
     }

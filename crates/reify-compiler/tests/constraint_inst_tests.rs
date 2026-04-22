@@ -29,10 +29,7 @@ fn assert_value_ref(expr: &CompiledExpr, expected_member: &str) {
             "expected ValueRef with member '{}', got '{}'",
             expected_member, id.member
         ),
-        other => panic!(
-            "expected ValueRef({}) but got {:?}",
-            expected_member, other
-        ),
+        other => panic!("expected ValueRef({}) but got {:?}", expected_member, other),
     }
 }
 
@@ -575,10 +572,7 @@ structure S {
                 "condition and else_branch must reference the same ValueCellId for param x"
             );
         }
-        other => panic!(
-            "expected Conditional constraint expr, got {:?}",
-            other
-        ),
+        other => panic!("expected Conditional constraint expr, got {:?}", other),
     }
 }
 
@@ -706,11 +700,7 @@ structure S {
 
     assert_eq!(tmpl.constraints.len(), 2, "expected exactly 2 constraints");
 
-    let labels: Vec<_> = tmpl
-        .constraints
-        .iter()
-        .map(|c| c.label.clone())
-        .collect();
+    let labels: Vec<_> = tmpl.constraints.iter().map(|c| c.label.clone()).collect();
 
     assert_ne!(
         labels[0], labels[1],

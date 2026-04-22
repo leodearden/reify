@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_types::{
-    CompiledExpr, ContentHash, ConstraintDomain, ConstraintNodeId, DimensionVector,
+    CompiledExpr, ConstraintDomain, ConstraintNodeId, ContentHash, DimensionVector,
     OptimizationObjective, RealizationNodeId, SourceSpan, Type, ValueCellId,
 };
 
@@ -302,7 +302,10 @@ impl TopologyTemplate {
 /// Returns `Some(&template)` for the first match, or `None` if no template has
 /// the given name.  All callers keep their own error-handling (diagnostic
 /// emission, silent skip, or test panic) — this utility is policy-neutral.
-pub fn find_template<'a>(templates: &'a [TopologyTemplate], name: &str) -> Option<&'a TopologyTemplate> {
+pub fn find_template<'a>(
+    templates: &'a [TopologyTemplate],
+    name: &str,
+) -> Option<&'a TopologyTemplate> {
     templates.iter().find(|t| t.name == name)
 }
 
@@ -408,7 +411,9 @@ pub enum ValueCellKind {
     Let,
     /// Solver-determined parameter: starts as Undef, value provided by constraint solver.
     /// `free`: when true this is an `auto(free)` parameter that skips uniqueness verification.
-    Auto { free: bool },
+    Auto {
+        free: bool,
+    },
 }
 
 impl ValueCellKind {
@@ -873,4 +878,3 @@ mod find_template_tests {
         assert!(find_template(&[], "absent").is_none());
     }
 }
-
