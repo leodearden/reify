@@ -41689,7 +41689,10 @@
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ]
         },
         "updatedAt": "2026-04-22T10:01:37.147Z"
       },
@@ -45411,7 +45414,9 @@
       "completedCount": 1874,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T10:06:37.237Z",
+      "description": "Tasks for master context"
     }
   }
 }
