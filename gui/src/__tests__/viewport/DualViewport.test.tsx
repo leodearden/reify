@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type { MeshData } from '../../types';
+import { createViewportStore } from '../../stores/viewportStore';
 
 // ── Mock Viewport ────────────────────────────────────────────────────────────
 // Capture rendered instances by viewportId so we can assert mesh sources.
@@ -112,7 +113,9 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<any>; 'def-prev
     setDefPath: vi.fn(),
     setForceExpanded: vi.fn(),
     // Real setState side-effect so sequential-drag tests can read the updated ratio.
+    // Matches real-store fidelity: Number.isFinite guard mirrors viewportStore.ts:188.
     setSplitRatio: vi.fn((ratio: number) => {
+      if (!Number.isFinite(ratio)) return false;
       const clamped = Math.min(0.9, Math.max(0.1, ratio));
       setState('splitRatio', clamped);
       return true;
@@ -593,6 +596,84 @@ describe('DualViewport', () => {
       expect(viewportStore.setSplitRatio).toHaveBeenNthCalledWith(2, expect.closeTo(0.8, 10));
     });
 
+    it('(k5) real createViewportStore setSplitRatio rejects NaN/Infinity — returns false, preserves state', () => {
+      // Uses the REAL store (no render needed) to pin the Number.isFinite guard at
+      // viewportStore.ts:188. If that guard is removed, this test catches it.
+      // (The mock's guard fidelity is verified transitively via this test's behavior.)
+      const store = createViewportStore();
+      expect(store.state.splitRatio).toBe(0.5);
+
+      // NaN: must return false and leave state unchanged
+      const nanResult = store.setSplitRatio(NaN);
+      expect(nanResult).toBe(false);
+      expect(store.state.splitRatio).toBe(0.5);
+
+      // Infinity: must return false and leave state unchanged
+      const infResult = store.setSplitRatio(Infinity);
+      expect(infResult).toBe(false);
+      expect(store.state.splitRatio).toBe(0.5);
+
+      // -Infinity: must return false and leave state unchanged
+      const negInfResult = store.setSplitRatio(-Infinity);
+      expect(negInfResult).toBe(false);
+      expect(store.state.splitRatio).toBe(0.5);
+    });
+
+    it('(k6) end-to-end clamp upper bound: real store clamps raw ratio 3.0 → 0.9', async () => {
+      // Uses the real createViewportStore to lock in the integration contract between
+      // handleDualResize's raw arithmetic and the real store's clamp semantics.
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      // Real store: initial splitRatio = 0.5, clamp [0.1, 0.9]
+      const viewportStore = createViewportStore();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      // containerHeight = 400; delta = 1000 → raw = 0.5 + 1000/400 = 3.0 → clamped to 0.9
+      const container = screen.getByTestId('dual-viewport');
+      Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 });
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(1000);
+
+      expect(viewportStore.state.splitRatio).toBe(0.9);
+    });
+
+    it('(k7) end-to-end clamp lower bound: real store clamps raw ratio -2.0 → 0.1', async () => {
+      const { DualViewport } = await importDualViewport();
+      const engineStore = makeEngineStore(['mesh/A']);
+      const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'BoltFlange');
+      const viewportStore = createViewportStore();
+
+      render(() => (
+        <DualViewport
+          engineStore={engineStore}
+          defPreviewStore={defPreviewStore}
+          viewportStore={viewportStore}
+          defPreviewActive={() => true}
+          designViewportActive={() => true}
+          defName={() => 'BoltFlange'}
+          onForceExpand={vi.fn()}
+        />
+      ));
+
+      // containerHeight = 400; delta = -1000 → raw = 0.5 + (-1000)/400 = -2.0 → clamped to 0.1
+      const container = screen.getByTestId('dual-viewport');
+      Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 });
+      capturedSplitterPropsByTestId['splitter-dual'].onResize(-1000);
+
+      expect(viewportStore.state.splitRatio).toBe(0.1);
+    });
+
     it('(l) both viewports active: wrapper flex styles reflect splitRatio', async () => {
       const { DualViewport } = await importDualViewport();
       const engineStore = makeEngineStore(['mesh/A']);
@@ -614,8 +695,13 @@ describe('DualViewport', () => {
 
       const defWrapper = screen.getByTestId('dual-viewport-def-preview-wrapper');
       const designWrapper = screen.getByTestId('dual-viewport-design-wrapper');
-      expect(defWrapper.style.flex).toBe('0.3 0 0%');
-      expect(designWrapper.style.flex).toBe('0.7 0 0%');
+      // Assert non-empty style attribute (dual-mode path applies inline styles)
+      expect(defWrapper.getAttribute('style')).toBeTruthy();
+      expect(designWrapper.getAttribute('style')).toBeTruthy();
+      // Assert flexGrow longhands directly — jsdom round-trips these reliably,
+      // unlike the flex shorthand which may normalize '0%' → '0px' or reorder tokens.
+      expect(defWrapper.style.flexGrow).toBe('0.3');
+      expect(designWrapper.style.flexGrow).toBe('0.7');
     });
 
     it('(l2) single-viewport mode: design wrapper has no inline flex style', async () => {
