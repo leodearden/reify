@@ -45161,6 +45161,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T05:17:10.375Z"
+      },
+      {
+        "id": "2132",
+        "title": "engine_edit: add assert_value_cell_types_representable call at edit_source recompile path",
+        "description": "Add a cfg(debug_assertions)-gated call to assert_value_cell_types_representable on the snapshot produced by Snapshot::from_compiled_module inside Engine::edit_source (crates/reify-eval/src/engine_edit.rs around line 951). Today the invariant is only asserted on the eval() cold-start path (engine_eval.rs:176-177), so a compiler-introduced violation during an edit-time recompile could slip past the guard until the next full eval.",
+        "details": "Context: task 1867 added `#[cfg(debug_assertions)] assert_value_cell_types_representable(&snapshot.graph);` right after `Snapshot::from_compiled_module(module)` in Engine::eval (engine_eval.rs:175-177). Reviewer flagged that Engine::edit_source also calls Snapshot::from_compiled_module but does not re-run the assertion, leaving a coverage gap for edit-time recompiles.\n\nFix: add the same cfg-gated call immediately after the from_compiled_module invocation in engine_edit.rs (around line 951). The helper `assert_value_cell_types_representable` is `pub(crate)`-reachable via `crate::engine_eval::` or by re-exporting; confirm visibility and adjust if needed. Zero release-build cost because the call is cfg(debug_assertions).\n\nSource: task 1867 review suggestion (reviewer_comprehensive); skipped at the time because engine_edit.rs was outside task 1867's locked modules.\n\nmemory_hints:\n- search: \"assert_value_cell_types_representable engine_eval debug_assertions\"\n- entity: Engine, Snapshot",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45170,7 +45181,10 @@
       "completedCount": 1860,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T05:30:29.718Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T05:30:29.737Z"
     }
   }
 }
