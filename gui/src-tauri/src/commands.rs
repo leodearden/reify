@@ -8,7 +8,7 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
-use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState};
+use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, PersistentViewState};
 use crate::watcher::FileWatcher;
 
 /// Application state shared across all Tauri commands.
@@ -129,6 +129,39 @@ pub fn get_def_preview_impl(
 ) -> Result<GuiState, String> {
     let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
     session.get_def_preview(def_name)
+}
+
+/// Read the view sidecar file for `ri_path`.
+///
+/// The sidecar lives at `{ri_path}.views.json` (literal suffix append, NOT
+/// `Path::with_extension` which would replace the `.ri` extension).
+///
+/// Returns:
+/// - `Ok(None)` when the sidecar file does not exist.
+/// - `Ok(Some(state))` when the file exists and parses successfully.
+/// - `Err(message)` when the file exists but contains malformed JSON.
+pub fn read_view_sidecar_impl(ri_path: &str) -> Result<Option<PersistentViewState>, String> {
+    let sidecar_path = format!("{}.views.json", ri_path);
+    match std::fs::read_to_string(&sidecar_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Error reading {}: {}", sidecar_path, e)),
+        Ok(content) => {
+            let state: PersistentViewState = serde_json::from_str(&content)
+                .map_err(|e| format!("Error parsing {}: {}", sidecar_path, e))?;
+            Ok(Some(state))
+        }
+    }
+}
+
+/// Write `state` as pretty-printed JSON to the view sidecar file for `ri_path`.
+///
+/// The sidecar lives at `{ri_path}.views.json` (literal suffix append).
+pub fn write_view_sidecar_impl(ri_path: &str, state: &PersistentViewState) -> Result<(), String> {
+    let sidecar_path = format!("{}.views.json", ri_path);
+    let json =
+        serde_json::to_string_pretty(state).map_err(|e| format!("Error serialising: {}", e))?;
+    std::fs::write(&sidecar_path, json)
+        .map_err(|e| format!("Error writing {}: {}", sidecar_path, e))
 }
 
 /// Return the innermost definition (structure/occurrence) containing the given

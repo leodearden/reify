@@ -1,5 +1,7 @@
 // IPC types for GUI ↔ Engine communication
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde::ser::Error as SerError;
 
@@ -230,6 +232,66 @@ pub fn format_determinacy(d: DeterminacyState) -> String {
         DeterminacyState::Provisional => "provisional".to_string(),
         DeterminacyState::Auto => "auto".to_string(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// View persistence types (Task 1749)
+// ---------------------------------------------------------------------------
+
+/// Camera state serialised as plain arrays (Three.js-independent, JSON-safe).
+///
+/// Mirrors the TypeScript `CameraState` interface in `gui/src/stores/viewportStore.ts`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CameraStateData {
+    pub position: [f64; 3],
+    pub target: [f64; 3],
+    pub up: [f64; 3],
+    pub zoom: f64,
+}
+
+/// A view definition (user-created or auto-generated).
+///
+/// Mirrors the TypeScript `ViewDefinition` interface in
+/// `gui/src/stores/autoViewGenerator.ts`.  Only user views (`auto: false`)
+/// are written to the sidecar; auto views are regenerated from the entity
+/// tree on every file open.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewDefinitionData {
+    pub id: String,
+    pub name: String,
+    pub auto: bool,
+    /// Explicit per-node visibility state keyed by entity path.
+    pub visibility: HashMap<String, String>,
+    /// Set to `true` on copy-on-write user views (auto→user on first edit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified: Option<bool>,
+}
+
+/// Serialised view state stored in localStorage and the sidecar
+/// `{filename}.ri.views.json` file.
+///
+/// Only user views are persisted; auto views are regenerated from the entity
+/// tree on every file open.  Schema version is stamped at `"1"`.
+///
+/// Mirrors the TypeScript `PersistentViewState` interface in
+/// `gui/src/types.ts`.  JSON keys use camelCase to match the TypeScript
+/// wire format (`#[serde(rename_all = "camelCase")]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentViewState {
+    /// Schema version — always `"1"` in this generation.
+    pub version: String,
+    /// Id of the active view at persist time.
+    pub active_view_id: String,
+    /// Snapshot of user-created views (auto views excluded).
+    pub user_views: Vec<ViewDefinitionData>,
+    /// Explicit visibility overrides keyed by entity path.
+    /// Preserves stale entries for undo/branch-switch restoration.
+    pub explicit: HashMap<String, String>,
+    /// Per-viewport camera state keyed by viewport id.
+    pub viewport_cameras: HashMap<String, CameraStateData>,
+    /// ISO 8601 timestamp of last write.
+    pub timestamp: String,
 }
 
 #[cfg(test)]
