@@ -45056,6 +45056,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T04:31:47.152Z"
+      },
+      {
+        "id": "2126",
+        "title": "find_template follow-up: drop redundant unit tests + migrate remaining call sites",
+        "description": "From task 461 review — two related cleanups around the new `find_template` utility in crates/reify-compiler/src/types.rs:305.\n\n(1) Delete the `find_template_tests` module (types.rs:862-908). It only verifies that `slice.iter().find(|t| t.name == name)` returns Some/None; the 19-field `make_template` builder is an order of magnitude larger than the one-line implementation, and the behavior is already exercised transitively by recursive_detection_tests, recursive_structure_tests, and unfold tests. The module mostly freezes TopologyTemplate's field layout.\n\n(2) Either migrate the ~20 remaining open-coded `templates.iter().find(|t| t.name == ...)` call sites in test/fixture files (crates/reify-test-support/src/fixtures.rs:1064-1078, crates/reify-compiler/tests/recursive_structure_tests.rs:199-407, crates/reify-compiler/tests/test_marker_compile_tests.rs:328-329, gui/src-tauri/src/tests/engine_tests.rs:2396, 3034-3035, plus others) so `find_template` is the canonical lookup, OR decide explicitly to scope the refactor to hot-path callers (reify-compiler/src and reify-eval/src) and add a brief doc note at the definition.\n\nReviewer: reviewer_comprehensive (task 461 review).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45065,7 +45076,10 @@
       "completedCount": 1853,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T04:37:18.400Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T04:37:18.422Z"
     }
   }
 }
