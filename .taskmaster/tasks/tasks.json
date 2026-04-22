@@ -45075,23 +45075,21 @@
         "description": "From task 461 review — the `has_depth_tagged` assertion in crates/reify-eval/tests/recursive_unfold.rs:2310-2320 pins the specific wording prefix `recursive sub \"oops\" in \"`. Because engine_eval.rs also emits a root-level diagnostic for `oops`, the test relies on subtle wording differences between two message paths to distinguish Phase-2 from root-level emission. Any benign rewording (single-quote variant, \"within\" vs. \"in\") could silently flip the test to pass for the wrong reason.\n\nFix: anchor the assertion on a structural invariant unique to the Phase-2 path — the `at depth N` (N≥1) substring, which cannot be emitted by the engine_eval root-level path. Suggested form:\n\n    d.message.contains(\"at depth 1\") && d.message.contains(\"oops\") && d.message.contains(\"Nonexistent\")\n\nReviewer: reviewer_comprehensive (task 461 review).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T04:38:11.476Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T04:37:24.865Z",
-      "taskCount": 2118,
+      "lastModified": "2026-04-22T04:38:11.476Z",
+      "taskCount": 2119,
       "completedCount": 1853,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T04:38:07.781Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T04:38:07.815Z"
+      ]
     }
   }
 }
