@@ -1091,19 +1091,8 @@ structure S {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // (a) Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // (a) Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (b) __count_bolts == Int(6) on the incremental engine.
     let count_id = ValueCellId::new("S", "__count_bolts");
@@ -1192,19 +1181,8 @@ structure Panel {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // Anchor: `result` must be Int(7) = 3 + 4 (refreshed sum body).
     // A missing functions-table refresh would produce Int(12) = 3 * 4 from module_A's
@@ -1364,19 +1342,8 @@ structure def Widget {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // Anchor: both added cells must read the refreshed meta_map on both paths.
     // If Step-11's `self.meta_map` refresh were skipped, `desc` and `tag` on the
@@ -1656,19 +1623,8 @@ fn edit_source_removed_cell_with_dependent_matches_cold_eval() {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (a) volume must match cold (dependent recomputed correctly).
     let volume_id = ValueCellId::new("Bracket", "volume");
@@ -1740,21 +1696,8 @@ fn edit_source_removed_constraint_invalidates_and_matches_cold_eval() {
         .check_snapshot(&module_b)
         .expect("check_snapshot must succeed after cold eval");
 
-    // (a) Cross-check values via key-union.
-    let incr_keys: HashSet<&ValueCellId> =
-        incr_check.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> =
-        cold_check.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr_check.values.get(key);
-        let cold_val = cold_check.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // (a) Cross-check values entry-for-entry.
+    assert_values_match(&incr_check.values, &cold_check.values);
 
     // (b) constraint_results.len() == 1 on both (removed constraint is gone).
     assert_eq!(
@@ -1835,19 +1778,8 @@ fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have 2 realizations in the graph.
     let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
@@ -1922,19 +1854,8 @@ fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have exactly 1 realization.
     let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
@@ -2001,19 +1922,8 @@ fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have exactly 1 realization.
     let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
