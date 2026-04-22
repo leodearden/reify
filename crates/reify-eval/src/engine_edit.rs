@@ -44,11 +44,17 @@ pub(crate) fn deactivate_if_not_auto(
 /// `(guard_cell, branch_tag)` where `branch_tag` is `0u8` for `members`
 /// (guard = true) and `1u8` for `else_members` (guard = false).
 ///
+/// When a `ValueCellId` appears in both `members` and `else_members` of the
+/// **same** group, the `else_members` entry wins (last-write semantics); this
+/// is an observable pattern in valid compiled modules (e.g. a cell that is the
+/// "effective" output regardless of which branch is active).
+///
 /// # Panics (debug builds only)
 ///
-/// In debug builds the function panics if any `ValueCellId` appears in more
-/// than one `(group, branch)` position, enforcing the invariant that every
-/// cell belongs to at most one guarded-group role.
+/// In debug builds the function panics if any `ValueCellId` appears in two
+/// groups that have **different** `guard_cell`s, i.e. the cell is claimed by
+/// two distinct guards.  Intra-group duplicates (same `guard_cell`) are
+/// permitted and resolved by last-write-wins.
 fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (ValueCellId, u8)> {
     let capacity: usize = groups.iter().map(|g| g.members.len() + g.else_members.len()).sum();
     let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
@@ -2171,5 +2177,42 @@ mod tests {
 
         // Must panic: `shared` appears in two groups.
         build_old_role_map(&[group1, group2]);
+    }
+
+    /// A ValueCellId in both `members` and `else_members` of the *same* group
+    /// must NOT panic: intra-group duplicates are permitted and resolved by
+    /// last-write semantics (else_members entry wins).
+    ///
+    /// This exercises the second `insert` call-site in `build_old_role_map` and
+    /// pins the observable behavior for callers: the cell ends up mapped to
+    /// `(guard_cell, 1u8)` (the else-branch tag) when it appears in both
+    /// branches.  Real compiled modules can produce this pattern (e.g. an
+    /// "effective" output cell that is active in both guard branches).
+    #[test]
+    fn build_old_role_map_intra_group_duplicate_last_write_wins() {
+        use std::collections::HashMap;
+
+        use crate::graph::GuardedGroupInfo;
+
+        use super::build_old_role_map;
+
+        let g1 = ValueCellId::new("E1", "guard");
+        let shared = ValueCellId::new("E1", "shared");
+
+        // `shared` appears in both `members` (branch 0) and `else_members`
+        // (branch 1) of the same group.  Expected: no panic; else_members wins.
+        let group = GuardedGroupInfo {
+            guard_cell: g1.clone(),
+            members: vec![shared.clone()],
+            else_members: vec![shared.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_old_role_map(&[group]);
+
+        // One entry; else_members (branch 1) overwrites members (branch 0).
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&shared), Some(&(g1.clone(), 1u8)));
     }
 }
