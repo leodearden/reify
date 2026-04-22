@@ -44651,6 +44651,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T02:06:00.206Z"
+      },
+      {
+        "id": "2111",
+        "title": "take_trace: thread trace_map_name into panic message",
+        "description": "deps.rs::take_trace panic only names sorted_set_name and hard-codes 'the trace map'. Add a second &'static str trace_map_name param so panic restores original informativeness. Update call sites in engine_eval.rs and unfold.rs. Run cargo test -p reify-eval.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44660,7 +44671,10 @@
       "completedCount": 1836,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T02:06:28.993Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T02:06:29.010Z"
     }
   }
 }
