@@ -45218,23 +45218,21 @@
         "description": "Follow-up from task 2131 post-merge review. Two small test-quality issues around the new `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values` test in crates/reify-eval/src/engine_edit.rs (~line 2413).",
         "details": "Two suggestions from the task 2131 post-merge review to address:\n\n1. **Redundant coverage with the new symmetry test.**\n   Location: crates/reify-eval/src/engine_edit.rs:2423-2470.\n   The new `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values` test covers the same invariants already pinned by:\n     - `reelaborate_guarded_group_leaves_active_members_with_no_default_expr_untouched` (active no-default no-op)\n     - `..._absent_from_graph_untouched` (active absent no-op)\n     - `reelaborate_guarded_group_activates_else_members_when_guard_false` (:2480) (inactive non-Auto → Undef under guard=false)\n   The stated purpose — \"a refactor that unrolls the loop and breaks one side asymmetrically would fail\" — is already achieved by having both guard=true and guard=false tests in the suite. Options:\n     (a) Delete the symmetry test (keep the narrower per-branch tests — better locality of failure messages).\n     (b) Replace the narrower per-branch tests with the symmetry test (removes ~60 lines of duplication, loses localized failure isolation).\n   Recommendation: (a), since per-branch tests give tighter failure localization and the symmetry is implicit in having both guard values covered.\n\n2. **Doc comment hard-codes line number `engine_edit.rs:68`.**\n   Location: crates/reify-eval/src/engine_edit.rs:2412-2414 (inside the doc comment of the new symmetry test if retained; otherwise moot).\n   The line number will drift as the file is edited. The existing intra-doc link `[`reelaborate_guarded_group`]` is sufficient. Drop the `:68` and refer to the loop by the enclosing function name only — e.g. \"the shared `for (cells, is_active) in ...` loop inside `reelaborate_guarded_group`\". Only relevant if (1) leaves the symmetry test in place.\n\nmemory_hints:\n- search: \"task 2131 reelaborate_guarded_group symmetry\"\n- file: crates/reify-eval/src/engine_edit.rs (around lines 2412–2470)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T05:58:29.391Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T05:57:29.149Z",
-      "taskCount": 2125,
+      "lastModified": "2026-04-22T05:58:29.392Z",
+      "taskCount": 2126,
       "completedCount": 1864,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T05:58:19.804Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T05:58:19.826Z"
+      ]
     }
   }
 }
