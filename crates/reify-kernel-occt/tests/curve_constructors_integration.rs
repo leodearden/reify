@@ -28,8 +28,8 @@ fn line_segment_coincident_points_returns_error() {
     match result {
         Err(GeometryError::OperationFailed(msg)) => {
             assert!(
-                msg.contains("coincident") || msg.contains("zero"),
-                "expected error about coincident points, got: {msg}"
+                msg.contains("[rust-guard]"),
+                "expected Rust-guard error (containing '[rust-guard]' marker), got: {msg}"
             );
         }
         Ok(_) => panic!("expected error for coincident points, got Ok"),
