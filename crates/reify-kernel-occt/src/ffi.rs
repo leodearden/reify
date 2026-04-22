@@ -175,6 +175,11 @@ pub mod ffi {
         fn make_helix_wire(
             radius: f64, pitch: f64, height: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Build a multi-edge wire from N points (flat coords, N >= 2).
+        /// Produces N-1 line edges — exercises BRepAdaptor_CompCurve paths.
+        fn make_polyline_wire(
+            coords: &[f64], n_points: usize,
+        ) -> Result<UniquePtr<OcctShape>>;
         fn make_interp_curve(
             coords: &[f64], n_points: usize,
         ) -> Result<UniquePtr<OcctShape>>;

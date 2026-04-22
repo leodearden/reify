@@ -894,6 +894,46 @@ std::unique_ptr<OcctShape> make_helix_wire(
     }
 }
 
+// --- make_polyline_wire ---
+
+std::unique_ptr<OcctShape> make_polyline_wire(
+    rust::Slice<const double> coords, size_t n_points) {
+    try {
+        if (n_points < 2) {
+            throw std::runtime_error("make_polyline_wire: requires at least 2 points");
+        }
+        if (coords.size() != n_points * 3) {
+            throw std::runtime_error("make_polyline_wire: coords length must be 3 * n_points");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder;
+        for (size_t i = 0; i + 1 < n_points; ++i) {
+            gp_Pnt p1(coords[3*i],     coords[3*i + 1],   coords[3*i + 2]);
+            gp_Pnt p2(coords[3*(i+1)], coords[3*(i+1)+1], coords[3*(i+1)+2]);
+            BRepBuilderAPI_MakeEdge edgeBuilder(p1, p2);
+            if (!edgeBuilder.IsDone()) {
+                throw std::runtime_error(
+                    std::string("make_polyline_wire: MakeEdge failed at segment ") +
+                    std::to_string(i));
+            }
+            wireBuilder.Add(edgeBuilder.Edge());
+            if (!wireBuilder.IsDone()) {
+                throw std::runtime_error(
+                    std::string("make_polyline_wire: MakeWire failed at segment ") +
+                    std::to_string(i));
+            }
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = wireBuilder.Wire();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_polyline_wire: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_polyline_wire: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_polyline_wire: unknown C++ exception");
+    }
+}
+
 // --- make_interp_curve ---
 
 std::unique_ptr<OcctShape> make_interp_curve(

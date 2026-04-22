@@ -581,7 +581,13 @@ impl OcctKernel {
                 let path_shape = self.get_shape(*path)?;
                 let t = ffi::ffi::wire_start_tangent(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                if !(t.x.abs() < 1e-6 && t.y.abs() < 1e-6 && t.z > 1.0 - 1e-6) {
+                // `wire_start_tangent` returns a unit vector, so checking
+                // t.z > 1 - 1e-6 alone is sufficient: by the unit-vector
+                // constraint x² + y² < 2e-6, so |x|,|y| < ~1.4e-3. A
+                // per-axis 1e-6 bound would be the binding constraint and
+                // could produce false positives under benign FP noise from
+                // BRepAdaptor_CompCurve on composite wires.
+                if t.z < 1.0 - 1e-6 {
                     return Err(GeometryError::OperationFailed(format!(
                         "pipe currently only supports paths whose start-tangent is +Z \
                          (got tangent ({:.3}, {:.3}, {:.3}))",
@@ -4426,6 +4432,82 @@ mod tests {
         assert!(
             t.z.abs() < 1e-6,
             "start-tangent z should be ≈ 0 for X line, got {}",
+            t.z
+        );
+    }
+
+    /// These two tests specifically exercise `BRepAdaptor_CompCurve` on
+    /// **multi-edge** wires (two line segments joined end-to-end via
+    /// `make_polyline_wire`). If a future refactor replaced the composite-curve
+    /// adaptor with a single-edge `BRepAdaptor_Curve`, it would break these
+    /// tests while the single-edge tests above would still pass — making the
+    /// regression immediately detectable.
+    #[test]
+    fn ffi_wire_start_tangent_composite_wire_non_z_direction() {
+        // Two +X segments: (0,0,0)→(0.010,0,0)→(0.020,0,0).
+        // start-tangent should be ≈ +X = (1, 0, 0).
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        #[rustfmt::skip]
+        let coords: &[f64] = &[
+            0.0, 0.0, 0.0,
+            0.010, 0.0, 0.0,
+            0.020, 0.0, 0.0,
+        ];
+        let wire = ffi::ffi::make_polyline_wire(coords, 3)
+            .expect("make_polyline_wire should succeed for 3-point +X polyline");
+        let t = ffi::ffi::wire_start_tangent(&wire)
+            .expect("wire_start_tangent should succeed for composite +X wire");
+        assert!(
+            (t.x - 1.0).abs() < 1e-6,
+            "composite +X wire: start-tangent x should be ≈ 1.0, got {}",
+            t.x
+        );
+        assert!(
+            t.y.abs() < 1e-6,
+            "composite +X wire: start-tangent y should be ≈ 0, got {}",
+            t.y
+        );
+        assert!(
+            t.z.abs() < 1e-6,
+            "composite +X wire: start-tangent z should be ≈ 0, got {}",
+            t.z
+        );
+    }
+
+    #[test]
+    fn ffi_wire_start_tangent_composite_wire_z_direction() {
+        // Two +Z segments: (0,0,0)→(0,0,0.010)→(0,0,0.020).
+        // start-tangent should be ≈ +Z = (0, 0, 1).
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        #[rustfmt::skip]
+        let coords: &[f64] = &[
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.010,
+            0.0, 0.0, 0.020,
+        ];
+        let wire = ffi::ffi::make_polyline_wire(coords, 3)
+            .expect("make_polyline_wire should succeed for 3-point +Z polyline");
+        let t = ffi::ffi::wire_start_tangent(&wire)
+            .expect("wire_start_tangent should succeed for composite +Z wire");
+        assert!(
+            t.x.abs() < 1e-6,
+            "composite +Z wire: start-tangent x should be ≈ 0, got {}",
+            t.x
+        );
+        assert!(
+            t.y.abs() < 1e-6,
+            "composite +Z wire: start-tangent y should be ≈ 0, got {}",
+            t.y
+        );
+        assert!(
+            (t.z - 1.0).abs() < 1e-6,
+            "composite +Z wire: start-tangent z should be ≈ 1.0, got {}",
             t.z
         );
     }

@@ -118,6 +118,13 @@ std::unique_ptr<OcctShape> make_arc_wire(
 std::unique_ptr<OcctShape> make_helix_wire(
     double radius, double pitch, double height);
 
+/// Create a polyline wire from N points (flat coords array of 3*N doubles, N >= 2).
+/// The resulting wire has N-1 line edges connecting consecutive points.
+/// Use this instead of make_interp_curve when you need a multi-edge wire
+/// (e.g. to exercise BRepAdaptor_CompCurve composite behaviour).
+std::unique_ptr<OcctShape> make_polyline_wire(
+    rust::Slice<const double> coords, size_t n_points);
+
 /// Create an interpolated B-spline curve through points (flat coords, n_points triples).
 std::unique_ptr<OcctShape> make_interp_curve(
     rust::Slice<const double> coords, size_t n_points);
