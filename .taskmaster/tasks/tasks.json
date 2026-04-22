@@ -17099,7 +17099,7 @@
         "description": "The public API now has three entry points: compile() (no prelude), compile_with_prelude() (caller-supplied), and compile_with_stdlib() (full stdlib). The bare compile() silently fails to resolve any standard units — including the nine that were previously hard-coded — making it a trap for callers.\n\nFix: Either mark compile() with #[deprecated] pointing to compile_with_stdlib, or add a prominent doc warning that compile() is intended only for prelude-module bootstrapping and will not resolve standard units.\n\nLocation: crates/reify-compiler/src/lib.rs:2636-2641.\n\nmemory_hints: search \"compile entry point API\" for context on the three-function API.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17109,7 +17109,7 @@
             "crates/reify-compiler/src/lib.rs"
           ]
         },
-        "updatedAt": "2026-04-22T10:01:43.525Z"
+        "updatedAt": "2026-04-22T11:55:28.719Z"
       },
       {
         "id": "767",
@@ -18413,7 +18413,7 @@
         "description": "Bundle of low-severity cleanup items from 2026-04-03 review:\n\n1. reify-mcp/src/jsonrpc.rs:232 — serde_json::to_string(&response).unwrap_or_default() should be .expect(\"JsonRpcResponse serialization\") since structural failure is a bug (F7)\n2. Stale \"stub\" comments on fully-implemented files (F8):\n   - crates/reify-runtime/src/lib.rs:1 — \"Stub — M1 implementation pending\"\n   - crates/reify-mcp/src/tools/write.rs:1 — \"Write tool stubs (5 tools)\"\n   - crates/reify-eval/src/deps.rs:5 — \"minimal stub for task 12\"\n3. Dead-code fields stored but never read (F9):\n   - EntityDefRef::content_hash (crates/reify-compiler/src/lib.rs:4108)\n   - ConcurrentEvalAdapter::version (crates/reify-runtime/src/concurrent_eval.rs:69)\n   Either document why retained or remove.\n4. Redundant #[allow(unused_imports)] on crates/reify-expr/tests/component_helper_tests.rs:6 (F10)\n\nPartially overlaps with task #383 (sweep/loft dead code, pending).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -18448,7 +18448,7 @@
           },
           "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
         },
-        "updatedAt": "2026-04-21T22:06:37.477Z"
+        "updatedAt": "2026-04-22T11:55:28.835Z"
       },
       {
         "id": "830",
@@ -24292,11 +24292,11 @@
         "description": "Two comment-cleanup items from the task 1083 review:\n\n1. **Stale doc comment** in `crates/reify-compiler/tests/qualified_access_compile_tests.rs` lines 278-280: The comment reads \"Currently fails because the let-binding second pass uses compiled_expr.result_type (Option<Real> placeholder) instead of consulting let_decl.type_expr, and lacks the OptionNone fixup present in the param-default path.\" This is now inaccurate — the fixup has been implemented and the test passes. Update to describe the test's purpose without \"Currently fails\" phrasing.\n\n2. **Fragile line-number reference** in `crates/reify-compiler/src/lib.rs` lines 5226-5227: Comment says \"mirroring the param-default fixup at lines 5179-5185\". Reference by description instead (e.g., \"mirroring the param-default OptionNone fixup in the `else` branch above\") so it doesn't go stale as the file is edited.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:20.976Z",
+        "updatedAt": "2026-04-22T11:55:28.957Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:28.605Z",
+      "lastModified": "2026-04-22T11:55:28.957Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
