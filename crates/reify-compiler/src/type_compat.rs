@@ -79,24 +79,21 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
         ) => q1 == q2,
 
         // Rule 2a: Q -> Tensor<0,_,Q>  (N is irrelevant for rank-0)
-        (
-            from_ty,
-            Type::Tensor {
-                rank: 0,
-                quantity: tq,
-                ..
-            },
-        ) => from_ty == tq.as_ref(),
+        //
+        // Guard: `from_ty` must be a scalar-like leaf type (Scalar, Real, Int, Bool, String,
+        // Enum, TypeParam, etc.). Compound types (Vector, Tensor, Matrix) are excluded —
+        // the spec's "Q is a single value" framing does not cover aggregate types.
+        // Rule 2c (above) handles the Tensor<0>↔Tensor<0> case explicitly.
+        (from_ty, Type::Tensor { rank: 0, quantity: tq, .. })
+            if !matches!(from_ty, Type::Vector { .. } | Type::Tensor { .. } | Type::Matrix { .. })
+            => from_ty == tq.as_ref(),
 
         // Rule 2b: Tensor<0,_,Q> -> Q  (N is irrelevant for rank-0)
-        (
-            Type::Tensor {
-                rank: 0,
-                quantity: tq,
-                ..
-            },
-            to_ty,
-        ) => tq.as_ref() == to_ty,
+        //
+        // Guard: `to_ty` must be a scalar-like leaf type. Same rationale as Rule 2a.
+        (Type::Tensor { rank: 0, quantity: tq, .. }, to_ty)
+            if !matches!(to_ty, Type::Vector { .. } | Type::Tensor { .. } | Type::Matrix { .. })
+            => tq.as_ref() == to_ty,
 
         // Rule 3: Tensor<2,N,Q> -> Matrix<N,N,Q>  (one-way, square matrices only)
         // Note: Matrix->Tensor is NOT allowed; the default `false` arm handles that.
