@@ -44253,13 +44253,13 @@
         "description": "In engine_edit.rs edit_source Phase 4 (lines 1690-1817), the code removes collection-instance scoped cells via `new_snapshot.graph.value_cells.remove(&scoped_id)` and `values.remove(&scoped_id)`, but does NOT invalidate `self.cache` entries keyed by `NodeId::Value(scoped_id)`. A subsequent edit that re-adds a collection instance at the same index would find a stale cache entry from the previous incarnation.\n\nAlso: a `collection_sub` that is entirely REMOVED by the edit (no longer present in `new_snapshot.graph.collection_subs`) never has its scoped cells visited by Phase 4 at all — their cache entries are never invalidated. Latent because `Snapshot::from_compiled_module` rebuilds `graph.value_cells` from scratch, but `self.cache` is retained across edits.\n\nFix:\n1. In Phase 4's remove loop, call `self.cache.invalidate(&NodeId::Value(scoped_id))` for each removed scoped cell.\n2. Add a separate sweep that diffs old/new `graph.collection_subs`; for each entirely-removed collection_sub, enumerate its scoped_ids in the OLD graph and invalidate them.\n\nRegression test (tests/edit_source.rs): two-edit sequence grow collection → shrink → re-grow, assert the re-grown instance's value comes from a fresh evaluation (not a resurrected cache entry).\n\nmemory_hints:\n- search: \"collection_subs Phase 4 scoped cells\"\n- entity: \"CachedResult\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2016"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:16:47.492Z",
+        "updatedAt": "2026-04-22T11:55:31.890Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -44328,11 +44328,11 @@
         "description": "Two post-merge polish follow-ups from task 2079 review (compile_builder extraction).\n\n1. **Anchor duplicate-diagnostic wire format** — `crates/reify-compiler/src/compile_builder/ctx.rs` test `record_or_report_duplicate_inserts_and_deduplicates` asserts `diagnostics.len() == 1` on the duplicate branch but does not verify the diagnostic's message text or label ordering. This helper is now the single source of truth for the `duplicate entity definition '<name>'` wire format (previously replicated verbatim across four pre_pass branches), so a silent message regression would only be caught by distant integration tests. Extend the test to assert:\n   - `diagnostics[0].message` contains `duplicate entity definition 'Widget'`\n   - Two labels present in order: first label span == `span_b` with kind `\"structure\"` (second def), second label span == `span_a` with kind referencing `\"first defined as structure here\"` (or the exact format).\n   This anchors behaviour that was previously enforced by duplication.\n\n2. **Clarify `build_constraint_def_registry` doc comment** — `crates/reify-compiler/src/compile_builder/entities_phase.rs:32-40`. Current doc says local defs \"override on name collision\" but does not call out that *all* local defs (pub or not) are inserted, only that prelude defs are filtered to pub. Extend the comment: e.g. \"All local constraint defs (pub or not) are inserted; non-pub local defs are only reachable within the current module but still shadow prelude defs of the same name.\" No behaviour change.\n\nCold-path micro-opt in `record_or_report_duplicate` (the redundant `.get().expect()` after `is_first_entity_def`) was also suggested but dismissed — not hot, and readability cost of `entry()` API rewrite outweighs the saved lookup.\n\n`cargo test -p reify-compiler` must pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:33:37.499Z",
+        "updatedAt": "2026-04-22T11:55:32.011Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder"
@@ -44362,13 +44362,13 @@
         "description": "Task 2084's lock `edit_source_role_flipped_guard_member_matches_cold_eval` in crates/reify-eval/tests/edit_source.rs only covers the active→inactive direction of the role flip (a member that was Determined becoming Undef). The symmetric case — a member previously suppressed to Undef on the inactive branch becoming a live Determined value on the active branch — is not pinned.\n\nSince the fix relies on Phase 1 running the full activation/deactivation pass for the whole group, the symmetric case exercises a different path in `deactivate_if_not_auto` / activation that is worth a dedicated lock.\n\nAdd a companion test where `moving` starts on the else-branch (Undef under `use_thick=true`), then in module B moves to the where-branch. Assert cold and incremental agree on the now-Determined value. Reuse `parse_and_compile` / `fresh_engine` for minimal extra code. Mirror the dual-assertion pattern (relative + positive anchor) from the existing test so a \"both wrong\" regression cannot slip through.\n\nmemory_hints:\n- search: \"edit_source role-flipped guard member test\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2084"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:48:48.616Z",
+        "updatedAt": "2026-04-22T11:55:32.159Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:31.778Z",
+      "lastModified": "2026-04-22T11:55:32.159Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
