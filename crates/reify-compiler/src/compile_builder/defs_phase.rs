@@ -44,11 +44,18 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 /// Runs annotation/pragma lowering and validation exactly once per declaration,
 /// resolves param types where possible, and caches the `@optimized` target so
 /// instantiation sites can read it without re-scanning annotations.
+///
+/// `structure_names` is the set of structure/occurrence names in scope (both
+/// local and imported via the prelude). Param type names in this set suppress
+/// the "unknown type" diagnostic because the resolved type is discarded at
+/// def-compile time anyway — entity.rs only reads `param.name` and
+/// `param.default` at instantiation time.
 fn compile_constraint_def(
     c: &reify_syntax::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
     enum_defs: &[reify_types::EnumDef],
     trait_names: &HashSet<String>,
+    structure_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledConstraintDef {
     // Extract @optimized target from raw syntax annotations BEFORE lowering so the
@@ -90,6 +97,7 @@ fn compile_constraint_def(
                 .is_none()
                 && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
                 && resolve_enum_type(name, enum_defs).is_none()
+                && !structure_names.contains(name.as_str())
             {
                 diagnostics.push(
                     Diagnostic::error(format!(
@@ -136,6 +144,22 @@ pub(crate) fn phase_constraint_defs(
     prelude: &[&crate::CompiledModule],
     trait_names: &HashSet<String>,
 ) {
+    // Build the set of structure/occurrence names in scope: local names filtered
+    // from seen_entity_names by kind, plus exported template names from every
+    // prelude module.  This mirrors the trait_names building pattern in
+    // phase_traits (traits_phase.rs:71-79).
+    let structure_names: HashSet<String> = ctx
+        .seen_entity_names
+        .iter()
+        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+        .map(|(name, _)| name.clone())
+        .chain(
+            prelude
+                .iter()
+                .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
+        )
+        .collect();
+
     for decl in &parsed.declarations {
         if let reify_syntax::Declaration::Constraint(c) = decl {
             let compiled = compile_constraint_def(
@@ -143,6 +167,7 @@ pub(crate) fn phase_constraint_defs(
                 &ctx.alias_registry,
                 &ctx.resolution_enums,
                 trait_names,
+                &structure_names,
                 &mut ctx.diagnostics,
             );
             ctx.constraint_defs.push(compiled);
