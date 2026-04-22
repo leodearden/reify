@@ -921,6 +921,39 @@ fn compile_sweep_rejects_three_args() {
     assert!(!has_sweep, "no Sweep(Sweep) op should be produced for 3-arg sweep call");
 }
 
+#[test]
+fn compile_sweep_emits_empty_args() {
+    // SweepKind::Sweep carries its geometry data in `profiles`; `args` should be empty.
+    // (task-383 S6 red: current compiler incorrectly emits [("profile",...),("path",...)])
+    let source = r#"structure S {
+    let result = sweep(sphere(5mm), line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm))
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_empty_args"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+    let ops = &compiled.templates[0].realizations[0].operations;
+    // ops[2] is Sweep(Sweep)
+    match &ops[2] {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Sweep,
+            args,
+            ..
+        } => {
+            assert!(
+                args.is_empty(),
+                "SweepKind::Sweep should emit empty args, got {:?}",
+                args.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
+        }
+        other => panic!("expected Sweep(Sweep) at ops[2], got {:?}", other),
+    }
+}
+
 // --- Tube and pipe compound-shape compiler tests (task-324) ---
 
 #[test]
