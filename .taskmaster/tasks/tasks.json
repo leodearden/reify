@@ -44916,25 +44916,23 @@
         "description": "Follow-up from Task 2117 review triage. The `assert_values_match(&incr, &cold)` helper introduced in Task 2117 replaced 7 duplicated key-union value-compare blocks in tests above line ~989, but one remaining copy at crates/reify-eval/tests/edit_source.rs:730-741 was deliberately left alone under the original task's \"limit blast radius\" rule. Now that the helper is proven and in use elsewhere, migrate this last instance for consistency.\n\nScope: Replace lines 730-741 (the `let incr_keys: HashSet<&ValueCellId> = ...` block through the closing `}` of the `for key in &all_keys` loop) with a single call `assert_values_match(&incr_edit.values, &cold_check.values);`. Leave the surrounding constraint-results cross-check block (lines 743-759) alone — it asserts a different structure.\n\nVerify: `cargo test -p reify-eval --test edit_source`.\n\nmemory_hints:\n- search: \"assert_values_match helper edit_source\"\n- search: \"cross-check values entry-for-entry key-union\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2117"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T03:36:44.736Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T03:35:30.423Z",
-      "taskCount": 2111,
+      "lastModified": "2026-04-22T03:36:44.736Z",
+      "taskCount": 2112,
       "completedCount": 1847,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T03:36:34.134Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T03:36:34.170Z"
+      ]
     }
   }
 }
