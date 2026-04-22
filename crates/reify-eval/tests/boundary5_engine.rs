@@ -1055,14 +1055,15 @@ fn evaluate_let_bindings_skips_let_cell_without_default_expr() {
 /// Characterization test: the cache entry for a let binding carries the full
 /// static dependency set extracted from its expression.
 ///
-/// Template S: `let a = 1`, `let b = 2`, `let c = a + b`.
-/// After eval, `cache_store().get(S.c).dependency_trace.reads` must contain
-/// exactly {S.a, S.b}, and `S.a`'s trace must have empty reads (literal).
+/// Template S: `let a = 1`, `let b = 2`, `let c = a + b`, `let d = c + 1`.
+/// After eval:
+/// - `S.c.dependency_trace.reads` == {S.a, S.b}
+/// - `S.d.dependency_trace.reads` == {S.c}  (chain: topologically later)
+/// - `S.a.dependency_trace.reads` == {}      (literal)
 ///
-/// This test PASSES on the current code (the redundant `extract_dependency_trace`
-/// call at line 1158 produces the same trace as the one in `let_traces`). Its
-/// purpose is to catch regressions introduced by the refactor — e.g. using
-/// `Default::default()` instead of the correct trace, or looking up the wrong key.
+/// The chain case (`d` depends on `c`) exercises the topologically-later path
+/// where a cached-vs-recomputed trace lookup diverges if the wrong key or a
+/// default value is used — making this stronger than a flat fan-in alone.
 #[test]
 fn evaluate_let_bindings_cache_records_dependency_trace() {
     use reify_eval::cache::NodeId;
@@ -1070,9 +1071,10 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
     use reify_types::{BinOp, ModulePath, Type, Value, ValueCellId};
     use std::collections::HashSet;
 
-    // let a = 1  (no reads — literal)
-    // let b = 2  (no reads — literal)
-    // let c = a + b  (reads S.a and S.b)
+    // let a = 1        (no reads — literal)
+    // let b = 2        (no reads — literal)
+    // let c = a + b    (reads S.a and S.b)
+    // let d = c + 1    (reads S.c — chain dependency)
     let template = TopologyTemplateBuilder::new("S")
         .let_binding("S", "a", Type::Int, literal(Value::Int(1)))
         .let_binding("S", "b", Type::Int, literal(Value::Int(2)))
@@ -1084,6 +1086,16 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
                 BinOp::Add,
                 reify_test_support::builders::value_ref_typed("S", "a", Type::Int),
                 reify_test_support::builders::value_ref_typed("S", "b", Type::Int),
+            ),
+        )
+        .let_binding(
+            "S",
+            "d",
+            Type::Int,
+            binop(
+                BinOp::Add,
+                reify_test_support::builders::value_ref_typed("S", "c", Type::Int),
+                literal(Value::Int(1)),
             ),
         )
         .build();
@@ -1112,6 +1124,20 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
         reads_c, expected_c_refs,
         "S.c dependency_trace.reads should be {{S.a, S.b}}, got {:?}",
         cache_c.dependency_trace.reads,
+    );
+
+    // S.d should have reads = {S.c} (chain: topologically later node)
+    let node_d = NodeId::Value(ValueCellId::new("S", "d"));
+    let cache_d = cache
+        .get(&node_d)
+        .expect("S.d should be in cache after eval");
+    let reads_d: HashSet<&ValueCellId> = cache_d.dependency_trace.reads.iter().collect();
+    let expected_d: HashSet<ValueCellId> = [ValueCellId::new("S", "c")].into_iter().collect();
+    let expected_d_refs: HashSet<&ValueCellId> = expected_d.iter().collect();
+    assert_eq!(
+        reads_d, expected_d_refs,
+        "S.d dependency_trace.reads should be {{S.c}}, got {:?}",
+        cache_d.dependency_trace.reads,
     );
 
     // S.a should have empty reads (it's a literal)

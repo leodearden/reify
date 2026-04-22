@@ -1100,7 +1100,7 @@ impl Engine {
             .collect();
 
         let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-        let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
+        let mut let_traces: HashMap<NodeId, DependencyTrace> = let_cells
             .iter()
             .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
             .collect();
@@ -1155,10 +1155,12 @@ impl Engine {
                 .values
                 .insert(cell_id.clone(), (val.clone(), DeterminacyState::Determined));
 
-            // Reuse the trace already computed in `let_traces` above; every node
-            // in `sorted_lets` is guaranteed to be a key in `let_traces` because
-            // both are derived from the same `let_cells` key set.
-            let trace = let_traces[&node_id].clone();
+            // Move the trace out of `let_traces` (built above from the same key set);
+            // every node in `sorted_lets` is guaranteed present, so remove() cannot fail.
+            // Using remove() avoids a Vec clone compared to indexing+clone.
+            let trace = let_traces
+                .remove(&node_id)
+                .expect("sorted_lets entries are always keys in let_traces");
             let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
             let outcome = self.cache.record_evaluation(
                 node_id.clone(),
