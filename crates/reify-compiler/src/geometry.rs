@@ -778,6 +778,13 @@ pub(crate) fn compile_geometry_call(
                 0, "pipe", "path", args, &geom_refs, diagnostics, step_offset,
             );
             let mut it = compiled_args.into_iter();
+            // Convention: Sweep-family ops store every positional argument
+            // in `args` (including geometry-ref args like "path") so the
+            // indices line up with the parsed call site. At eval time the
+            // path is resolved through `profiles[0]` (the GeomRef) and the
+            // `args["path"]` entry is never read — treat it as a padded
+            // placeholder, not an evaluable geometry expression.
+            // (See crates/reify-eval/src/geometry_ops.rs SweepKind::Pipe arm.)
             let pipe_args: Vec<(String, CompiledExpr)> = vec![
                 ("path".to_string(), it.next().unwrap()),
                 ("radius".to_string(), it.next().unwrap()),

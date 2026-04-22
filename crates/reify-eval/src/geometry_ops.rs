@@ -917,6 +917,13 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::SweepKind::Pipe => {
+                    // Convention: the compiler stores the path expression
+                    // in `args` at the "path" key as a positional placeholder
+                    // (mirrors the Sweep/SweepGuided convention). It is not
+                    // read here — the path is resolved solely through
+                    // `profiles[0]` (the GeomRef). A future refactor that
+                    // tries to evaluate `args["path"]` as a scalar would
+                    // silently mis-type, so keep reading via profiles here.
                     let path_handle = resolve_geom_ref(
                         profiles.first().ok_or_else(|| "no path GeomRef supplied".to_string())?,
                         step_handles,
