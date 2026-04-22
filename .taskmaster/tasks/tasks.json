@@ -41359,10 +41359,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:07.200Z",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
-          ]
+          "modules": [],
+          "files": []
         }
       },
       {
@@ -41575,15 +41573,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:07.261Z",
         "metadata": {
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/functions.rs",
-            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ]
+          "files": [],
+          "modules": []
         }
       },
       {
