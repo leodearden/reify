@@ -31,15 +31,16 @@ pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
 }
 
 /// Remove and return the trace for `node_id`; panics with a message naming
-/// `sorted_set_name` if the key is absent.
+/// both `sorted_set_name` and `trace_map_name` if the key is absent.
 pub(crate) fn take_trace(
     traces: &mut HashMap<NodeId, DependencyTrace>,
     node_id: &NodeId,
     sorted_set_name: &'static str,
+    trace_map_name: &'static str,
 ) -> DependencyTrace {
     traces
         .remove(node_id)
-        .unwrap_or_else(|| panic!("{sorted_set_name} entries are always keys in the trace map"))
+        .unwrap_or_else(|| panic!("{sorted_set_name} entries are always keys in {trace_map_name}"))
 }
 
 /// Reverse dependency index: maps ValueCellId → set of NodeIds that depend on it.
@@ -629,7 +630,7 @@ mod tests {
         map.insert(node_id_a.clone(), trace_a);
         map.insert(node_id_b.clone(), trace_b);
 
-        let returned = take_trace(&mut map, &node_id_a, "sorted_lets");
+        let returned = take_trace(&mut map, &node_id_a, "sorted_lets", "let_traces");
 
         assert_eq!(returned.reads, vec![cell_x], "returned trace should match the inserted reads for node_id_a");
         assert!(!map.contains_key(&node_id_a), "node_id_a should be removed from the map");

@@ -568,7 +568,7 @@ fn elaborate_child_lets_only<'t>(
         );
 
         // sorted_child_lets and child_let_traces are built from the same key set, so remove() cannot fail.
-        let trace = take_trace(&mut child_let_traces, &child_node_id, "sorted_child_lets");
+        let trace = take_trace(&mut child_let_traces, &child_node_id, "sorted_child_lets", "child_let_traces");
         let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
         let outcome =
             cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
