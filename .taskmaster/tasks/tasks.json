@@ -44545,11 +44545,16 @@
         "description": "Fix L1435 count mismatch (raw vs deduped) on intra-group duplicates. From task 2092 review. See memory 092192b7 for details.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:54:53.454Z"
+        "updatedAt": "2026-04-22T02:02:05.304Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_edit.rs"
+          ]
+        }
       },
       {
         "id": "2104",
@@ -44592,7 +44597,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:01:40.813Z",
+      "lastModified": "2026-04-22T02:02:05.305Z",
       "taskCount": 2098,
       "completedCount": 1836,
       "tags": [
