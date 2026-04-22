@@ -117,8 +117,8 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
     if t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON {
         return Err(GeometryError::OperationFailed(format!(
             "pipe currently only supports paths whose start-tangent is +Z \
-             (got tangent ({:.3}, {:.3}, {:.3}))",
-            t.x, t.y, t.z
+             (tolerance {:e}) (got tangent ({:.3}, {:.3}, {:.3}))",
+            PIPE_START_TANGENT_Z_EPSILON, t.x, t.y, t.z
         )));
     }
     Ok(())
