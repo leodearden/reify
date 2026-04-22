@@ -1,13 +1,20 @@
 use super::*;
 
-/// Compile a curve constructor call into a single CompiledGeometryOp::Curve.
+/// Compile a curve constructor call into CompiledGeometryOps.
 ///
-/// Curve constructors are pure: they take only scalar args and produce a
-/// standalone op with no geometry-arg dependencies (sub_ops is always empty).
+/// Takes pre-accumulated sub_ops (from any geometry-arg dependencies resolved
+/// by the caller). Each arm validates arg count, builds a
+/// CompiledGeometryOp::Curve, pushes it to sub_ops, and returns Some(sub_ops).
+///
+/// Today all curve constructors return `&[]` from `geometry_arg_indices()` so
+/// sub_ops will always be empty at the call site; the parameter is accepted for
+/// forward-compatibility and to match the signature of `compile_transform_op`
+/// and `compile_modify_op`.
 pub(crate) fn compile_curve_op(
     name: &str,
     compiled_args: Vec<CompiledExpr>,
     diagnostics: &mut Vec<Diagnostic>,
+    mut sub_ops: Vec<CompiledGeometryOp>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     match name {
         // line_segment(x1, y1, z1, x2, y2, z2)
@@ -20,7 +27,7 @@ pub(crate) fn compile_curve_op(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Curve {
+            sub_ops.push(CompiledGeometryOp::Curve {
                 kind: CurveKind::LineSegment,
                 args: vec![
                     ("x1".to_string(), it.next().unwrap()),
@@ -30,7 +37,8 @@ pub(crate) fn compile_curve_op(
                     ("y2".to_string(), it.next().unwrap()),
                     ("z2".to_string(), it.next().unwrap()),
                 ],
-            }])
+            });
+            Some(sub_ops)
         }
         // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
         "arc" => {
@@ -42,7 +50,7 @@ pub(crate) fn compile_curve_op(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Curve {
+            sub_ops.push(CompiledGeometryOp::Curve {
                 kind: CurveKind::Arc,
                 args: vec![
                     ("cx".to_string(), it.next().unwrap()),
@@ -55,7 +63,8 @@ pub(crate) fn compile_curve_op(
                     ("ay".to_string(), it.next().unwrap()),
                     ("az".to_string(), it.next().unwrap()),
                 ],
-            }])
+            });
+            Some(sub_ops)
         }
         // helix(radius, pitch, height)
         "helix" => {
@@ -67,14 +76,15 @@ pub(crate) fn compile_curve_op(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Curve {
+            sub_ops.push(CompiledGeometryOp::Curve {
                 kind: CurveKind::Helix,
                 args: vec![
                     ("radius".to_string(), it.next().unwrap()),
                     ("pitch".to_string(), it.next().unwrap()),
                     ("height".to_string(), it.next().unwrap()),
                 ],
-            }])
+            });
+            Some(sub_ops)
         }
         // interp(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
         "interp" => {
@@ -90,10 +100,11 @@ pub(crate) fn compile_curve_op(
                 .enumerate()
                 .map(|(i, expr)| (format!("c{}", i), expr))
                 .collect();
-            Some(vec![CompiledGeometryOp::Curve {
+            sub_ops.push(CompiledGeometryOp::Curve {
                 kind: CurveKind::InterpCurve,
                 args,
-            }])
+            });
+            Some(sub_ops)
         }
         // bezier(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
         "bezier" => {
@@ -109,10 +120,11 @@ pub(crate) fn compile_curve_op(
                 .enumerate()
                 .map(|(i, expr)| (format!("c{}", i), expr))
                 .collect();
-            Some(vec![CompiledGeometryOp::Curve {
+            sub_ops.push(CompiledGeometryOp::Curve {
                 kind: CurveKind::BezierCurve,
                 args,
-            }])
+            });
+            Some(sub_ops)
         }
         // nurbs — minimum: degree(1) + n_points(1) + 2×3 coords(6) + 2 weights(2) = 10
         "nurbs" => {
@@ -128,10 +140,11 @@ pub(crate) fn compile_curve_op(
                 .enumerate()
                 .map(|(i, expr)| (format!("c{}", i), expr))
                 .collect();
-            Some(vec![CompiledGeometryOp::Curve {
+            sub_ops.push(CompiledGeometryOp::Curve {
                 kind: CurveKind::NurbsCurve,
                 args,
-            }])
+            });
+            Some(sub_ops)
         }
         _ => unreachable!("compile_curve_op called with non-curve name: {}", name),
     }
@@ -149,7 +162,7 @@ mod tests {
     fn compile_curve_op_line_segment_direct() {
         let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_curve_op("line_segment", args.clone(), &mut diagnostics);
+        let result = compile_curve_op("line_segment", args.clone(), &mut diagnostics, vec![]);
         assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
         let ops = result.expect("compile_curve_op line_segment should return Some");
         assert_eq!(ops.len(), 1);
@@ -167,8 +180,30 @@ mod tests {
     fn compile_curve_op_wrong_arg_count() {
         let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_curve_op("line_segment", args, &mut diagnostics);
+        let result = compile_curve_op("line_segment", args, &mut diagnostics, vec![]);
         assert!(result.is_none(), "expected None for wrong arg count");
         assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
+    }
+
+    #[test]
+    fn compile_curve_op_prepends_sub_ops() {
+        let marker_sub_ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Sphere,
+            args: vec![("radius".to_string(), scalar_literal(1.0))],
+        }];
+        let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_curve_op("line_segment", args, &mut diagnostics, marker_sub_ops);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_curve_op line_segment should return Some");
+        assert_eq!(ops.len(), 2);
+        match &ops[0] {
+            CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. } => {}
+            other => panic!("expected Primitive(Sphere) at index 0, got {:?}", other),
+        }
+        match &ops[1] {
+            CompiledGeometryOp::Curve { kind: CurveKind::LineSegment, .. } => {}
+            other => panic!("expected Curve(LineSegment) at index 1, got {:?}", other),
+        }
     }
 }
