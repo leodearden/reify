@@ -67,3 +67,57 @@ fn eval_honors_single_param_override_on_cold_start() {
         "post-override eval must surface the 0.12m override, not the 100mm default"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// step-3: orphaned-override purge across topology edits
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// If a Param cell is removed from the module and later re-added with the
+/// same `ValueCellId`, the stale override must NOT zombie-resurrect — the
+/// intermediate module that lacks the cell should have purged the entry
+/// from `self.param_overrides`.  Mirrors the purge `edit_source` already
+/// performs after a structural edit.  Currently FAILS because step-2
+/// carries the override forward through the intermediate eval.
+#[test]
+fn eval_purges_override_for_cell_absent_from_new_graph() {
+    let mut engine = fresh_engine();
+
+    let module_a = compile_source(
+        "structure S { param width: Scalar = 100mm\n param height: Scalar = 200mm }",
+    );
+    let width_id = ValueCellId::new("S", "width");
+
+    // Eval A, then set an override on `width`.
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&width_id, length_scalar(0.12));
+
+    // Eval a variant B that REMOVES `width` entirely. After this eval, the
+    // override entry for `width` must have been purged — the cell no longer
+    // exists in the graph, so a dormant entry would zombie-resurrect on a
+    // future edit that re-adds `width`.
+    let module_b = compile_source("structure S { param height: Scalar = 200mm }");
+    let result_b = engine.eval(&module_b);
+    assert!(
+        result_b.values.get(&width_id).is_none(),
+        "width cell is absent from module B so no value should be present, got {:?}",
+        result_b.values.get(&width_id)
+    );
+    assert!(
+        result_b.diagnostics.is_empty(),
+        "silent purge must not emit spurious warnings, got {:?}",
+        result_b.diagnostics
+    );
+
+    // Eval module C (identical topology to A: same name, same Scalar type,
+    // same 100mm default). The re-added `width` cell must resolve to the
+    // MODULE DEFAULT (0.1m), NOT the zombie 0.12m override.
+    let module_c = compile_source(
+        "structure S { param width: Scalar = 100mm\n param height: Scalar = 200mm }",
+    );
+    let result_c = engine.eval(&module_c);
+    assert_eq!(
+        result_c.values.get(&width_id),
+        Some(&length_scalar(0.1)),
+        "re-added cell must resolve to module default, not zombie override"
+    );
+}
