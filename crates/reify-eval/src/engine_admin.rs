@@ -5,11 +5,72 @@ use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
-use reify_compiler::CompiledModule;
+use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
 };
 use std::collections::HashMap;
+
+/// Why an attempted param_override was rejected for a target value cell.
+/// Callers translate this into their own error channel:
+/// - `Engine::eval` pushes a `Diagnostic::warning` and falls back to the
+///   cell's `default_expr`.
+/// - `Engine::edit_param` returns the corresponding `EngineError`
+///   variant (`TypeKindMismatch` / `DimensionMismatch`).
+///
+/// Centralising the rejection vocabulary (task 2017 amend-pass) lets a
+/// future third guard (e.g. Tensor shape, List element-type check) land
+/// in one place rather than drifting between the cold-start and
+/// incremental paths.  `Engine::edit_param`'s adoption of this helper is
+/// a follow-up — the amend-pass scope did not include `engine_edit.rs`
+/// and that call site still inlines its guard chain for now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParamOverrideRejection {
+    /// Value and cell type disagree at the type-kind level (Int vs
+    /// Scalar, Bool vs List, etc).
+    TypeKindMismatch,
+    /// Both sides are Scalar, but their dimensions disagree (e.g. a
+    /// LENGTH override pushed against a MASS cell).
+    ScalarDimensionMismatch {
+        expected: reify_types::dimension::DimensionVector,
+        got: reify_types::dimension::DimensionVector,
+    },
+}
+
+/// Validate that `value` is a safe write into a cell of type `cell_type`.
+///
+/// Returns `Ok(())` if the override is compatible, or the corresponding
+/// [`ParamOverrideRejection`] explaining the mismatch.  The guard chain
+/// currently enforces:
+/// 1. Type-kind match via `value_type_kind_matches` (rejects e.g. an Int
+///    value into a Scalar cell).
+/// 2. Scalar dimension match when both sides are Scalar (rejects e.g. a
+///    LENGTH value into a MASS cell).
+///
+/// Any future refinement lands here and is picked up by every call site
+/// automatically.  See the type-level comment on
+/// [`ParamOverrideRejection`] for the parallel `engine_edit.rs` site
+/// that is slated to migrate onto this helper in a follow-up.
+pub(crate) fn validate_param_override(
+    value: &reify_types::Value,
+    cell_type: &reify_types::Type,
+) -> Result<(), ParamOverrideRejection> {
+    if !crate::value_type_kind_matches(value, cell_type) {
+        return Err(ParamOverrideRejection::TypeKindMismatch);
+    }
+    if let reify_types::Type::Scalar {
+        dimension: expected,
+    } = cell_type
+        && let reify_types::Value::Scalar { dimension: got, .. } = value
+        && *got != *expected
+    {
+        return Err(ParamOverrideRejection::ScalarDimensionMismatch {
+            expected: *expected,
+            got: *got,
+        });
+    }
+    Ok(())
+}
 
 impl Engine {
     /// Maximum allowed value for [`set_max_unfold_depth`][Engine::set_max_unfold_depth].
@@ -191,6 +252,61 @@ impl Engine {
     /// Access the current snapshot (for testing/inspection).
     pub fn snapshot(&self) -> Option<&Snapshot> {
         self.eval_state.as_ref().map(|s| &s.snapshot)
+    }
+
+    /// Clear all param overrides currently held by this engine.
+    ///
+    /// Intended for callers that semantically start fresh with respect to
+    /// user edits — e.g. the CLI's `load_file` / `open_file` when the user
+    /// opens a new source file and any overrides from the previous file
+    /// should no longer apply.
+    ///
+    /// This method:
+    /// - wipes every entry from `self.param_overrides`,
+    /// - does NOT invalidate the cache — the next call to `eval()` rebuilds
+    ///   the snapshot from the module defaults anyway (and the per-eval
+    ///   purge step would drop the entries on its own once the module
+    ///   changes, but this primitive makes the reset explicit for
+    ///   topology-preserving reloads),
+    /// - does NOT touch `eval_state`, `snapshot`, `cache`, or `journal`.
+    ///
+    /// Distinct from `set_param_and_invalidate` (which writes a single
+    /// override) — the "clear" intent warrants its own entry point rather
+    /// than being smuggled in as a sentinel value.
+    pub fn clear_param_overrides(&mut self) {
+        self.param_overrides.clear();
+    }
+
+    /// Retain only those entries in `self.param_overrides` whose target
+    /// value cell still exists in `graph` and is currently a Param-kind
+    /// cell. Drops entries whose cell disappeared from the module, whose
+    /// kind changed from Param to Let/Auto, or which never existed.
+    ///
+    /// The zombie-resurrect scenario this prevents: a user sets an
+    /// override on `S.width`, then edits the source to remove `width`,
+    /// then later re-adds a cell with the same
+    /// `ValueCellId::new("S", "width")`.  Without purging, the dormant
+    /// override from the first edit would silently reapply in the third.
+    ///
+    /// Called by `Engine::eval` once the new snapshot graph has been
+    /// materialised. `Engine::edit_source` performs an equivalent purge
+    /// via an inline `self.param_overrides.retain(...)` against its
+    /// post-edit graph; a follow-up task will migrate that site onto
+    /// this helper (the amend-pass scope for task 2017 did not include
+    /// `engine_edit.rs`).  Until that merge lands the two predicates
+    /// must remain behaviourally identical — if you refine one, refine
+    /// the other.
+    pub(crate) fn prune_param_overrides_against(
+        &mut self,
+        graph: &crate::graph::EvaluationGraph,
+    ) {
+        self.param_overrides.retain(|id, _| {
+            graph
+                .value_cells
+                .get(id)
+                .map(|node| matches!(node.kind, ValueCellKind::Param))
+                .unwrap_or(false)
+        });
     }
 
     /// Access the eval set from the last eval() or edit_param() call.

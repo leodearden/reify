@@ -15,6 +15,7 @@ use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
+use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
@@ -179,6 +180,17 @@ impl Engine {
         snapshot.version = VersionId(version_id);
         snapshot.provenance = SnapshotProvenance::Initial;
 
+        // Purge orphaned param_overrides entries BEFORE the per-cell Param
+        // loop populates `values` from the override map. A dormant override
+        // on a cell that no longer exists (or whose kind changed from Param
+        // to Let/Auto) would otherwise zombie-resurrect if a future edit
+        // re-adds a cell with the same ValueCellId. See
+        // `Engine::prune_param_overrides_against` for the shared helper
+        // (task 2017 amend-pass); `engine_edit.rs` still inlines the same
+        // retain predicate and will migrate onto the helper in a follow-up
+        // — until then the two predicates must stay behaviourally identical.
+        self.prune_param_overrides_against(&snapshot.graph);
+
         // Build dependency structures from the graph
         let reverse_index = ReverseDependencyIndex::build_from_graph(&snapshot.graph);
         let trace_map = crate::deps::build_trace_map(&snapshot.graph);
@@ -275,8 +287,59 @@ impl Engine {
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
                 } else if cell.kind == ValueCellKind::Param
-                    && let Some(ref expr) = cell.default_expr
+                    && (cell.default_expr.is_some() || self.param_overrides.contains_key(&cell.id))
                 {
+                    // Param cells: an entry in `self.param_overrides` takes
+                    // precedence over evaluating `default_expr`. This mirrors
+                    // edit_source's seeding rule ("override wins for Param
+                    // cells") so that a value written via
+                    // `set_param_and_invalidate` / `edit_param` survives a
+                    // subsequent `eval()` instead of being silently rebuilt
+                    // from the module default.
+                    //
+                    // If there is no default_expr we only enter this branch
+                    // when an override exists (so the cell gets seeded from
+                    // the override); this preserves the pre-task-2017
+                    // behaviour of silently skipping a no-default Param with
+                    // no override.
+                    //
+                    // Validation mirrors Engine::edit_param via the shared
+                    // `validate_param_override` helper (task 2017 amend-pass):
+                    // type-kind and Scalar-dimension are both checked there.
+                    // On mismatch we emit a Warning diagnostic, retain the
+                    // entry in param_overrides (reverting the source edit
+                    // should resurrect it), and fall back to the default_expr
+                    // path.  `engine_edit.rs` still inlines the same guard
+                    // chain; a follow-up task will migrate that site onto
+                    // `validate_param_override` so any future third guard
+                    // (e.g. Tensor shape) lands in one place.
+                    //
+                    // Orphan purging runs once, before this loop (see the
+                    // retain call after Snapshot::from_compiled_module).
+                    let override_val = match self.param_overrides.get(&cell.id) {
+                        None => None,
+                        Some(v) => match validate_param_override(v, &cell.cell_type) {
+                            Ok(()) => Some(v.clone()),
+                            Err(ParamOverrideRejection::TypeKindMismatch) => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                                    cell.id, cell.cell_type, v
+                                )));
+                                None
+                            }
+                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
+                                expected,
+                                got,
+                            }) => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                                    cell.id, expected, got
+                                )));
+                                None
+                            }
+                        },
+                    };
+
                     let node_id = NodeId::Value(cell.id.clone());
                     let start = Instant::now();
                     self.journal.record(EvalEvent {
@@ -287,12 +350,35 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(
-                        expr,
-                        &reify_expr::EvalContext::new(&values, &functions)
-                            .with_meta(&self.meta_map)
-                            .with_determinacy(&snapshot.values),
-                    );
+                    let val = if let Some(v) = override_val {
+                        v
+                    } else if let Some(ref expr) = cell.default_expr {
+                        reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(&values, &functions)
+                                .with_meta(&self.meta_map)
+                                .with_determinacy(&snapshot.values),
+                        )
+                    } else {
+                        // No override accepted and no default_expr. This is
+                        // only reachable if the override existed but was
+                        // rejected by the type-kind guard above. Skip the
+                        // cell — mirrors the pre-task-2017 behaviour and
+                        // avoids writing an invalid value into the snapshot.
+                        // Keep the journal well-formed by completing the
+                        // Started event with an Unchanged outcome (no value
+                        // was written; equivalent to a no-op).
+                        self.journal.record(EvalEvent {
+                            timestamp: Instant::now(),
+                            node_id,
+                            kind: EventKind::Completed {
+                                outcome: EvalOutcome::Unchanged,
+                            },
+                            version: VersionId(version_id),
+                            payload: Some(EventPayload::Duration(start.elapsed())),
+                        });
+                        continue;
+                    };
                     values.insert(cell.id.clone(), val.clone());
 
                     // Update snapshot values
