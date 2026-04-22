@@ -524,6 +524,7 @@ pub enum CompiledGeometryOp {
 
 /// Primitive geometry kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum PrimitiveKind {
     Box,
     Cylinder,
@@ -546,6 +547,7 @@ impl std::fmt::Display for PrimitiveKind {
 
 /// Boolean geometry operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum BooleanOp {
     Union,
     Difference,
@@ -564,6 +566,7 @@ impl std::fmt::Display for BooleanOp {
 
 /// Modification operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum ModifyKind {
     Fillet,
     Chamfer,
@@ -586,6 +589,7 @@ impl std::fmt::Display for ModifyKind {
 
 /// Transform operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum TransformKind {
     Translate,
     Rotate,
@@ -606,6 +610,7 @@ impl std::fmt::Display for TransformKind {
 
 /// Pattern operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum PatternKind {
     Linear,
     Circular,
@@ -628,6 +633,7 @@ impl std::fmt::Display for PatternKind {
 
 /// Sweep operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum SweepKind {
     Loft,
     Extrude,
@@ -662,6 +668,7 @@ impl std::fmt::Display for SweepKind {
 
 /// Curve construction operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum CurveKind {
     LineSegment,
     Arc,
