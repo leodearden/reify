@@ -44816,7 +44816,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:12:28.445Z"
+        "updatedAt": "2026-04-22T02:12:28.445Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs",
+            "crates/reify-eval/src/engine_build.rs"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -44826,7 +44833,9 @@
       "completedCount": 1842,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T02:50:11.662Z",
+      "description": "Tasks for master context"
     }
   }
 }
