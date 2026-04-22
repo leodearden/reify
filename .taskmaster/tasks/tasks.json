@@ -45210,11 +45210,16 @@
         "description": "Follow-up from task 2130 review. `gui/src/__tests__/viewport/DualViewport.test.tsx:114-124` defines `makeViewportStore` with a hand-rolled `setSplitRatio` that now duplicates the real store's `Number.isFinite` guard and `[0.1, 0.9]` clamp. This duplication is a drift risk: if `viewportStore.ts:188` grows additional validation (e.g. rejects negatives under a new policy, changes clamp bounds), the mock will silently diverge and tests that rely on the mock for store behavior will pass while production behavior differs.\n\nTwo possible fixes (reviewer_comprehensive):\n(a) Wrap the real `createViewportStore` in `makeViewportStore` and only spy on its methods — single source of truth for store semantics.\n(b) Keep the hand-rolled mock but add a direct equivalence test that asserts the mock's `setSplitRatio` behaves identically to the real one for representative inputs (NaN, Infinity, clamp boundaries at 0.1/0.9, normal values).\n\nPreferred approach: (a) — it makes the drift impossible by construction. The real store is already imported in k5/k6/k7, so the machinery is there.\n\nScope: only `gui/src/__tests__/viewport/DualViewport.test.tsx`. Verify full DualViewport test file still passes after refactor.\n\nmemory_hints:\n- search: \"Task 2130 DualViewport mock fidelity\"\n- files: gui/src/__tests__/viewport/DualViewport.test.tsx, gui/src/viewport/viewportStore.ts",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T05:43:18.626Z"
+        "updatedAt": "2026-04-22T06:21:19.419Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "f8cfdb637c424f6b84ff62c5fe6c6662986a6702"
+          }
+        }
       },
       {
         "id": "2134",
@@ -45248,9 +45253,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T06:16:19.833Z",
+      "lastModified": "2026-04-22T06:21:19.419Z",
       "taskCount": 2127,
-      "completedCount": 1865,
+      "completedCount": 1866,
       "tags": [
         "master"
       ]
