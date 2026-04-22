@@ -10326,7 +10326,19 @@
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/boundary5_engine.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "evaluate_let_bindings",
+              "TopologyTemplate",
+              "extract_dependency_trace"
+            ],
+            "queries": [
+              "evaluate_let_bindings extract_dependency_trace topological sort duplicate call",
+              "TopologyTemplate pre-compute sorted_let_ids let_cells compile time static expression graph"
+            ]
+          },
+          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
         },
         "updatedAt": "2026-04-21T22:22:04.816Z"
       },
