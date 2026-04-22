@@ -27,6 +27,28 @@
   flex: 1;
 }
 
+.actions {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  align-items: center;
+}
+
+.actionBtn {
+  background: none;
+  border: 1px solid var(--reify-subtext, #a6adc8);
+  border-radius: 3px;
+  color: var(--reify-text, #cdd6f4);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+
+.actionBtn:hover {
+  background: var(--reify-surface1, #45475a);
+}
+
 .close {
   background: none;
   border: none;
