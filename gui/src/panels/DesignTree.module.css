@@ -73,3 +73,8 @@
 .eyeIcon:hover {
   opacity: 1;
 }
+
+.stale {
+  opacity: 0.5;
+  font-style: italic;
+}

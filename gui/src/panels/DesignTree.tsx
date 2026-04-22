@@ -47,6 +47,10 @@ const DesignTree: Component<Props> = (props) => {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const [menu, setMenu] = createSignal<MenuState | null>(null);
 
+  // Stale paths: present in explicit overrides but absent from the current tree.
+  // Used to apply greyed styling to forward-compat stale-row display.
+  const stalePaths = createMemo(() => new Set(props.viewStateStore.getStalePaths()));
+
   // Unifies single and multi-selection: prefer selectedEntities when provided,
   // else fall back to [selectedEntity] (or empty). Returns a Set for O(1) lookup.
   const effectiveSelected = createMemo((): Set<string> => {
@@ -147,9 +151,10 @@ const DesignTree: Component<Props> = (props) => {
     return (
       <div class={styles.nodeWrapper} style={{ 'padding-left': `${depth * 16}px` }}>
         <div
-          classList={{ [styles.row]: true, [styles.selected]: effectiveSelected().has(node.entity_path) }}
+          classList={{ [styles.row]: true, [styles.selected]: effectiveSelected().has(node.entity_path), [styles.stale]: stalePaths().has(node.entity_path) }}
           data-testid={`tree-row-${node.entity_path}`}
           data-selected={effectiveSelected().has(node.entity_path) ? 'true' : undefined}
+          data-stale={stalePaths().has(node.entity_path) ? 'true' : undefined}
           onContextMenu={(e) => openMenu(node.entity_path, e)}
           onClick={(e) => {
             if (e.shiftKey && props.anchorEntity && props.onRangeSelect) {

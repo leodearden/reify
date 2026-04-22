@@ -912,18 +912,20 @@ describe('DesignTree — stale path rendering', () => {
   });
 
   it('row with a stale path gets data-stale="true"', () => {
-    // Root.A is in explicit but NOT in the store's nodeByPath (stale)
+    // Root.A is in explicit but NOT in the store's nodeByPath (stale).
+    // Use setTree([nodeB]) so nodeByPath is non-empty (required for getStalePaths to detect stale).
     const nodeA = makeNode({ entity_path: 'Root.A' });
+    const nodeB = makeNode({ entity_path: 'Root.B' });
     let store: ReturnType<typeof createViewStateStore>;
     createRoot(() => {
       store = createViewStateStore();
-      store.setTree([nodeA]);
+      store.setTree([nodeA, nodeB]);
       store.setVisibility('Root.A', 'hidden', false);
-      // Now remove Root.A from the tree so it becomes stale in nodeByPath
-      store.setTree([]);
+      // Swap to a tree that only has Root.B — Root.A becomes stale
+      store.setTree([nodeB]);
     });
     // Render DesignTree with Root.A synthetically (stale in store but present in tree prop)
-    render(() => <DesignTree tree={[nodeA]} viewStateStore={store!} />);
+    render(() => <DesignTree tree={[nodeA, nodeB]} viewStateStore={store!} />);
     const row = screen.getByTestId('tree-row-Root.A');
     expect(row.getAttribute('data-stale')).toBe('true');
   });
@@ -947,14 +949,16 @@ describe('DesignTree — stale path rendering', () => {
 
   it('getStalePaths() integration: stale row class returns the stale class', () => {
     const nodeA = makeNode({ entity_path: 'Root.A' });
+    const nodeB = makeNode({ entity_path: 'Root.B' });
     let store: ReturnType<typeof createViewStateStore>;
     createRoot(() => {
       store = createViewStateStore();
-      store.setTree([nodeA]);
+      store.setTree([nodeA, nodeB]);
       store.setVisibility('Root.A', 'hidden', false);
-      store.setTree([]);
+      // Swap to a tree without Root.A — it becomes stale
+      store.setTree([nodeB]);
     });
-    render(() => <DesignTree tree={[nodeA]} viewStateStore={store!} />);
+    render(() => <DesignTree tree={[nodeA, nodeB]} viewStateStore={store!} />);
     const row = screen.getByTestId('tree-row-Root.A');
     // The row should have the stale CSS class applied (indicative of greying)
     expect(row.className).toMatch(/stale/);
