@@ -25088,7 +25088,14 @@
         "subtasks": [],
         "updatedAt": "2026-04-22T10:01:22.091Z",
         "metadata": {
-          "modules": [],
+          "modules": [
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/tests/deprecated_use_tests.rs"
+          ],
           "files": []
         }
       },
@@ -45426,7 +45433,9 @@
       "completedCount": 1874,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T10:08:03.409Z",
+      "description": "Tasks for master context"
     }
   }
 }
