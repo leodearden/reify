@@ -45335,7 +45335,15 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "old_guard_val lookup guard_cell ValueCellId eval_state snapshot values engine_edit",
+              "guard value unchanged refactor helper extraction engine_edit.rs deduplication",
+              "Phase 1 Phase 3 guard skip logic edit_param edit_source consolidation"
+            ]
+          }
         }
       },
       {
