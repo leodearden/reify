@@ -45150,15 +45150,16 @@
         "description": "Follow-up from task 2125 review (esc-2125-73). Two related test-quality improvements to the reelaborate_guarded_group tests in crates/reify-eval/src/engine_edit.rs.",
         "details": "Two small, independent improvements surfaced in the task 2125 post-merge review:\n\n1. **Rename helper `run_active_case` → `run_with_guard_true`.**\n   Location: crates/reify-eval/src/engine_edit.rs:1968 (definition) and all call sites.\n   Rationale: the helper hardcodes `guard_val = Value::Bool(true)` and is used by tests that exercise *both* the active branch (members) and the inactive branch (else_members under guard=true), e.g. `reelaborate_guarded_group_inactive_else_member_without_default_expr_is_deactivated`. The current name implies \"active branch\" which is only half the story. A name that describes the input (`guard_val`) rather than the narrative is more accurate.\n\n2. **Add symmetric guard=false coverage** for the four new no-op / deactivation tests added in task 2125.\n   The four new tests at lines ~2243–2410 cover only `guard_val = Bool(true)`:\n     - active member with default_expr=None\n     - active member absent from graph\n     - inactive else_member with default_expr=None\n     - inactive else_member absent from graph\n   Under `guard_val = Bool(false)` the roles flip (`members` → inactive, `else_members` → active). A regression that diverged the two halves of the shared `for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)]` loop would not be caught by the current tests — the general guard=false test `reelaborate_guarded_group_activates_else_members_when_guard_false` only covers the happy path.\n\n   Either: (a) add four mirror tests covering guard=false × {active member missing default_expr, active member absent, inactive member no default_expr, inactive member absent}; (b) parameterize the eight cases via a helper that takes `guard_val` + role assignments; or (c) add a short comment at the top of the `guard_val = Bool(true)` test cluster explaining that symmetry is enforced by the shared loop and hence only one direction is pinned, and dismiss the coverage gap deliberately.\n\nmemory_hints:\n- search: \"task 2125 reelaborate_guarded_group\"\n- file: crates/reify-eval/src/engine_edit.rs (around lines 1960–2410)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T05:17:10.375Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T05:17:07.306Z",
+      "lastModified": "2026-04-22T05:17:10.375Z",
       "taskCount": 2123,
       "completedCount": 1859,
       "tags": [
