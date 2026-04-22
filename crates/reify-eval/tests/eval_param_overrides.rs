@@ -258,3 +258,76 @@ fn eval_skips_dimension_mismatched_override_and_emits_warning_diagnostic() {
         "override must survive a transient dimension-mismatch eval"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// step-9: partial mismatch — compatible overrides survive, mismatched warns
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// When two params are overridden and a subsequent module change invalidates
+/// one override but leaves the other compatible, eval() must:
+/// - honor the still-compatible override (no cross-contamination),
+/// - fall back to the default for the mismatched cell,
+/// - emit exactly one warning (about the mismatched cell only).
+///
+/// This locks the per-override independence contract that the deleted CLI-side
+/// `reapply_user_overrides_partial_mismatch_preserves_surviving_overrides_and_warns_for_mismatched`
+/// used to assert.  Acts as a regression lock: should PASS against the
+/// step-6/step-8 implementation because the override path is per-cell.
+#[test]
+fn eval_partial_mismatch_preserves_compatible_overrides_and_warns_only_for_mismatched() {
+    let mut engine = fresh_engine();
+    let width_id = ValueCellId::new("S", "width");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    // Module A: both params are Scalar[LENGTH]. Override both.
+    let module_a = compile_source(
+        "structure S { param width: Scalar = 100mm\n param thickness: Scalar = 5mm }",
+    );
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&width_id, length_scalar(0.12));
+    engine.set_param_and_invalidate(&thickness_id, length_scalar(0.004));
+
+    // Module B: width is now an Int (type-kind mismatch for its override);
+    //           thickness stays Scalar[LENGTH] (override remains compatible).
+    let module_b = compile_source(
+        "structure S { param width: Int = 80\n param thickness: Scalar = 5mm }",
+    );
+    let result_b = engine.eval(&module_b);
+
+    // (a) thickness override survives unchanged.
+    assert_eq!(
+        result_b.values.get(&thickness_id),
+        Some(&length_scalar(0.004)),
+        "compatible thickness override must survive a peer-cell mismatch"
+    );
+
+    // (b) width falls back to the Int default, override skipped.
+    assert_eq!(
+        result_b.values.get(&width_id),
+        Some(&Value::Int(80)),
+        "type-kind mismatched width override must fall back to the Int default"
+    );
+
+    // (c) Exactly ONE warning diagnostic: about S.width, not S.thickness.
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning for the partial mismatch, got: {:?}",
+        result_b.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("S.width"),
+        "warning should be about S.width, got: {:?}",
+        warnings[0].message
+    );
+    assert!(
+        !warnings[0].message.contains("S.thickness"),
+        "warning must not mention the compatible S.thickness cell, got: {:?}",
+        warnings[0].message
+    );
+}
