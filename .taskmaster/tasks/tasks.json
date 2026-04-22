@@ -9265,11 +9265,11 @@
         "description": "In `crates/reify-compiler/src/lib.rs`, the `detect_recursive_structures()` function iterates over `st.sccs` twice with an identical `is_cycle` predicate — once to build `in_cycle[]` and emit diagnostics (lines ~2451-2469), and again to build `cyclic_sccs` (lines ~2475-2486). This duplicated predicate creates a divergence risk: if the is_cycle logic is updated in one loop but not the other, `in_cycle` flags and `cyclic_sccs` silently diverge, breaking the contract with the termination-check pass.\n\nFix: Merge both loops into a single pass that simultaneously builds `in_cycle[]`, emits diagnostics, and pushes to `cyclic_sccs`. Compute `is_cycle` exactly once per SCC.\n\nMemory hints: search \"detect_recursive_structures Tarjan SCC\" for implementation context; get_entity \"TopologyTemplate\" for the is_recursive field.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:06:38.597Z",
+        "updatedAt": "2026-04-22T10:07:06.337Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [],
@@ -9283,7 +9283,7 @@
           "done_provenance": {
             "commit": "2bbe33c6ed3fb60ebaabe532ebc2a449bb0ae26a",
             "commit_input": "2bbe33c6e",
-            "note": "Loop merge landed 2026-03-25 as part of SCC module extraction; current scc.rs already implements the single-pass design at lines 67-108."
+            "note": "refactor(compiler): extract SCC module and merge duplicate is_cycle loops — landed on main 4 weeks ago; is_cycle is now computed once per SCC in crates/reify-compiler/src/scc.rs"
           }
         }
       },
@@ -45414,14 +45414,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:06:38.598Z",
+      "lastModified": "2026-04-22T10:07:06.337Z",
       "taskCount": 2140,
-      "completedCount": 1874,
+      "completedCount": 1875,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T10:06:40.913Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
