@@ -98,7 +98,7 @@ fn main() {
     // Emit the generated C++ header so occt_wrapper.cpp can include it.
     println!("cargo:rerun-if-changed=src/floor_constants.rs");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let cpp_floor_value = format!("{:e}", floor_constants::CPP_LINE_WIRE_MIN_LENGTH_SQ);
+    let cpp_floor_value = format!("{:.17e}", floor_constants::CPP_LINE_WIRE_MIN_LENGTH_SQ);
     let header_content = format!(
         "#pragma once\n\
          // Auto-generated from src/floor_constants.rs by build.rs. Do not edit.\n\
