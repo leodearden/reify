@@ -452,44 +452,33 @@ impl Engine {
                     let is_true = matches!(&guard_val, Value::Bool(true));
                     let is_false = matches!(&guard_val, Value::Bool(false));
 
-                    for mid in &group.members {
-                        if is_true {
-                            if let Some(node) = graph.value_cells.get(mid)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(
-                                    expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                    for (cells, is_active) in
+                        [(&group.members, is_true), (&group.else_members, is_false)]
+                    {
+                        for mid in cells {
+                            if is_active {
+                                if let Some(node) = graph.value_cells.get(mid)
+                                    && let Some(ref expr) = node.default_expr
+                                {
+                                    let val = reify_expr::eval_expr(
+                                        expr,
+                                        &reify_expr::EvalContext::new(&values, &functions)
+                                            .with_meta(&self.meta_map),
+                                    );
+                                    values.insert(mid.clone(), val.clone());
+                                    new_snapshot
+                                        .values
+                                        .insert(mid.clone(), (val, DeterminacyState::Determined));
+                                }
+                            } else {
+                                // Auto cells skipped — see `deactivate_if_not_auto` doc.
+                                deactivate_if_not_auto(
+                                    graph,
+                                    mid,
+                                    &mut values,
+                                    &mut new_snapshot.values,
                                 );
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
-                        } else {
-                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
-                        }
-                    }
-                    for mid in &group.else_members {
-                        if is_false {
-                            if let Some(node) = graph.value_cells.get(mid)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(
-                                    expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
-                                );
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
-                            }
-                        } else {
-                            // Auto cells skipped — see `deactivate_if_not_auto` doc.
-                            deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
                     }
                 }
