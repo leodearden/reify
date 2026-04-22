@@ -25736,7 +25736,25 @@
           "combined_at": "2026-04-20T11:31:29.226762+00:00",
           "done_provenance": {
             "commit": "f46c5714f1262133f292d307b7f62e34ddad1859"
-          }
+          },
+          "memory_hints": {
+            "entities": [
+              "ExtrudeSymmetric",
+              "compile_geometry_op",
+              "PrimitiveKind",
+              "ModifyKind",
+              "DEGENERATE_LENGTH_M",
+              "BooleanOp",
+              "eval_fill_form"
+            ],
+            "queries": [
+              "ExtrudeSymmetric degenerate threshold per-side vs total distance semantics",
+              "geometry op diagnostic Display Debug user-facing format missing required argument",
+              "compile_geometry_op missing arg early return fail-fast suppress downstream diagnostic",
+              "degenerate guard threshold magic number 1e-12 geometry_ops boundary test"
+            ]
+          },
+          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
         },
         "updatedAt": "2026-04-21T19:43:30.774Z"
       },
@@ -44152,7 +44170,9 @@
       "completedCount": 1822,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T00:05:06.501Z",
+      "description": "Tasks for master context"
     }
   }
 }
