@@ -44495,6 +44495,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T01:53:46.534Z"
+      },
+      {
+        "id": "2102",
+        "title": "engine_edit: fix role-flip probe count mismatch on intra-group duplicates",
+        "description": "engine_edit.rs ~L1435: `new_total != old_roles.len()` compares raw count vs deduped len; identical intra-group dups on both sides produce false role-flip. Spawned from task 2092 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44504,7 +44515,10 @@
       "completedCount": 1835,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:54:03.163Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T01:54:03.180Z"
     }
   }
 }
