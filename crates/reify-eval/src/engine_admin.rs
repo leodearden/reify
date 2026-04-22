@@ -198,6 +198,8 @@ impl Engine {
         &self.last_eval_set
     }
 
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
     /// Count of non-skipped guarded-group iterations across Phase 1 and Phase 3
     /// of the most recent `edit_source` or `edit_param` call.
     ///
@@ -209,6 +211,11 @@ impl Engine {
     /// (`phase1_reelaborated`) skips it before the counter is incremented
     /// (task 2140). Used by tests to assert that the per-group skip is working
     /// correctly.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method by adding a self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_guard_phase_group_evals(&self) -> usize {
         self.last_guard_phase_group_evals
     }

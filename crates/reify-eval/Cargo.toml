@@ -12,7 +12,12 @@ reify-syntax.workspace = true
 reify-compiler.workspace = true
 tracing.workspace = true
 
+[features]
+test-instrumentation = []
+
 [dev-dependencies]
+# Self-dev-dep enables `test-instrumentation`-gated accessors (e.g. Engine::last_guard_phase_group_evals) in integration tests; see src/engine_admin.rs
+reify-eval = { path = ".", features = ["test-instrumentation"] }
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-kernel-occt.workspace = true
 reify-constraints.workspace = true
