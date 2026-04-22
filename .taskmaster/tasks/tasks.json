@@ -44137,13 +44137,13 @@
         "description": "In engine_edit.rs edit_source Phase 4 (lines 1690-1817), the code removes collection-instance scoped cells via `new_snapshot.graph.value_cells.remove(&scoped_id)` and `values.remove(&scoped_id)`, but does NOT invalidate `self.cache` entries keyed by `NodeId::Value(scoped_id)`. A subsequent edit that re-adds a collection instance at the same index would find a stale cache entry from the previous incarnation.\n\nAlso: a `collection_sub` that is entirely REMOVED by the edit (no longer present in `new_snapshot.graph.collection_subs`) never has its scoped cells visited by Phase 4 at all — their cache entries are never invalidated. Latent because `Snapshot::from_compiled_module` rebuilds `graph.value_cells` from scratch, but `self.cache` is retained across edits.\n\nFix:\n1. In Phase 4's remove loop, call `self.cache.invalidate(&NodeId::Value(scoped_id))` for each removed scoped cell.\n2. Add a separate sweep that diffs old/new `graph.collection_subs`; for each entirely-removed collection_sub, enumerate its scoped_ids in the OLD graph and invalidate them.\n\nRegression test (tests/edit_source.rs): two-edit sequence grow collection → shrink → re-grow, assert the re-grown instance's value comes from a fresh evaluation (not a resurrected cache entry).\n\nmemory_hints:\n- search: \"collection_subs Phase 4 scoped cells\"\n- entity: \"CachedResult\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "2016"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:38:05.565Z",
+        "updatedAt": "2026-04-22T00:11:12.974Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -44210,14 +44210,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T00:04:25.724Z",
+      "lastModified": "2026-04-22T00:11:12.975Z",
       "taskCount": 2081,
       "completedCount": 1822,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T00:05:06.501Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
