@@ -21,10 +21,12 @@ fn compile_all(source: &str) -> (Vec<TopologyTemplate>, Vec<Diagnostic>) {
 }
 
 /// Helper: find a template by name in a list of templates.
+///
+/// Delegates to `reify_compiler::find_template` and panics if the template is absent —
+/// preserving the clear panic messages at the 31 call sites without changing their spelling.
+/// The fully-qualified path avoids shadowing the local name with the glob import.
 fn find_template<'a>(templates: &'a [TopologyTemplate], name: &str) -> &'a TopologyTemplate {
-    templates
-        .iter()
-        .find(|t| t.name == name)
+    reify_compiler::find_template(templates, name)
         .unwrap_or_else(|| panic!("expected template named '{}'", name))
 }
 
