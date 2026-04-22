@@ -21,11 +21,11 @@ use crate::annotations::{
     lower_annotations, optimized_target, validate_annotations, validate_pragmas,
 };
 use crate::compile_builder::ctx::CompilationCtx;
+use crate::CompiledModule;
 use crate::type_resolution::{
     TypeAliasRegistry, convert_type_params, resolve_enum_type, resolve_type_expr_with_aliases,
 };
 use crate::types::{CompiledConstraintDef, CompiledConstraintParam};
-use crate::CompiledModule;
 
 /// Format a constraint-def shadow-warning message for a name collision between two prelude modules.
 ///
@@ -303,18 +303,28 @@ mod tests {
             !registry.contains_key("Hidden"),
             "non-pub Hidden should be excluded from registry"
         );
-        assert_eq!(
-            registry["MinThickness"].span,
-            span_local,
-            "local MinThickness should override prelude (span 3,3)"
+        // ptr::eq is stronger than span equality: it pins the exact stored reference.
+        assert!(
+            std::ptr::eq(registry["MinThickness"], &local[1]),
+            "local MinThickness should override prelude (ptr identity to local[1])"
         );
 
         // Without local defs: first-imported prelude 'a' wins over 'b'.
         let registry_no_local = build_constraint_def_registry(&[], &[&m_a, &m_b]);
-        assert_eq!(
-            registry_no_local["MinThickness"].span,
-            span_a,
-            "first-imported prelude 'a' should win over 'b' (span 1,1)"
+        assert!(
+            std::ptr::eq(registry_no_local["MinThickness"], &m_a.constraint_defs[0]),
+            "first-imported prelude 'a' should win over 'b' (ptr identity to m_a.constraint_defs[0])"
+        );
+
+        // Empty-prelude baseline: local defs populate the registry without panicking.
+        let local_only = build_constraint_def_registry(&local, &[]);
+        assert!(
+            local_only.contains_key("MinThickness"),
+            "local MinThickness should be present with empty prelude"
+        );
+        assert!(
+            local_only.contains_key("WallWidth"),
+            "local WallWidth should be present with empty prelude"
         );
     }
 }
