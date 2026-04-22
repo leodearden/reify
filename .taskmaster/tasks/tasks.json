@@ -8559,7 +8559,10 @@
         "subtasks": [],
         "metadata": {
           "modules": [
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/engine_build.rs",
             "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/edit_source.rs"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
@@ -8576,7 +8579,7 @@
             ]
           },
           "files": [],
-          "_causation_id": "5ee8c6ff-4cfb-495f-b008-c4eecb34ed54"
+          "_causation_id": "f6512fb7-cad5-4e80-86da-ddbca8dc0e37"
         },
         "updatedAt": "2026-04-22T04:21:56.396Z"
       },
@@ -45124,7 +45127,9 @@
       "completedCount": 1857,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T04:56:37.758Z",
+      "description": "Tasks for master context"
     }
   }
 }
