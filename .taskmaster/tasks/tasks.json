@@ -41589,12 +41589,8 @@
         "subtasks": [],
         "updatedAt": "2026-04-20T12:20:07.321Z",
         "metadata": {
-          "files": [
-            "crates/reify-compiler/src/conformance.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/src"
-          ]
+          "files": [],
+          "modules": []
         }
       },
       {
@@ -41659,14 +41655,8 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-compiler/tests/trait_merge_tests.rs",
-            "crates/reify-compiler/src/conformance.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-compiler/src"
-          ]
+          "files": [],
+          "modules": []
         },
         "updatedAt": "2026-04-20T12:20:07.381Z"
       },
