@@ -26,6 +26,8 @@ impl fmt::Display for ModulePathParseError {
     }
 }
 
+impl std::error::Error for ModulePathParseError {}
+
 /// Path to a module in the project (e.g., "bracket" or "lib/fasteners/bolt").
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModulePath(pub Vec<String>);
