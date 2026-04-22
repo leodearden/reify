@@ -45311,6 +45311,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-22T07:24:12.588Z"
+      },
+      {
+        "id": "2140",
+        "title": "Dedup Phase 3 reelaboration in edit_param against Phase 1 (or document baseline counter=2)",
+        "description": "In crates/reify-eval/src/engine_edit.rs edit_param (Phase 1 around lines 480-530, Phase 3 around lines 711-770), Phase 1 and Phase 3 can both reelaborate the SAME group when a guard value actually changes. The per-group skip (added by task 2088) does not deduplicate across phases: Phase 1 updates the guard cell in `values`, but `old_guard_val` in Phase 3 is still pulled from `self.eval_state` (pre-edit snapshot), so the comparison correctly detects a real value change and does NOT skip — Phase 3 redoes Phase 1's work.\n\nNot a correctness bug (reelaboration is idempotent), but a missed optimisation. The current counter-baseline of 2 (recently tightened by commit 88dc7a37f) bakes this behavior in.\n\nChoose one:\n(a) Track a per-edit `phase1_reelaborated: HashSet<GuardedGroupId>` (or equivalent) populated in Phase 1, consulted in Phase 3 to skip already-processed groups. Update perf-lock tests to expect counter=1 after the dedup.\n(b) Document explicitly on the `last_guard_phase_group_evals` field doc-comment (lib.rs:209-215) that Phase 1 and Phase 3 both count each affected group by design, so test authors know why counter==2 is the intended baseline.\n\nOption (a) is the real perf win; option (b) is minimum-effort disclosure.\n\nSource: post-merge review suggestion on task 2088 (merge commit 90804da34).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45320,7 +45331,10 @@
       "completedCount": 1869,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T07:24:43.986Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T07:24:44.005Z"
     }
   }
 }
