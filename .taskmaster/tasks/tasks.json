@@ -44593,14 +44593,25 @@
       {
         "id": "2105",
         "title": "Scope make_polyline_wire FFI: test-only gate or explicit stable-surface doc",
-        "description": "Decide whether make_polyline_wire (added in task 2095 for composite-wire tangent tests) belongs in the production FFI surface or should be gated to test-only builds.",
-        "details": "Post-merge review of task 2095 (reviewer_comprehensive) noted that `make_polyline_wire` (crates/reify-kernel-occt/cpp/occt_wrapper.cpp:897-934, plus its exports in the C++ header and cxx bridge) is consumed only by two FFI tests — the composite-wire start-tangent tests. Because it is public in the bridge, it becomes part of the kernel FFI surface indefinitely purely for test scaffolding.\n\nTwo acceptable resolutions:\n\n(a) **Gate behind a test-only cfg/feature.** Move the function (C++ side, header, and cxx bridge declaration) behind a `#[cfg(any(test, feature = \"test-helpers\"))]`-equivalent so production builds do not expose it. If the C++ side cannot easily be conditionally compiled, build the two-segment composite wire in C++ by wiring two `make_line_wire` outputs via a small test-only helper, keeping the production FFI lean.\n\n(b) **Document as intentional stable FFI.** Update the header comment on `make_polyline_wire` to state explicitly that it is part of the stable FFI surface for future polyline use cases, not just CompCurve testing — the current comment only justifies it for the tests.\n\nChoose based on whether polyline construction is a likely near-term production need. Touches:\n- crates/reify-kernel-occt/cpp/occt_wrapper.cpp\n- crates/reify-kernel-occt/cpp/occt_wrapper.h (header export)\n- crates/reify-kernel-occt/src/ffi*.rs (cxx bridge)\n- the two tests that consume it (no functional change expected).",
-        "testStrategy": "",
+        "description": "Decide whether make_polyline_wire (added in task 2095 for composite-wire tangent tests) belongs in the production FFI surface or should be gated to test-only builds. Additionally, incorporate memory hints to optimize execution context prefetching.",
         "status": "in-progress",
         "dependencies": [],
         "priority": "low",
+        "details": "Post-merge review of task 2095 (reviewer_comprehensive) noted that `make_polyline_wire` (crates/reify-kernel-occt/cpp/occt_wrapper.cpp:897-934, plus its exports in the C++ header and cxx bridge) is consumed only by two FFI tests — the composite-wire start-tangent tests. Because it is public in the bridge, it becomes part of the kernel FFI surface indefinitely purely for test scaffolding.\n\nTwo acceptable resolutions:\n\n(a) **Gate behind a test-only cfg/feature.** Move the function (C++ side, header, and cxx bridge declaration) behind a `#[cfg(any(test, feature = \"test-helpers\"))]`-equivalent so production builds do not expose it. If the C++ side cannot easily be conditionally compiled, build the two-segment composite wire in C++ by wiring two `make_line_wire` outputs via a small test-only helper, keeping the production FFI lean.\n\n(b) **Document as intentional stable FFI.** Update the header comment on `make_polyline_wire` to state explicitly that it is part of the stable FFI surface for future polyline use cases, not just CompCurve testing — the current comment only justifies it for the tests.\n\nChoose based on whether polyline construction is a likely near-term production need.\n\nMemory hints:\n- Search: \"make_polyline_wire FFI test-only cfg feature production surface\"\n- Search: \"task 2095 pipe start-tangent composite wire test scaffolding\"\n- Entity: \"GeometryOp::Pipe\"\n\nTouches:\n- crates/reify-kernel-occt/cpp/occt_wrapper.cpp\n- crates/reify-kernel-occt/cpp/occt_wrapper.h (header export)\n- crates/reify-kernel-occt/src/ffi*.rs (cxx bridge)\n- the two tests that consume it (no functional change expected).",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:58:43.495Z"
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "GeometryOp::Pipe"
+            ],
+            "queries": [
+              "make_polyline_wire FFI test-only cfg feature production surface",
+              "task 2095 pipe start-tangent composite wire test scaffolding"
+            ]
+          },
+          "_causation_id": "295b905c-95f4-440c-8090-7792215e35ba"
+        }
       },
       {
         "id": "2106",
@@ -44775,7 +44786,9 @@
       "completedCount": 1837,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T02:22:32.316Z",
+      "description": "Tasks for master context"
     }
   }
 }
