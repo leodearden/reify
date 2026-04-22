@@ -45373,7 +45373,10 @@
           "memory_hints": {
             "entities": [],
             "queries": [
-              "resolution for: Clean up test-instrumentation wire-up: drop redundant surface test, document Cargo self-dev-dep"
+              "reify-eval module lock contention hot module max_per_module",
+              "self-dev-dep Cargo.toml test-instrumentation feature reify-eval",
+              "test_instrumentation_surface.rs Engine::last_guard_phase_group_evals integration test",
+              "cargo test reify-eval suite performance timeout"
             ]
           }
         }
