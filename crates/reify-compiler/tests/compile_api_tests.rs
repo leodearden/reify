@@ -1088,6 +1088,40 @@ fn compile_pipe_produces_sweep_pipe_kind_with_path_ref() {
 }
 
 #[test]
+fn compile_pipe_omits_path_placeholder() {
+    // SweepKind::Pipe should carry only ("radius", ...) in args; the inert
+    // "path" placeholder should be removed (task-383 S6 red).
+    let source = r#"structure S {
+    let r = pipe(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm), 2mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_pipe_no_path_arg"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+    let ops = &compiled.templates[0].realizations[0].operations;
+    match &ops[1] {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Pipe,
+            args,
+            ..
+        } => {
+            assert_eq!(
+                args.len(),
+                1,
+                "pipe args should contain only 'radius', got {:?}",
+                args.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
+            assert_eq!(args[0].0, "radius", "sole arg should be 'radius', got {:?}", args[0].0);
+        }
+        other => panic!("expected Sweep{{Pipe}} at ops[1], got {:?}", other),
+    }
+}
+
+#[test]
 fn compile_pipe_wrong_arg_count() {
     // pipe with 1 arg (should need 2)
     let source = r#"structure S {
