@@ -44703,11 +44703,18 @@
         "description": "deps.rs::take_trace panic only names sorted_set_name and hard-codes 'the trace map'. Add a second &'static str trace_map_name param so panic restores original informativeness (e.g. 'sorted_lets entries are always keys in let_traces'). Update the two call sites in engine_eval.rs and unfold.rs. Run cargo test -p reify-eval. Spawned from task 2096 review suggestion.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:07:44.972Z"
+        "updatedAt": "2026-04-22T02:12:27.112Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/deps.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/unfold.rs"
+          ]
+        }
       },
       {
         "id": "2113",
@@ -44752,15 +44759,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T02:11:25.668Z",
-      "taskCount": 2106,
+      "lastModified": "2026-04-22T02:12:27.113Z",
+      "taskCount": 2107,
       "completedCount": 1836,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T02:12:16.308Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T02:12:22.794Z"
+      ]
     }
   }
 }
