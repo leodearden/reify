@@ -8559,20 +8559,27 @@
         "subtasks": [],
         "metadata": {
           "modules": [
-            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/unfold.rs",
             "crates/reify-eval/tests/meta_eval_integration.rs",
-            "crates/reify-runtime/src/concurrent_eval.rs",
-            "crates/reify-runtime/tests/concurrent_eval.rs"
+            "crates/reify-runtime/src/concurrent_eval.rs"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "evaluate_let_bindings",
+              "meta_map",
+              "TopologyTemplate"
+            ],
             "queries": [
-              "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
+              "task 2032 engine_*.rs split restructuring reify-eval lib.rs",
+              "meta_map performance review suggestions task 212 hot-path clones",
+              "task 470 eliminate redundant computation let_bindings"
             ]
           },
           "files": [],
-          "_causation_id": "e4f619eb-8acf-4a83-a696-3b1cd5162acb"
+          "_causation_id": "5ee8c6ff-4cfb-495f-b008-c4eecb34ed54"
         },
         "updatedAt": "2026-04-22T04:21:56.396Z"
       },
@@ -45040,7 +45047,9 @@
       "completedCount": 1851,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T04:22:32.365Z",
+      "description": "Tasks for master context"
     }
   }
 }
