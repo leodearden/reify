@@ -1216,7 +1216,7 @@ impl Engine {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, debug_assertions))]
 mod invariant_tests {
     use reify_compiler::ValueCellKind;
     use reify_types::{ContentHash, Type, ValueCellId};
