@@ -44502,23 +44502,21 @@
         "description": "engine_edit.rs ~L1435: `new_total != old_roles.len()` compares raw count vs deduped len; identical intra-group dups on both sides produce false role-flip. Spawned from task 2092 review.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-22T01:54:22.093Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T01:53:46.542Z",
-      "taskCount": 2093,
+      "lastModified": "2026-04-22T01:54:22.096Z",
+      "taskCount": 2094,
       "completedCount": 1835,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T01:54:03.163Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-22T01:54:03.180Z"
+      ]
     }
   }
 }
