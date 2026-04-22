@@ -45425,7 +45425,19 @@
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/tests/guard_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "engine_edit.rs",
+              "guarded_groups",
+              "phase1_reelaborated"
+            ],
+            "queries": [
+              "guarded_groups clone post-wave2 cleanup edit_param allocation avoidance",
+              "phase1_reelaborated iterate guard_cell lookup avoid O(guarded_groups) clone",
+              "edit_param post-wave2 cleanup borrow scope refactor"
+            ]
+          }
         }
       },
       {
