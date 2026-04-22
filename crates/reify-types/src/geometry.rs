@@ -20,6 +20,7 @@ impl GeometryHandleId {
     /// Domain-separated with tag byte [11] followed by the id as le_bytes.
     /// This serves as a proxy hash since OCCT shapes can't be hashed directly.
     pub fn content_hash(&self) -> ContentHash {
+        debug_assert_ne!(self.0, u64::MAX, "INVALID handle must not be hashed");
         let mut buf = [0u8; 9];
         buf[0] = 11;
         buf[1..].copy_from_slice(&self.0.to_le_bytes());
@@ -454,11 +455,20 @@ mod tests {
     fn geometry_handle_id_content_hash_distinct() {
         let h1 = GeometryHandleId(0).content_hash();
         let h2 = GeometryHandleId(1).content_hash();
-        let h3 = GeometryHandleId(u64::MAX).content_hash();
+        // Use u64::MAX - 1 (not INVALID = u64::MAX) to avoid triggering the
+        // debug_assert in content_hash() while still proving distinctness.
+        let h3 = GeometryHandleId(u64::MAX - 1).content_hash();
 
         assert_ne!(h1, h2);
         assert_ne!(h1, h3);
         assert_ne!(h2, h3);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "INVALID handle must not be hashed")]
+    fn geometry_handle_id_content_hash_invalid_panics() {
+        let _ = GeometryHandleId::INVALID.content_hash();
     }
 
     #[test]

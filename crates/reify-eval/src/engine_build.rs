@@ -331,7 +331,7 @@ impl Engine {
             }
         }
         // Discard intermediate handles from partially-failed realizations
-        let rolled_back = had_failure || step_handles.len() - handle_start < operations.len();
+        let rolled_back = had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
         if rolled_back {
             step_handles.truncate(handle_start);
         } else if let Some(name) = realization_name {
