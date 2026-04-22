@@ -146,30 +146,34 @@ pub(crate) fn phase_constraint_defs(
     prelude: &[&crate::CompiledModule],
     trait_names: &HashSet<String>,
 ) {
-    // Build the set of structure/occurrence names in scope: local names filtered
-    // from seen_entity_names by kind, plus exported template names from every
+    // Lazily built on first Declaration::Constraint; modules with zero
+    // constraint defs skip this allocation entirely.  The set contains
+    // structure/occurrence names in scope: local names filtered from
+    // seen_entity_names by kind, plus exported template names from every
     // prelude module.  This mirrors the trait_names building pattern in
     // phase_traits (traits_phase.rs:71-79).
-    let structure_names: HashSet<String> = ctx
-        .seen_entity_names
-        .iter()
-        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
-        .map(|(name, _)| name.clone())
-        .chain(
-            prelude
-                .iter()
-                .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
-        )
-        .collect();
+    let mut structure_names: Option<HashSet<String>> = None;
 
     for decl in &parsed.declarations {
         if let reify_syntax::Declaration::Constraint(c) = decl {
+            let names = structure_names.get_or_insert_with(|| {
+                ctx.seen_entity_names
+                    .iter()
+                    .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+                    .map(|(name, _)| name.clone())
+                    .chain(
+                        prelude
+                            .iter()
+                            .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
+                    )
+                    .collect()
+            });
             let compiled = compile_constraint_def(
                 c,
                 &ctx.alias_registry,
                 &ctx.resolution_enums,
                 trait_names,
-                &structure_names,
+                names,
                 &mut ctx.diagnostics,
             );
             ctx.constraint_defs.push(compiled);
