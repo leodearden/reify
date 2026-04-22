@@ -634,3 +634,78 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
     let msg = err.to_string();
     assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
 }
+
+// --- PersistentViewState serde tests (step-7) ---
+
+#[test]
+fn persistent_view_state_serde_roundtrip() {
+    use crate::types::{CameraStateData, PersistentViewState, ViewDefinitionData};
+
+    let mut cameras = std::collections::HashMap::new();
+    cameras.insert(
+        "design".to_string(),
+        CameraStateData {
+            position: [1.0, 2.0, 3.0],
+            target: [0.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            zoom: 1.5,
+        },
+    );
+
+    let mut visibility = std::collections::HashMap::new();
+    visibility.insert("Bracket.flange".to_string(), "show".to_string());
+
+    let mut explicit = std::collections::HashMap::new();
+    explicit.insert("Bracket.body".to_string(), "ghost".to_string());
+
+    let state = PersistentViewState {
+        version: "1".to_string(),
+        active_view_id: "user:my-view".to_string(),
+        user_views: vec![ViewDefinitionData {
+            id: "user:my-view".to_string(),
+            name: "My View".to_string(),
+            auto: false,
+            visibility,
+            modified: Some(true),
+        }],
+        explicit,
+        viewport_cameras: cameras,
+        timestamp: "2026-04-22T12:00:00Z".to_string(),
+    };
+
+    // Serialise to JSON and back.
+    let json = serde_json::to_string_pretty(&state).expect("serialise should succeed");
+    let loaded: PersistentViewState =
+        serde_json::from_str(&json).expect("deserialise should succeed");
+
+    assert_eq!(loaded, state, "round-trip should preserve all fields");
+}
+
+#[test]
+fn persistent_view_state_json_uses_camel_case_keys() {
+    use crate::types::PersistentViewState;
+
+    let state = PersistentViewState {
+        version: "1".to_string(),
+        active_view_id: "auto:default".to_string(),
+        user_views: vec![],
+        explicit: std::collections::HashMap::new(),
+        viewport_cameras: std::collections::HashMap::new(),
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+    };
+
+    let v = serde_json::to_value(&state).expect("serialise should succeed");
+    // Keys must be camelCase to match the TypeScript PersistentViewState interface.
+    assert!(v.get("activeViewId").is_some(), "activeViewId key must be present");
+    assert!(v.get("userViews").is_some(), "userViews key must be present");
+    assert!(v.get("viewportCameras").is_some(), "viewportCameras key must be present");
+    // Snake_case equivalents must NOT appear.
+    assert!(v.get("active_view_id").is_none(), "snake_case active_view_id must not appear");
+    assert!(v.get("user_views").is_none(), "snake_case user_views must not appear");
+}
+
+#[test]
+fn persistent_view_state_ipc_contract() {
+    use crate::types::PersistentViewState;
+    super::assert_ipc_contract::<PersistentViewState>();
+}
