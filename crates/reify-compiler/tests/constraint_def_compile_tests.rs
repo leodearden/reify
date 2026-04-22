@@ -1084,3 +1084,84 @@ constraint def FitsWall {
         def.params[0].name
     );
 }
+
+// ── Test 19: constraint def with prelude structure param type compiles cleanly ─
+
+/// A constraint def whose param type is a structure exported from an imported
+/// module must compile without any "unknown type" error diagnostic.
+///
+/// Cross-module regression: the structure_names set must include template names
+/// from the prelude (imported modules), not just locally-defined structures.
+///
+/// This test is meant to fail before step-4 wires up the prelude-template chain
+/// in `phase_constraint_defs`. Since step-2 already chains prelude templates
+/// into structure_names, it should pass at step-3 commit time — acting as a
+/// belt-and-suspenders confirmation that the prelude path is covered.
+#[test]
+fn constraint_def_with_prelude_structure_param_type_compiles_cleanly() {
+    use std::fs;
+
+    let (_tmp, dir) = fresh_project_dir();
+
+    // Module a: exports a pub structure Wall
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure Wall {\n    param t: Length = 5mm\n}\n",
+    )
+    .unwrap();
+
+    // Module b: imports a, defines a constraint def with Wall as a param type
+    fs::write(
+        dir.join("b.ri"),
+        concat!(
+            "import a\n",
+            "constraint def FitsWall {\n",
+            "    param w: Wall\n",
+            "    w.t > 0mm\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("b", &resolver);
+
+    assert!(
+        result.is_ok(),
+        "expected compilation to succeed, got: {:?}",
+        result.unwrap_err()
+    );
+
+    let compiled_b = dag.modules.get("b").expect("compiled module 'b' not found");
+
+    // No "unknown type" error must be emitted for the imported structure param type.
+    let unknown_type_errors: Vec<_> = compiled_b
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.starts_with("unknown type '")
+                && d.message.contains("Wall")
+        })
+        .collect();
+    assert!(
+        unknown_type_errors.is_empty(),
+        "expected no 'unknown type' error for imported structure 'Wall' \
+         as param type in constraint def, got: {:?}",
+        unknown_type_errors
+    );
+
+    // Positive shape assertion: FitsWall must be present in module b's compiled output.
+    let def = compiled_b
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "FitsWall")
+        .expect("FitsWall constraint def must be present in compiled module b");
+    assert_eq!(
+        def.params.len(),
+        1,
+        "expected FitsWall to have 1 param (w), got {}",
+        def.params.len()
+    );
+}
