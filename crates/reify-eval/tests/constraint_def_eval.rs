@@ -11,14 +11,9 @@ use reify_types::{
     DiagnosticLabel, Satisfaction, Severity, SourceSpan,
 };
 
-// ── step-3: violated constraint def produces labeled diagnostic ───────────────
-
-/// A violated constraint def instantiation should produce:
-/// - A ConstraintCheckEntry with satisfaction==Violated and label==Some("MinWall#0[0]")
-/// - At least one Error diagnostic containing the string "MinWall#0[0]"
-#[test]
-fn violated_constraint_def_produces_labeled_diagnostic() {
-    let source = r#"
+/// Shared fixture: violated single-predicate constraint def instantiation.
+/// `thickness = 1` means `wall > 2` is Violated, producing label `MinWall#0[0]`.
+const MIN_WALL_SOURCE: &str = r#"
 constraint def MinWall {
     param wall: Length
     wall > 2
@@ -28,7 +23,15 @@ structure S {
     constraint MinWall(wall: thickness)
 }
 "#;
-    let result = check_source(source);
+
+// ── step-3: violated constraint def produces labeled diagnostic ───────────────
+
+/// A violated constraint def instantiation should produce:
+/// - A ConstraintCheckEntry with satisfaction==Violated and label==Some("MinWall#0[0]")
+/// - At least one Error diagnostic containing the string "MinWall#0[0]"
+#[test]
+fn violated_constraint_def_produces_labeled_diagnostic() {
+    let result = check_source(MIN_WALL_SOURCE);
 
     // Exactly one constraint result
     assert_eq!(
@@ -546,23 +549,42 @@ impl ConstraintChecker for NonEmbeddingChecker {
 /// 2. Exactly one `Severity::Error` diagnostic is present.
 /// 3. The diagnostic message is the domain text "wall thickness below minimum"
 ///    unchanged — the engine must pass it through verbatim when the raw id is absent.
+/// 4. The engine still attaches the friendly label (`Some("MinWall#0[0]")`) to the
+///    `ConstraintCheckEntry` even when the checker's message omits the raw id —
+///    confirming that label attachment is independent of message content.
 #[test]
 fn non_embedding_checker_does_not_panic_on_labeled_constraint() {
-    let source = r#"
-constraint def MinWall {
-    param wall: Length
-    wall > 2
-}
-structure S {
-    param thickness: Length = 1
-    constraint MinWall(wall: thickness)
-}
-"#;
-    let compiled = parse_and_compile(source);
+    let compiled = parse_and_compile(MIN_WALL_SOURCE);
     let mut engine = reify_eval::Engine::new(Box::new(NonEmbeddingChecker), None);
     // Before the fix this panics with debug_assert! ("id format drift?").
     // After the fix it must return normally.
     let result = engine.check(&compiled);
+
+    // The engine must surface exactly one ConstraintCheckEntry, with the
+    // Violated satisfaction reported by NonEmbeddingChecker and the engine-
+    // attached friendly label — even though the checker's diagnostic message
+    // never embedded the raw ConstraintNodeId.
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected 1 constraint result, got: {:?}",
+        result.constraint_results
+    );
+    let entry = &result.constraint_results[0];
+    assert_eq!(
+        entry.satisfaction,
+        Satisfaction::Violated,
+        "expected Violated (NonEmbeddingChecker always reports Violated), got: {:?}",
+        entry.satisfaction
+    );
+    assert_eq!(
+        entry.label,
+        Some("MinWall#0[0]".to_string()),
+        "expected engine-attached friendly label Some(\"MinWall#0[0]\") \
+         even though NonEmbeddingChecker's message omits the raw ConstraintNodeId, \
+         got: {:?}",
+        entry.label
+    );
 
     let errors = error_diags(&result.diagnostics);
     assert_eq!(
@@ -586,8 +608,10 @@ structure S {
 /// WARN level.
 ///
 /// Uses `CountingSubscriberBuilder` with `Level::DEBUG` and a `target_prefix`
-/// of `"reify_eval"` so that only events from this crate are counted, avoiding
-/// interference from any debug instrumentation in transitive dependencies.
+/// of `"reify_eval::engine_constraints"` — the module path of `labeled_diagnostics`,
+/// where the drift signal is emitted — so that only events from that specific module
+/// are counted, pinning the assertion to the drift branch and avoiding interference
+/// from debug instrumentation elsewhere in the crate or its transitive dependencies.
 #[test]
 fn drift_signal_fires_for_non_embedding_checker() {
     use std::sync::atomic::Ordering;
@@ -595,23 +619,13 @@ fn drift_signal_fires_for_non_embedding_checker() {
 
     let (subscriber, counters) = CountingSubscriberBuilder::new()
         .count_level(tracing::Level::DEBUG)
-        .target_prefix("reify_eval")
+        .target_prefix("reify_eval::engine_constraints")
         .build();
     // Clone the Arc before moving `counters` into the closure so we can read
     // the count after the subscriber is dropped.
     let debug_arc = counters[&tracing::Level::DEBUG].clone();
 
-    let source = r#"
-constraint def MinWall {
-    param wall: Length
-    wall > 2
-}
-structure S {
-    param thickness: Length = 1
-    constraint MinWall(wall: thickness)
-}
-"#;
-    let compiled = parse_and_compile(source);
+    let compiled = parse_and_compile(MIN_WALL_SOURCE);
     let mut engine = reify_eval::Engine::new(Box::new(NonEmbeddingChecker), None);
 
     tracing::subscriber::with_default(subscriber, || {
