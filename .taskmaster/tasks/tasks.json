@@ -44165,7 +44165,11 @@
             "queries": [
               "resolution for: edit_source Phase 4: invalidate cache for removed collection scoped cells and entirely-removed collection_subs"
             ]
-          }
+          },
+          "modules": [
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/tests/edit_source.rs"
+          ]
         }
       },
       {
@@ -44247,7 +44251,9 @@
       "completedCount": 1825,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T00:36:18.555Z",
+      "description": "Tasks for master context"
     }
   }
 }
