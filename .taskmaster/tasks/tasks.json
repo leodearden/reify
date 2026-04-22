@@ -44048,15 +44048,20 @@
         "description": "Post-merge cleanup for task 2035. Three related items in crates/reify-compiler/src/compile_builder/: (1) retarget stale 'above/below' pre-pass comments in entities_phase.rs L88-145 to name the sibling modules (e.g. 'Already compiled by functions_phase::phase_functions'); (2) lift the duplicate-filter in entities_phase::compile_entity_decl L178-183 into an explicit CompilationCtx method fn is_first_entity_def(&self, name: &str, span: SourceSpan) -> bool and share it with pre_pass; (3) extract fn build_constraint_def_registry(local, prelude) to mirror build_trait_registry, replacing the inline rebuild in phase_entities L54-66. No behavior change — cargo test -p reify-compiler must still pass.",
         "details": "",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:04:25.091Z",
+        "updatedAt": "2026-04-22T00:18:08.765Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "fd861d5c82a1ca2ab40a703768f3597ad170bdbc",
+            "commit_input": "fd861d5c8",
+            "note": "All three task-description items landed on main across step-1..step-6 commits (97b805ff7, 20302bc12, 5d93aee2b, 2d46c0633, bcdba5fd0, fd861d5c8). Verified: ctx.rs has is_first_entity_def + record_or_report_duplicate; entities_phase.rs has build_constraint_def_registry at L41 used at L79; pre_pass.rs uses is_first_entity_def via record_or_report_duplicate; comment arms name actual sibling modules. cargo test -p reify-compiler --lib passes. Task was previously cancelled in error; restoring to done."
+          }
         }
       },
       {
@@ -44210,9 +44215,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T00:16:47.492Z",
+      "lastModified": "2026-04-22T00:18:08.765Z",
       "taskCount": 2081,
-      "completedCount": 1822,
+      "completedCount": 1823,
       "tags": [
         "master"
       ]
