@@ -373,7 +373,10 @@ pub(super) fn check_phase_pre_register_default_types(
 /// For `DefaultKind::Let { cell_type: None, .. }` entries, the advertised type is the inferred
 /// result type from `inferred_let_exprs` (populated by phase 3's Pass 2). Falls back to
 /// `Type::Real` if the name is absent from the cache — this covers the edge case where Pass 2
-/// itself encountered a compilation error for the let expression.
+/// itself encountered a compilation error for the let expression. A `debug_assert!` guards the
+/// fallback: any name reaching it must be in `pass2_skipped` (which would have short-circuited
+/// above), so hitting the `Type::Real` branch in practice indicates a Pass-2 contract break — the
+/// same drift mode that would re-introduce the phantom-type-mismatch bug task 1951 Option B fixed.
 pub(super) fn check_phase_build_available_defaults_map(
     ctx: &MergeContext,
     inferred_let_exprs: &HashMap<String, CompiledExpr>,
@@ -396,6 +399,10 @@ pub(super) fn check_phase_build_available_defaults_map(
                         return None;
                     }
                     let resolved = cell_type.clone().unwrap_or_else(|| {
+                        debug_assert!(
+                            inferred_let_exprs.contains_key(name),
+                            "unannotated Let '{name}' absent from inferred_let_exprs and not in pass2_skipped — Pass 2 contract broken; Type::Real fallback would re-introduce the phantom-type-mismatch bug fixed by task 1951 Option B"
+                        );
                         inferred_let_exprs
                             .get(name)
                             .map(|e| e.result_type.clone())
