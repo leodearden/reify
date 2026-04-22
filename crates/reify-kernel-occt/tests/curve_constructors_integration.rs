@@ -3,6 +3,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
+use reify_kernel_occt::RUST_GUARD_MARKER;
 use reify_types::{GeometryError, GeometryOp, ReprKind};
 
 // --- LineSegment ---
@@ -28,8 +29,8 @@ fn line_segment_coincident_points_returns_error() {
     match result {
         Err(GeometryError::OperationFailed(msg)) => {
             assert!(
-                msg.contains("[rust-guard]"),
-                "expected Rust-guard error (containing '[rust-guard]' marker), got: {msg}"
+                msg.contains(RUST_GUARD_MARKER),
+                "expected Rust-guard error (containing {RUST_GUARD_MARKER:?} marker), got: {msg}"
             );
         }
         Ok(_) => panic!("expected error for coincident points, got Ok"),
