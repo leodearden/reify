@@ -44951,18 +44951,21 @@
         "description": "Polish refactor in crates/reify-eval/src/engine_edit.rs: extract the duplicated guard re-elaboration loop into a helper, and add a borrow-scope comment on the hoisted eval_state binding.",
         "details": "Two follow-ups from task 471's review (esc-471-63, suggestions 2 and 3 from reviewer_comprehensive):\n\n**(A) Extract `reelaborate_guarded_group` helper** (engine_edit.rs ~452-483 and ~693-723):\nAfter task 471's consolidation, the two members/else_members re-elaboration blocks are now structurally identical save for `graph` vs `new_snapshot.graph` and small wording differences — one in the Phase 1 guard re-elaboration (~line 452), one in the post-resolution phase (~line 693). Extract a private helper with signature roughly:\n```\nfn reelaborate_guarded_group(\n    graph: &Graph,\n    group: &GuardedGroup,\n    guard_val: &Value,\n    values: &mut ValueMap,\n    snapshot_values: &mut SnapshotValues,\n    ctx: &ReelaborateCtx,  // meta_map, functions, etc.\n)\n```\nBoth call sites then reduce to one line. Verify by diffing the two blocks and confirming behavior is preserved (eval_expr call, values.insert, deactivate_if_not_auto branch, DeterminacyState::Determined for active cells).\n\n**(B) Borrow-scope comment at engine_edit.rs:933**:\nTask 471 hoisted `let eval_state = self.eval_state.as_ref().unwrap();` out of the step-8 scope. The code relies on Rust's disjoint-field borrow checking to coexist with later `self.param_overrides.retain(...)` (~1132) and `self.cache.invalidate(...)` (~1148+). This works today but is non-obvious. Add a brief comment at line 933 noting that `eval_state` is a disjoint-field borrow of `self.eval_state`, used only for reads into old snapshot state, and that the disjoint-field rule lets later mutable borrows of sibling fields coexist.\n\nConsider doing (A) first so the post-helper call sites are cleaner before adding the comment in (B).\n\nmemory_hints:\n- search: \"task 471 engine_edit consolidated guard loops\"\n- search: \"disjoint-field borrow eval_state engine_edit\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T03:54:33.542Z",
+        "updatedAt": "2026-04-22T04:31:48.347Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/engine_edit.rs"
           ],
           "modules": [
             "crates/reify-eval/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "817480713421a29b1ab318ebd3f5717756fae60c"
+          }
         }
       },
       {
@@ -45057,9 +45060,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T04:31:47.152Z",
+      "lastModified": "2026-04-22T04:31:48.347Z",
       "taskCount": 2117,
-      "completedCount": 1852,
+      "completedCount": 1853,
       "tags": [
         "master"
       ]
