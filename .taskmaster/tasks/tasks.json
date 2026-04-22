@@ -44507,6 +44507,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-22T01:54:22.093Z"
+      },
+      {
+        "id": "2103",
+        "title": "engine_edit role-flip probe: dedupe new_total vs old_roles.len comparison",
+        "description": "Fix L1435 count mismatch (raw vs deduped) on intra-group duplicates. From task 2092 review. See memory 092192b7 for details.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -44516,7 +44527,10 @@
       "completedCount": 1835,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T01:54:43.673Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T01:54:43.696Z"
     }
   }
 }
