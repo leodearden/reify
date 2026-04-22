@@ -15,12 +15,13 @@ use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
+use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
-    guard_state_fingerprint, value_type_kind_matches,
+    guard_state_fingerprint,
 };
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
@@ -180,20 +181,15 @@ impl Engine {
         snapshot.provenance = SnapshotProvenance::Initial;
 
         // Purge orphaned param_overrides entries BEFORE the per-cell Param
-        // loop populates `values` from the override map. A dormant override on
-        // a cell that no longer exists (or whose kind changed from Param to
-        // Let/Auto) would otherwise zombie-resurrect if a future edit re-adds
-        // a cell with the same ValueCellId. Identical predicate to
-        // `engine_edit.rs` Engine::edit_source's post-seed retain call — any
-        // future refinement to the rule should land in both places.
-        self.param_overrides.retain(|id, _| {
-            snapshot
-                .graph
-                .value_cells
-                .get(id)
-                .map(|node| matches!(node.kind, ValueCellKind::Param))
-                .unwrap_or(false)
-        });
+        // loop populates `values` from the override map. A dormant override
+        // on a cell that no longer exists (or whose kind changed from Param
+        // to Let/Auto) would otherwise zombie-resurrect if a future edit
+        // re-adds a cell with the same ValueCellId. See
+        // `Engine::prune_param_overrides_against` for the shared helper
+        // (task 2017 amend-pass); `engine_edit.rs` still inlines the same
+        // retain predicate and will migrate onto the helper in a follow-up
+        // — until then the two predicates must stay behaviourally identical.
+        self.prune_param_overrides_against(&snapshot.graph);
 
         // Build dependency structures from the graph
         let reverse_index = ReverseDependencyIndex::build_from_graph(&snapshot.graph);
@@ -307,49 +303,41 @@ impl Engine {
                     // behaviour of silently skipping a no-default Param with
                     // no override.
                     //
-                    // Validation mirrors Engine::edit_param: type-kind
-                    // checked here (step-6); Scalar dimension check added by
-                    // step-8. On mismatch we emit a Warning diagnostic,
-                    // retain the entry in param_overrides (reverting the
-                    // source edit should resurrect it), and fall back to the
-                    // default_expr path.
+                    // Validation mirrors Engine::edit_param via the shared
+                    // `validate_param_override` helper (task 2017 amend-pass):
+                    // type-kind and Scalar-dimension are both checked there.
+                    // On mismatch we emit a Warning diagnostic, retain the
+                    // entry in param_overrides (reverting the source edit
+                    // should resurrect it), and fall back to the default_expr
+                    // path.  `engine_edit.rs` still inlines the same guard
+                    // chain; a follow-up task will migrate that site onto
+                    // `validate_param_override` so any future third guard
+                    // (e.g. Tensor shape) lands in one place.
                     //
                     // Orphan purging runs once, before this loop (see the
                     // retain call after Snapshot::from_compiled_module).
                     let override_val = match self.param_overrides.get(&cell.id) {
                         None => None,
-                        Some(v) if !value_type_kind_matches(v, &cell.cell_type) => {
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                                cell.id, cell.cell_type, v
-                            )));
-                            None
-                        }
-                        Some(v) => {
-                            // Type-kind matches.  Apply the Scalar dimension
-                            // guard mirrored from Engine::edit_param
-                            // (engine_edit.rs:344-355): a Scalar[LENGTH]
-                            // override against a Scalar[MASS] cell is
-                            // silently corrupting unless we reject it here.
-                            // Emit a Warning, leave the override in place
-                            // (reverting the source edit should resurrect
-                            // it), and fall through to the default_expr
-                            // path below.
-                            if let reify_types::Type::Scalar {
-                                dimension: expected,
-                            } = cell.cell_type
-                                && let reify_types::Value::Scalar { dimension: got, .. } = v
-                                && *got != expected
-                            {
+                        Some(v) => match validate_param_override(v, &cell.cell_type) {
+                            Ok(()) => Some(v.clone()),
+                            Err(ParamOverrideRejection::TypeKindMismatch) => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                                    cell.id, cell.cell_type, v
+                                )));
+                                None
+                            }
+                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
+                                expected,
+                                got,
+                            }) => {
                                 diagnostics.push(Diagnostic::warning(format!(
                                     "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
                                     cell.id, expected, got
                                 )));
                                 None
-                            } else {
-                                Some(v.clone())
                             }
-                        }
+                        },
                     };
 
                     let node_id = NodeId::Value(cell.id.clone());
