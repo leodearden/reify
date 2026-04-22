@@ -39492,11 +39492,11 @@
         "description": "Design and implement Material as a first-class type so that `param material : Material = ...` is meaningful. Today Material only exists as a trait in `crates/reify-compiler/stdlib/materials_mechanical.ri`. Options: (a) canonical Material struct with name/density/young_modulus fields; (b) make Material-the-trait usable as an existential type backed by the trait-typed-params work. This enables dimensionally/physically correct plumbing in examples like BoltFlange instead of the `String = \"steel\"` stand-in used in task 1751.",
         "details": "## Scope\nSpawned from task 1751 esc-1751-2.\n\n## Open questions\n- Do we want a literal syntax like `material::steel` or a stdlib registry?\n- How does it relate to the trait-typed-params work (see sibling follow-up)?\n- Dimension types for density (`Density = kg/m^3`) may be needed in concert.\n\n### memory_hints\n- search: \"Material trait stdlib\"\n- search: \"physical properties density volume\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:13.224Z",
+        "updatedAt": "2026-04-22T10:01:31.914Z",
         "metadata": {
           "modules": [],
           "files": []
@@ -39746,11 +39746,11 @@
         "description": "In crates/reify-compiler/src/conformance.rs around line 273, `ty.clone()` is unconditionally called inside the default pre-registration loop. The clone is only *consumed* on the cold `!was_new` (trait-merge conflict) path for the debug event, but runs on every iteration (hot path). The existing inline comment acknowledges the clone is compile-time-only so cost is negligible, but this can be avoided.\n\nTwo suggested approaches:\n(a) Probe first: check `scope.names.contains_key(name)` — if present, clone `ty` for the debug emission before calling `register_if_absent(name, ty)`; otherwise move `ty` directly into `register_if_absent` without cloning.\n(b) Change `scope::register_if_absent` to return `Result<(), Type>` (or `Option<Type>`) that hands back the rejected `Type` on conflict, so the caller can log `ignored_ty` without cloning on either path.\n\nOption (b) is preferable because it removes the probe race/duplication and centralises the \"rejected type\" return in the API. Option (a) is mechanically simpler but duplicates the lookup.\n\nEither way, keep (or update) the inline comment to reflect the new ownership story and ensure the `trait_merge_name_conflict_emits_debug_event` test still passes (debug event still emits `ignored_ty`).\n\nmemory_hints:\n- search: \"register_if_absent scope trait merge conformance\"\n- entity: \"Scope\", \"register_if_absent\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:13.287Z",
+        "updatedAt": "2026-04-22T10:01:33.222Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -39852,13 +39852,13 @@
         "description": "The `inferred_let_exprs.get(name)` fallback inside the `available_defaults` builder in `crates/reify-compiler/src/conformance.rs:246-251` (task 1834 step-8) currently has no observable end-to-end coverage: `RequirementKind::Let` is unreachable from source because the parser's `lower_let` rejects `let x : T` without a value (documented in `let_with_type_and_no_value_parses_as_empty_trait`). That makes the entire inferred-type → `AvailableDefaultKind::Let` lookup path effectively dormant, so a future regression — e.g., breaking the cache population in the pre-register pass — would not be caught by any source-driven test.\n\nAdd an in-crate (`#[cfg(test)] mod tests` inside `conformance.rs`, since `MergeContext`, `TraitRequirement`, and `TraitDefault` are `pub(crate)`) unit test that calls `check_trait_conformance` with a manually-constructed `ctx.requirements` containing a `RequirementKind::Let(expected_ty)` and a sibling unannotated `DefaultKind::Let { cell_type: None, .. }`. Assert the inferred type from the let's expression satisfies the requirement (no diagnostics).\n\nA second negative case (inferred type incompatible with `expected_ty`) would also pin the `Some(default_type) => type-mismatch diagnostic` branch around line 297-309.\n\nOrigin: esc-1834-67 review suggestion #1 from reviewer_comprehensive (task 1834). Triaged as a follow-up rather than folded into 1834 because it requires an in-crate test module that doesn't exist yet — out of scope for the original task but worth pinning before a future parser change inadvertently surfaces `RequirementKind::Let` from source.\n\nMemory hints: search \"DefaultKind Let cell_type conformance scope registration\", \"MergeContext available_defaults\", entities: DefaultKind, RequirementKind, check_trait_conformance, MergeContext.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1834"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:01:13.348Z",
+        "updatedAt": "2026-04-22T10:01:33.833Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -45371,7 +45371,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:01:31.280Z",
+      "lastModified": "2026-04-22T10:01:33.833Z",
       "taskCount": 2140,
       "completedCount": 1873,
       "tags": [
