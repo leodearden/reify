@@ -1342,6 +1342,7 @@ pub(crate) fn compile_entity(
                 ) {
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
+                        name: Some(let_decl.name.clone()),
                         operations: ops,
                         span: SourceSpan::new(0, 0),
                     });
@@ -1367,6 +1368,7 @@ pub(crate) fn compile_entity(
                 {
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
+                        name: Some(param.name.clone()),
                         operations: ops,
                         span: SourceSpan::new(0, 0),
                     });
@@ -1882,6 +1884,7 @@ fn emit_guarded_geometry_realizations(
                 {
                     sink.realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(deps.entity_name, *sink.realization_index),
+                        name: Some(param.name.clone()),
                         operations: ops,
                         span: SourceSpan::new(0, 0),
                     });

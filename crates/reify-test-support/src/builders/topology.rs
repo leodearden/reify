@@ -197,6 +197,25 @@ impl TopologyTemplateBuilder {
     ) -> Self {
         self.realizations.push(RealizationDecl {
             id: RealizationNodeId::new(entity, index),
+            name: None,
+            operations,
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    /// Like `realization` but sets the user-facing `name` field, which lets
+    /// the engine build a name→handle map for `GeomRef::Sub` resolution.
+    pub fn realization_named(
+        mut self,
+        entity: &str,
+        index: u32,
+        name: impl Into<String>,
+        operations: Vec<CompiledGeometryOp>,
+    ) -> Self {
+        self.realizations.push(RealizationDecl {
+            id: RealizationNodeId::new(entity, index),
+            name: Some(name.into()),
             operations,
             span: SourceSpan::new(0, 0),
         });

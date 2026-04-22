@@ -454,6 +454,11 @@ pub struct CompiledConstraint {
 #[derive(Debug, Clone)]
 pub struct RealizationDecl {
     pub id: RealizationNodeId,
+    /// The user-facing let-binding name for this realization (e.g. `"body"`
+    /// for `let body = cylinder(r, h)`).  `None` for anonymous realizations
+    /// that have no direct let-binding (e.g. intermediate guarded-group
+    /// params without a user-visible name).
+    pub name: Option<String>,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
 }
