@@ -4666,28 +4666,14 @@ mod tests {
 
     #[test]
     fn rust_guard_above_floor_does_not_fire() {
-        // Behavioral complement to the compile-time invariant at crate root:
-        //   `const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ);`
-        // and to the FFI-path `cpp_line_wire_floor_matches_rust_const` test above
-        // (which brackets the *C++* floor, not the Rust one).
-        //
-        // The below-floor invariant (Rust guard fires and emits the '[rust-guard]' marker)
-        // is covered by two complementary tests:
-        //   • `floor_constants::tests::below_floor_rejects_with_rust_guard_marker` — unit test,
-        //     runs unconditionally (no OCCT required), exercises the guard helper directly.
-        //   • `tests/curve_constructors_integration.rs::line_segment_coincident_points_returns_error`
-        //     — end-to-end integration test that drives the below-floor path through
-        //     `OcctKernel::execute` and asserts the '[rust-guard]' marker appears in the error.
-        //     This catches regressions where the guard helper is no longer wired into the kernel arm.
-        //
-        // This test covers the above-floor case via `OcctKernel::execute`:
-        //   dist_sq = 1.1 × RUST_LINE_WIRE_MIN_LENGTH_SQ — the Rust guard must NOT fire.
-        //   CPP_LINE_WIRE_MIN_LENGTH_SQ (1e-10) is 100× above RUST_LINE_WIRE_MIN_LENGTH_SQ
-        //   (1e-12), so the C++ layer still rejects this input. The '[rust-guard]' marker
-        //   must be absent from whatever C++-layer error surfaces.
-        //
-        // Failure mode caught: Rust guard widened (fires at above-floor value) → assertion
-        //   fails because the '[rust-guard]' marker appears unexpectedly in the error.
+        // Exercises the above-floor case via `OcctKernel::execute`:
+        //   dist_sq = 1.1 × RUST_LINE_WIRE_MIN_LENGTH_SQ — the `[rust-guard]` marker must NOT
+        //   appear in any error. `Ok` is not required: CPP_LINE_WIRE_MIN_LENGTH_SQ is 100×
+        //   above the Rust floor, so the C++ layer still rejects this input; an
+        //   `OperationFailed` without the marker is acceptable.
+        // See `floor_constants::tests::below_floor_rejects_with_rust_guard_marker` and
+        //   `tests/curve_constructors_integration.rs::line_segment_coincident_points_returns_error`
+        //   for the below-floor complements.
 
         // Above-floor case: dist_sq = 1.1 × RUST_LINE_WIRE_MIN_LENGTH_SQ.
         // The Rust guard must NOT fire; any error here is from the C++ layer.
