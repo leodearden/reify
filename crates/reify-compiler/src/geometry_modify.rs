@@ -1,5 +1,43 @@
 use super::*;
 
+/// Shared helper for 2-argument modify operations (thicken, chamfer, fillet).
+///
+/// Validates that exactly 2 arguments were provided, emits a labeled diagnostic if not,
+/// then builds `CompiledGeometryOp::Modify` with args `[("target", ...), (arg2_name, ...)]`.
+pub(crate) fn compile_modify_2arg(
+    name: &str,
+    kind: ModifyKind,
+    arg2_name: &str,
+    compiled_args: Vec<CompiledExpr>,
+    target: GeomRef,
+    expr_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+    mut sub_ops: Vec<CompiledGeometryOp>,
+) -> Option<Vec<CompiledGeometryOp>> {
+    if compiled_args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "{}() expects 2 arguments, got {}",
+                name,
+                compiled_args.len()
+            ))
+            .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+        );
+        return None;
+    }
+    let mut it = compiled_args.into_iter();
+    let op = CompiledGeometryOp::Modify {
+        kind,
+        target,
+        args: vec![
+            ("target".to_string(), it.next().unwrap()),
+            (arg2_name.to_string(), it.next().unwrap()),
+        ],
+    };
+    sub_ops.push(op);
+    Some(sub_ops)
+}
+
 /// Compile a modify operation into CompiledGeometryOps.
 ///
 /// Takes pre-resolved target GeomRef, expr_span for diagnostics, and pre-accumulated sub_ops.
