@@ -28,6 +28,29 @@ pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
     }
 }
 
+/// Remove and return a node's trace from a pre-built trace map.
+///
+/// Both let-binding evaluation sites build a `HashMap<NodeId, DependencyTrace>` (the
+/// `let_traces` / `child_let_traces` map) whose key set is exactly the set of nodes in
+/// the companion sorted list (`sorted_lets` / `sorted_child_lets`). Every key in that
+/// sorted list is therefore guaranteed to be present in the map, so `remove()` cannot
+/// fail. Using `remove()` avoids a second walk of the expression tree —
+/// `extract_dependency_trace` was already called above for every let cell — and also
+/// avoids the `Vec` clone you'd get with indexing + `clone()`.
+///
+/// The `sorted_set_name` label is embedded in the panic message so that a future
+/// invariant violation names the source-of-truth sorted set rather than printing a
+/// generic message.
+pub(crate) fn take_trace(
+    traces: &mut HashMap<NodeId, DependencyTrace>,
+    node_id: &NodeId,
+    sorted_set_name: &'static str,
+) -> DependencyTrace {
+    traces
+        .remove(node_id)
+        .unwrap_or_else(|| panic!("{sorted_set_name} entries are always keys in the trace map"))
+}
+
 use crate::cache::NodeId;
 use std::collections::{HashMap, HashSet};
 
