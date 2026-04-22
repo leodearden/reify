@@ -2120,4 +2120,113 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert_eq!(map.get(&shared), Some(&(g1.clone(), 1u8)));
     }
+
+    /// When `guard_val = Bool(true)`, `reelaborate_guarded_group` must:
+    ///   (a) evaluate the active-branch `members` cell's `default_expr` and
+    ///       write the result into both `values` and `snapshot_values` with
+    ///       `DeterminacyState::Determined`;
+    ///   (b) deactivate inactive non-Auto `else_members` cells
+    ///       (`Value::Undef` / `Undetermined`);
+    ///   (c) leave inactive Auto `else_members` cells absent from both maps
+    ///       (Auto cell lifecycle is owned by the solver, not guard logic).
+    #[test]
+    fn reelaborate_guarded_group_activates_members_when_guard_true() {
+        use std::collections::HashMap;
+
+        use reify_types::{CompiledExpr, Type};
+
+        use crate::graph::GuardedGroupInfo;
+
+        use super::reelaborate_guarded_group;
+
+        let guard_id = ValueCellId::new("E", "guard");
+        let member_id = ValueCellId::new("E", "member");
+        let else_member_id = ValueCellId::new("E", "else_member");
+        let auto_else_id = ValueCellId::new("E", "auto_else");
+
+        let mut graph = EvaluationGraph::default();
+        graph.value_cells.insert(
+            guard_id.clone(),
+            ValueCellNode {
+                id: guard_id.clone(),
+                kind: reify_compiler::ValueCellKind::Param,
+                cell_type: Type::Bool,
+                default_expr: None,
+                content_hash: ContentHash::of_str("guard"),
+            },
+        );
+        graph.value_cells.insert(
+            member_id.clone(),
+            ValueCellNode {
+                id: member_id.clone(),
+                kind: reify_compiler::ValueCellKind::Param,
+                cell_type: Type::Int,
+                default_expr: Some(CompiledExpr::literal(Value::Int(42), Type::Int)),
+                content_hash: ContentHash::of_str("member"),
+            },
+        );
+        graph.value_cells.insert(
+            else_member_id.clone(),
+            ValueCellNode {
+                id: else_member_id.clone(),
+                kind: reify_compiler::ValueCellKind::Param,
+                cell_type: Type::Int,
+                default_expr: None,
+                content_hash: ContentHash::of_str("else_member"),
+            },
+        );
+        graph.value_cells.insert(
+            auto_else_id.clone(),
+            ValueCellNode {
+                id: auto_else_id.clone(),
+                kind: reify_compiler::ValueCellKind::Auto { free: false },
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("auto_else"),
+            },
+        );
+
+        let group = GuardedGroupInfo {
+            guard_cell: guard_id.clone(),
+            members: vec![member_id.clone()],
+            else_members: vec![else_member_id.clone(), auto_else_id.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let mut values: ValueMap = ValueMap::default();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        reelaborate_guarded_group(
+            &graph,
+            &group,
+            &Value::Bool(true),
+            &mut values,
+            &mut snapshot_values,
+            &[],
+            &HashMap::new(),
+        );
+
+        // Active member: evaluated default_expr → Int(42), Determined.
+        assert_eq!(values.get(&member_id), Some(&Value::Int(42)));
+        assert_eq!(
+            snapshot_values.get(&member_id),
+            Some(&(Value::Int(42), DeterminacyState::Determined))
+        );
+
+        // Inactive non-Auto else_member: deactivated to Undef / Undetermined.
+        assert_eq!(values.get(&else_member_id), Some(&Value::Undef));
+        assert_eq!(
+            snapshot_values.get(&else_member_id),
+            Some(&(Value::Undef, DeterminacyState::Undetermined))
+        );
+
+        // Inactive Auto else_member: absent from both maps.
+        assert!(values.get(&auto_else_id).is_none(), "Auto cell must not appear in values");
+        assert!(
+            snapshot_values.get(&auto_else_id).is_none(),
+            "Auto cell must not appear in snapshot_values"
+        );
+    }
 }
