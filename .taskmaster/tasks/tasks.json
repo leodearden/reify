@@ -44948,11 +44948,11 @@
         "description": "Three small follow-ups from the post-merge review of task 2106 in crates/reify-kernel-occt/src/lib.rs.",
         "details": "Post-merge review (reviewer_comprehensive) of task-2106's changes to validate_pipe_start_tangent flagged three small polish items:\n\n1. **Delete the wording-pin test** (lib.rs:4444-4460, `validate_pipe_start_tangent_error_mentions_tolerance`). Its sole assertion is `msg.contains(\"tolerance\")`. It exercises no behavior beyond message prose — no tolerance value, no branch selection, no coordinate reporting. Rewording the message (e.g. \"accepted margin %e\") would break the test without changing any contract; conversely a real correctness regression (wrong comparator/branch) would slip past it. The adjacent `validate_pipe_start_tangent_rejects_negative_z` test already covers the not-+Z branch with a stronger assertion. Action: delete the test.\n\n2. **Trim doc duplication** (lib.rs:98-103 + 106-109 + 602-609). The unit-vector residual derivation now lives on `PIPE_START_TANGENT_Z_EPSILON`'s doc comment, the helper's rustdoc, and the inline comment at the Pipe arm call site. Keep the residual derivation on the constant only; let the helper's rustdoc describe behavior; trim the call-site inline comment to a one-line pointer (e.g. \"Reject paths whose start-tangent is not approximately +Z; see validate_pipe_start_tangent.\"). Low priority.\n\n3. **Optional upper-bound guard** (lib.rs:108-124, `validate_pipe_start_tangent`). After filtering NaN/Inf, the comparator `t.z < 1.0 - ε` accepts arbitrarily large finite `t.z` (e.g. 1e100) and does not enforce the unit-vector invariant the doc rationale depends on. Cheap defense against upstream FFI bugs in `wire_start_tangent`: add `|| t.z > 1.0 + PIPE_START_TANGENT_Z_EPSILON` to the guard, or assert `(t.x*t.x + t.y*t.y + t.z*t.z - 1.0).abs() < 1e-3` defensively. Not blocking; pre-refactor code had the same gap.\n\nAll three are co-located polish on the helper landed in commits 5be841671..d087ef970 (task 2106). No behavior change for accepted (+Z) paths.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T03:04:37.764Z",
+        "updatedAt": "2026-04-22T11:55:33.084Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
@@ -45218,11 +45218,11 @@
         "description": "Add a cfg(debug_assertions)-gated call to assert_value_cell_types_representable on the snapshot produced by Snapshot::from_compiled_module inside Engine::edit_source (crates/reify-eval/src/engine_edit.rs around line 951). Today the invariant is only asserted on the eval() cold-start path (engine_eval.rs:176-177), so a compiler-introduced violation during an edit-time recompile could slip past the guard until the next full eval.",
         "details": "Context: task 1867 added `#[cfg(debug_assertions)] assert_value_cell_types_representable(&snapshot.graph);` right after `Snapshot::from_compiled_module(module)` in Engine::eval (engine_eval.rs:175-177). Reviewer flagged that Engine::edit_source also calls Snapshot::from_compiled_module but does not re-run the assertion, leaving a coverage gap for edit-time recompiles.\n\nFix: add the same cfg-gated call immediately after the from_compiled_module invocation in engine_edit.rs (around line 951). The helper `assert_value_cell_types_representable` is `pub(crate)`-reachable via `crate::engine_eval::` or by re-exporting; confirm visibility and adjust if needed. Zero release-build cost because the call is cfg(debug_assertions).\n\nSource: task 1867 review suggestion (reviewer_comprehensive); skipped at the time because engine_edit.rs was outside task 1867's locked modules.\n\nmemory_hints:\n- search: \"assert_value_cell_types_representable engine_eval debug_assertions\"\n- entity: Engine, Snapshot",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T05:30:46.925Z",
+        "updatedAt": "2026-04-22T11:55:33.296Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -45254,11 +45254,11 @@
         "description": "Follow-up from task 2131 post-merge review. Two small test-quality issues around the new `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values` test in crates/reify-eval/src/engine_edit.rs (~line 2413).",
         "details": "Two suggestions from the task 2131 post-merge review to address:\n\n1. **Redundant coverage with the new symmetry test.**\n   Location: crates/reify-eval/src/engine_edit.rs:2423-2470.\n   The new `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values` test covers the same invariants already pinned by:\n     - `reelaborate_guarded_group_leaves_active_members_with_no_default_expr_untouched` (active no-default no-op)\n     - `..._absent_from_graph_untouched` (active absent no-op)\n     - `reelaborate_guarded_group_activates_else_members_when_guard_false` (:2480) (inactive non-Auto → Undef under guard=false)\n   The stated purpose — \"a refactor that unrolls the loop and breaks one side asymmetrically would fail\" — is already achieved by having both guard=true and guard=false tests in the suite. Options:\n     (a) Delete the symmetry test (keep the narrower per-branch tests — better locality of failure messages).\n     (b) Replace the narrower per-branch tests with the symmetry test (removes ~60 lines of duplication, loses localized failure isolation).\n   Recommendation: (a), since per-branch tests give tighter failure localization and the symmetry is implicit in having both guard values covered.\n\n2. **Doc comment hard-codes line number `engine_edit.rs:68`.**\n   Location: crates/reify-eval/src/engine_edit.rs:2412-2414 (inside the doc comment of the new symmetry test if retained; otherwise moot).\n   The line number will drift as the file is edited. The existing intra-doc link `[`reelaborate_guarded_group`]` is sufficient. Drop the `:68` and refer to the loop by the enclosing function name only — e.g. \"the shared `for (cells, is_active) in ...` loop inside `reelaborate_guarded_group`\". Only relevant if (1) leaves the symmetry test in place.\n\nmemory_hints:\n- search: \"task 2131 reelaborate_guarded_group symmetry\"\n- file: crates/reify-eval/src/engine_edit.rs (around lines 2412–2470)",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T05:58:29.391Z",
+        "updatedAt": "2026-04-22T11:55:33.424Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:32.951Z",
+      "lastModified": "2026-04-22T11:55:33.424Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
