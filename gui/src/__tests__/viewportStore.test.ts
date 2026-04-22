@@ -255,6 +255,67 @@ describe('viewportStore', () => {
     });
   });
 
+  describe('splitRatio', () => {
+    it('(a) fresh store exposes state.splitRatio === 0.5', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        expect(store.state.splitRatio).toBe(0.5);
+        dispose();
+      });
+    });
+
+    it('(b) setSplitRatio(0.7) returns true and updates state.splitRatio to 0.7', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setSplitRatio(0.7);
+        expect(result).toBe(true);
+        expect(store.state.splitRatio).toBe(0.7);
+        dispose();
+      });
+    });
+
+    it('(c) setSplitRatio(-1) clamps to lower bound 0.1', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setSplitRatio(-1);
+        expect(result).toBe(true);
+        expect(store.state.splitRatio).toBe(0.1);
+        dispose();
+      });
+    });
+
+    it('(d) setSplitRatio(1.5) clamps to upper bound 0.9', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setSplitRatio(1.5);
+        expect(result).toBe(true);
+        expect(store.state.splitRatio).toBe(0.9);
+        dispose();
+      });
+    });
+
+    it('(e) setSplitRatio(0.5) is idempotent and returns true', () => {
+      createRoot((dispose) => {
+        const store = createViewportStore();
+        const result = store.setSplitRatio(0.5);
+        expect(result).toBe(true);
+        expect(store.state.splitRatio).toBe(0.5);
+        dispose();
+      });
+    });
+
+    it('(f) two fresh stores do not share splitRatio state', () => {
+      createRoot((dispose) => {
+        const storeA = createViewportStore();
+        storeA.setSplitRatio(0.3);
+        const storeB = createViewportStore();
+        // storeB should start at 0.5, unaffected by storeA's mutation
+        expect(storeB.state.splitRatio).toBe(0.5);
+        dispose();
+      });
+    });
+  });
+
   describe('store isolation', () => {
     it('mutation of store A does not leak to store B', () => {
       createRoot((dispose) => {
