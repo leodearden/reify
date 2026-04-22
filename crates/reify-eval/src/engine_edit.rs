@@ -2534,6 +2534,58 @@ mod tests {
         );
     }
 
+    /// Pins the behavior of `reelaborate_guarded_group` on the **inactive branch**
+    /// for `members` when a `member` is present in the graph but its
+    /// `default_expr` is `None`.
+    ///
+    /// With `guard_val = Bool(false)`, `members` are on the **inactive branch**
+    /// and are passed to `deactivate_if_not_auto`. That helper does NOT inspect
+    /// `default_expr` — it only checks whether the cell is `Auto`. A non-Auto cell
+    /// (here `ValueCellKind::Param`) must be written as
+    /// `Value::Undef / DeterminacyState::Undetermined` regardless of whether it
+    /// carries a `default_expr`.
+    ///
+    /// Mirrors `_inactive_else_member_without_default_expr_is_deactivated`; pins
+    /// the `members` side of the symmetric loop at engine_edit.rs:68.
+    ///
+    /// A regression that skipped deactivation for cells without a `default_expr`
+    /// (e.g. by wrapping the `deactivate_if_not_auto` call in a
+    /// `default_expr.is_some()` guard) would be caught here on the inactive
+    /// branch under guard=false.
+    #[test]
+    fn reelaborate_guarded_group_inactive_member_without_default_expr_is_deactivated() {
+        let guard_id = ValueCellId::new("E", "guard");
+        let member_id = ValueCellId::new("E", "member");
+
+        let mut graph = EvaluationGraph::default();
+        graph.value_cells.insert(guard_id.clone(), make_cell(&guard_id, ValueCellKind::Param, Type::Bool, None));
+        // member IS in the graph but has no default_expr.
+        graph.value_cells.insert(member_id.clone(), make_cell(&member_id, ValueCellKind::Param, Type::Int, None));
+
+        // guard=false → else_members active, members INACTIVE → deactivate_if_not_auto.
+        let group = GuardedGroupInfo {
+            guard_cell: guard_id.clone(),
+            members: vec![member_id.clone()],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let (values, snapshot_values) = run_with_guard_false(graph, group);
+
+        // deactivate_if_not_auto does not check default_expr; Param → Undef/Undetermined.
+        assert_eq!(
+            values.get(&member_id),
+            Some(&Value::Undef),
+            "Inactive Param member with default_expr=None must be deactivated to Undef"
+        );
+        assert_eq!(
+            snapshot_values.get(&member_id),
+            Some(&(Value::Undef, DeterminacyState::Undetermined)),
+            "Inactive Param member with default_expr=None must be Undetermined in snapshot_values"
+        );
+    }
+
     /// When `guard_val = Bool(false)`, `reelaborate_guarded_group` must
     /// activate `else_members` and deactivate `members`.
     ///
