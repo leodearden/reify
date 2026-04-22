@@ -325,6 +325,17 @@ fn type_compatible_int_real_widening_preserved() {
     );
 }
 
+/// (c2) type_compatible(Int, Real) == false — Int->Real widening is one-way.
+/// Real->Int narrowing is NOT allowed; only Int->Real widening fires (param=Real, arg=Int).
+/// Covers suggestion #15: asymmetric widening characterization.
+#[test]
+fn type_compatible_int_real_widening_is_asymmetric() {
+    assert!(
+        !type_compatible(&Type::Int, &Type::Real),
+        "type_compatible(Int, Real) should be false — Real->Int narrowing is not allowed"
+    );
+}
+
 /// (d) type_compatible(Tensor<2,3,Real>, Matrix<3,3,Real>) == true.
 #[test]
 fn type_compatible_tensor2_matrix() {
