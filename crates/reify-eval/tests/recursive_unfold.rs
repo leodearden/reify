@@ -2252,3 +2252,209 @@ fn unfold_recursive_guard_non_bool_type_emits_error() {
         error_count, result.diagnostics
     );
 }
+
+// ─── step-10 (task 461): unknown structure at recursive depth emits depth-tagged diagnostic ─
+
+/// Tests the Phase-2 diagnostic path in `unfold.rs:174-180`:
+///   "recursive sub \"{}\" in \"{}\" at depth {} references unknown structure \"{}\"; skipping branch"
+///
+/// This path fires when `child_template` (reached at depth ≥ 1) owns a recursive sub
+/// whose `structure_name` is not found in the template list.  The existing
+/// `missing_template_ref_emits_error_diagnostic` exercises only the top-level
+/// engine_eval.rs path (before unfold is entered); this test specifically covers
+/// the recursive-depth path.
+///
+/// Setup:
+///   Template S: param n: Int = 2, is_recursive = true
+///               sub valid_child = S(n: n-1) where n > 0   ← reaches depth ≥ 1
+///               sub oops        = "Nonexistent" where n > 0  ← triggers depth-tagged diagnostic
+///
+/// At depth 0, engine_eval.rs emits its own "unknown structure" diagnostic for "oops"
+/// (top-level path) and still calls unfold_recursive_sub for "valid_child".
+/// Inside unfold_recursive_sub at depth 0, Phase-2 iterates child_template (S)'s
+/// recursive subs, hits "oops", and emits the depth-tagged diagnostic for entity
+/// "S.valid_child" at depth 1.  At depth 1 it fires again for "S.valid_child.valid_child"
+/// at depth 2 (because n=1 there, guard still true for "oops").
+///
+/// Positive assertions confirm normal recursion is unaffected.
+/// Diagnostic assertion uses substring-matching to avoid being tied to the exact
+/// entity path, but requires ALL THREE substrings unique to the Phase-2 message.
+#[test]
+fn unfold_recursive_inner_unknown_structure_emits_depth_tagged_diagnostic() {
+    // guard: n > 0
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    // arg: n = n - 1
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .is_recursive(true)
+        // Valid self-recursive sub — carries recursion to depth ≥ 1
+        .sub_component_with_guard(
+            "valid_child",
+            "S",
+            vec![("n".to_string(), n_minus_1.clone())],
+            guard.clone(),
+        )
+        // Invalid sub — "Nonexistent" is not in the module; triggers Phase-2 diagnostic
+        .sub_component_with_guard(
+            "oops",
+            "Nonexistent",
+            vec![],
+            guard.clone(),
+        )
+        .build();
+
+    let result = eval_single_template(template);
+
+    // (1) Normal recursion still produces the expected chain despite the invalid sibling.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.valid_child", "n")),
+        Some(&Value::Int(1)),
+        "S.valid_child.n should be 1 (= 2-1); normal recursion must not be blocked by \
+         the invalid sibling sub"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.valid_child.valid_child", "n")),
+        Some(&Value::Int(0)),
+        "S.valid_child.valid_child.n should be 0 (= 1-1); recursion reaches depth 2"
+    );
+
+    // (2) At least one Error diagnostic from the Phase-2 recursive path contains
+    //     all three substrings unique to unfold.rs:175-177
+    //     ("recursive sub" + "depth" + "Nonexistent").
+    //     We do NOT assert an exact count because the engine_eval.rs top-level path
+    //     also emits its own diagnostic for "oops" at root level (different wording).
+    let has_depth_tagged =
+        result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("recursive sub")
+                && d.message.contains("depth")
+                && d.message.contains("Nonexistent")
+        });
+    assert!(
+        has_depth_tagged,
+        "Expected at least one Error diagnostic containing 'recursive sub', 'depth', \
+         and 'Nonexistent' (the Phase-2 depth-tagged path in unfold.rs), but got: {:?}",
+        result.diagnostics
+    );
+}
+
+// ─── step-11 (task 461): n=3 two-node mutual recursion — depth-3 alternation ───
+
+/// Extends `unfold_mutual_recursion_two_node_cycle` (n=2) to n=3, exercising
+/// three consecutive template-lookup alternations across a two-node A↔B cycle.
+///
+/// n=2 covers: A(2) → A.b=B(1) → A.b.a=A(0) → guard false (depth-1 alternation).
+/// n=3 covers: A(3) → A.b=B(2) → A.b.a=A(1) → A.b.a.b=B(0) → guard false (depth-3).
+///
+/// This verifies that template lookup correctly alternates A↔B for three consecutive
+/// depth levels (task 461, item 5).
+///
+/// Also covers task 461 item 6 (negative assertion): template B has its own top-level
+/// root entity with default n=0.  B's guard (`B.n > 0`) is false at that root, so B's
+/// recursion chain MUST NOT expand — `B.a.*` and `B.a.b.*` must be absent even though
+/// B itself appears in `result.values`.
+#[test]
+fn unfold_mutual_recursion_two_node_cycle_n3() {
+    // Template A: param n=3, sub b = B(n: n-1) where n > 0
+    let guard_a = gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0)));
+    let n_minus_1_a = binop(
+        BinOp::Sub,
+        value_ref_typed("A", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let template_a = TopologyTemplateBuilder::new("A")
+        .param(
+            "A",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(3), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard("b", "B", vec![("n".to_string(), n_minus_1_a)], guard_a)
+        .build();
+
+    // Template B: param n=0 (default — B.n > 0 is false at root, so B's chain won't expand),
+    //             sub a = A(n: n-1) where n > 0
+    let guard_b = gt(value_ref_typed("B", "n", Type::Int), literal(Value::Int(0)));
+    let n_minus_1_b = binop(
+        BinOp::Sub,
+        value_ref_typed("B", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let template_b = TopologyTemplateBuilder::new("B")
+        .param(
+            "B",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard("a", "A", vec![("n".to_string(), n_minus_1_b)], guard_b)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .template(template_b)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // ── Positive chain assertions: depth-3 alternation A→B→A→B ──────────────────
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A", "n")),
+        Some(&Value::Int(3)),
+        "A.n should be 3 (top-level default)"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b", "n")),
+        Some(&Value::Int(2)),
+        "A.b.n should be 2 (= A.n - 1 = 3 - 1, first B instance)"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.a", "n")),
+        Some(&Value::Int(1)),
+        "A.b.a.n should be 1 (= A.b.n - 1 = 2 - 1, second A instance at depth 2)"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.a.b", "n")),
+        Some(&Value::Int(0)),
+        "A.b.a.b.n should be 0 (= A.b.a.n - 1 = 1 - 1, second B instance at depth 3)"
+    );
+    // Guard false at B.n=0: no further expansion.
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b.a.b.a", "n")),
+        "A.b.a.b.a should NOT exist — guard (B.n > 0) is false at n=0"
+    );
+
+    // ── Negative top-level-B assertions (task 461 item 6) ────────────────────────
+    // The engine iterates module.templates as roots, so B DOES produce a top-level
+    // entity with its default n=0.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("B", "n")),
+        Some(&Value::Int(0)),
+        "B.n should be 0 (B's default — B exists as a top-level root template)"
+    );
+    // B's guard (B.n > 0) is false at n=0, so B's recursion chain must NOT expand.
+    assert!(
+        !result.values.contains(&ValueCellId::new("B.a", "n")),
+        "B.a.n must NOT exist — B's guard (B.n > 0) is false with B.n=0, \
+         so the recursion chain from the B root does not expand"
+    );
+    assert!(
+        !result.values.contains(&ValueCellId::new("B.a.b", "n")),
+        "B.a.b.n must NOT exist — B's recursion chain does not expand at the root level"
+    );
+}
