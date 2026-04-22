@@ -2330,21 +2330,27 @@ fn unfold_recursive_inner_unknown_structure_emits_depth_tagged_diagnostic() {
     );
 
     // (2) At least one Error diagnostic from the Phase-2 recursive path contains
-    //     the literal prefix `recursive sub "oops" in "` — a token produced only by
-    //     unfold.rs:175-177 and impossible to come from engine_eval.rs's root-level
-    //     path (which uses "sub-component ... references unknown structure" wording
-    //     and never includes the sub name followed by `in "`).
+    //     all three structural substrings: `at depth 1`, `oops`, and `Nonexistent`.
+    //     `at depth N` (N ≥ 1) is emitted only by unfold.rs:175-178 Phase-2;
+    //     engine_eval.rs's root-level path uses "sub-component ... references unknown
+    //     structure" with no depth tag.  Anchoring on `at depth 1` + `oops` +
+    //     `Nonexistent` pins the Phase-2 path structurally and is robust to benign
+    //     wording changes (quote style, preposition, punctuation).
     //     We do NOT assert an exact count because the engine_eval.rs top-level path
     //     also emits its own diagnostic for "oops" at root level (different wording).
     let has_depth_tagged =
         result.diagnostics.iter().any(|d| {
             d.severity == Severity::Error
-                && d.message.contains("recursive sub \"oops\" in \"")
+                && d.message.contains("at depth 1")
+                && d.message.contains("oops")
+                && d.message.contains("Nonexistent")
         });
     assert!(
         has_depth_tagged,
-        "Expected at least one Error diagnostic containing the Phase-2 prefix \
-         'recursive sub \"oops\" in \"' (unfold.rs depth-tagged path), but got: {:?}",
+        "Expected at least one Error diagnostic from the Phase-2 path (unfold.rs:175-178) \
+         containing all three substrings: 'at depth 1', 'oops', 'Nonexistent'. \
+         The 'at depth N' tag is structurally unique to Phase-2 (absent from \
+         engine_eval.rs's root-level path). Got: {:?}",
         result.diagnostics
     );
 }
