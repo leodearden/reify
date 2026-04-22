@@ -44024,11 +44024,11 @@
         "description": "Address review suggestion on crates/reify-types/src/identity.rs:28-36 (`ModulePath::from_dotted`).\n\nProblem: the function uses `debug_assert!` for emptiness and empty-segment checks, but the docstring's guidance (\"Add a `debug_assert` at call sites that accept user-provided strings\") inverts responsibility — callers shouldn't duplicate invariants the constructor owns. In release builds, bad inputs (\"\" or \"a..b\") silently produce `[\"\"]` or `[\"a\", \"\", \"b\"]`, which then flow into module identity keys. Since `from_dotted` is called on `module_path` strings originating from import declarations in `ModuleDag::compile_module` (crates/reify-compiler/src/module_dag.rs), a malformed parse/import can silently reach this in release.\n\nFix: either\n- (preferred) change the signature to `from_dotted(dotted: &str) -> Result<Self, ParseError>` and update the (few) callers to handle the error, OR\n- convert the `debug_assert!`s to hard `assert!`s since this is not a hot path.\n\nAlso: remove the misleading \"add a `debug_assert` at call sites\" note from the docstring — the invariant is the constructor's responsibility.\n\nMemory hints: grep `from_dotted` for the full caller set before choosing Result vs assert; callers include `module_dag.rs:160`, `module_dag.rs:197`, and likely the parser/test-support crates.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:31.516Z",
+        "updatedAt": "2026-04-22T11:55:39.064Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/identity.rs",
@@ -45581,7 +45581,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T11:55:38.505Z",
+      "lastModified": "2026-04-22T11:55:39.064Z",
       "taskCount": 2139,
       "completedCount": 1876,
       "tags": [
