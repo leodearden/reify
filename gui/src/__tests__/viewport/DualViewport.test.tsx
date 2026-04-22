@@ -614,8 +614,13 @@ describe('DualViewport', () => {
 
       const defWrapper = screen.getByTestId('dual-viewport-def-preview-wrapper');
       const designWrapper = screen.getByTestId('dual-viewport-design-wrapper');
-      expect(defWrapper.style.flex).toBe('0.3 0 0%');
-      expect(designWrapper.style.flex).toBe('0.7 0 0%');
+      // Assert non-empty style attribute (dual-mode path applies inline styles)
+      expect(defWrapper.getAttribute('style')).toBeTruthy();
+      expect(designWrapper.getAttribute('style')).toBeTruthy();
+      // Assert flexGrow longhands directly — jsdom round-trips these reliably,
+      // unlike the flex shorthand which may normalize '0%' → '0px' or reorder tokens.
+      expect(defWrapper.style.flexGrow).toBe('0.3');
+      expect(designWrapper.style.flexGrow).toBe('0.7');
     });
 
     it('(l2) single-viewport mode: design wrapper has no inline flex style', async () => {
