@@ -4300,4 +4300,52 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn kernel_pipe_x_axis_path_degenerate_solid() {
+        // The Pipe kernel arm always creates its circular profile face
+        // in the XY plane at z=0 (+Z normal). `BRepOffsetAPI_MakePipe`
+        // expects the profile plane to align with the path's start-tangent,
+        // so an X-axis path produces a degenerate (zero-volume) solid
+        // rather than a valid circular pipe.
+        //
+        // This test pins the current limitation: execute() succeeds (no
+        // GeometryError) but the resulting solid has effectively zero
+        // volume. A future amendment that reorients the profile to the
+        // path's local frame will surface here as a regression on the
+        // `volume < 1e-12` assertion — that would be a good outcome and
+        // the test should be updated to assert the correct analytic
+        // volume at that point. See the orientation-constraint section
+        // of GeometryOp::Pipe for the documented convention.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let wire_handle = kernel
+            .execute(&GeometryOp::LineSegment {
+                x1: 0.0, y1: 0.0, z1: 0.0,
+                x2: 0.020, y2: 0.0, z2: 0.0,
+            })
+            .expect("LineSegment execute should succeed");
+        let pipe_handle = kernel
+            .execute(&GeometryOp::Pipe {
+                path: wire_handle.id,
+                radius: Value::Real(0.002),
+            })
+            .expect("Pipe execute should not raise an error (returns a degenerate solid)");
+
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pipe_handle.id))
+            .expect("Volume query should succeed");
+        let v = vol.as_f64().expect("Volume should be numeric");
+        // Current known-limitation behaviour: the orthogonal path
+        // produces a zero-volume solid. If this ever returns
+        // π*r²*L ≈ 2.513e-7, the orientation bug has been fixed —
+        // update this test to assert the correct volume.
+        assert!(
+            v.abs() < 1e-12,
+            "pipe-along-X is expected to yield a degenerate solid (current limitation); got volume={v:.3e}"
+        );
+    }
 }

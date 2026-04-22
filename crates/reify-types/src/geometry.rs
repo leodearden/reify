@@ -178,6 +178,23 @@ pub enum GeometryOp {
     ///
     /// Composed at the kernel layer as `make_pipe(make_circle_face(radius, 0.0),
     /// path)`. The circle cross-section is a private kernel-internal detail.
+    ///
+    /// # Orientation constraint
+    ///
+    /// The circular cross-section is a face in the **XY plane at z=0**
+    /// (i.e. its normal is +Z). `BRepOffsetAPI_MakePipe` expects the
+    /// profile's plane to align with the path's start-tangent; in
+    /// practice this means the current implementation is well-behaved
+    /// only for paths whose start-tangent is along the +Z axis (the
+    /// task's canonical use case).
+    ///
+    /// Paths with a non-Z start-tangent currently yield a degenerate
+    /// (zero-volume) solid — `execute` does not fail, but the resulting
+    /// shape is unusable. The `kernel_pipe_x_axis_path_degenerate_solid`
+    /// test pins this behaviour so a future orientation fix is detected
+    /// as a regression on the existing assertion. Callers that need
+    /// arbitrary path orientations should use `Sweep { profile, path }`
+    /// directly, supplying an explicit profile wire.
     Pipe {
         path: GeometryHandleId,
         radius: Value,
