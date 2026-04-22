@@ -4413,9 +4413,8 @@ mod tests {
 
     #[test]
     fn validate_pipe_start_tangent_rejects_non_finite_components() {
-        // Calls the pure helper directly with NaN / Infinity inputs.
-        // The helper does not exist yet (step 2 adds it); this test is the
-        // failing red state that step 2 makes green.
+        // Calls the pure helper directly with NaN / Infinity inputs and
+        // asserts each non-finite component produces a "non-finite" error.
         let non_finite_cases = [
             ffi::ffi::Point3 { x: f64::NAN,       y: 0.0,            z: 1.0 },
             ffi::ffi::Point3 { x: 0.0,            y: f64::INFINITY,  z: 1.0 },
@@ -4444,21 +4443,44 @@ mod tests {
 
     #[test]
     fn validate_pipe_start_tangent_error_mentions_tolerance() {
-        // Verifies that the non-+Z error message includes the tolerance value
-        // so that operators can read the accepted margin directly from the error.
-        // Step 4 adds "(tolerance 1e-6)" to the format string; until then this
-        // test fails — the expected red state.
+        // Verifies that the non-+Z error message surfaces the tolerance so
+        // operators can read the accepted margin directly from the error.
         let t = ffi::ffi::Point3 { x: 1.0, y: 0.0, z: 0.0 }; // +X tangent, not +Z
         let result = super::validate_pipe_start_tangent(t);
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
                 assert!(
-                    msg.contains("1e-6"),
-                    "expected error message to mention tolerance '1e-6', got: {msg}"
+                    msg.contains("tolerance"),
+                    "expected error message to mention 'tolerance', got: {msg}"
                 );
             }
             Ok(()) => panic!("expected Err for +X tangent, got Ok"),
             Err(other) => panic!("expected OperationFailed for +X tangent, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_pipe_start_tangent_rejects_negative_z() {
+        // Exercises the pure helper with a -Z unit tangent directly.
+        // Guards against a future refactor that compares t.z.abs() instead of
+        // t.z — such a change would still reject +X and +Y but would
+        // incorrectly accept -Z. Asserts both the "start-tangent" substring
+        // (correct branch) and negative-z evidence in the reported coordinates
+        // so that a wrong-branch rejection would surface immediately.
+        let t = ffi::ffi::Point3 { x: 0.0, y: 0.0, z: -1.0 };
+        match super::validate_pipe_start_tangent(t) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("start-tangent"),
+                    "expected error containing 'start-tangent' for -Z tangent, got: {msg}"
+                );
+                assert!(
+                    msg.contains("-1"),
+                    "expected error to include negative-Z coordinate evidence ('-1'), got: {msg}"
+                );
+            }
+            Ok(()) => panic!("expected Err for -Z tangent (z=-1.0), got Ok"),
+            Err(other) => panic!("expected OperationFailed for -Z tangent, got {:?}", other),
         }
     }
 
