@@ -148,12 +148,16 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
         Value::Range { .. } => matches!(ty, Type::Range(_)),
         // Note: `Type::Geometry`, `Type::StructureRef`, and `Type::TypeParam` have
-        // no corresponding `Value` variant today, so any non-Undef value supplied
-        // to a cell of those types will return `false` here and trigger
-        // `TypeKindMismatch`.  That is the desired behaviour — only `Value::Undef`
-        // (the Auto sentinel, handled unconditionally above) is accepted.
-        // If a future `Value::GeometryHandle` variant is added, add a matching arm
-        // here so the compiler enforces completeness.
+        // no corresponding `Value` variant, so any non-Undef value supplied to a
+        // cell of those types falls through this `match` and returns `false`,
+        // triggering `EngineError::TypeKindMismatch`. This default-reject behaviour
+        // is sound because value cells never carry those types post-compilation —
+        // an invariant enforced at runtime by the `#[cfg(debug_assertions)]`
+        // `assert_value_cell_types_representable` check in
+        // `crate::engine_eval::Engine::eval` (task 1867), and regression-locked
+        // in CI by `crates/reify-eval/tests/value_cell_type_invariants.rs`. If a
+        // future `Value::GeometryHandle` variant is added, add a matching arm here
+        // AND relax the runtime assertion so the compiler enforces completeness.
     }
 }
 
