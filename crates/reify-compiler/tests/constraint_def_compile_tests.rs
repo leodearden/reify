@@ -1329,17 +1329,9 @@ constraint def Foo {
 
 // ── Test 21 ──────────────────────────────────────────────────────────────────
 
-/// Regression guard for the option-(b) lazy-build path in `phase_constraint_defs`.
-///
-/// When `parsed.declarations` contains no `Declaration::Constraint` entries,
-/// the lazy `structure_names: Option<HashSet<String>>` must remain `None`
-/// without breaking compilation of the non-constraint declarations (structure
-/// and occurrence defs).
-///
-/// This test passes on the current eager-build code (correct behaviour already
-/// present) and must continue to pass after the step-4 lazy-build refactor,
-/// confirming the `Option::None` path does not accidentally break zero-
-/// constraint-def compilation.
+/// Verifies that a module containing structure and occurrence declarations but
+/// zero `constraint def` declarations compiles without errors and produces an
+/// empty `constraint_defs` output.
 #[test]
 fn module_with_no_constraint_defs_compiles_cleanly() {
     let source = r#"
