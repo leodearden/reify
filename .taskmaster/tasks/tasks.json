@@ -45041,6 +45041,17 @@
           ]
         },
         "updatedAt": "2026-04-22T04:21:55.727Z"
+      },
+      {
+        "id": "2125",
+        "title": "engine_edit: extend reelaborate_guarded_group tests for no-default_expr and absent-cell branches",
+        "description": "Add test coverage for two explicitly documented but currently untested branches of reelaborate_guarded_group in crates/reify-eval/src/engine_edit.rs.",
+        "details": "Follow-up from task 2121 review (esc-2121-67). The existing tests at engine_edit.rs ~2159 (guard=true) and ~2228 (guard=false / guard=Undef) cover three branches:\n  - active member with default_expr\n  - inactive non-Auto member (→ Undef/Undetermined)\n  - inactive Auto member (→ absent)\n\nThe docstring states: \"Cells without a default_expr (or absent from the graph) are left unchanged\". Neither currently has an assertion. A regression that replaced `if let Some(node)` with an unconditional insert would escape the tests.\n\nAdd to the guard=true test (or a new test), one or both of:\n\n1. **Active member with `default_expr: None`** — insert a ValueCellNode into graph.value_cells with `default_expr=None`, put it in `members`, assert both `values.get(id).is_none()` and `snapshot_values.get(id).is_none()` after the call.\n\n2. **Active member absent from graph.value_cells** — include an id in `members` that is NOT inserted into graph.value_cells, assert both maps return None for it.\n\nBoth cases exercise the early-exit path where reelaborate_guarded_group must be a no-op on the cell.\n\nmemory_hints:\n- search: \"task 2121 reelaborate_guarded_group\"\n- file: crates/reify-eval/src/engine_edit.rs (around lines 2159–2320)",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45050,7 +45061,10 @@
       "completedCount": 1852,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T04:31:41.488Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-22T04:31:41.508Z"
     }
   }
 }
