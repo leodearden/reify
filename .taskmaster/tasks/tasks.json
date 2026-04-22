@@ -10316,7 +10316,7 @@
         "description": "Remove duplicate extract_dependency_trace call and consider pre-computing topological order at compile time",
         "details": "In crates/reify-eval/src/lib.rs:\n1. Replace duplicate extract_dependency_trace call at line ~2950 with let_traces[&node_id].clone() — the identical trace already exists in the let_traces HashMap built at lines 2919-2922\n2. Consider pre-computing let_cells/let_traces/topological order at compile time in TopologyTemplate since the expression graph is static after compilation. Store sorted_let_ids on TopologyTemplate to make evaluate_let_bindings a single linear pass with no per-call allocations.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"evaluate_let_bindings extract_dependency_trace topological sort\"\n  entities: [\"evaluate_let_bindings\", \"TopologyTemplate\", \"extract_dependency_trace\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10338,9 +10338,12 @@
               "TopologyTemplate pre-compute sorted_let_ids let_cells compile time static expression graph"
             ]
           },
-          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
+          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78",
+          "done_provenance": {
+            "commit": "2ab85ba6578c4786c77902b829ceee7084fa5b03"
+          }
         },
-        "updatedAt": "2026-04-21T22:22:04.816Z"
+        "updatedAt": "2026-04-22T00:40:00.082Z"
       },
       {
         "id": "471",
@@ -12371,12 +12374,12 @@
       {
         "id": "555",
         "title": "Replace fragile unwrap and unreachable patterns in eval let-binding code",
-        "description": "Two hardening fixes in `crates/reify-eval/src/lib.rs`:\n\n1. **filter+unwrap → filter_map** (lines ~2916-2917 and ~3715-3719): The pattern `.filter(|c| c.default_expr.is_some()).map(|c| c.default_expr.as_ref().unwrap())` is safe today but fragile under refactor. Replace with `.filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))`.\n\n2. **unreachable!() → graceful diagnostic** (lines ~2930-2932): In `evaluate_let_bindings` and `elaborate_child_lets_only`, `_ => unreachable!()` on NodeId match is a latent panic. Replace with: `_ => { diagnostics.push(Diagnostic::error(...)); continue; }`.\n\nConsistent with project convention: logic errors should be noisy, not silent, and should not crash.\n\nmemory_hints: search \"fragile unwrap pattern eval\", search \"silent defaults pattern\"",
-        "details": "",
-        "testStrategy": "",
+        "description": "Four code-quality improvements to the evaluate_let_bindings path in reify-eval: fix a misleading inline comment, lock in duplicate-read semantics in the characterization test, replace fragile filter+unwrap chains with filter_map, and replace unreachable!() panics with graceful diagnostics.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "1. **Comment accuracy** (`crates/reify-eval/src/engine_eval.rs:1158-1160`): The inline comment currently says \"Using remove() avoids a Vec clone compared to indexing+clone.\" That captures the micro-choice but misses the bigger win from task 470 (eliminating a redundant second `extract_dependency_trace(expr)` walk). Reword to: \"Using remove() avoids a second walk of the expression tree — extract_dependency_trace was already called above for every let cell — and also avoids the Vec clone you'd get with indexing+clone.\"\n\n2. **Test robustness** (`crates/reify-eval/tests/boundary5_engine.rs:1118-1141`): The test converts `dependency_trace.reads` (Vec<ValueCellId>) into a HashSet for comparison. `collect_value_refs` is documented to preserve duplicates (see `extract_dependency_trace_preserves_duplicate_reads_for_same_cell_in_binop`); a HashSet comparison silently tolerates regressions that drop or add duplicates. Replace with a sorted Vec comparison (or multiset equality + length assertion) so duplicate-handling semantics are locked in.\n\n3. **filter+unwrap → filter_map** (`crates/reify-eval/src/engine_eval.rs ~lines 2916-2917 and ~3715-3719`): The pattern `.filter(|c| c.default_expr.is_some()).map(|c| c.default_expr.as_ref().unwrap())` is safe today but fragile under refactor. Replace with `.filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))`.\n\n4. **unreachable!() → graceful diagnostic** (`crates/reify-eval/src/engine_eval.rs ~lines 2930-2932` and `crates/reify-eval/src/unfold.rs`): In `evaluate_let_bindings` and `elaborate_child_lets_only`, replace `_ => unreachable!()` with a proper diagnostic or error return so unexpected node kinds do not panic in production.",
+        "testStrategy": "",
         "subtasks": [],
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
@@ -12386,9 +12389,11 @@
             "crates/reify-eval/src/unfold.rs",
             "crates/reify-eval/tests/boundary5_engine.rs",
             "crates/reify-eval/tests/recursive_unfold.rs"
-          ]
-        },
-        "updatedAt": "2026-04-21T19:43:26.551Z"
+          ],
+          "curator_action": "combine",
+          "curator_justification": "The candidate (comment fix in engine_eval.rs:1158-1160 + test robustness fix in boundary5_engine.rs:1118-1141) touches exactly the same two files already in Task 555's file set, both tasks are low-priority code-quality improvements to the evaluate_let_bindings path, and they will serialize on the same module lock. Combining adds zero new files to the lock set, the union stays at 4 files with 4 distinct concerns (well within budget), and splitting boundary5_engine.rs changes across two tasks invi",
+          "combined_at": "2026-04-22T00:39:05.161303+00:00"
+        }
       },
       {
         "id": "556",
@@ -44246,14 +44251,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T00:32:04.984Z",
+      "lastModified": "2026-04-22T00:40:00.083Z",
       "taskCount": 2082,
-      "completedCount": 1825,
+      "completedCount": 1826,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T00:36:18.555Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
