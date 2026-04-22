@@ -41955,15 +41955,18 @@
         "description": "Delete the `phantom_let_advertisement_contract_for_future_parser_extension` integration test in `crates/reify-compiler/tests/trait_merge_tests.rs` (~1404-1522, ~120 lines).\n\nThe test is self-documented as non-distinguishing: \"all three assertions pass unconditionally today\" and \"cannot distinguish the patched binary from the unpatched one\". Behavioral assertions are tautologies against the current code — zero regression coverage for the Option B fix landed in task 1951. The in-crate unit test `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name` in conformance.rs is what gates the behavior.\n\nAssertion 3 is a pure wording pin on a diagnostic never emitted in the reachable universe, so it will continue to pass even if the Option B guard is deleted. Meanwhile the test locks in source-level details (trait/member/type names, compile-cleanly expectations) that can break for unrelated reasons.\n\nAction:\n- Delete the test function and any test-only imports it solely uses.\n- Leave a short breadcrumb comment in conformance.rs near the pass2_skipped guard pointing at the in-crate unit test.\n- When `RequirementKind::Let` becomes parser-reachable (see esc-1951-6 / task 1951's design_concern), write the regression test then in the reachable form.\n\nVerify: `cargo test -p reify-compiler`; clippy; fmt.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestion 2). Test added in commit 7351ae1c0 on the task/1951 branch.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ]
         },
-        "updatedAt": "2026-04-22T10:01:39.085Z"
+        "updatedAt": "2026-04-22T10:07:31.133Z"
       },
       {
         "id": "1991",
@@ -45416,14 +45419,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T10:07:11.035Z",
+      "lastModified": "2026-04-22T10:07:31.133Z",
       "taskCount": 2140,
       "completedCount": 1874,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-22T10:07:23.580Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
