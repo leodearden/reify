@@ -85,6 +85,9 @@ export function DualViewport(props: DualViewportProps) {
   );
 
 
+  // True when both viewports are simultaneously visible (wrapper flex styles apply)
+  const bothActive = createMemo(() => defPreviewEffective() && designEffective());
+
   // ── Dual-splitter resize handler ──────────────────────────────────────────
   function handleDualResize(delta: number) {
     const h = containerRef?.clientHeight ?? 0;
@@ -126,7 +129,11 @@ export function DualViewport(props: DualViewportProps) {
             </div>
           }
         >
-          <div class={styles.viewportWrapper}>
+          <div
+            class={styles.viewportWrapper}
+            data-testid="dual-viewport-def-preview-wrapper"
+            style={bothActive() ? { flex: `${props.viewportStore.state.splitRatio} 0 0%` } : undefined}
+          >
             <Viewport
               viewportId="def-preview"
               viewportStore={props.viewportStore}
@@ -157,7 +164,11 @@ export function DualViewport(props: DualViewportProps) {
             </div>
           }
         >
-          <div class={styles.viewportWrapper}>
+          <div
+            class={styles.viewportWrapper}
+            data-testid="dual-viewport-design-wrapper"
+            style={bothActive() ? { flex: `${1 - props.viewportStore.state.splitRatio} 0 0%` } : undefined}
+          >
             <Viewport
               viewportId="design-main"
               viewportStore={props.viewportStore}
