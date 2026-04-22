@@ -490,6 +490,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         assert_eq!(
@@ -551,6 +552,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         assert!(
@@ -623,6 +625,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -687,6 +690,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
@@ -752,6 +756,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
 
         assert!(diagnostics.is_empty(), "expected no diagnostics");
@@ -805,6 +810,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("bad"),
+            SourceSpan::new(0, 0),
         );
 
         assert!(
@@ -869,6 +875,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
@@ -885,6 +892,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
         let h2 = named_steps["body"];
 
@@ -974,6 +982,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
         let h1 = named_steps["body"];
         assert!(diagnostics.is_empty(), "first realization must succeed cleanly");
@@ -989,6 +998,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
