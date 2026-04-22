@@ -2272,3 +2272,89 @@ describe('viewStateStore — switchView', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stale path preservation — step-17 tests (fail until step-18 removes prunes)
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — stale path preservation (step-17)', () => {
+  /** Build a single-root tree with an optional child path. */
+  function treeWith(child?: string) {
+    if (!child) return [makeNode({ entity_path: 'Root', kind: 'structure' })];
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [makeNode({ entity_path: child, kind: 'occurrence' })],
+      }),
+    ];
+  }
+
+  it('(a) regenerateAutoViews with a tree omitting the path preserves explicit entry and user-view visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      // Generate auto views with the path present
+      store.regenerateAutoViews(treeWith('Root.moving_part'));
+
+      // Switch to a user view so the explicit map is preserved across regen
+      const viewId = store.createView('My View');
+      store.switchView(viewId);
+
+      // Record an explicit override on the path
+      store.setVisibility('Root.moving_part', 'hidden', false);
+      expect(store.state.explicit['Root.moving_part']).toBe('hidden');
+      expect(store.state.views[viewId].visibility['Root.moving_part']).toBe('hidden');
+
+      // Regenerate with a tree that omits the path
+      store.regenerateAutoViews(treeWith());
+
+      // After step-18: stale entry must survive (currently FAILS — it's pruned)
+      expect(store.state.explicit['Root.moving_part']).toBe('hidden');
+      expect(store.state.views[viewId].visibility['Root.moving_part']).toBe('hidden');
+
+      dispose();
+    });
+  });
+
+  it('(b) regenerateAutoViews again with the path restored re-surfaces the persisted visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      store.regenerateAutoViews(treeWith('Root.moving_part'));
+      const viewId = store.createView('My View');
+      store.switchView(viewId);
+      store.setVisibility('Root.moving_part', 'hidden', false);
+
+      // Remove the path from the tree
+      store.regenerateAutoViews(treeWith());
+
+      // Restore the path — the 'hidden' visibility should re-surface
+      store.regenerateAutoViews(treeWith('Root.moving_part'));
+
+      // After step-18: getEffectiveVisibility should return 'hidden' (preserved value)
+      expect(store.getEffectiveVisibility('Root.moving_part')).toBe('hidden');
+
+      dispose();
+    });
+  });
+
+  it('(c) setTree alone preserves explicit entry for a path no longer in the new tree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      // Set the tree with the path — then add an explicit override
+      store.setTree(treeWith('Root.moving_part'));
+      store.setVisibility('Root.moving_part', 'hidden', false);
+      expect(store.state.explicit['Root.moving_part']).toBe('hidden');
+
+      // Replace tree WITHOUT the path — currently prunes the entry
+      store.setTree(treeWith());
+
+      // After step-18: entry must survive
+      expect(store.state.explicit['Root.moving_part']).toBe('hidden');
+
+      dispose();
+    });
+  });
+});
