@@ -550,6 +550,16 @@ pub async fn edit_check_concurrent(
     // post-edit values that the engine will commit. If `edit_param_concurrent`
     // ever diverges the two maps, the constraint results here will be
     // inconsistent with the committed engine state.
+    debug_assert!(
+        result.values.len() == result.snapshot_values.len()
+            && result.values.iter().all(|(id, val)| {
+                result
+                    .snapshot_values
+                    .get(id)
+                    .map_or(false, |(sv, _)| sv == val)
+            }),
+        "edit_param_concurrent invariant violated: values and snapshot_values have inconsistent keys or values"
+    );
     let values = result.values.clone();
 
     // Apply concurrent edit to update engine state

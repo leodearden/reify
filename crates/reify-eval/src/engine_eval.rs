@@ -159,15 +159,7 @@ impl Engine {
         // values map before templates are evaluated, because structure
         // expressions may reference fields (e.g., `sample(my_field, point)`).
         for field in &module.fields {
-            // Analytical and Composed share a match arm because both variants
-            // carry a compiled lambda expression whose evaluation yields the
-            // callable Value stored in `lambda`. The evaluation path is
-            // byte-identical: build an EvalContext, eval the expr, wrap in Arc.
-            // Sampled and Imported fields have no expression to evaluate — the
-            // fallthrough arm returns `Arc::new(Value::Undef)`. This mirrors
-            // the merged pattern already used in reify-expr/src/calculus.rs and
-            // reify-expr/src/analysis.rs, which gate differential operators on
-            // `FieldSourceKind::Analytical | FieldSourceKind::Composed`.
+            // Both variants carry a callable lambda expr; evaluation is identical.
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr }
                 | reify_compiler::CompiledFieldSource::Composed { expr } => {
