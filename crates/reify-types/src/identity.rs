@@ -333,13 +333,13 @@ mod tests {
 
     #[test]
     fn from_dotted_two_segments() {
-        let path = ModulePath::from_dotted("std.units");
+        let path = ModulePath::from_dotted("std.units").unwrap();
         assert_eq!(path.0, vec!["std".to_string(), "units".to_string()]);
     }
 
     #[test]
     fn from_dotted_three_segments() {
-        let path = ModulePath::from_dotted("a.b.c");
+        let path = ModulePath::from_dotted("a.b.c").unwrap();
         assert_eq!(
             path.0,
             vec!["a".to_string(), "b".to_string(), "c".to_string()]
@@ -348,8 +348,47 @@ mod tests {
 
     #[test]
     fn from_dotted_single_segment() {
-        let path = ModulePath::from_dotted("foo");
+        let path = ModulePath::from_dotted("foo").unwrap();
         assert_eq!(path.0, vec!["foo".to_string()]);
+    }
+
+    #[test]
+    fn from_dotted_empty_string_returns_err() {
+        let result = ModulePath::from_dotted("");
+        assert_eq!(result, Err(ModulePathParseError::Empty));
+    }
+
+    #[test]
+    fn from_dotted_double_dot_returns_empty_segment_err() {
+        let result = ModulePath::from_dotted("a..b");
+        assert_eq!(
+            result,
+            Err(ModulePathParseError::EmptySegment {
+                input: "a..b".into()
+            })
+        );
+    }
+
+    #[test]
+    fn from_dotted_leading_dot_returns_empty_segment_err() {
+        let result = ModulePath::from_dotted(".leading");
+        assert_eq!(
+            result,
+            Err(ModulePathParseError::EmptySegment {
+                input: ".leading".into()
+            })
+        );
+    }
+
+    #[test]
+    fn from_dotted_trailing_dot_returns_empty_segment_err() {
+        let result = ModulePath::from_dotted("trailing.");
+        assert_eq!(
+            result,
+            Err(ModulePathParseError::EmptySegment {
+                input: "trailing.".into()
+            })
+        );
     }
 
     #[test]
