@@ -41624,7 +41624,10 @@
         "updatedAt": "2026-04-22T10:01:19.450Z",
         "metadata": {
           "files": [],
-          "modules": []
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+          ]
         }
       },
       {
@@ -45427,7 +45430,9 @@
       "completedCount": 1874,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-22T10:08:43.588Z",
+      "description": "Tasks for master context"
     }
   }
 }
