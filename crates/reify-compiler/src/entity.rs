@@ -1376,7 +1376,7 @@ pub(crate) fn compile_entity(
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(let_decl.name.clone()),
                         operations: ops,
-                        span: SourceSpan::new(0, 0),
+                        span: let_decl.span,
                     });
                     realization_index += 1;
                 }

@@ -1841,3 +1841,49 @@ fn realization_decl_name_matches_let_binding_name() {
         "result realization should have name Some(\"result\")"
     );
 }
+
+// ── RealizationDecl.span tests ────────────────────────────────────────────────
+
+/// Verifies that a geometry-let realization's `span` field is populated from
+/// the originating `LetDecl.span` — i.e., it carries meaningful byte offsets
+/// that point back into the source text.
+///
+/// This test fails against current `entity.rs` which hardcodes
+/// `span: SourceSpan::new(0, 0)` on the let arm (step-1 TDD pin).
+#[test]
+fn realization_span_populated_from_let_decl_span() {
+    // Source is crafted so "let body = cylinder(r, h)" starts well past
+    // byte-offset 0.  Three preceding lines (structure header + two params)
+    // guarantee span.start > 0.
+    let source = "structure S {\n    param r: Scalar = 5mm\n    param h: Scalar = 10mm\n    let body = cylinder(r, h)\n}";
+    let compiled = compile_source(source);
+
+    let template = &compiled.templates[0];
+    // The first realization corresponds to `let body = cylinder(r, h)`.
+    let realization = &template.realizations[0];
+
+    assert!(
+        realization.span.start > 0,
+        "span.start should be > 0 (let body is not at the very beginning of source), \
+         got span.start = {}",
+        realization.span.start
+    );
+    assert!(
+        realization.span.end > realization.span.start,
+        "span.end should be > span.start (non-empty span), \
+         got start={} end={}",
+        realization.span.start,
+        realization.span.end
+    );
+    let slice = &source[realization.span.start as usize..realization.span.end as usize];
+    assert!(
+        slice.contains("body"),
+        "span slice should contain \"body\", got: {:?}",
+        slice
+    );
+    assert!(
+        slice.contains("cylinder"),
+        "span slice should contain \"cylinder\", got: {:?}",
+        slice
+    );
+}
