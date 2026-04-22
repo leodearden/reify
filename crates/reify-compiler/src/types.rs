@@ -777,92 +777,111 @@ mod kind_display_tests {
     //! These strings are a user-facing contract — they appear in
     //! compiler diagnostics and are asserted on by `geometry_ops` /
     //! `geometry_error_handling` tests (`diagnostics[0].message.contains("box")`
-    //! etc). Each test is table-driven so adding a variant is a one-line
-    //! row addition; the repetition of per-variant `assert_eq!` lines was
-    //! flagged as low-ROI in review.
+    //! etc). Each test iterates ALL variants via `strum::IntoEnumIterator`
+    //! and compares `format!("{}", kind)` against an exhaustive `match`,
+    //! giving two independent compile-time guards: the `impl Display` match
+    //! arm list and the test's expected-string match arm list both fire a
+    //! Rust exhaustiveness error if a new variant is added without updating
+    //! both sides.
     use super::*;
+    use strum::IntoEnumIterator;
 
-    fn check<T: std::fmt::Display>(cases: &[(T, &str)]) {
-        for (variant, expected) in cases {
-            assert_eq!(format!("{}", variant), *expected);
+    #[test]
+    fn primitive_kind_display() {
+        for kind in PrimitiveKind::iter() {
+            let expected = match kind {
+                PrimitiveKind::Box => "box",
+                PrimitiveKind::Cylinder => "cylinder",
+                PrimitiveKind::Sphere => "sphere",
+                PrimitiveKind::Tube => "tube",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
         }
     }
 
     #[test]
-    fn primitive_kind_display() {
-        check(&[
-            (PrimitiveKind::Box, "box"),
-            (PrimitiveKind::Cylinder, "cylinder"),
-            (PrimitiveKind::Sphere, "sphere"),
-            (PrimitiveKind::Tube, "tube"),
-        ]);
+    fn boolean_op_display() {
+        for kind in BooleanOp::iter() {
+            let expected = match kind {
+                BooleanOp::Union => "union",
+                BooleanOp::Difference => "difference",
+                BooleanOp::Intersection => "intersection",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn modify_kind_display() {
-        check(&[
-            (ModifyKind::Fillet, "fillet"),
-            (ModifyKind::Chamfer, "chamfer"),
-            (ModifyKind::Shell, "shell"),
-            (ModifyKind::Draft, "draft"),
-            (ModifyKind::Thicken, "thicken"),
-        ]);
-    }
-
-    #[test]
-    fn boolean_op_display() {
-        check(&[
-            (BooleanOp::Union, "union"),
-            (BooleanOp::Difference, "difference"),
-            (BooleanOp::Intersection, "intersection"),
-        ]);
+        for kind in ModifyKind::iter() {
+            let expected = match kind {
+                ModifyKind::Fillet => "fillet",
+                ModifyKind::Chamfer => "chamfer",
+                ModifyKind::Shell => "shell",
+                ModifyKind::Draft => "draft",
+                ModifyKind::Thicken => "thicken",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn transform_kind_display() {
-        check(&[
-            (TransformKind::Translate, "translate"),
-            (TransformKind::Rotate, "rotate"),
-            (TransformKind::Scale, "scale"),
-            (TransformKind::RotateAround, "rotate_around"),
-        ]);
+        for kind in TransformKind::iter() {
+            let expected = match kind {
+                TransformKind::Translate => "translate",
+                TransformKind::Rotate => "rotate",
+                TransformKind::Scale => "scale",
+                TransformKind::RotateAround => "rotate_around",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn pattern_kind_display() {
-        check(&[
-            (PatternKind::Linear, "linear"),
-            (PatternKind::Circular, "circular"),
-            (PatternKind::Mirror, "mirror"),
-            (PatternKind::Linear2D, "linear_2d"),
-            (PatternKind::Arbitrary, "arbitrary"),
-        ]);
+        for kind in PatternKind::iter() {
+            let expected = match kind {
+                PatternKind::Linear => "linear",
+                PatternKind::Circular => "circular",
+                PatternKind::Mirror => "mirror",
+                PatternKind::Linear2D => "linear_2d",
+                PatternKind::Arbitrary => "arbitrary",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn sweep_kind_display() {
-        check(&[
-            (SweepKind::Loft, "loft"),
-            (SweepKind::Extrude, "extrude"),
-            (SweepKind::Revolve, "revolve"),
-            (SweepKind::Sweep, "sweep"),
-            (SweepKind::ExtrudeSymmetric, "extrude_symmetric"),
-            (SweepKind::SweepGuided, "sweep_guided"),
-            (SweepKind::LoftGuided, "loft_guided"),
-            (SweepKind::Pipe, "pipe"),
-        ]);
+        for kind in SweepKind::iter() {
+            let expected = match kind {
+                SweepKind::Loft => "loft",
+                SweepKind::Extrude => "extrude",
+                SweepKind::Revolve => "revolve",
+                SweepKind::Sweep => "sweep",
+                SweepKind::ExtrudeSymmetric => "extrude_symmetric",
+                SweepKind::SweepGuided => "sweep_guided",
+                SweepKind::LoftGuided => "loft_guided",
+                SweepKind::Pipe => "pipe",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn curve_kind_display() {
-        check(&[
-            (CurveKind::LineSegment, "line_segment"),
-            (CurveKind::Arc, "arc"),
-            (CurveKind::Helix, "helix"),
-            (CurveKind::InterpCurve, "interp_curve"),
-            (CurveKind::BezierCurve, "bezier_curve"),
-            (CurveKind::NurbsCurve, "nurbs_curve"),
-        ]);
+        for kind in CurveKind::iter() {
+            let expected = match kind {
+                CurveKind::LineSegment => "line_segment",
+                CurveKind::Arc => "arc",
+                CurveKind::Helix => "helix",
+                CurveKind::InterpCurve => "interp_curve",
+                CurveKind::BezierCurve => "bezier_curve",
+                CurveKind::NurbsCurve => "nurbs_curve",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 }
 
