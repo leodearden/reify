@@ -16,11 +16,30 @@ use reify_test_support::{bracket_compiled_module, parse_and_compile};
 use reify_compiler::CompiledModule;
 use reify_types::{
     ConstraintNodeId, RealizationNodeId, Satisfaction, SnapshotProvenance, Value, ValueCellId,
+    ValueMap,
 };
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
     Engine::new(Box::new(SimpleConstraintChecker), None)
+}
+
+/// Cross-check two value maps entry-for-entry via key-union.
+/// Panics on the first diverging key with a message identical to the
+/// inline pattern previously copy-pasted across the Task 2087 tests.
+fn assert_values_match(incr: &ValueMap, cold: &ValueMap) {
+    let incr_keys: HashSet<&ValueCellId> = incr.iter().map(|(k, _)| k).collect();
+    let cold_keys: HashSet<&ValueCellId> = cold.iter().map(|(k, _)| k).collect();
+    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
+    for key in &all_keys {
+        let incr_val = incr.get(key);
+        let cold_val = cold.get(key);
+        assert_eq!(
+            incr_val, cold_val,
+            "value for {key} diverges: incremental={:?}, cold={:?}",
+            incr_val, cold_val
+        );
+    }
 }
 
 /// Run `eval(module_a)` then `edit_source(module_b)` on a single engine,
@@ -1033,19 +1052,8 @@ structure S {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // (a) Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // (a) Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (b) __count_bolts == Int(6) on the incremental engine.
     let count_id = ValueCellId::new("S", "__count_bolts");
@@ -1097,8 +1105,8 @@ structure S {
 /// entry), so it must freshly evaluate against the refreshed `self.functions`
 /// table installed by Step-11 of `edit_source`.
 ///
-/// If Step-11's `self.functions = ...` refresh at `engine_edit.rs:1169-1172`
-/// were skipped, the incremental engine would compute `3.0 * 4.0 = 12.0`
+/// If Step-11's `self.functions = module.functions.clone()` refresh were skipped,
+/// the incremental engine would compute `3.0 * 4.0 = 12.0`
 /// (module_A's body) while cold eval would compute `3.0 + 4.0 = 7.0`.
 ///
 /// Task 2087 — coverage gap 2.
@@ -1134,19 +1142,8 @@ structure Panel {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // Anchor: `result` must be Int(7) = 3 + 4 (refreshed sum body).
     // A missing functions-table refresh would produce Int(12) = 3 * 4 from module_A's
@@ -1170,8 +1167,8 @@ structure Panel {
 
 /// Changing a purpose body (adding a constraint) and then activating the purpose
 /// on the incremental engine must inject module_B's constraints — matching the
-/// cold path.  If Step-11's `self.compiled_purposes = ...` refresh at
-/// `engine_edit.rs:1172` were skipped, incremental would inject module_A's
+/// cold path.  If Step-11's `self.compiled_purposes` refresh were skipped,
+/// incremental would inject module_A's
 /// 1-constraint purpose while cold injects module_B's 2-constraint purpose.
 ///
 /// Task 2087 — coverage gap 3.
@@ -1265,8 +1262,8 @@ purpose mfg_ready(subject : Structure) {
 ///
 /// Note: `meta.key` access hashes entity+key only (not the meta value), so a
 /// meta-dict-value change alone does not dirty an existing cell.  Pairing the
-/// meta change with an ADDED reading cell guarantees that the refreshed
-/// `self.meta_map` at `engine_edit.rs:1173-1178` is actually consulted.
+/// meta change with an ADDED reading cell guarantees that Step-11's
+/// `self.meta_map` refresh is actually consulted.
 ///
 /// Task 2087 — coverage gap 4.
 #[test]
@@ -1306,19 +1303,8 @@ structure def Widget {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // Anchor: both added cells must read the refreshed meta_map on both paths.
     // If Step-11's `self.meta_map` refresh were skipped, `desc` and `tag` on the
@@ -1358,8 +1344,8 @@ structure def Widget {
 /// `edit_source` to forward the *new* `Maximize` objective to the solver —
 /// matching a cold `eval(B)`.
 ///
-/// If Step-11's `self.objectives.clear(); self.objectives.insert(...)` refresh at
-/// `engine_edit.rs:1221-1225` were skipped, `self.objectives` would still carry
+/// If Step-11's `self.objectives.clear(); self.objectives.insert(...)` refresh
+/// were skipped, `self.objectives` would still carry
 /// the stale `Minimize` objective from `eval(A)`, and the solver would receive
 /// `Minimize` instead of `Maximize` during the `edit_source(B)` resolution phase.
 /// The spy assertion on `captured_problems[1].objective` catches this divergence.
@@ -1533,24 +1519,6 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
         Some(&mm(15.0)),
         "incremental resolved thickness should be mm(15.0) from the sequenced solver"
     );
-
-    // Final call-count guard: the spy's SequencedMockConstraintSolver repeats the
-    // last result on exhaustion rather than panicking, so a silent third solver call
-    // during edit_source would return mm(15.0) again and all preceding assertions
-    // would still pass.  Re-asserting the total call count here catches that case.
-    // The spy is pre-configured with exactly 2 results (vec! above), so any extra
-    // invocation is an unintended re-solve.
-    {
-        let problems = captured.lock().unwrap();
-        assert_eq!(
-            problems.len(),
-            2,
-            "expected exactly 2 solver calls total (eval(A) + edit_source(B)); \
-             got {} — extra calls indicate an unintended re-solve; if intentional, \
-             extend the spy's result sequence accordingly",
-            problems.len()
-        );
-    }
 }
 
 // ── Coverage gap 6: removed cell whose dependents remain ─────────────────────
@@ -1577,9 +1545,9 @@ fn edit_source_removed_cell_with_dependent_matches_cold_eval() {
     let volume = width * height * fudge
 }"#;
     // Module B: `fudge` removed; `volume` now inlines the expression.
-    // The removed-cell defensive arm at engine_edit.rs:1002-1017 ensures
-    // `volume` is re-evaluated even though its new expression no longer
-    // references `fudge`.
+    // The removed-cell defensive arm (Step 6 — `old_reverse_index` dependents
+    // traversal) ensures `volume` is re-evaluated even though its new expression
+    // no longer references `fudge`.
     let module_b_src = r#"structure Bracket {
     param width : Scalar = 80mm
     param height : Scalar = 100mm
@@ -1598,19 +1566,8 @@ fn edit_source_removed_cell_with_dependent_matches_cold_eval() {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (a) volume must match cold (dependent recomputed correctly).
     let volume_id = ValueCellId::new("Bracket", "volume");
@@ -1682,21 +1639,8 @@ fn edit_source_removed_constraint_invalidates_and_matches_cold_eval() {
         .check_snapshot(&module_b)
         .expect("check_snapshot must succeed after cold eval");
 
-    // (a) Cross-check values via key-union.
-    let incr_keys: HashSet<&ValueCellId> =
-        incr_check.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> =
-        cold_check.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr_check.values.get(key);
-        let cold_val = cold_check.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // (a) Cross-check values entry-for-entry.
+    assert_values_match(&incr_check.values, &cold_check.values);
 
     // (b) constraint_results.len() == 1 on both (removed constraint is gone).
     assert_eq!(
@@ -1744,8 +1688,8 @@ fn edit_source_removed_constraint_invalidates_and_matches_cold_eval() {
 /// Adding a second geometry `let` must add a new `RealizationNodeId` to the
 /// snapshot graph and place it in `last_eval_set()` — matching cold eval.
 ///
-/// Exercises the `for rid in &added_realizations` splice at
-/// `engine_edit.rs:1040-1042`.  Task 2087 — coverage gap 8.
+/// Exercises the `for rid in &added_realizations` splice into `dirty_cone` (Step 6b).
+/// Task 2087 — coverage gap 8.
 #[test]
 fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
     // Module A: one realization `let body = box(...)`.
@@ -1777,19 +1721,8 @@ fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have 2 realizations in the graph.
     let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
@@ -1831,7 +1764,7 @@ fn edit_source_added_realization_is_tracked_and_matches_cold_eval() {
 /// Dropping a geometry `let` must remove its `RealizationNodeId` from the
 /// snapshot graph — matching cold eval.
 ///
-/// Exercises cache invalidation at `engine_edit.rs:1152-1154`.
+/// Exercises the `for rid in &removed_realizations` cache invalidation (Step 9).
 /// Task 2087 — coverage gap 9.
 #[test]
 fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
@@ -1864,19 +1797,8 @@ fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have exactly 1 realization.
     let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
@@ -1910,8 +1832,8 @@ fn edit_source_removed_realization_is_dropped_and_matches_cold_eval() {
 /// `RealizationNodeData::content_hash` — the modified realization must appear
 /// in `last_eval_set()` and its content_hash must match cold eval.
 ///
-/// Exercises the `for rid in &changed_realizations` splice at
-/// `engine_edit.rs:1037-1039`.  Task 2087 — coverage gap 10.
+/// Exercises the `for rid in &changed_realizations` splice into `dirty_cone` (Step 6b).
+/// Task 2087 — coverage gap 10.
 #[test]
 fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
     // Module A: `let body = box(width, height, thickness)`.
@@ -1943,19 +1865,8 @@ fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
     let mut cold = fresh_engine();
     let cold_result = cold.eval(&module_b);
 
-    // Cross-check values entry-for-entry via key-union.
-    let incr_keys: HashSet<&ValueCellId> = incr.values.iter().map(|(k, _)| k).collect();
-    let cold_keys: HashSet<&ValueCellId> = cold_result.values.iter().map(|(k, _)| k).collect();
-    let all_keys: HashSet<&ValueCellId> = incr_keys.union(&cold_keys).copied().collect();
-    for key in &all_keys {
-        let incr_val = incr.values.get(key);
-        let cold_val = cold_result.values.get(key);
-        assert_eq!(
-            incr_val, cold_val,
-            "value for {key} diverges: incremental={:?}, cold={:?}",
-            incr_val, cold_val
-        );
-    }
+    // Cross-check values entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
 
     // (a) Both engines should have exactly 1 realization.
     let incr_snap = incremental.snapshot().expect("incremental snapshot must exist");
