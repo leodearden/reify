@@ -4663,6 +4663,27 @@ mod tests {
     }
 
     #[test]
+    fn cpp_line_wire_floor_matches_rust_const() {
+        // Behavioral anchor: verifies the C++ layer honours the Rust-defined
+        // CPP_LINE_WIRE_MIN_LENGTH_SQ constant by bracketing the floor.
+        // Inputs are derived from the Rust const so this test auto-tracks any
+        // future change to the canonical value in src/floor_constants.rs.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let floor_len = crate::CPP_LINE_WIRE_MIN_LENGTH_SQ.sqrt();
+        // Just below the C++ floor — must be rejected.
+        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, floor_len * 0.9, 0.0, 0.0);
+        result
+            .err()
+            .expect("make_line_wire just below CPP floor should return Err, got Ok");
+        // Just above the C++ floor — must succeed.
+        let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, floor_len * 2.0, 0.0, 0.0);
+        result.expect("make_line_wire just above CPP floor should succeed");
+    }
+
+    #[test]
     fn rust_line_wire_floor_strictly_below_cpp_floor() {
         // Drift-guard: asserts that the Rust-layer primary floor
         // (RUST_LINE_WIRE_MIN_LENGTH_SQ) stays strictly below the C++-layer
