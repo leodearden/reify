@@ -4430,6 +4430,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validate_pipe_start_tangent_error_mentions_tolerance() {
+        // Verifies that the non-+Z error message includes the tolerance value
+        // so that operators can read the accepted margin directly from the error.
+        // Step 4 adds "(tolerance 1e-6)" to the format string; until then this
+        // test fails — the expected red state.
+        let t = ffi::ffi::Point3 { x: 1.0, y: 0.0, z: 0.0 }; // +X tangent, not +Z
+        let result = super::validate_pipe_start_tangent(t);
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("1e-6"),
+                    "expected error message to mention tolerance '1e-6', got: {msg}"
+                );
+            }
+            Ok(()) => panic!("expected Err for +X tangent, got Ok"),
+            Err(other) => panic!("expected OperationFailed for +X tangent, got {:?}", other),
+        }
+    }
+
     // --- wire_start_tangent FFI tests ---
 
     #[test]
