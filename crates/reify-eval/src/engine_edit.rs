@@ -2125,4 +2125,41 @@ mod tests {
         assert_eq!(map.get(&c), Some(&(g2.clone(), 0u8)));
         assert_eq!(map.get(&d), Some(&(g2.clone(), 1u8)));
     }
+
+    /// Duplicate ValueCellId across two groups must panic in debug builds.
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` because `debug_assert!` is a no-op
+    /// in release mode — without the gate `cargo test --release` would run the
+    /// body, the silent overwrite would not panic, and `#[should_panic]` would
+    /// fail. Pattern mirrors `crates/reify-expr/tests/gradient_tests.rs:4043`.
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "appeared in multiple guarded-group roles")]
+    #[test]
+    fn build_old_role_map_panics_on_duplicate_member() {
+        use crate::graph::GuardedGroupInfo;
+
+        use super::build_old_role_map;
+
+        let g1 = ValueCellId::new("E1", "guard");
+        let g2 = ValueCellId::new("E2", "guard");
+        let shared = ValueCellId::new("E1", "shared");
+
+        let group1 = GuardedGroupInfo {
+            guard_cell: g1.clone(),
+            members: vec![shared.clone()],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let group2 = GuardedGroupInfo {
+            guard_cell: g2.clone(),
+            members: vec![shared.clone()],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        // Must panic: `shared` appears in two groups.
+        build_old_role_map(&[group1, group2]);
+    }
 }
