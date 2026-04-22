@@ -466,13 +466,21 @@ impl Engine {
         // ── Guard re-elaboration phase ────────────────────────────────
         // If any structure_controlling cell changed, re-evaluate guarded groups
         // to flip which branch is active/inactive, and recompute fingerprint.
-        {
+        //
+        // Cross-phase dedup (task 2140): the set is non-empty only when Phase 1
+        // fires; the else arm returns an empty HashSet so no allocation is wasted
+        // when no guards are dirty. Phase 3 consults the set to skip groups
+        // already re-elaborated here. Reelaboration is idempotent for a given
+        // guard value — provided wave2 has not subsequently overwritten inactive
+        // members (the post-wave2 cleanup in the solver block re-deactivates them).
+        let phase1_reelaborated: HashSet<ValueCellId> = {
             let graph = &new_snapshot.graph;
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             });
 
             if has_dirty_guards {
+                let mut set = HashSet::new();
                 for group in &graph.guarded_groups {
                     // Re-evaluate the guard cell's expression
                     let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
@@ -517,6 +525,7 @@ impl Engine {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
+                    set.insert(group.guard_cell.clone());
 
                     reelaborate_guarded_group(
                         graph,
@@ -534,8 +543,11 @@ impl Engine {
                     guard_state_fingerprint(&graph.guarded_groups, &values, GuardLookup::Lenient);
                 new_snapshot.topology_fingerprint =
                     graph.topology_fingerprint().combine(guard_state_hash);
+                set
+            } else {
+                HashSet::new()
             }
-        }
+        };
 
         // ── Resolution phase ───────────────────────────────────────────
         // If a solver is present, check whether any constraints governing
@@ -705,6 +717,40 @@ impl Engine {
                         );
                     }
                 }
+
+                // Post-wave2 cleanup for cross-phase dedup safety (task 2140):
+                // wave2 unconditionally re-evaluates any cell in the demand cone
+                // whose default_expr reads a resolved auto param — including
+                // inactive-branch members that Phase 1 already deactivated (Undef).
+                // For each group Phase 1 processed, re-deactivate its inactive
+                // branch so Phase 3's `phase1_reelaborated` skip stays correct.
+                if !phase1_reelaborated.is_empty() {
+                    for group in new_snapshot.graph.guarded_groups.clone() {
+                        if !phase1_reelaborated.contains(&group.guard_cell) {
+                            continue;
+                        }
+                        let guard_val = values
+                            .get(&group.guard_cell)
+                            .cloned()
+                            .expect("guard cell must have a value after Phase 1");
+                        let is_true = matches!(&guard_val, Value::Bool(true));
+                        let is_false = matches!(&guard_val, Value::Bool(false));
+                        for (cells, is_active) in
+                            [(&group.members, is_true), (&group.else_members, is_false)]
+                        {
+                            if !is_active {
+                                for mid in cells {
+                                    deactivate_if_not_auto(
+                                        &new_snapshot.graph,
+                                        mid,
+                                        &mut values,
+                                        &mut new_snapshot.values,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -733,6 +779,14 @@ impl Engine {
                         .get(&group.guard_cell)
                         .cloned()
                         .expect("guard cell must have a value after initial evaluation");
+                    // Cross-phase dedup: skip groups already re-elaborated by Phase 1
+                    // in this same edit_param call (task 2140). Reelaboration is
+                    // idempotent, so Phase 1's work is sufficient. The existing
+                    // old-vs-new skip below still covers groups where Phase 1 did NOT
+                    // fire (e.g. resolver-driven guard changes via auto params).
+                    if phase1_reelaborated.contains(&group.guard_cell) {
+                        continue;
+                    }
                     // Per-group skip: if this group's guard value is unchanged vs.
                     // the pre-edit snapshot, its activation state has not flipped
                     // and its members don't need re-elaboration.

@@ -755,6 +755,120 @@ impl Engine {
             }
         }
 
+        // ── Post-solver guard re-evaluation ───────────────────────────────────
+        // The "Third pass: guarded groups" loop above runs BEFORE the solver,
+        // so any guard whose expression reads an auto param evaluates to Undef
+        // at that point (auto params start as Undef). After the solver resolves
+        // auto params to concrete values, we must re-evaluate guard cells and
+        // member cells to get the correct activated/deactivated state.
+        //
+        // This pass is idempotent with the earlier pass for guards that don't
+        // depend on auto params — they will re-evaluate to the same value.
+        // For auto-param-dependent guards and members that reference auto params,
+        // this corrects what the earlier pass could not compute.
+        if self.solver.is_some() {
+            for template in &module.templates {
+                for group in &template.guarded_groups {
+                    let guard_val = reify_expr::eval_expr(
+                        &group.guard_expr,
+                        &reify_expr::EvalContext::new(&values, &functions)
+                            .with_meta(&self.meta_map)
+                            .with_determinacy(&snapshot.values),
+                    );
+                    values.insert(group.guard_value_cell.clone(), guard_val.clone());
+                    let guard_determinacy = match &guard_val {
+                        Value::Bool(_) => DeterminacyState::Determined,
+                        _ => DeterminacyState::Undetermined,
+                    };
+                    snapshot.values.insert(
+                        group.guard_value_cell.clone(),
+                        (guard_val.clone(), guard_determinacy),
+                    );
+
+                    let guard_is_true = matches!(&guard_val, Value::Bool(true));
+                    let guard_is_false = matches!(&guard_val, Value::Bool(false));
+
+                    for cell in &group.members {
+                        if guard_is_true {
+                            if cell.kind == ValueCellKind::Param
+                                || cell.kind == ValueCellKind::Let
+                            {
+                                if let Some(ref expr) = cell.default_expr {
+                                    let val = reify_expr::eval_expr(
+                                        expr,
+                                        &reify_expr::EvalContext::new(&values, &functions)
+                                            .with_meta(&self.meta_map)
+                                            .with_determinacy(&snapshot.values),
+                                    );
+                                    values.insert(cell.id.clone(), val.clone());
+                                    snapshot.values.insert(
+                                        cell.id.clone(),
+                                        (val, DeterminacyState::Determined),
+                                    );
+                                } else {
+                                    values.insert(cell.id.clone(), Value::Undef);
+                                    snapshot.values.insert(
+                                        cell.id.clone(),
+                                        (Value::Undef, DeterminacyState::Undetermined),
+                                    );
+                                }
+                            }
+                            // Auto cells in the active branch are left untouched:
+                            // the solver already resolved them to concrete values.
+                            // Overwriting with Undef here would destroy solver work.
+                        } else {
+                            values.insert(cell.id.clone(), Value::Undef);
+                            let det = if cell.kind.is_auto() {
+                                DeterminacyState::Auto
+                            } else {
+                                DeterminacyState::Undetermined
+                            };
+                            snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
+                        }
+                    }
+
+                    for cell in &group.else_members {
+                        if guard_is_false {
+                            if cell.kind == ValueCellKind::Param
+                                || cell.kind == ValueCellKind::Let
+                            {
+                                if let Some(ref expr) = cell.default_expr {
+                                    let val = reify_expr::eval_expr(
+                                        expr,
+                                        &reify_expr::EvalContext::new(&values, &functions)
+                                            .with_meta(&self.meta_map)
+                                            .with_determinacy(&snapshot.values),
+                                    );
+                                    values.insert(cell.id.clone(), val.clone());
+                                    snapshot.values.insert(
+                                        cell.id.clone(),
+                                        (val, DeterminacyState::Determined),
+                                    );
+                                } else {
+                                    values.insert(cell.id.clone(), Value::Undef);
+                                    snapshot.values.insert(
+                                        cell.id.clone(),
+                                        (Value::Undef, DeterminacyState::Undetermined),
+                                    );
+                                }
+                            }
+                            // Auto cells in the active else branch are left untouched:
+                            // the solver already resolved them to concrete values.
+                            // Overwriting with Undef here would destroy solver work.
+                        } else {
+                            values.insert(cell.id.clone(), Value::Undef);
+                            let det = if cell.kind.is_auto() {
+                                DeterminacyState::Auto
+                            } else {
+                                DeterminacyState::Undetermined
+                            };
+                            snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Guard-state fingerprinting ──────────────────────────────
         // Include guard-cell boolean states in the topology fingerprint so that
         // eval() and edit_param() produce identical fingerprints for the same

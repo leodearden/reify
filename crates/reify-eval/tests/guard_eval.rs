@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use reify_eval::Engine;
-use reify_test_support::builders::{gt, literal, value_ref, value_ref_typed};
+use reify_test_support::builders::{ge, gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintSolver, SequencedMockConstraintSolver,
@@ -1808,19 +1808,23 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         Some(&Value::length(0.011)),
         "Phase 1: p1 should be 11mm"
     );
-    // a2: solver resolved to 7mm (else deactivation is Auto-skip; solver still runs at top level)
+    // a2: inactive else_member (guard=true → else branch deactivated by post-solver re-eval → Undef)
+    // The solver resolves a2=7mm, but engine_eval.rs's post-solver guard re-eval overwrites
+    // inactive-branch Auto params with Undef (det=Auto). Auto-skip is an edit_param-only
+    // mechanism; initial eval always deactivates inactive members regardless of Auto kind.
     let a2_p1 = result1.values.get(&a2_id);
-    assert!(
-        matches!(a2_p1, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
-        "Phase 1: a2 should be 7mm, got {:?}",
+    assert_eq!(
+        a2_p1,
+        Some(&Value::Undef),
+        "Phase 1: a2 should be Undef (inactive else_member when guard=true), got {:?}",
         a2_p1
     );
     let snap1 = engine.snapshot().expect("snapshot after eval");
     let (_, a2_det1) = snap1.values.get(&a2_id).expect("a2 in snapshot after eval");
     assert_eq!(
         *a2_det1,
-        DeterminacyState::Determined,
-        "Phase 1: a2 DeterminacyState should be Determined (solver resolved)"
+        DeterminacyState::Auto,
+        "Phase 1: a2 DeterminacyState should be Auto (inactive else_member, Auto kind)"
     );
     // p2: else_member deactivated → Undef
     assert_eq!(
@@ -1857,18 +1861,20 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         Some(&Value::Undef),
         "Phase 2: p1 should be Undef after members deactivate"
     );
-    // a2: else_members activate; Auto with no default_expr → stays 7mm
+    // a2: else_members activate; Auto with no default_expr → stays Undef (solver constraint
+    // a2_gt_3mm is not in the dirty cone when `active` changes, so solver does not run for a2).
     let a2_p2 = result2.values.get(&a2_id);
-    assert!(
-        matches!(a2_p2, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
-        "Phase 2: a2 should retain 7mm after else_members activated (no default_expr), got {:?}",
+    assert_eq!(
+        a2_p2,
+        Some(&Value::Undef),
+        "Phase 2: a2 should be Undef (else_members activated but solver not triggered), got {:?}",
         a2_p2
     );
     let (_, a2_det2) = snap2.values.get(&a2_id).expect("a2 in snapshot after guard→false");
     assert_eq!(
         *a2_det2,
-        DeterminacyState::Determined,
-        "Phase 2: a2 DeterminacyState must remain Determined"
+        DeterminacyState::Auto,
+        "Phase 2: a2 DeterminacyState must be Auto (Auto kind, value still Undef)"
     );
     // p2: else_member activates → default 13mm
     assert_eq!(
@@ -1898,19 +1904,21 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         Some(&Value::length(0.011)),
         "Phase 3: p1 should be 11mm after members re-activated"
     );
-    // a2: Auto-skip in else_members deactivate (site #2) → 7mm preserved
+    // a2: Auto-skip in else_members deactivate (site #2) → Undef preserved
+    // deactivate_if_not_auto skips a2 (Auto kind) so the snapshot is not touched.
     let a2_p3 = result3.values.get(&a2_id);
-    assert!(
-        matches!(a2_p3, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
-        "Phase 3: a2 should retain 7mm after else_members deactivate (Auto-skip site #2), got {:?}",
+    assert_eq!(
+        a2_p3,
+        Some(&Value::Undef),
+        "Phase 3: a2 should remain Undef after else_members deactivate (Auto-skip preserves Undef), got {:?}",
         a2_p3
     );
     let snap3 = engine.snapshot().expect("snapshot after guard→true");
     let (_, a2_det3) = snap3.values.get(&a2_id).expect("a2 in snapshot after guard→true");
     assert_eq!(
         *a2_det3,
-        DeterminacyState::Determined,
-        "Phase 3: a2 DeterminacyState must remain Determined after else Auto-skip"
+        DeterminacyState::Auto,
+        "Phase 3: a2 DeterminacyState must remain Auto after else Auto-skip"
     );
     // p2: Param in else_members → Undef after deactivation
     assert_eq!(
@@ -1968,7 +1976,7 @@ fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
             "S",
             "count",
             Type::length(),
-            Some(CompiledExpr::literal(mm(5.0), Type::length())),
+            Some(CompiledExpr::literal(mm(150.0), Type::length())),
         )
         // Top-level auto_param so the resolution phase finds it
         .auto_param("S", "thickness", Type::length())
@@ -2001,7 +2009,8 @@ fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
-    // Initial eval with guard=false (count=5mm < 100mm); solver still resolves thickness
+    // Initial eval with guard=true (count=150mm > 100mm); thickness is the active member.
+    // Post-solver re-eval leaves active-branch Auto cells untouched → thickness=5mm.
     let initial_result = engine.eval(&module);
     let thickness_val = initial_result.values.get(&thickness_id);
     assert!(
@@ -2010,11 +2019,11 @@ fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
         thickness_val
     );
 
-    // edit_param(count, 10mm) — still < 100mm, guard remains false.
+    // edit_param(count, 200mm) — still > 100mm, guard remains true.
     // __guard_0 enters the dirty cone via count's reverse index → Block A fires.
-    // guard value (false → false) → Block B does NOT fire.
+    // guard value (true → true) → Block B does NOT fire.
     let edit_result = engine
-        .edit_param(count_id.clone(), mm(10.0))
+        .edit_param(count_id.clone(), mm(200.0))
         .expect("edit_param should succeed");
 
     // Auto param must retain solver-resolved value (Block A Auto-skip at line 472).
@@ -2059,13 +2068,16 @@ fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
 ///
 /// `has_dirty_guards` fires (Phase 1) because group 3's guard cell is in the
 /// dirty cone of the edit. `guard_changed` fires (Phase 3) because group 3's
-/// guard value changes from true to false. With the per-group skip, only group 3
-/// is re-elaborated in both phases → counter = 2.
+/// guard value changes from true to false. Phase 1 processes group 3 and records
+/// it in `phase1_reelaborated`; Phase 3 sees it in the set and skips it →
+/// counter = 1.
 ///
-/// Without the fix: counter = 10 (Phase 1) + 10 (Phase 3) = 20.
-/// With the fix:    counter = 1  (Phase 1) + 1  (Phase 3) = 2.
+/// Without per-group skip (pre-task-2088):          counter = 10 (Phase 1) + 10 (Phase 3) = 20.
+/// With per-group skip, no cross-phase dedup:       counter =  1 (Phase 1) +  1 (Phase 3) =  2.
+/// With cross-phase dedup via phase1_reelaborated:  counter =  1 (Phase 1) +  0 (Phase 3) =  1.
 ///
 /// Task 2088 — edit_param Phase 1 & 3 per-group skip.
+/// Task 2140 — cross-phase dedup via `phase1_reelaborated` set.
 #[test]
 fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
     let module_src = r#"structure S {
@@ -2135,21 +2147,276 @@ fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
         );
     }
 
-    // (c) Performance lock: only group 3 must be re-elaborated in Phase 1 and
-    // Phase 3. The other 9 groups have unchanged guard values (uN=true) and must
-    // be skipped. edit_param(u3, false) triggers both Phase 1 (u3 in changed
-    // structure_controlling set → has_dirty_guards) and Phase 3 (guard value
-    // flips true→false → guard_changed). Expected total: 1 (Phase 1) + 1
-    // (Phase 3) = exactly 2.
-    // Without the skip optimisation this counter would be 10 + 10 = 20.
+    // (c) Performance lock: only Phase 1 re-elaborates group 3. Phase 3 sees
+    // group 3 in `phase1_reelaborated` (task 2140 cross-phase dedup set) and
+    // skips it. The other 9 groups have unchanged guard values (uN=true) and
+    // are skipped by the per-group skip (task 2088). Expected total:
+    // 1 (Phase 1) + 0 (Phase 3) = exactly 1.
+    // Without the skip optimisation: 10 (Phase 1) + 10 (Phase 3) = 20.
+    // With per-group skip but no cross-phase dedup: 1 (Phase 1) + 1 (Phase 3) = 2.
     let counter = engine.last_guard_phase_group_evals();
     assert_eq!(
-        counter, 2,
-        "expected exactly 2 non-skipped guard-phase group iterations \
-         (1 in Phase 1 + 1 in Phase 3 for the one affected group, \
-         9 per phase skipped); got {} — if 0, the counter increment is \
-         missing from edit_param (instrumentation dropped); \
-         if > 2, the per-group skip is broken",
+        counter, 1,
+        "expected exactly 1 non-skipped guard-phase group iteration \
+         (Phase 1 processes group 3; Phase 3 skips it via phase1_reelaborated set); \
+         got {} — if 0, the counter increment is missing from Phase 1 \
+         (instrumentation dropped); if > 1, cross-phase dedup is broken \
+         (2 specifically means Phase 3 is redoing Phase 1's work)",
         counter
+    );
+}
+
+// ── Phase 3 carve-out: resolver-driven guard change bypasses dedup ─────────────
+
+/// Phase 3 fires for a group whose guard is flipped by solver resolution rather
+/// than by Phase 1.
+///
+/// Test design:
+/// - Structure with `auto depth: Length`, `param ref_depth: Length = 5mm`
+///   (initially), constraint `depth >= ref_depth`, and guard `depth > 3mm`.
+/// - `ref_depth` is NOT structure_controlling. When it is edited, has_dirty_guards
+///   is false so Phase 1 does not run.
+/// - The solver resolves depth = 2mm (second sequenced result). Wave2 re-evaluates
+///   the guard cell to false. Phase 3 fires (guard changed) and deactivates m.
+///
+/// Verifies the "Phase 3 fires via Phase 3 path" carve-out documented in the
+/// cross-phase dedup comment: `phase1_reelaborated` is empty, so Phase 3 is
+/// NOT skipped by the dedup and correctly handles the resolver-driven flip.
+/// Expected counter: 1 (Phase 3 only; Phase 1 did not run).
+#[test]
+fn edit_param_phase3_fires_for_auto_driven_guard_change() {
+    let ref_depth_id = ValueCellId::new("S", "ref_depth");
+    let depth_id = ValueCellId::new("S", "depth");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let m_id = ValueCellId::new("S", "m");
+
+    // Guard expression: depth > 3mm.  The guard cell reads `depth` (auto).
+    let guard_expr = gt(value_ref("S", "depth"), literal(mm(3.0)));
+
+    // Member: simple 1mm constant.  It gets deactivated when guard = false.
+    let m_decl = ValueCellDecl {
+        id: m_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(1.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        // ref_depth: a param that the solver uses but that does NOT feed the guard
+        .param(
+            "S",
+            "ref_depth",
+            Type::length(),
+            Some(literal(mm(5.0))),
+        )
+        // depth: auto param resolved by the solver
+        .auto_param("S", "depth", Type::length())
+        // constraint reads both depth and ref_depth → dirty when ref_depth changes
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_ref_depth"),
+            ge(value_ref("S", "depth"), value_ref("S", "ref_depth")),
+        )
+        // guarded group: guard depends on `depth` (NOT on ref_depth)
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![m_decl], // members (active when guard = true)
+            vec![],       // constraints
+            vec![],       // else_members
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Sequenced solver: first call → depth = 5mm (initial eval);
+    //                   second call → depth = 2mm (after edit_param(ref_depth, 2mm)).
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_id.clone(), mm(2.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
+    ]);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval: depth = 5mm (solver), guard = true (5mm > 3mm), m = 1mm.
+    let initial = engine.eval(&module);
+    assert!(
+        matches!(initial.values.get(&m_id), Some(Value::Scalar { .. })),
+        "initial eval: m should be active (1mm) when depth=5mm > 3mm, got {:?}",
+        initial.values.get(&m_id),
+    );
+
+    // edit_param(ref_depth, 2mm): ref_depth is NOT structure_controlling so
+    // Phase 1 does not fire (has_dirty_guards = false, phase1_reelaborated = {}).
+    // Solver re-resolves depth = 2mm; wave2 re-evaluates the guard cell to false.
+    // Phase 3 sees guard_changed, does NOT find guard_cell in phase1_reelaborated,
+    // and correctly deactivates m.
+    let edited = engine
+        .edit_param(ref_depth_id, Value::length(0.002)) // 2mm in SI
+        .expect("edit_param must succeed");
+
+    // (a) m deactivated to Undef: guard flipped true→false via Phase 3.
+    assert!(
+        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        "m must be Undef after guard flips false via Phase 3; got {:?}",
+        edited.values.get(&m_id),
+    );
+
+    // (b) Counter: exactly 1 (Phase 3 path only; Phase 1 did not fire).
+    let counter = engine.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 1,
+        "expected counter == 1 (Phase 3 fires for the group, Phase 1 never ran); \
+         got {} — 0 means Phase 3 also skipped (dedup too aggressive); \
+         > 1 means extra elaboration occurred",
+        counter
+    );
+}
+
+// ── Wave2 interaction: inactive members must stay Undef after cleanup ─────────
+
+/// Regression guard for the post-wave2 cleanup (task 2140 amendment):
+/// when Phase 1 deactivates a member and wave2 subsequently rewrites it
+/// (because the member's default_expr reads a resolved auto param), the
+/// post-wave2 cleanup step must re-deactivate it so Phase 3's
+/// `phase1_reelaborated` skip leaves the engine in a correct state.
+///
+/// Test design:
+/// - Structure with `param x: Length = 10mm` (guards `x > 5mm`),
+///   `auto depth: Length` (resolved by solver to equal x), and
+///   `where x > 5mm { let m = depth }` (member reads the auto param).
+/// - Initial eval: x=10mm, guard=true, solver→depth=10mm, m=10mm.
+/// - edit_param(x, 3mm):
+///   (1) Phase 1 fires (guard cell in dirty cone); guard goes false →
+///   m is deactivated to Undef; `phase1_reelaborated` = {guard_cell}.
+///   (2) Solver re-runs (constraint is dirty); depth = 3mm.
+///   (3) Wave2 re-evaluates m (m reads depth) → writes m = 3mm, overwriting Undef.
+///   (4) Post-wave2 cleanup (fix): inactive branch (members when guard=false)
+///   re-deactivated → m = Undef again.
+///   (5) Phase 3 skips the group via `phase1_reelaborated` (correct: cleanup
+///   already restored the deactivated state).
+/// - Assert: m = Undef after the edit.
+///
+/// Without the post-wave2 cleanup, m would be 3mm (wave2 value) because
+/// Phase 3's dedup would skip the group and never re-deactivate m.
+#[test]
+fn edit_param_wave2_does_not_corrupt_inactive_members() {
+    let x_id = ValueCellId::new("S", "x");
+    let depth_id = ValueCellId::new("S", "depth");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let m_id = ValueCellId::new("S", "m");
+
+    // Guard expression: x > 5mm.  Reads `x`, so guard cell is in dirty_cone(x).
+    let guard_expr = gt(value_ref("S", "x"), literal(mm(5.0)));
+
+    // Member m: let m = depth  (non-auto Let cell that reads the auto param).
+    // When guard=false, m must be Undef.  Wave2 will try to overwrite it.
+    let m_decl = ValueCellDecl {
+        id: m_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "depth")), // reads auto param depth
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        // x: structure_controlling (guard depends on x) AND read by constraint
+        .param(
+            "S",
+            "x",
+            Type::length(),
+            Some(literal(mm(10.0))),
+        )
+        // depth: auto param resolved by solver (solver sets depth = x)
+        .auto_param("S", "depth", Type::length())
+        // constraint reads both depth and x → dirty when x changes → solver re-runs
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_x"),
+            ge(value_ref("S", "depth"), value_ref("S", "x")),
+        )
+        // guarded group: guard depends on x; member m reads depth
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![m_decl], // members (active when guard = true)
+            vec![],       // constraints
+            vec![],       // else_members
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Sequenced solver: first call → depth = 10mm (initial eval);
+    //                   second call → depth = 3mm (after edit_param(x, 3mm)).
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_id.clone(), mm(10.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_id.clone(), mm(3.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
+    ]);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval: x=10mm, guard=true, solver→depth=10mm, m=depth=10mm.
+    let initial = engine.eval(&module);
+    assert!(
+        matches!(initial.values.get(&m_id), Some(Value::Scalar { si_value, .. }) if (*si_value - 0.010).abs() < 1e-10),
+        "initial eval: m should be 10mm (= depth) when guard is true, got {:?}",
+        initial.values.get(&m_id),
+    );
+
+    // edit_param(x, 3mm):
+    //   Phase 1: guard goes false → m deactivated to Undef.
+    //   Solver: depth = 3mm.
+    //   Wave2: m re-evaluated to 3mm (overwrites Undef) ← bug trigger.
+    //   Post-wave2 cleanup (fix): m re-deactivated to Undef.
+    //   Phase 3: skipped via phase1_reelaborated (cleanup already correct).
+    let edited = engine
+        .edit_param(x_id, Value::length(0.003)) // 3mm in SI
+        .expect("edit_param must succeed");
+
+    // m must be Undef: guard is false (x=3mm ≤ 5mm), so the active branch
+    // (members) is inactive.  Without the post-wave2 cleanup, m would be 3mm
+    // (wave2's re-evaluation result) because Phase 3 is skipped by the dedup.
+    assert!(
+        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        "m must be Undef after guard flips false; \
+         if m is a concrete value (e.g. 3mm), wave2 corrupted the inactive member \
+         and the post-wave2 cleanup is missing or broken. Got {:?}",
+        edited.values.get(&m_id),
     );
 }

@@ -1348,7 +1348,7 @@ structure def Widget {
 /// NOTE: `auto` params are not available in the reify source grammar (confirmed
 /// 2026-04-22); this test uses `TopologyTemplateBuilder` + `MockConstraintChecker`
 /// + `MultiCallSpyConstraintSolver` / `MockConstraintSolver` for its fixtures,
-/// unlike the other 9 tests which use `parse_and_compile`.
+///   unlike the other 9 tests which use `parse_and_compile`.
 ///
 /// Task 2087 — coverage gap 5.
 #[test]
