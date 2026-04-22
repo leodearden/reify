@@ -75,6 +75,7 @@
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAdaptor_CompCurve.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
 
@@ -1268,6 +1269,33 @@ std::unique_ptr<OcctShape> make_rect_face(double width, double height,
         throw std::runtime_error(std::string("OCCT make_rect_face: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT make_rect_face: unknown C++ exception");
+    }
+}
+
+// --- Wire queries ---
+
+Point3 wire_start_tangent(const OcctShape& wire_shape) {
+    try {
+        TopoDS_Wire w = TopoDS::Wire(wire_shape.shape);
+        if (w.IsNull()) {
+            throw std::runtime_error("wire_start_tangent: shape is not a wire");
+        }
+        BRepAdaptor_CompCurve adaptor(w);
+        double u = adaptor.FirstParameter();
+        gp_Pnt p;
+        gp_Vec v;
+        adaptor.D1(u, p, v);
+        double m = v.Magnitude();
+        if (m < 1e-12) {
+            throw std::runtime_error("wire_start_tangent: degenerate curve (zero tangent)");
+        }
+        return Point3{ v.X() / m, v.Y() / m, v.Z() / m };
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT wire_start_tangent: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT wire_start_tangent: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT wire_start_tangent: unknown C++ exception");
     }
 }
 

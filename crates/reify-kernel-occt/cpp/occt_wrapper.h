@@ -175,6 +175,13 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
 std::unique_ptr<OcctShape> make_rect_face(double width, double height,
     double cx, double cy, double cz);
 
+// --- Wire queries ---
+
+/// Return the normalised start-tangent of a wire (unit vector at the first
+/// parameter of the wire's composite curve). Throws std::runtime_error if the
+/// shape is not a wire or the start-tangent has zero magnitude.
+Point3 wire_start_tangent(const OcctShape& wire);
+
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);

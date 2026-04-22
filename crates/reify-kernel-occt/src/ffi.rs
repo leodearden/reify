@@ -236,6 +236,9 @@ pub mod ffi {
             cz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Wire queries ---
+        fn wire_start_tangent(wire: &OcctShape) -> Result<Point3>;
+
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
