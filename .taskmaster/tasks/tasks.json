@@ -18355,7 +18355,20 @@
             "crates/reify-mcp/src/tools",
             "crates/reify-runtime/src/concurrent_eval.rs",
             "crates/reify-runtime/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "EntityDefRef",
+              "ConcurrentEvalAdapter",
+              "jsonrpc"
+            ],
+            "queries": [
+              "dead code fields content_hash version stored never read reify-compiler reify-runtime",
+              "stale stub comments reify-runtime reify-mcp reify-eval fully implemented",
+              "review cleanup sweep jsonrpc serialization unwrap_or_default expect"
+            ]
+          },
+          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
         },
         "updatedAt": "2026-04-21T22:06:37.477Z"
       },
