@@ -2533,6 +2533,59 @@ mod tests {
         );
     }
 
+    /// `detect_role_flip` must return `true` when branches are swapped between
+    /// old and new: old has `members=[x], else_members=[y]` and new has
+    /// `members=[y], else_members=[x]`.
+    ///
+    /// This is the positive-direction lock: it ensures the symmetric-map
+    /// comparison doesn't over-relax.  If someone future-refactors the helper
+    /// to return `false` unconditionally, or compares only key sets (ignoring
+    /// branch tags), this test catches it.
+    #[test]
+    fn detect_role_flip_returns_true_for_cross_branch_swap() {
+        use crate::graph::GuardedGroupInfo;
+
+        use super::detect_role_flip;
+
+        let g = ValueCellId::new("E", "guard");
+        let x = ValueCellId::new("E", "x");
+        let y = ValueCellId::new("E", "y");
+
+        let old_groups = [GuardedGroupInfo {
+            guard_cell: g.clone(),
+            members: vec![x.clone()],
+            else_members: vec![y.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        }];
+        // New graph swaps the branches.
+        let new_groups = [GuardedGroupInfo {
+            guard_cell: g.clone(),
+            members: vec![y.clone()],
+            else_members: vec![x.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        }];
+
+        assert!(
+            detect_role_flip(&old_groups, &new_groups),
+            "detect_role_flip must return true when member branches are swapped"
+        );
+    }
+
+    /// `detect_role_flip` must return `false` for two empty slices — the empty
+    /// fast-path in the helper avoids allocating two empty `HashMap`s and must
+    /// return the correct answer.
+    #[test]
+    fn detect_role_flip_returns_false_for_empty_groups() {
+        use super::detect_role_flip;
+
+        assert!(
+            !detect_role_flip(&[], &[]),
+            "detect_role_flip must return false for two empty slices"
+        );
+    }
+
     /// When `guard_val = Bool(true)`, `reelaborate_guarded_group` must:
     ///   (a) evaluate the active-branch `members` cell's `default_expr` and
     ///       write the result into both `values` and `snapshot_values` with
