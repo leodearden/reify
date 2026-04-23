@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
 
-use reify_types::Diagnostic;
+use reify_types::{Diagnostic, ModulePathParseError};
 
 use crate::CompiledModule;
 
@@ -105,6 +105,22 @@ pub struct ModuleDag {
     in_progress: IndexSet<String>,
     /// Source committed on the first `std.*` resolution (all-or-nothing invariant).
     stdlib_mode: Option<StdlibMode>,
+}
+
+/// Build an "invalid module path" [`Diagnostic`] vec.
+///
+/// Returns a singleton `Vec<Diagnostic>` so call sites can use it directly with
+/// `.map_err(|e| diag_invalid_path(path, e, ctx))?` where the outer `Result`
+/// error type is `Vec<Diagnostic>`.
+fn diag_invalid_path(
+    path: &str,
+    e: ModulePathParseError,
+    context_phrase: &str,
+) -> Vec<Diagnostic> {
+    vec![Diagnostic::error(format!(
+        "invalid module path while {} '{}': {}",
+        context_phrase, path, e
+    ))]
 }
 
 /// Build a "partial stdlib overlay: filesystem-over-embedded" [`Diagnostic`].
@@ -261,7 +277,7 @@ impl ModuleDag {
                 // typo like "std.unknonwn") must not taint the mode for subsequent
                 // valid imports.
                 let target = reify_types::ModulePath::from_dotted(module_path)
-                    .map_err(|e| vec![Diagnostic::error(format!("invalid module path while resolving import '{}': {}", module_path, e))])?;
+                    .map_err(|e| diag_invalid_path(module_path, e, "resolving import"))?;
                 let stdlib = crate::stdlib_loader::load_stdlib();
                 if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
                     // Commit embedded mode now that we know the module is present.
@@ -315,7 +331,7 @@ impl ModuleDag {
         let parsed = reify_syntax::parse(
             &source,
             reify_types::ModulePath::from_dotted(module_path)
-                .map_err(|e| vec![Diagnostic::error(format!("invalid module path while resolving import '{}': {}", module_path, e))])?,
+                .map_err(|e| diag_invalid_path(module_path, e, "resolving import"))?,
         );
 
         if !parsed.errors.is_empty() {
@@ -402,7 +418,6 @@ impl ModuleDag {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::ModulePathParseError;
 
     #[test]
     fn diag_invalid_path_formats_message_with_context_phrase() {
