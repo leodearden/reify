@@ -17,6 +17,11 @@ impl ContentHash {
         Self::of(s.as_bytes())
     }
 
+    /// Hash a `u64` via its little-endian byte representation.
+    pub fn of_u64(n: u64) -> Self {
+        Self::of(&n.to_le_bytes())
+    }
+
     /// Combine two hashes (order-dependent).
     pub fn combine(self, other: ContentHash) -> ContentHash {
         let mut buf = [0u8; 32];
