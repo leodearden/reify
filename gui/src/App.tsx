@@ -24,7 +24,7 @@ import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
-import { createViewportStore } from './stores/viewportStore';
+import { createViewportStore, type CameraState } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
 import {
@@ -64,7 +64,7 @@ import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar } from './stores/sidecarPersistence';
-import { loadViewPersistence } from './stores/viewPersistence';
+import { loadViewPersistence, createDebouncedSaver } from './stores/viewPersistence';
 import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
@@ -114,6 +114,38 @@ const App: Component = () => {
     if (sidecar !== null) return sidecar;
     return loadViewPersistence(path);
   }
+
+  // Debounced persistence of view state to localStorage.
+  // Runs whenever currentFilePath, viewStateStore.state, or viewport cameras change.
+  // A single saver instance is created per file path and cleaned up on path change.
+  // The composed state includes user views, active view, explicit overrides, viewport
+  // cameras, and a timestamp (PRD §8.1 design decision).
+  createEffect(() => {
+    const path = currentFilePath();
+    if (!path) return;
+
+    const saver = createDebouncedSaver(500);
+    onCleanup(() => saver.cancel());
+
+    // Track view state + viewport cameras reactively.
+    // Reading viewStateStore.state and viewportStore.state subscribes this
+    // effect to any of their changes.
+    void viewStateStore.state;
+    void viewportStore.state;
+
+    const viewportCameras: Record<string, CameraState> = {};
+    for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
+      if (vp.camera) viewportCameras[id] = vp.camera;
+    }
+
+    const composed: PersistentViewState = {
+      ...viewStateStore.serializePersistedState(),
+      viewportCameras,
+      timestamp: new Date().toISOString(),
+    };
+
+    saver.schedule(path, composed);
+  });
 
   // Activation hook: watches editor cursor → debounces 200ms → loads def preview
   const defPreviewActivation = createDefPreviewActivation({
