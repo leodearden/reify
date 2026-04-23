@@ -58,38 +58,25 @@ pub(crate) fn check_arg_count_at_least(
 mod tests {
     use super::*;
 
-    // (a) got == expected returns true with empty diagnostics and no label
+    // (a) got == expected returns true with empty diagnostics
     #[test]
-    fn check_arg_count_exact_ok_no_span() {
+    fn check_arg_count_exact_ok_with_span() {
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = check_arg_count_exact("translate", 4, 4, None, &mut diagnostics);
+        let span = SourceSpan::new(5, 15);
+        let result = check_arg_count_exact("translate", 4, 4, span, &mut diagnostics);
         assert!(result, "expected true when got == expected");
-        assert!(diagnostics.is_empty(), "expected no diagnostics on ok path");
-    }
-
-    // (b) got != expected with span = None returns false, pushes diagnostic with correct message and empty labels
-    #[test]
-    fn check_arg_count_exact_err_no_span() {
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = check_arg_count_exact("translate", 2, 4, None, &mut diagnostics);
-        assert!(!result, "expected false when got != expected");
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert_eq!(
-            diagnostics[0].message,
-            "translate() expects 4 arguments, got 2"
-        );
         assert!(
-            diagnostics[0].labels.is_empty(),
-            "expected no labels when span is None"
+            diagnostics.is_empty(),
+            "expected no diagnostics on ok path even with span"
         );
     }
 
-    // (c) got != expected with span = Some(...) returns false with message AND labeled span
+    // (b) got != expected returns false with message AND labeled span
     #[test]
     fn check_arg_count_exact_err_with_span() {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let span = SourceSpan::new(10, 20);
-        let result = check_arg_count_exact("translate", 2, 4, Some(span), &mut diagnostics);
+        let result = check_arg_count_exact("translate", 2, 4, span, &mut diagnostics);
         assert!(!result, "expected false when got != expected");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
         assert_eq!(
@@ -104,26 +91,14 @@ mod tests {
         assert_eq!(diagnostics[0].labels[0].span, span);
     }
 
-    // (d) OK path with span = Some(...) returns true, no diagnostic pushed
-    #[test]
-    fn check_arg_count_exact_ok_with_span() {
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let span = SourceSpan::new(5, 15);
-        let result = check_arg_count_exact("translate", 4, 4, Some(span), &mut diagnostics);
-        assert!(result, "expected true when got == expected");
-        assert!(
-            diagnostics.is_empty(),
-            "expected no diagnostics on ok path even with span"
-        );
-    }
-
     // --- check_arg_count_at_least tests ---
 
     // (a) got == min returns true with no diagnostic
     #[test]
     fn check_arg_count_at_least_ok_equal() {
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = check_arg_count_at_least("loft", 2, 2, None, &mut diagnostics);
+        let span = SourceSpan::new(0, 10);
+        let result = check_arg_count_at_least("loft", 2, 2, span, &mut diagnostics);
         assert!(result, "expected true when got == min");
         assert!(diagnostics.is_empty(), "expected no diagnostics on ok path");
     }
@@ -132,34 +107,18 @@ mod tests {
     #[test]
     fn check_arg_count_at_least_ok_greater() {
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = check_arg_count_at_least("loft", 5, 2, None, &mut diagnostics);
+        let span = SourceSpan::new(0, 10);
+        let result = check_arg_count_at_least("loft", 5, 2, span, &mut diagnostics);
         assert!(result, "expected true when got > min");
         assert!(diagnostics.is_empty(), "expected no diagnostics on ok path");
     }
 
-    // (c) got < min with span = None returns false, pushes diagnostic with "at least" message and empty labels
-    #[test]
-    fn check_arg_count_at_least_err_no_span() {
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = check_arg_count_at_least("loft", 1, 2, None, &mut diagnostics);
-        assert!(!result, "expected false when got < min");
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert_eq!(
-            diagnostics[0].message,
-            "loft() expects at least 2 arguments, got 1"
-        );
-        assert!(
-            diagnostics[0].labels.is_empty(),
-            "expected no labels when span is None"
-        );
-    }
-
-    // (d) got < min with span = Some(...) pushes diagnostic with "at least" message AND labeled span
+    // (c) got < min pushes diagnostic with "at least" message AND labeled span
     #[test]
     fn check_arg_count_at_least_err_with_span() {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let span = SourceSpan::new(10, 20);
-        let result = check_arg_count_at_least("loft", 1, 2, Some(span), &mut diagnostics);
+        let result = check_arg_count_at_least("loft", 1, 2, span, &mut diagnostics);
         assert!(!result, "expected false when got < min");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
         assert_eq!(
