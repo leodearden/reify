@@ -1000,6 +1000,90 @@ fn edit_source_role_flipped_guard_member_matches_cold_eval() {
     );
 }
 
+/// When an existing `let` **moves between branches** of a `where … else` group
+/// without changing its id or expression text, `diff_value_cells` classifies
+/// it as neither `changed` (same `content_hash`) nor `added` (still present).
+/// The Phase 1 trigger therefore does not fire, leaving the old branch value
+/// from before the edit intact — incremental diverges from cold eval.
+///
+/// Symmetric counterpart to `edit_source_role_flipped_guard_member_matches_cold_eval`
+/// (task 2084): exercises the **inactive → active** direction.
+///
+/// Scenario: `use_thick = true` (members branch is active).
+/// - Module A: `moving` is in the **inactive** else branch  → cold eval gives Undef.
+/// - Module B: `moving` moves to the **active** where branch  → cold eval gives Determined (15mm).
+///
+/// Before the fix (task 2084): incremental keeps the old Undef value
+/// (Phase 1 never fires). After the fix: `has_role_flipped_guard_member` fires
+/// Phase 1, which re-elaborates the now-active branch and writes a Determined
+/// value for `moving`, matching cold eval.
+///
+/// Task 2091 — symmetric role-flip direction (inactive → active).
+#[test]
+fn edit_source_role_flipped_guard_member_inactive_to_active_matches_cold_eval() {
+    // Module A: `moving` is on the inactive (else) branch.
+    let module_a_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let active_only = thickness * 2.0
+    } else {
+        let moving = thickness * 3.0
+        let inactive_only = thickness
+    }
+}"#;
+    // Module B: `moving` (same id, same expr → same content_hash) relocates
+    // to the active where-branch. `active_only` / `inactive_only` stay put.
+    let module_b_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let moving = thickness * 3.0
+        let active_only = thickness * 2.0
+    } else {
+        let inactive_only = thickness
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let moving_id = ValueCellId::new("Bracket", "moving");
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check: whatever cold eval says about the role-flipped cell,
+    // incremental edit_source must match.
+    let incr_val = incr.values.get(&moving_id);
+    let cold_val = cold_result.values.get(&moving_id);
+    assert_eq!(
+        incr_val, cold_val,
+        "role-flipped guard member (inactive→active) diverges from cold eval: \
+         incremental={:?}, cold={:?}",
+        incr_val, cold_val
+    );
+    // Positive lock: with `use_thick = true`, `moving` moved from the inactive
+    // else branch to the active where branch, so cold eval must activate it to a
+    // Determined value of 15mm (0.015 m = 5mm × 3.0). Uses epsilon comparison
+    // because 0.005 * 3.0 is not bit-exactly 0.015 in IEEE 754. If this
+    // assertion fails, cold eval itself regressed — both the relative check
+    // above and this anchor are needed so a "both wrong" regression does not
+    // slip through.
+    assert!(
+        matches!(cold_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.015).abs() < 1e-10),
+        "cold eval should activate where-branch member to Determined 15mm (0.015 m), got {:?}",
+        cold_val
+    );
+}
+
 // ── Coverage gap 1: Phase 4 collection count re-elaboration ──────────────────
 
 /// Incrementally changing a collection-count param from 4 → 6 must re-elaborate
