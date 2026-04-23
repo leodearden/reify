@@ -668,6 +668,15 @@ structure S {
 ///
 /// Template A has identical raw content in both modules. Before the fix, both A
 /// templates have the same content_hash. After the fix they must differ.
+///
+/// ## Implicit assumption
+///
+/// This test relies on A's `content_hash` being a function of A's OWN compiled
+/// content plus (when recursive) the `"is_recursive"` domain tag — NOT a
+/// transitive closure that also incorporates B's resolved content_hash. If the
+/// hash ever evolved to transitively include resolved-sub-component hashes, the
+/// `assert_ne!` below would pass for a different (and stronger) reason, and
+/// this test would no longer isolate the `is_recursive` remix contract.
 #[test]
 fn is_recursive_mixed_into_content_hash() {
     // Module 1: A<->B mutual cycle — A.is_recursive = true
