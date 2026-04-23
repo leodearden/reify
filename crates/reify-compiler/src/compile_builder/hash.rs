@@ -102,19 +102,24 @@ fn hash_pragma_arg(arg: &reify_syntax::PragmaArg) -> ContentHash {
     match arg {
         reify_syntax::PragmaArg::KeyValue { key, value } => ContentHash::of_str("kv")
             .combine(ContentHash::of_str(key))
-            .combine(ContentHash::of_str(&format_pragma_value(value))),
+            .combine(hash_pragma_value(value)),
         reify_syntax::PragmaArg::Bare(value) => ContentHash::of_str("bare")
-            .combine(ContentHash::of_str(&format_pragma_value(value))),
+            .combine(hash_pragma_value(value)),
     }
 }
 
-fn format_pragma_value(v: &reify_syntax::PragmaValue) -> String {
+fn hash_pragma_value(v: &reify_syntax::PragmaValue) -> ContentHash {
     match v {
-        reify_syntax::PragmaValue::Ident(s) => format!("ident:{s}"),
-        reify_syntax::PragmaValue::Number(n) => format!("num:{:016x}", n.to_bits()),
-        reify_syntax::PragmaValue::String(s) => format!("str:{s}"),
-        reify_syntax::PragmaValue::Bool(b) => {
-            if *b { "bool:true".to_string() } else { "bool:false".to_string() }
+        reify_syntax::PragmaValue::Ident(s) => {
+            ContentHash::of_str("ident").combine(ContentHash::of_str(s))
         }
+        reify_syntax::PragmaValue::Number(n) => {
+            ContentHash::of_str("num").combine(ContentHash::of_u64(n.to_bits()))
+        }
+        reify_syntax::PragmaValue::String(s) => {
+            ContentHash::of_str("str").combine(ContentHash::of_str(s))
+        }
+        reify_syntax::PragmaValue::Bool(b) => ContentHash::of_str("bool")
+            .combine(ContentHash::of_str(if *b { "true" } else { "false" })),
     }
 }
