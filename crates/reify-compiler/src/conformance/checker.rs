@@ -33,9 +33,11 @@ pub(super) fn resolve_let_advertised_type(
     cell_type: &Option<Type>,
     inferred: Option<&CompiledExpr>,
 ) -> Type {
-    cell_type
-        .clone()
-        .unwrap_or_else(|| inferred.map(|e| e.result_type.clone()).unwrap_or(Type::Real))
+    cell_type.clone().unwrap_or_else(|| {
+        inferred
+            .map(|e| e.result_type.clone())
+            .unwrap_or(Type::Real)
+    })
 }
 
 /// Phase 1 of trait conformance checking: resolve structure member types and collect
@@ -90,60 +92,60 @@ pub(super) fn check_phase_resolve_structure_members(
     // poison the downstream requirement check whenever the trait requires a non-Real type
     // (e.g. Length), generating a misleading second diagnostic and obscuring the actual
     // problem for the user.
-    let resolve_member_annotation_type =
-        |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
-            match &te.kind {
-                reify_syntax::TypeExprKind::Named { name, type_args } => {
-                    resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
-                        .or_else(|| {
-                            enum_names.contains(name.as_str()).then(|| {
-                                if !type_args.is_empty() {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!(
-                                            "enum `{}` does not accept type arguments",
-                                            name
-                                        ))
-                                        .with_label(DiagnosticLabel::new(
-                                            te.span,
-                                            "enum types are not generic",
-                                        )),
-                                    );
-                                }
-                                Type::Enum(name.to_string())
-                            })
+    let resolve_member_annotation_type = |te: &reify_syntax::TypeExpr,
+                                          diagnostics: &mut Vec<Diagnostic>|
+     -> Type {
+        match &te.kind {
+            reify_syntax::TypeExprKind::Named { name, type_args } => {
+                resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
+                    .or_else(|| {
+                        enum_names.contains(name.as_str()).then(|| {
+                            if !type_args.is_empty() {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "enum `{}` does not accept type arguments",
+                                        name
+                                    ))
+                                    .with_label(
+                                        DiagnosticLabel::new(te.span, "enum types are not generic"),
+                                    ),
+                                );
+                            }
+                            Type::Enum(name.to_string())
                         })
-                        .unwrap_or_else(|| {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type in conformance check: {}",
-                                    name
-                                ))
-                                .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                            );
-                            // Return Type::Error (poison sentinel) so the downstream
-                            // `implicitly_converts_to` / `type_compatible` producer-side
-                            // wildcard (type_compat.rs:3-26, :119-130) suppresses the
-                            // cascade "type mismatch for trait member" diagnostic.
-                            // The diagnostic emitted on the preceding line is the root
-                            // cause; a second mismatch diagnostic would mislead the user.
-                            Type::Error
-                        })
-                }
-                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "unresolved type in conformance check: {}",
-                            te
-                        ))
-                        .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
-                    );
-                    // Return Type::Error (poison sentinel) — same rationale as the Named
-                    // arm above: suppress downstream "type mismatch for trait member"
-                    // cascade via the type_compat.rs producer-side wildcard.
-                    Type::Error
-                }
+                    })
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved type in conformance check: {}",
+                                name
+                            ))
+                            .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                        );
+                        // Return Type::Error (poison sentinel) so the downstream
+                        // `implicitly_converts_to` / `type_compatible` producer-side
+                        // wildcard (type_compat.rs:3-26, :119-130) suppresses the
+                        // cascade "type mismatch for trait member" diagnostic.
+                        // The diagnostic emitted on the preceding line is the root
+                        // cause; a second mismatch diagnostic would mislead the user.
+                        Type::Error
+                    })
             }
-        };
+            reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                        .with_label(DiagnosticLabel::new(
+                            te.span,
+                            "unexpected dimensional expression",
+                        )),
+                );
+                // Return Type::Error (poison sentinel) — same rationale as the Named
+                // arm above: suppress downstream "type mismatch for trait member"
+                // cascade via the type_compat.rs producer-side wildcard.
+                Type::Error
+            }
+        }
+    };
 
     let structure_members: HashMap<String, Type> = structure
         .members
@@ -172,7 +174,10 @@ pub(super) fn check_phase_resolve_structure_members(
                 // check will report "missing required member" rather than a spurious
                 // "no type annotation" error.
                 let te = l.type_expr.as_ref()?;
-                Some((l.name.clone(), resolve_member_annotation_type(te, diagnostics)))
+                Some((
+                    l.name.clone(),
+                    resolve_member_annotation_type(te, diagnostics),
+                ))
             }
             _ => None,
         })
@@ -297,8 +302,13 @@ pub(super) fn check_phase_pre_register_default_types(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
-) -> (HashMap<(String, AvailableDefaultKind), CompiledExpr>, HashSet<String>, HashSet<String>) {
-    let mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> = HashMap::new();
+) -> (
+    HashMap<(String, AvailableDefaultKind), CompiledExpr>,
+    HashSet<String>,
+    HashSet<String>,
+) {
+    let mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
+        HashMap::new();
     // Unannotated-let defaults whose scope slot was already claimed by an annotated
     // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
     // insert so the injection loop does not emit a duplicate Let cell alongside the
@@ -350,7 +360,9 @@ pub(super) fn check_phase_pre_register_default_types(
                     ..
                 } => annotation_ty.clone(),
                 // Deferred to Pass 2 — needs Pass 1's scope to compile against.
-                DefaultKind::Let { cell_type: None, .. } => continue,
+                DefaultKind::Let {
+                    cell_type: None, ..
+                } => continue,
                 DefaultKind::Constraint(_) => continue,
             };
             // First-seen type wins. `ty` is moved into `register_if_absent`; on
@@ -418,7 +430,8 @@ pub(super) fn check_phase_pre_register_default_types(
                     // injection for this name and avoids duplicate (entity, member) cells.
                     pass2_skipped.insert(name.to_string());
                 } else {
-                    inferred_let_exprs.insert((name.clone(), AvailableDefaultKind::Let), compiled_expr);
+                    inferred_let_exprs
+                        .insert((name.clone(), AvailableDefaultKind::Let), compiled_expr);
                 }
             }
         }
@@ -627,9 +640,7 @@ pub(super) fn check_phase_check_members_against_requirements(
                 // Requirement counts are small in practice so this is not a hot path; if it
                 // ever becomes one, switch to a two-level map `HashMap<String, HashMap<K, V>>`.
                 match available_defaults.get(&(req.name.clone(), required_default_kind)) {
-                    Some(default_type)
-                        if implicitly_converts_to(default_type, expected_type) =>
-                    {
+                    Some(default_type) if implicitly_converts_to(default_type, expected_type) => {
                         // Same-kind default with matching type satisfies the requirement.
                     }
                     Some(default_type) => {
@@ -652,9 +663,7 @@ pub(super) fn check_phase_check_members_against_requirements(
                                 "missing required member '{}' (expected type: {})",
                                 req.name, expected_type
                             ))
-                            .with_label(
-                                DiagnosticLabel::new(structure.span, "required by trait"),
-                            ),
+                            .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                         );
                     }
                 }
@@ -811,7 +820,9 @@ pub(super) fn check_phase_inject_defaults(
                             compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
                         }
                         None => {
-                            match inferred_let_exprs.remove(&(name.to_string(), AvailableDefaultKind::Let)) {
+                            match inferred_let_exprs
+                                .remove(&(name.to_string(), AvailableDefaultKind::Let))
+                            {
                                 Some(ce) => ce,
                                 None => {
                                     if pass2_skipped.contains(name) {

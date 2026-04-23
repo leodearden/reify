@@ -3,7 +3,6 @@ use checker::*;
 
 use super::*;
 
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
@@ -18,11 +17,20 @@ pub(crate) fn check_trait_conformance(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let (structure_members, structure_constraint_labels) =
-        check_phase_resolve_structure_members(structure, trait_names, enum_defs, alias_registry, diagnostics);
+    let (structure_members, structure_constraint_labels) = check_phase_resolve_structure_members(
+        structure,
+        trait_names,
+        enum_defs,
+        alias_registry,
+        diagnostics,
+    );
 
-    let ctx =
-        check_phase_collect_trait_bounds(structure, trait_registry, &structure_members, diagnostics);
+    let ctx = check_phase_collect_trait_bounds(
+        structure,
+        trait_registry,
+        &structure_members,
+        diagnostics,
+    );
 
     let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
         check_phase_pre_register_default_types(
@@ -67,7 +75,6 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 }
-
 
 /// Verify that a compiled arg value's type conforms to the declared param type
 /// in the target structure when the declared type is `Type::TraitObject(trait_name)`.
@@ -598,12 +605,16 @@ mod tests {
         // false, and a spurious "requirement expects …, available default has Real"
         // diagnostic was emitted.
         // Post-fix: no phantom entry → this filter collects nothing.
+        // Filter uses the quoted member name `"'x'"` — diagnostic templates surround the
+        // member name with single quotes (`'{}'`), so `"'x'"` rejects incidental `x`
+        // letters in prose like "expr", "exists", "mismatch" (same pattern as
+        // `inferred_let_expr_incompatible_with_let_requirement` at mod.rs:993).
         let phantom_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
                 d.message.contains("available default")
                     && d.message.contains("Real")
-                    && d.message.contains('x')
+                    && d.message.contains("'x'")
             })
             .collect();
         assert!(
@@ -616,9 +627,11 @@ mod tests {
         // --- Assertion 2: correct "missing required member" diagnostic IS present ---
         // With the phantom entry absent, the None arm of the available_defaults lookup
         // fires and emits the correct "missing required member" diagnostic.
+        // Filter uses the quoted member name `"'x'"` to avoid matching incidental `x`
+        // letters in diagnostic prose.
         let missing_diags: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.message.contains("missing required member") && d.message.contains("x"))
+            .filter(|d| d.message.contains("missing required member") && d.message.contains("'x'"))
             .collect();
         assert_eq!(
             missing_diags.len(),
@@ -681,7 +694,8 @@ mod tests {
     /// - Guard site: `check_phase_build_available_defaults_map` in `checker.rs`, the
     ///   `DefaultKind::Let` arm, at the `pass2_skipped` exclusion block.
     #[test]
-    fn option_b_guard_preserves_annotated_let_advertisement_when_sibling_unannotated_let_is_pass2_skipped() {
+    fn option_b_guard_preserves_annotated_let_advertisement_when_sibling_unannotated_let_is_pass2_skipped()
+     {
         // --- Build LetDecl fixtures ---
         //
         // Annotated Let: `let x : Length = 1.0` — cell_type: Some(Type::length())
@@ -821,9 +835,7 @@ mod tests {
         // Under the narrowed guard the annotated-Let advertisement satisfies the requirement.
         let missing_x_diags: Vec<_> = diagnostics
             .iter()
-            .filter(|d| {
-                d.message.contains("missing required member") && d.message.contains("'x'")
-            })
+            .filter(|d| d.message.contains("missing required member") && d.message.contains("'x'"))
             .collect();
         assert!(
             missing_x_diags.is_empty(),
@@ -1233,8 +1245,9 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .filter(|d| d.message.contains("missing required member")
-                    && d.message.contains("'x'"))
+                .filter(
+                    |d| d.message.contains("missing required member") && d.message.contains("'x'")
+                )
                 .count()
                 == 0,
             "negative case should hit the Some(default_type) arm, not the None arm; \
@@ -1406,7 +1419,10 @@ mod tests {
             diagnostics
         );
         assert_eq!(ctx.requirements.len(), 1, "Expected 1 requirement");
-        assert_eq!(ctx.requirements[0].name, "w", "Expected requirement name 'w'");
+        assert_eq!(
+            ctx.requirements[0].name, "w",
+            "Expected requirement name 'w'"
+        );
     }
 
     /// Phase-contract test for `check_phase_pre_register_default_types`.
@@ -1442,15 +1458,16 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
+        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+            check_phase_pre_register_default_types(
+                &ctx,
+                &structure_members,
+                "S",
+                &mut scope,
+                &[],
+                &[],
+                &mut diagnostics,
+            );
 
         assert!(
             diagnostics.is_empty(),
@@ -1516,15 +1533,16 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
+        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+            check_phase_pre_register_default_types(
+                &ctx,
+                &structure_members,
+                "S",
+                &mut scope,
+                &[],
+                &[],
+                &mut diagnostics,
+            );
 
         assert!(
             diagnostics.is_empty(),
@@ -1688,15 +1706,16 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) = check_phase_pre_register_default_types(
-            &ctx,
-            &structure_members,
-            "S",
-            &mut scope,
-            &[],
-            &[],
-            &mut diagnostics,
-        );
+        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+            check_phase_pre_register_default_types(
+                &ctx,
+                &structure_members,
+                "S",
+                &mut scope,
+                &[],
+                &[],
+                &mut diagnostics,
+            );
 
         // The collision must be recorded in pass2_skipped, not the expression cache.
         assert!(
@@ -1761,7 +1780,8 @@ mod tests {
             },
         ];
 
-        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> = HashMap::new();
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
+            HashMap::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
 
@@ -1779,8 +1799,7 @@ mod tests {
             available_defaults.keys().collect::<Vec<_>>()
         );
         assert!(
-            available_defaults
-                .contains_key(&("x".to_string(), AvailableDefaultKind::Param)),
+            available_defaults.contains_key(&("x".to_string(), AvailableDefaultKind::Param)),
             "Expected key ('x', Param) in available_defaults"
         );
         assert_eq!(
@@ -1983,8 +2002,7 @@ mod tests {
     /// `MemberDecl::Sub` entry matching both the required name and structure type, the
     /// "missing required sub-component" diagnostic is emitted.
     #[test]
-    fn check_phase_check_members_against_requirements_emits_missing_sub_for_absent_sub_component()
-    {
+    fn check_phase_check_members_against_requirements_emits_missing_sub_for_absent_sub_component() {
         let structure_def = reify_syntax::StructureDef {
             name: "S".to_string(),
             doc: None,
@@ -2025,7 +2043,9 @@ mod tests {
             diagnostics
         );
         assert!(
-            diagnostics[0].message.contains("missing required sub-component"),
+            diagnostics[0]
+                .message
+                .contains("missing required sub-component"),
             "Expected 'missing required sub-component' in diagnostic; got: {}",
             diagnostics[0].message
         );
@@ -2081,7 +2101,8 @@ mod tests {
 
         let structure_members: HashMap<String, Type> = HashMap::new();
         let structure_constraint_labels: HashSet<String> = HashSet::new();
-        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> = HashMap::new();
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
+            HashMap::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
         let mut scope = CompilationScope::new("S");
@@ -2123,7 +2144,11 @@ mod tests {
             ValueCellKind::Param,
             "Expected ValueCellKind::Param"
         );
-        assert!(constraints.is_empty(), "Expected no constraints; got: {:?}", constraints);
+        assert!(
+            constraints.is_empty(),
+            "Expected no constraints; got: {:?}",
+            constraints
+        );
         assert!(
             diagnostics.is_empty(),
             "Expected no diagnostics; got: {:?}",
