@@ -37213,8 +37213,13 @@
         "subtasks": [],
         "updatedAt": "2026-04-22T11:55:29.712Z",
         "metadata": {
-          "modules": [],
-          "files": []
+          "modules": [
+            "crates/reify-compiler/src"
+          ],
+          "files": [
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ]
         }
       },
       {
@@ -38909,8 +38914,12 @@
         "subtasks": [],
         "updatedAt": "2026-04-22T11:55:30.063Z",
         "metadata": {
-          "modules": [],
-          "files": []
+          "modules": [
+            "crates/reify-compiler/src"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ]
         }
       },
       {
@@ -45695,7 +45704,9 @@
       "completedCount": 1893,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T17:27:08.620Z",
+      "description": "Tasks for master context"
     }
   }
 }
