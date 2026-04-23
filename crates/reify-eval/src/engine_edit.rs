@@ -144,8 +144,12 @@ fn reelaborate_guarded_group(
 /// For groups outside Phase 1's dirty-guard trigger, `values` holds the pre-edit
 /// guard value seeded from `new_snapshot.values` at edit-start (line 432-437),
 /// which is non-empty for every guard cell that `eval()` has populated.
-/// The defensive `unwrap_or(Value::Undef)` fallback mirrors how Phase 1 itself
-/// handles a missing guard node (line 564).
+/// A `debug_assert!` verifies that the guard cell is present in `values`; a
+/// missing entry indicates a real invariant violation (the cell was neither
+/// seeded by Phase 1 nor by the edit-start snapshot pass) and should be caught
+/// early in debug builds.  In release builds the `unwrap_or(Value::Undef)`
+/// fallback mirrors how Phase 1 itself handles a missing guard node (line 564),
+/// treating both branches as inactive rather than panicking.
 ///
 /// ## Note on `phase1_reelaborated`
 ///
@@ -163,6 +167,13 @@ fn reapply_guard_deactivations_post_wave2(
     snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
 ) {
     for group in &graph.guarded_groups {
+        debug_assert!(
+            values.contains(&group.guard_cell),
+            "guard cell {:?} has no value in `values` before post-wave2 cleanup — \
+             this indicates an invariant violation: every guard cell must be seeded \
+             either by Phase 1 or by the edit-start snapshot-to-values pass",
+            group.guard_cell
+        );
         let guard_val = values
             .get(&group.guard_cell)
             .cloned()
