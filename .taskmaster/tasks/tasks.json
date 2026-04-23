@@ -44779,18 +44779,20 @@
       {
         "id": "2107",
         "title": "Pipe start-tangent guard follow-ups: NaN rejection, tolerance in error, -Z test case",
-        "description": "Three polish fixes co-located around the task-2095 Pipe start-tangent guard in crates/reify-kernel-occt/src/lib.rs. All strictly tighten the rejection contract; no behavior change for accepted (+Z) paths.",
-        "details": "Post-merge review of task 2095 (reviewer_comprehensive) flagged three related cleanups on the Pipe start-tangent guard:\n\n1. **NaN rejection (lib.rs:588-591).** The guard `if t.z < 1.0 - 1e-6` silently accepts NaN components because any comparison with NaN is false. `wire_start_tangent` already errors on zero magnitude and OCCT is unlikely to emit NaN, but defense-in-depth: flip to `!(t.z >= 1.0 - 1e-6)` (rejects NaN) or add an explicit `t.x.is_finite() && t.y.is_finite() && t.z.is_finite()` precheck before the tangent comparison.\n\n2. **Include tolerance in the runtime error (lib.rs:593-597).** The docstring says the constraint is \"+Z (within 1e-6)\" but the runtime error string drops the tolerance. Include it so callers hitting FP noise can tell whether their path is close-but-rejected vs. far-off (e.g. extend the message with \"expected tangent.z > 0.999999\").\n\n3. **Add -Z case to kernel_pipe_non_z_start_tangent_returns_error (lib.rs:4343-4368).** The test currently covers +X, +Y, and an XY-plane arc. A start-tangent ≈ (0,0,-1) also fails the `t.z > 1-1e-6` check and is worth pinning: -Z is the single case where a user might reasonably expect pipe() to \"just work\" (profile plane still aligned, direction flipped). Pinning makes the contract explicit; if -Z is ever accepted in a future orientation-generalization pass, this test becomes the forcing function.\n\nTriage context preserved in memory 0bb8ede0-45ea-426f-bbf6-903f7a1a7850 (observations_and_summaries, agent_id=claude-task-2095-steward).",
-        "testStrategy": "",
+        "description": "Five co-located polish items on validate_pipe_start_tangent and its surrounding tests in crates/reify-kernel-occt/src/lib.rs. All tighten the rejection contract, improve documentation, or remove brittle test assertions.",
         "status": "pending",
         "dependencies": [],
-        "priority": "low",
+        "priority": "medium",
+        "details": "Five co-located polish items on `validate_pipe_start_tangent` and its surrounding tests in `crates/reify-kernel-occt/src/lib.rs`. All tighten the rejection contract, improve documentation, or remove brittle test assertions; no behavior change for accepted (+Z) paths.\n\n1. **NaN rejection (lib.rs:588-591).** The guard `if t.z < 1.0 - 1e-6` silently accepts NaN components because any comparison with NaN is false. `wire_start_tangent` already errors on zero magnitude and OCCT is unlikely to emit NaN, but defense-in-depth: flip to `!(t.z >= 1.0 - 1e-6)` (rejects NaN) or add an explicit `t.x.is_finite() && t.y.is_finite() && t.z.is_finite()` precheck before the tangent comparison.\n\n2. **Include tolerance in the runtime error (lib.rs:593-597).** The docstring says the constraint is \"+Z (within 1e-6)\" but the runtime error string drops the tolerance. Include it so callers hitting FP noise can tell whether their path is close-but-rejected vs. far-off (e.g. extend the message with \"expected tangent.z > 0.999999\").\n\n3. **Add -Z case to `kernel_pipe_non_z_start_tangent_returns_error` (lib.rs:4343-4368).** The test currently covers +X, +Y, and an XY-plane arc. A start-tangent ≈ (0,0,-1) also fails the `t.z > 1-1e-6` check and is worth pinning: -Z is the single case where a user might reasonably expect pipe() to \"just work\" (profile plane still aligned, direction flipped). Pinning makes the contract explicit; if -Z is ever accepted in a future orientation-generalization pass, this test becomes the forcing function.\n\n4. **Move rationale into `validate_pipe_start_tangent`'s rustdoc (lib.rs ~108–120).** The caller at lib.rs:612 now says \"see validate_pipe_start_tangent\" (after task-2119 trims it to a one-line pointer). The helper's doc currently describes only mechanics; it lacks the WHY (BRepOffsetAPI_MakePipe requires profile-plane alignment with the path's start-tangent; non-+Z paths produce degenerate zero-volume solids) and the task-2095 deferred-work pointer for general-orientation support. Action: add the OCCT profile-plane rationale and task-2095 deferred-work reference to the rustdoc of `validate_pipe_start_tangent`.\n\n5. **Drop the `msg.contains(\"+Z\")` assertion from `validate_pipe_start_tangent_rejects_oversize_z` (lib.rs:4506–4524).** Since `1e100` is finite, `is_finite()` passes and only the tolerance branch can reject — the branch-disambiguating assertion is already implied by the input. The wording check adds no coverage and couples the test to the error string (same brittleness class as the wording-pin test removed in task 2119). Action: drop the `msg.contains(\"+Z\")` assertion and keep only the `Err(OperationFailed(_))` match.",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:32.578Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
-          ]
+          ],
+          "curator_action": "combine",
+          "curator_justification": "Both tasks touch only `crates/reify-kernel-occt/src/lib.rs` (no module-lock expansion), are tiny polish items co-located around `validate_pipe_start_tangent` and its tests, and will serialize on the same module lock anyway. Task 2107 is pending and combine_eligible. The unified concern — tighten the start-tangent guard's rejection contract, error message, test coverage, documentation, and brittle assertions — is coherent; 5 items, 1 file, well under planning budget. Combining loads context once ",
+          "combined_at": "2026-04-23T18:04:25.779805+00:00"
         }
       },
       {
@@ -45776,6 +45778,17 @@
             "crates/reify-eval/tests/eval_param_overrides.rs"
           ]
         }
+      },
+      {
+        "id": "2155",
+        "title": "Pipe start-tangent rationale doc and oversize_z test cleanup",
+        "description": "Two small follow-ups from the reviewer_comprehensive review of task 2119's changes in crates/reify-kernel-occt/src/lib.rs.",
+        "details": "Post-merge review of task-2119 flagged two co-located polish items on validate_pipe_start_tangent and its oversize_z test:\n\n1. Move rationale into the helper's rustdoc (lib.rs ~108-120). The caller at lib.rs:612 now just says \"see validate_pipe_start_tangent\". The previous inline block at the pipe-executor call site explained WHY the restriction exists (BRepOffsetAPI_MakePipe requires profile-plane alignment with the path's start-tangent; non-+Z paths produce degenerate zero-volume solids) and referenced task-2095 for the deferred general-orientation support. That rationale is not present on validate_pipe_start_tangent's doc comment — only mechanics are documented. Action: move the OCCT profile-plane rationale + task-2095 deferred-work pointer into the rustdoc of validate_pipe_start_tangent.\n\n2. Drop the msg.contains(\"+Z\") assertion from validate_pipe_start_tangent_rejects_oversize_z (lib.rs:4506-4524). Since 1e100 is finite, is_finite() passes and only the tolerance branch can reject — the branch-disambiguating assertion is already implied by the input. The wording check adds no coverage and couples the test to the error string (same brittleness class as the wording-pin test removed in task 2119). Action: drop the msg.contains(\"+Z\") assertion and keep only the Err(OperationFailed(_)) match.\n\nBoth items are co-located polish. No behavior change for accepted (+Z) paths.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45785,7 +45798,10 @@
       "completedCount": 1895,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T18:04:25.839Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T18:05:53.296Z"
     }
   }
 }
