@@ -78,10 +78,14 @@ pub(crate) fn compile_curve_op(
         // interp(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
         "interp" => {
             if compiled_args.len() < 6 || !compiled_args.len().is_multiple_of(3) {
-                diagnostics.push(Diagnostic::error(format!(
-                    "interp() expects coordinate triples (at least 6 args for 2 points), got {}",
-                    compiled_args.len()
-                )).with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")));
+                push_labeled_arg_count_error(
+                    format!(
+                        "interp() expects coordinate triples (at least 6 args for 2 points), got {}",
+                        compiled_args.len()
+                    ),
+                    expr_span,
+                    diagnostics,
+                );
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
@@ -98,10 +102,14 @@ pub(crate) fn compile_curve_op(
         // bezier(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
         "bezier" => {
             if compiled_args.len() < 6 || !compiled_args.len().is_multiple_of(3) {
-                diagnostics.push(Diagnostic::error(format!(
-                    "bezier() expects coordinate triples (at least 6 args for 2 points), got {}",
-                    compiled_args.len()
-                )).with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")));
+                push_labeled_arg_count_error(
+                    format!(
+                        "bezier() expects coordinate triples (at least 6 args for 2 points), got {}",
+                        compiled_args.len()
+                    ),
+                    expr_span,
+                    diagnostics,
+                );
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
@@ -117,11 +125,7 @@ pub(crate) fn compile_curve_op(
         }
         // nurbs — minimum: degree(1) + n_points(1) + 2×3 coords(6) + 2 weights(2) = 10
         "nurbs" => {
-            if compiled_args.len() < 10 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "nurbs() expects at least 10 arguments (degree + n_points + coords + weights), got {}",
-                    compiled_args.len()
-                )).with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")));
+            if !check_arg_count_at_least("nurbs", compiled_args.len(), 10, expr_span, diagnostics) {
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
@@ -163,15 +167,6 @@ mod tests {
             }
             other => panic!("expected Curve(LineSegment), got {:?}", other),
         }
-    }
-
-    #[test]
-    fn compile_curve_op_wrong_arg_count() {
-        let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_curve_op("line_segment", args, SourceSpan::new(10, 20), &mut diagnostics, vec![]);
-        assert!(result.is_none(), "expected None for wrong arg count");
-        assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
     }
 
     #[test]

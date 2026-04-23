@@ -46,6 +46,25 @@ pub(crate) fn check_arg_count_at_least(
     false
 }
 
+/// Push a labeled arg-count error with a fully custom message.
+///
+/// Used for variadic ops whose validation logic doesn't map directly onto
+/// `check_arg_count_exact` or `check_arg_count_at_least` (e.g. ops that
+/// require both a minimum count *and* a multiple-of-N constraint).  The
+/// `"wrong number of arguments"` label text is centralised here so all
+/// arg-count diagnostics use exactly the same wording regardless of which
+/// helper emitted them.
+pub(crate) fn push_labeled_arg_count_error(
+    msg: impl Into<String>,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(msg.into())
+            .with_label(DiagnosticLabel::new(span, "wrong number of arguments")),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
