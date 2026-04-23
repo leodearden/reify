@@ -45453,11 +45453,11 @@
         "description": "The perf-lock tests added by task 2088 in crates/reify-eval/tests/edit_source.rs:1900-2023 and crates/reify-eval/tests/guard_eval.rs:2048-2155 only exercise the case where Phase 1 and Phase 3 BOTH fire for a single group (counter == 2). They do NOT lock the intentionally-conservative branches of the skip condition.\n\nAdd assertions for:\n(a) Phase 1 firing while Phase 3 does NOT — e.g. guard expression edited but resulting value unchanged (`where u3` → `where u3 && true`); expected counter reflects Phase 1 only.\n(b) Phase 3 firing while Phase 1 does NOT — edit_param on a non-guard input that propagates through a computed guard without any structure_controlling dirtiness path.\n(c) Skip correctly SUPPRESSED when a member is added to a group whose guard value is unchanged (counter == 1 because `has_added_in_group` forces non-skip).\n(d) Role-flip suppression path via `has_role_flipped_guard_member` — counter == 1.\n\nThese are cheap and lock the conservative clauses so a regression (e.g. dropping `has_added_in_group` or the role-flip clause, or dropping Phase-1-only reset) would be caught. Correctness tests exist elsewhere (e.g. `edit_source_role_flipped_guard_member_matches_cold_eval`), so this gap is performance coverage only.\n\nSource: post-merge review suggestion on task 2088 (merge commit 90804da34).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T19:30:50.703Z",
+        "updatedAt": "2026-04-23T20:25:39.358Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs",
@@ -45471,6 +45471,9 @@
               "has_added_in_group has_role_flipped_guard_member guard skip suppression",
               "edit_source edit_param guard re-evaluation perf test coverage"
             ]
+          },
+          "done_provenance": {
+            "commit": "bd5c4fc80500481031c43497a88be6990fb5078e"
           }
         }
       },
@@ -46113,9 +46116,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:25:33.761Z",
+      "lastModified": "2026-04-23T20:25:39.358Z",
       "taskCount": 2160,
-      "completedCount": 1916,
+      "completedCount": 1917,
       "tags": [
         "master"
       ]
