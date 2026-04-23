@@ -226,7 +226,11 @@ const App: Component = () => {
             {
               label: 'No',
               onClick: () => {
-                // Dismiss without changes.
+                // Dismiss and suppress this specific pair for the session —
+                // the stale entry stays so the user can still rebind manually
+                // or undo. This matches [Ignore] scoping: the same stale→candidate
+                // pair will not re-fire on the next tree update.
+                ignoredPairs.add(pairKey);
               },
             },
             {
