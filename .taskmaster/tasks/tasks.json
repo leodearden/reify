@@ -45885,7 +45885,17 @@
           "modules": [
             "crates/reify-eval/tests/guard_eval.rs",
             "crates/reify-test-support/src/mocks.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "MockConstraintSolver",
+              "guard_eval.rs"
+            ],
+            "queries": [
+              "MockConstraintSolver invocation counter solver re-invocation pattern",
+              "eval_and_edit_param_paths inactive auto state test guard flip thickness"
+            ]
+          }
         }
       },
       {
