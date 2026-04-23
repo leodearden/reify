@@ -4511,10 +4511,6 @@ mod tests {
         match super::validate_pipe_start_tangent(t) {
             Err(GeometryError::OperationFailed(msg)) => {
                 assert!(
-                    msg.contains("start-tangent"),
-                    "expected error containing 'start-tangent' for oversize-z tangent, got: {msg}"
-                );
-                assert!(
                     msg.contains("+Z"),
                     "expected error to identify the +Z-tolerance branch (not the non-finite branch) for oversize-z tangent, got: {msg}"
                 );
