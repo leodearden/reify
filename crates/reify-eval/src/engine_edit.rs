@@ -232,6 +232,37 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
     old_roles
 }
 
+/// Detect whether any guarded-group member has changed its role (guard cell or
+/// branch) between the old and new evaluation graph.
+///
+/// Returns `true` if a role-flip is detected; `false` if the guard membership
+/// is structurally unchanged.
+///
+/// ## Correctness
+///
+/// Both `old_groups` and `new_groups` are reduced through the same
+/// [`build_old_role_map`] helper before comparison.  This applies the same
+/// last-write-wins semantics to both sides, so intra-group duplicates (a cell
+/// appearing in both `members` and `else_members` of the same group — an
+/// affirmatively supported pattern documented in `build_old_role_map`'s
+/// docstring) resolve identically on both sides.  `HashMap` equality then
+/// covers both the per-element role check **and** the dedup'd key-count check
+/// in a single comparison, eliminating the spurious mismatch that the old
+/// inline walk produced for that shape.
+///
+/// ## Performance
+///
+/// The empty-case fast path avoids allocating two empty `HashMap`s in the
+/// common no-guarded-groups case.  Otherwise two O(N) passes over the group
+/// lists are performed (one per side), followed by an O(N) map-equality check —
+/// same asymptotic cost as the previous short-circuit walk, with simpler code.
+fn detect_role_flip(old_groups: &[GuardedGroupInfo], new_groups: &[GuardedGroupInfo]) -> bool {
+    if old_groups.is_empty() && new_groups.is_empty() {
+        return false;
+    }
+    build_old_role_map(old_groups) != build_old_role_map(new_groups)
+}
+
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
 /// collections.
 ///
@@ -1551,43 +1582,16 @@ impl Engine {
                 group.members.iter().any(|m| added.contains(m))
                     || group.else_members.iter().any(|m| added.contains(m))
             });
-            // Detect role flips with a short-circuiting probe: build one
-            // HashMap for the old graph keyed by ValueCellId → (guard_cell_id,
-            // branch_tag), then walk the new groups once, breaking as soon as
-            // any mismatch is found. Skip entirely when both sides are empty so
-            // the common no-guarded-group case is free. branch_tag 0 = members,
-            // 1 = else_members.
+            // Detect role flips via symmetric `build_old_role_map` comparison.
+            // `detect_role_flip` applies the same last-write-wins reduction to
+            // both sides so intra-group duplicates resolve identically, then
+            // compares the two `HashMap`s for equality — this subsumes both the
+            // per-element role check and the dedup'd count check in one step.
+            // See `detect_role_flip` for the full correctness rationale.
             let eval_state = self.eval_state.as_ref().unwrap();
             let old_groups = &eval_state.snapshot.graph.guarded_groups;
             let new_groups = &graph.guarded_groups;
-            let has_role_flipped_guard_member = if old_groups.is_empty() && new_groups.is_empty() {
-                false
-            } else {
-                // Build old role map once.
-                let old_roles = build_old_role_map(old_groups);
-                // Walk new groups, short-circuit on first mismatch.
-                let mut new_total = 0usize;
-                let mut flipped = false;
-                'outer: for group in new_groups.iter() {
-                    for (mid, tag) in group
-                        .members
-                        .iter()
-                        .map(|m| (m, 0u8))
-                        .chain(group.else_members.iter().map(|m| (m, 1u8)))
-                    {
-                        new_total += 1;
-                        match old_roles.get(mid) {
-                            Some((gc, t)) if gc == &group.guard_cell && *t == tag => {}
-                            _ => {
-                                flipped = true;
-                                break 'outer;
-                            }
-                        }
-                    }
-                }
-                // Also flip if new graph has fewer members than old (a cell left a group).
-                flipped || new_total != old_roles.len()
-            };
+            let has_role_flipped_guard_member = detect_role_flip(old_groups, new_groups);
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             }) || has_added_guard_member
