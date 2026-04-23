@@ -45658,7 +45658,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T16:23:33.694Z"
+        "updatedAt": "2026-04-22T16:23:33.694Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/type_compat.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": "2149",
@@ -45670,7 +45678,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T16:24:11.834Z"
+        "updatedAt": "2026-04-22T16:24:11.834Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/implicit_conversion_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "2150",
