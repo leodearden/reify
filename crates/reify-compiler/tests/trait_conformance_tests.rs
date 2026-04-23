@@ -1050,3 +1050,56 @@ structure def S : Child {}
         errors
     );
 }
+
+/// Suggestion #4 (semantic_gap_in_api): A structure `let` member must NOT silently
+/// satisfy a trait `param` requirement.
+///
+/// `param` in a trait means "an externally-settable slot"; `let` in a structure
+/// is a computed binding that cannot be set from outside. Accepting a let-in-structure
+/// as satisfying a param-in-trait requirement would allow consumers to treat a
+/// non-settable binding as a settable parameter, which is semantically wrong.
+///
+/// Source:
+///   trait A { param x : Length }
+///   structure def S : A { let x : Length = 5mm }
+///
+/// Expected: Error-severity diagnostic whose message mentions "missing required" and "x"
+/// (or explicitly mentions the param-vs-let kind mismatch).
+///
+/// NOTE: This test is expected to FAIL on current HEAD — `structure_members` currently
+/// stores both param and let entries under the same name→type key, so the let silently
+/// satisfies the param requirement. Step-8 implements the kind-aware lookup fix.
+#[test]
+fn structure_let_does_not_satisfy_param_requirement() {
+    let source = r#"
+trait A {
+    param x : Length
+}
+
+structure def S : A {
+    let x : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected an error: let x does not satisfy param x requirement, but got no errors"
+    );
+
+    let mentions_missing = errors.iter().any(|d| {
+        let lower = d.message.to_lowercase();
+        (lower.contains("missing") || lower.contains("param")) && lower.contains("x")
+    });
+    assert!(
+        mentions_missing,
+        "error should mention missing/param requirement for 'x', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
