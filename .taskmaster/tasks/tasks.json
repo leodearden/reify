@@ -45761,7 +45761,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:28:56.806Z"
+        "updatedAt": "2026-04-23T17:28:56.806Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/eval_param_overrides.rs"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -45771,7 +45777,9 @@
       "completedCount": 1893,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T17:36:59.078Z",
+      "description": "Tasks for master context"
     }
   }
 }
