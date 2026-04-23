@@ -64,6 +64,9 @@ pub struct TraitDefault {
 }
 
 /// The kind of default a trait provides.
+///
+/// Variants are matched exhaustively across the crate; add a new variant only
+/// after updating every match site.
 #[derive(Debug, Clone)]
 pub enum DefaultKind {
     /// A param with a default expression: `param x : Length = 10mm`

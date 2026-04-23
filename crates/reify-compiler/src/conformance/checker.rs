@@ -43,13 +43,24 @@ pub(super) fn resolve_let_advertised_type(
 /// Phase 1 of trait conformance checking: resolve structure member types and collect
 /// constraint labels.
 ///
-/// Builds two outputs from the structure's member list:
-/// - `structure_members`: a `HashMap<String, Type>` mapping each param/let member name
-///   to its resolved type. Let bindings are only included when they carry an explicit
-///   type annotation; unannotated lets are omitted here and handled by the pre-register
-///   pass (phase 3).
+/// Builds three outputs from the structure's member list:
+/// - `structure_param_members`: a `HashMap<String, Type>` mapping each **param** member name
+///   to its resolved type. Only `MemberDecl::Param` entries are included here.
+/// - `structure_let_members`: a `HashMap<String, Type>` mapping each **let** member name to
+///   its resolved type. Let bindings are only included when they carry an explicit type
+///   annotation; unannotated lets are omitted here and handled by the pre-register pass
+///   (phase 3).
 /// - `structure_constraint_labels`: a `HashSet<String>` of constraint label names, used
 ///   by phase 6 to detect member overrides before injecting trait defaults.
+///
+/// ## Kind separation rationale
+///
+/// Keeping param and let members in separate maps enables **kind-aware requirement lookup**
+/// in phase 5 (`check_phase_check_members_against_requirements`): a `param` requirement can
+/// only be satisfied by a structure `param` member, and a `let` requirement only by a
+/// structure `let` member. When both maps are needed (e.g. for "does the structure override
+/// this name?" checks in phases 2, 3, and 6), the caller merges them by `.chain()`-ing the
+/// two iterators into a combined map.
 ///
 /// # Type resolution order
 ///
@@ -64,7 +75,7 @@ pub(super) fn check_phase_resolve_structure_members(
     enum_defs: &[reify_types::EnumDef],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
-) -> (HashMap<String, Type>, HashSet<String>) {
+) -> (HashMap<String, Type>, HashMap<String, Type>, HashSet<String>) {
     // Collect all structure member names for conformance checking.
     let empty_params: HashSet<String> = HashSet::new();
     // Build a HashSet of enum names once (O(E)) so the filter_map below performs
@@ -147,10 +158,14 @@ pub(super) fn check_phase_resolve_structure_members(
         }
     };
 
-    let structure_members: HashMap<String, Type> = structure
-        .members
-        .iter()
-        .filter_map(|m| match m {
+    // Build separate maps for param and let members so phase 5 can perform
+    // kind-aware lookups: a `param` requirement must be satisfied by a structure
+    // `param`, not a `let` (which is a computed/derived slot, not externally settable).
+    let mut structure_param_members: HashMap<String, Type> = HashMap::new();
+    let mut structure_let_members: HashMap<String, Type> = HashMap::new();
+
+    for m in structure.members.iter() {
+        match m {
             reify_syntax::MemberDecl::Param(p) => {
                 let ty = match p.type_expr.as_ref() {
                     Some(te) => resolve_member_annotation_type(te, diagnostics),
@@ -165,23 +180,22 @@ pub(super) fn check_phase_resolve_structure_members(
                         Type::Real
                     }
                 };
-                Some((p.name.clone(), ty))
+                structure_param_members.insert(p.name.clone(), ty);
             }
             reify_syntax::MemberDecl::Let(l) => {
                 // let bindings get their type from expression inference, not annotations.
-                // Only include in structure_members when there is an explicit type annotation;
-                // omitting is safe because if a trait requires this member, the conformance
-                // check will report "missing required member" rather than a spurious
-                // "no type annotation" error.
-                let te = l.type_expr.as_ref()?;
-                Some((
-                    l.name.clone(),
-                    resolve_member_annotation_type(te, diagnostics),
-                ))
+                // Only include in structure_let_members when there is an explicit type
+                // annotation; omitting is safe because if a trait requires this member,
+                // the conformance check will report "missing required member" rather than
+                // a spurious "no type annotation" error.
+                if let Some(te) = l.type_expr.as_ref() {
+                    let ty = resolve_member_annotation_type(te, diagnostics);
+                    structure_let_members.insert(l.name.clone(), ty);
+                }
             }
-            _ => None,
-        })
-        .collect();
+            _ => {}
+        }
+    }
 
     // Collect structure constraint labels.
     let structure_constraint_labels: HashSet<String> = structure
@@ -196,7 +210,7 @@ pub(super) fn check_phase_resolve_structure_members(
         })
         .collect();
 
-    (structure_members, structure_constraint_labels)
+    (structure_param_members, structure_let_members, structure_constraint_labels)
 }
 
 /// Phase 2 of trait conformance checking: collect all requirements and defaults from
@@ -583,7 +597,8 @@ pub(super) fn check_phase_build_available_defaults_map(
 pub(super) fn check_phase_check_members_against_requirements(
     ctx: &MergeContext,
     structure: &EntityDefRef<'_>,
-    structure_members: &HashMap<String, Type>,
+    structure_param_members: &HashMap<String, Type>,
+    structure_let_members: &HashMap<String, Type>,
     available_defaults: &HashMap<(String, AvailableDefaultKind), Type>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -616,8 +631,24 @@ pub(super) fn check_phase_check_members_against_requirements(
                 continue;
             }
         };
-        match structure_members.get(&req.name) {
+        // Route the structure-member lookup to the kind-appropriate map.
+        // A `param` requirement is satisfied only by a structure `param` member;
+        // a `let` requirement only by a structure `let` member.  This prevents a
+        // structure's computed `let` slot from silently satisfying a trait's
+        // settable `param` requirement (the fix for suggestion #4).
+        let kind_members = match required_default_kind {
+            AvailableDefaultKind::Param => structure_param_members,
+            AvailableDefaultKind::Let => structure_let_members,
+        };
+        match kind_members.get(&req.name) {
             Some(actual_type) => {
+                // Intentionally NOT suppressed by `available_defaults`: when a structure
+                // explicitly provides a member, that member is the authoritative value the
+                // compiler will use — any chain default for the same name is discarded.
+                // A type mismatch on an explicit member is therefore always an error,
+                // regardless of whether a well-typed default exists elsewhere in the chain.
+                // Widening this arm to also check `available_defaults` would silently accept
+                // structures whose explicit members carry the wrong type, which is incorrect.
                 if !implicitly_converts_to(actual_type, expected_type) {
                     diagnostics.push(
                         Diagnostic::error(format!(
@@ -658,12 +689,31 @@ pub(super) fn check_phase_check_members_against_requirements(
                         // No default of the required kind — treat as missing.
                         // A param requirement with only a let default in scope means the
                         // structure must provide a settable param slot itself.
-                        diagnostics.push(
-                            Diagnostic::error(format!(
+                        // Only mention the required kind when the structure declares the
+                        // name in the opposite-kind map (the actionable "wrong kind" case);
+                        // otherwise the suffix is noise — the user simply forgot the member.
+                        let opposite_kind_members = match required_default_kind {
+                            AvailableDefaultKind::Param => structure_let_members,
+                            AvailableDefaultKind::Let => structure_param_members,
+                        };
+                        let message = if opposite_kind_members.contains_key(&req.name) {
+                            let kind_str = match required_default_kind {
+                                AvailableDefaultKind::Param => "param",
+                                AvailableDefaultKind::Let => "let",
+                            };
+                            format!(
+                                "missing required member '{}' (expected type: {}; requires a `{}` slot)",
+                                req.name, expected_type, kind_str
+                            )
+                        } else {
+                            format!(
                                 "missing required member '{}' (expected type: {})",
                                 req.name, expected_type
-                            ))
-                            .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
+                            )
+                        };
+                        diagnostics.push(
+                            Diagnostic::error(message)
+                                .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                         );
                     }
                 }

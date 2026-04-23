@@ -894,3 +894,63 @@ structure S {
         "else-branch guarded param",
     );
 }
+
+// ---------------------------------------------------------------------------
+// task 193 / suggestion #19: non-port let Option<Length> = none → typed OptionNone
+// (relocated from qualified_access_compile_tests.rs)
+// ---------------------------------------------------------------------------
+
+/// `let y : Option<Length> = none` should compile with cell_type = Option<Length>,
+/// not the placeholder Option<Real> that the `none` keyword produces.
+///
+/// Source: `structure def S { let y : Option<Length> = none }`
+///
+/// Assert: no compile errors, value cell 'y' has type Option<Length> (not Option<Real>),
+/// and default_expr is OptionNone with matching result_type.
+#[test]
+fn let_none_with_typed_annotation_gets_correct_type() {
+    let source = r#"
+structure def S {
+    let y : Option<Length> = none
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
+
+    let y_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "y")
+        .expect("expected value cell 'y'");
+
+    let expected_type = Type::Option(Box::new(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    }));
+    assert_eq!(
+        y_cell.cell_type, expected_type,
+        "cell_type for 'let y : Option<Length> = none' should be Option<Length>, got: {:?}",
+        y_cell.cell_type
+    );
+
+    // Also verify that the default_expr has been fixed up to have the correct type.
+    let default_expr = y_cell
+        .default_expr
+        .as_ref()
+        .expect("expected default_expr for let y");
+    assert_eq!(
+        default_expr.result_type, expected_type,
+        "default_expr.result_type should be Option<Length> after OptionNone fixup, got: {:?}",
+        default_expr.result_type
+    );
+    assert!(
+        matches!(default_expr.kind, CompiledExprKind::OptionNone),
+        "default_expr.kind should be OptionNone, got: {:?}",
+        default_expr.kind
+    );
+}
