@@ -3401,6 +3401,66 @@ describe('App persistence wiring — Save views action (step-33)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Step-37: Camera state restoration tests
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — camera state restoration (step-37)', () => {
+  /** Open a file via Ctrl+O with a persisted sidecar containing camera state. */
+  async function openFileWithCameras(
+    path: string,
+    cameras: Record<string, { position: [number, number, number]; target: [number, number, number]; up: [number, number, number]; zoom: number }>,
+  ) {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue(path);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path, content: '' });
+    vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue({
+      version: '1',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: cameras,
+      timestamp: '2026-04-23T00:00:00.000Z',
+    });
+
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    // Flush the async chain from handleOpen
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+
+  it('restores persisted camera for design-main viewport on openFile', async () => {
+    const cam = { position: [3, 4, 5] as [number, number, number], target: [1, 2, 3] as [number, number, number], up: [0, 0, 1] as [number, number, number], zoom: 1.5 };
+
+    await renderAndWaitForReady();
+    await openFileWithCameras('/test/bracket.ri', { 'design-main': cam });
+
+    // The viewportStore passed to DualViewport should reflect the restored camera
+    await waitFor(() => {
+      const vp = capturedDualViewportProps.viewportStore?.state.viewports['design-main'];
+      expect(vp).toBeDefined();
+      expect(vp.camera.position).toEqual([3, 4, 5]);
+      expect(vp.camera.target).toEqual([1, 2, 3]);
+      expect(vp.camera.up).toEqual([0, 0, 1]);
+      expect(vp.camera.zoom).toBe(1.5);
+    });
+  });
+
+  it('restores cameras for multiple viewports when sidecar contains them', async () => {
+    const cams = {
+      'design-main': { position: [10, 0, 0] as [number, number, number], target: [0, 0, 0] as [number, number, number], up: [0, 1, 0] as [number, number, number], zoom: 2 },
+      'def-preview': { position: [0, 10, 0] as [number, number, number], target: [0, 0, 0] as [number, number, number], up: [0, 0, 1] as [number, number, number], zoom: 3 },
+    };
+
+    await renderAndWaitForReady();
+    await openFileWithCameras('/test/bracket.ri', cams);
+
+    await waitFor(() => {
+      const viewports = capturedDualViewportProps.viewportStore?.state.viewports;
+      expect(viewports?.['design-main'].camera.position).toEqual([10, 0, 0]);
+      expect(viewports?.['def-preview'].camera.zoom).toBe(3);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step-35: Fuzzy-rebind notification tests
 // ---------------------------------------------------------------------------
 

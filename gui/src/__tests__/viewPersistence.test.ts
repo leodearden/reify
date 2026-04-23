@@ -380,3 +380,67 @@ describe('createDebouncedSaver', () => {
     expect(localStorage.getItem(`${STORAGE_KEY_PREFIX}${TEST_PATH}`)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step-37: Camera state round-trip tests
+// ---------------------------------------------------------------------------
+
+describe('viewPersistence — camera state round-trip (step-37)', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('save then load preserves viewportCameras position, target, up, and zoom exactly', () => {
+    const cams: Record<string, CameraState> = {
+      'design-main': { position: [3, 4, 5], target: [1, 2, 3], up: [0, 0, 1], zoom: 1.5 },
+      'def-preview': { position: [10, 0, 0], target: [0, 0, 0], up: [0, 1, 0], zoom: 2.0 },
+    };
+
+    const state: PersistentViewState = {
+      version: '1',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: cams,
+      timestamp: '2026-04-23T00:00:00.000Z',
+    };
+
+    saveViewPersistence(TEST_PATH, state);
+    const loaded = loadViewPersistence(TEST_PATH);
+
+    expect(loaded).not.toBeNull();
+    // Each camera field must deep-equal the original
+    expect(loaded!.viewportCameras['design-main'].position).toEqual([3, 4, 5]);
+    expect(loaded!.viewportCameras['design-main'].target).toEqual([1, 2, 3]);
+    expect(loaded!.viewportCameras['design-main'].up).toEqual([0, 0, 1]);
+    expect(loaded!.viewportCameras['design-main'].zoom).toBe(1.5);
+
+    expect(loaded!.viewportCameras['def-preview'].position).toEqual([10, 0, 0]);
+    expect(loaded!.viewportCameras['def-preview'].target).toEqual([0, 0, 0]);
+    expect(loaded!.viewportCameras['def-preview'].up).toEqual([0, 1, 0]);
+    expect(loaded!.viewportCameras['def-preview'].zoom).toBe(2.0);
+  });
+
+  it('multiple viewports are all preserved through JSON serialisation', () => {
+    const cameras: Record<string, CameraState> = {};
+    for (let i = 0; i < 4; i++) {
+      cameras[`vp-${i}`] = { position: [i, 0, 0], target: [0, 0, 0], up: [0, 1, 0], zoom: i + 1 };
+    }
+
+    const state: PersistentViewState = {
+      version: '1',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: cameras,
+      timestamp: '2026-04-23T00:00:00.000Z',
+    };
+
+    saveViewPersistence(TEST_PATH, state);
+    const loaded = loadViewPersistence(TEST_PATH);
+
+    expect(loaded).not.toBeNull();
+    for (let i = 0; i < 4; i++) {
+      expect(loaded!.viewportCameras[`vp-${i}`].position[0]).toBe(i);
+      expect(loaded!.viewportCameras[`vp-${i}`].zoom).toBe(i + 1);
+    }
+  });
+});
