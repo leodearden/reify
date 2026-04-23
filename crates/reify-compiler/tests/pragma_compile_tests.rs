@@ -336,6 +336,13 @@ fn known_block_pragma_solver_no_warning_on_trait() {
 
 /// Module-only pragma `#no_prelude` on a structure block should emit a
 /// "only valid at module level" warning, not the generic "unknown pragma" one.
+///
+/// The new assertion `pragma_warnings(&module, "unknown pragma").is_empty()` pins
+/// the absence of the legacy generic warning so a regression that emits both
+/// (module-only + unknown-pragma), or reverts the classify_pragma split in
+/// annotations.rs back to a single generic-unknown branch, would fail here.
+/// Contract: `#no_prelude` on a block emits *exactly* the module-only warning —
+/// neither less nor more.
 #[test]
 fn no_prelude_on_structure_emits_module_only_warning() {
     let module = compile_source(r#"structure S { #no_prelude param x : Real }"#);
@@ -349,6 +356,11 @@ fn no_prelude_on_structure_emits_module_only_warning() {
         warns.iter().any(|d| d.message.contains("only valid at module level")),
         "expected warning to mention 'only valid at module level', got: {:?}",
         warns
+    );
+    assert!(
+        pragma_warnings(&module, "unknown pragma").is_empty(),
+        "expected no legacy 'unknown pragma' warning for #no_prelude on a block, got: {:?}",
+        pragma_warnings(&module, "unknown pragma")
     );
 }
 
