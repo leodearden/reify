@@ -42078,7 +42078,7 @@
         "description": "Tighten guard at conformance.rs:344-351 to `cell_type.is_none() && pass2_skipped.contains(name)` so annotated-Let advertisements aren't dropped. Add unit-test sub-case for pass2_skipped triggered by annotated-Let. Replace `.contains('x')` with `.contains(\"'x'\")` in test filters at ~1095-1105.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -42090,7 +42090,7 @@
             "crates/reify-compiler/src/conformance"
           ]
         },
-        "updatedAt": "2026-04-23T18:37:32.775Z"
+        "updatedAt": "2026-04-23T19:28:27.963Z"
       },
       {
         "id": "1989",
@@ -45983,7 +45983,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T19:28:16.927Z",
+      "lastModified": "2026-04-23T19:28:27.963Z",
       "taskCount": 2154,
       "completedCount": 1909,
       "tags": [
