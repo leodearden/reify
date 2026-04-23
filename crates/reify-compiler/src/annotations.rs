@@ -180,22 +180,85 @@ pub(crate) fn is_valid_optimized(ann: &reify_types::Annotation) -> bool {
         )
 }
 
-/// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown names.
+/// Pragmas valid on block-level declarations (structures, occurrences, traits, purposes, etc.).
+pub(crate) const KNOWN_BLOCK_PRAGMAS: &[&str] = &["precision", "solver", "kernel"];
+
+/// Pragmas valid only at module level; not valid on any block-level declaration.
+pub(crate) const MODULE_ONLY_PRAGMAS: &[&str] = &["no_prelude", "version"];
+
+/// Returns `true` if `name` is a known block-level pragma.
+pub(crate) fn is_known_block_pragma(name: &str) -> bool {
+    KNOWN_BLOCK_PRAGMAS.contains(&name)
+}
+
+/// Returns `true` if `name` is a module-only pragma (valid at module level, not on blocks).
+pub(crate) fn is_module_only_pragma(name: &str) -> bool {
+    MODULE_ONLY_PRAGMAS.contains(&name)
+}
+
+/// Returns `true` if `name` is any recognized pragma (block or module-only).
 ///
-/// Known block-level pragmas: `#precision`, `#solver`, `#kernel`.
-/// Unknown pragmas emit a `Severity::Warning` diagnostic.
+/// The module-level pragma set is `KNOWN_BLOCK_PRAGMAS ∪ MODULE_ONLY_PRAGMAS`,
+/// which structurally enforces the subset relation: the block list is always a
+/// subset of the module list by construction rather than by hand-maintenance.
+pub(crate) fn is_known_module_pragma(name: &str) -> bool {
+    is_known_block_pragma(name) || is_module_only_pragma(name)
+}
+
+/// Classification of a pragma name with respect to its validity context.
+enum PragmaKind {
+    /// Valid on block-level declarations (`#precision`, `#solver`, `#kernel`).
+    KnownBlock,
+    /// Valid only at module level; misplaced when found on a block (`#no_prelude`, `#version`).
+    ModuleOnly,
+    /// Not a recognized pragma name.
+    Unknown,
+}
+
+/// Classify a pragma name for context-aware validation.
+fn classify_pragma(name: &str) -> PragmaKind {
+    if is_known_block_pragma(name) {
+        PragmaKind::KnownBlock
+    } else if is_module_only_pragma(name) {
+        PragmaKind::ModuleOnly
+    } else {
+        PragmaKind::Unknown
+    }
+}
+
+/// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown or
+/// misplaced pragma names.
+///
+/// Known block-level pragmas: `#precision`, `#solver`, `#kernel` — no warning.
+/// Module-only pragmas (`#no_prelude`, `#version`) on a block: context-aware "only valid at
+/// module level" warning.
+/// All other pragma names: generic `"unknown pragma #<name>"` warning.
 pub(crate) fn validate_pragmas(
     pragmas: &[reify_syntax::Pragma],
-    _context: &str,
+    context: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    const KNOWN_BLOCK_PRAGMAS: &[&str] = &["precision", "solver", "kernel"];
     for pragma in pragmas {
-        if !KNOWN_BLOCK_PRAGMAS.contains(&pragma.name.as_str()) {
-            diagnostics.push(
-                Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
-                    .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
-            );
+        match classify_pragma(&pragma.name) {
+            PragmaKind::KnownBlock => {} // Valid here — no warning.
+            PragmaKind::ModuleOnly => {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "pragma #{} is only valid at module level, not on {}",
+                        pragma.name, context
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        pragma.span,
+                        "module-only pragma on block",
+                    )),
+                );
+            }
+            PragmaKind::Unknown => {
+                diagnostics.push(
+                    Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
+                        .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
+                );
+            }
         }
     }
 }

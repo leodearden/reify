@@ -332,6 +332,26 @@ fn known_block_pragma_solver_no_warning_on_trait() {
     );
 }
 
+// ── Step A: context-aware module-only pragma warning ─────────────────────────
+
+/// Module-only pragma `#no_prelude` on a structure block should emit a
+/// "only valid at module level" warning, not the generic "unknown pragma" one.
+#[test]
+fn no_prelude_on_structure_emits_module_only_warning() {
+    let module = compile_source(r#"structure S { #no_prelude param x : Real }"#);
+    let warns = pragma_warnings(&module, "no_prelude");
+    assert!(
+        !warns.is_empty(),
+        "expected a warning for #no_prelude on structure, got none; all warnings: {:?}",
+        warnings_only(&module)
+    );
+    assert!(
+        warns.iter().any(|d| d.message.contains("only valid at module level")),
+        "expected warning to mention 'only valid at module level', got: {:?}",
+        warns
+    );
+}
+
 /// Known block pragma `#kernel` on a purpose should NOT emit an unknown-pragma warning.
 #[test]
 fn known_block_pragma_kernel_no_warning_on_purpose() {
@@ -349,5 +369,107 @@ fn known_block_pragma_kernel_no_warning_on_purpose() {
         warns.is_empty(),
         "expected no 'unknown pragma' warning for #kernel on purpose, got: {:?}",
         warns
+    );
+}
+
+// ── Step B: module pragma contributes to content_hash ────────────────────────
+
+/// Changing a module-level pragma value must produce a different content_hash,
+/// and compiling the same source twice must produce an identical hash (determinism).
+///
+/// Fails on current main: `compute_module_hash` does not include `parsed.pragmas`,
+/// so two sources differing only in `#precision(value=...)` produce identical hashes.
+#[test]
+fn module_pragma_change_changes_module_content_hash() {
+    let path = reify_types::ModulePath::single("m");
+
+    let source_a = "#precision(value=32)\nstructure S { param x : Real }";
+    let parsed_a = reify_syntax::parse(source_a, path.clone());
+    assert!(parsed_a.errors.is_empty(), "parse errors in a: {:?}", parsed_a.errors);
+    let compiled_a = reify_compiler::compile(&parsed_a);
+
+    let source_b = "#precision(value=64)\nstructure S { param x : Real }";
+    let parsed_b = reify_syntax::parse(source_b, path.clone());
+    assert!(parsed_b.errors.is_empty(), "parse errors in b: {:?}", parsed_b.errors);
+    let compiled_b = reify_compiler::compile(&parsed_b);
+
+    assert_ne!(
+        compiled_a.content_hash, compiled_b.content_hash,
+        "sources differing only in module-level pragma should produce different content_hashes"
+    );
+
+    // Determinism: compiling the same source twice yields the same hash.
+    let parsed_a2 = reify_syntax::parse(source_a, path.clone());
+    let compiled_a2 = reify_compiler::compile(&parsed_a2);
+    assert_eq!(
+        compiled_a.content_hash, compiled_a2.content_hash,
+        "same source compiled twice should produce identical content_hashes"
+    );
+}
+
+// ── Step C: characterization tests ───────────────────────────────────────────
+
+/// Characterization: block-level pragma on an occurrence def is propagated to
+/// TopologyTemplate.pragmas via EntityDefRef::from(&OccurrenceDef) → compile_entity
+/// → pragmas: structure.pragmas.to_vec().
+///
+/// Mirrors `structure_pragma_propagated_to_topology_template`, but for occurrences.
+/// No implementation change needed — this guards existing behavior.
+#[test]
+fn occurrence_pragma_propagated_to_topology_template() {
+    let module =
+        compile_source(r#"occurrence def O { #solver(backend="ipopt") param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "O")
+        .expect("template named 'O' not found");
+
+    assert_eq!(
+        template.entity_kind,
+        reify_compiler::EntityKind::Occurrence,
+        "expected entity_kind Occurrence"
+    );
+    assert_eq!(
+        template.pragmas.len(),
+        1,
+        "expected 1 pragma on occurrence template, got {}: {:?}",
+        template.pragmas.len(),
+        template.pragmas
+    );
+    let solver = &template.pragmas[0];
+    assert_eq!(solver.name, "solver", "expected pragma name 'solver'");
+    assert_eq!(solver.args.len(), 1, "expected 1 arg on #solver");
+    match &solver.args[0] {
+        reify_syntax::PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "backend");
+            assert_eq!(
+                value,
+                &reify_syntax::PragmaValue::String("ipopt".to_string())
+            );
+        }
+        other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
+    }
+}
+
+/// Characterization: `#no_prelude` at module level is stored on CompiledModule.pragmas
+/// via `pragmas: parsed.pragmas.clone()` in ctx.rs.
+///
+/// Complements the behavioral tests (no_prelude_simple_structure_compiles_clean,
+/// no_prelude_suppresses_stdlib_units) with a storage assertion. Guards ctx.rs:161.
+#[test]
+fn no_prelude_is_stored_on_compiled_module_pragmas() {
+    let module =
+        compile_source_with_stdlib("#no_prelude\nstructure S { param x : Real = 1.0 }");
+    assert!(
+        module.pragmas.iter().any(|p| p.name == "no_prelude"),
+        "expected #no_prelude in module.pragmas, got: {:?}",
+        module.pragmas
     );
 }
