@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
+use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
     ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
