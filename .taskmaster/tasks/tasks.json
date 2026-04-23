@@ -45674,11 +45674,11 @@
         "description": "Review suggestion from task-395. Rule 2c is only exercised with Type::Real as Q; the spec rationale is about trait conformance with dimensioned scalars. Add two tests in crates/reify-compiler/tests/implicit_conversion_tests.rs: (1) allow Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[m]&gt; (same dimension), (2) reject Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[angle]&gt; (quantity mismatch). Without the negative case a regression that accidentally drops the q1 == q2 check would still pass existing Real tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:27:12.534Z",
+        "updatedAt": "2026-04-23T17:27:22.311Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/implicit_conversion_tests.rs"
@@ -45694,11 +45694,11 @@
         "description": "Review suggestion from task-395. The three field-composition tests in functions.rs (tests mod ~306-423) only assert diagnostic count; a refactor that reverses producer/consumer in the error string would still pass. In field_composition_rejects_matrix_to_tensor2, assert the diagnostic message contains \"codomain of 'inner'\" and \"domain of 'outer'\" so swapping inner/outer in the error would be caught.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:27:12.654Z"
+        "updatedAt": "2026-04-23T17:27:23.635Z"
       },
       {
         "id": "2151",
@@ -45735,7 +45735,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:27:20.704Z",
+      "lastModified": "2026-04-23T17:27:23.635Z",
       "taskCount": 2144,
       "completedCount": 1893,
       "tags": [
