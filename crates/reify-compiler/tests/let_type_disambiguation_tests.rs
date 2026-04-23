@@ -746,6 +746,92 @@ structure S : MutualLets {
     );
 }
 
+// ── task 1914 step-1: error-cascade suppression for unannotated-let compile failure ──
+
+/// Regression test for error-cascade suppression when an unannotated `let` default's
+/// expression fails to compile (esc-1834-144).
+///
+/// ## Scenario
+///
+/// `trait HasA { let a = b + 1mm }` provides an unannotated let default whose
+/// expression contains a forward reference to `b`, which is not defined anywhere.
+/// `structure S : HasA {}` inherits the default without overriding it.
+///
+/// ## What this test locks in
+///
+/// **Single root-cause diagnostic — no secondary phantom cascade.**  Exactly one
+/// root-cause "unresolved `b`" error must be present.  No cascade diagnostics of
+/// the form "available default has Real" (which would indicate a poisoned
+/// `inferred_let_exprs` entry was advertised as a valid default) and no
+/// "type mismatch for trait member 'a'" phantom from the same root cause.
+///
+/// Note: this test does NOT assert an exact diagnostic count because unrelated
+/// upstream compiler phases (e.g. trait compilation in `traits.rs`) may also emit
+/// their own root-cause "unresolved name" diagnostic for the same identifier; only
+/// the absence of SECONDARY cascade diagnostics is pinned here.
+///
+/// ## Pre-fix behaviour (task 1914 step-2 fixes this)
+///
+/// Before the fix, Pass 2 of `check_phase_pre_register_default_types` inserted the
+/// poisoned `compile_expr` result (Type::Real or Type::Error) into
+/// `inferred_let_exprs`, and `check_phase_build_available_defaults_map` advertised a
+/// phantom `("a", Let) → Type::Real` entry.  Any trait requirement matching against
+/// that phantom entry would then emit a spurious "available default has Real"
+/// type-mismatch cascade on top of the original root-cause diagnostic.
+#[test]
+fn unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch() {
+    let source = r#"
+trait HasA {
+    let a = b + 1mm
+}
+structure S : HasA {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // (a) The root-cause "unresolved `b`" error must be present.
+    assert!(
+        diagnostic_names_unresolved(&errors, "b"),
+        "expected at least one diagnostic naming the unresolved identifier `b`; \
+         got: {:?}",
+        errors
+    );
+
+    // (b) No cascade "available default has Real" diagnostic.
+    // A phantom `("a", Let) -> Type::Real` advertisement would cause
+    // check_phase_check_members_against_requirements to emit this substring
+    // when comparing against any requirement with a non-Real expected type.
+    let cascade_diags: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("available default") && d.message.contains("Real"))
+        .collect();
+    assert!(
+        cascade_diags.is_empty(),
+        "phantom cascade diagnostic found: a poisoned inferred-let entry was \
+         advertised in available_defaults, triggering a secondary type-mismatch \
+         on top of the root-cause 'unresolved b' error. \
+         Cascade diagnostics: {:?}",
+        cascade_diags
+    );
+
+    // (c) No "type mismatch for trait member 'a'" phantom diagnostic.
+    let trait_member_mismatch: Vec<_> = errors
+        .iter()
+        .filter(|d| {
+            d.message.contains("type mismatch for trait member")
+                && d.message.contains("'a'")
+        })
+        .collect();
+    assert!(
+        trait_member_mismatch.is_empty(),
+        "phantom 'type mismatch for trait member' diagnostic found for 'a'; \
+         this is a cascade from the failed compile_expr for the unannotated let \
+         expression. Diagnostics: {:?}",
+        trait_member_mismatch
+    );
+}
+
 /// Reverse-order companion to `mutual_unannotated_lets_documented_limitation`:
 /// declaring `let b = 2mm` *before* `let a = b + 1mm` compiles cleanly, because
 /// the pre-register/inference pass in `conformance.rs` walks `ctx.defaults` in
