@@ -42273,11 +42273,11 @@
         "description": "Every call to `Engine::eval()` and `Engine::edit_param()` clones the entire merged function table (`self.functions: Vec<CompiledFunction>`). `CompiledFunction` contains boxed expression trees, so cost is O(|user_fns + prelude_fns| * avg_tree_size) per call — a significant allocation for modules with a large prelude.",
         "details": "Change `Engine::functions` from `Vec<CompiledFunction>` to `Arc<Vec<CompiledFunction>>` so the borrow-checker workaround clone in `eval()` and `edit_param()` becomes O(1).\n\nKey sites:\n- `crates/reify-eval/src/lib.rs` near `let functions: Vec<CompiledFunction> = self.functions.clone();` inside `eval()` (the PERFORMANCE NOTE comment describes the fix)\n- `crates/reify-eval/src/lib.rs` near line ~1548: `let functions = self.functions.clone();` inside `edit_param()` — same pattern\n- `crates/reify-eval/src/concurrent.rs`: `ConcurrentEditSetup::functions` field is typed `Vec<CompiledFunction>` and assigned via `functions: self.functions.clone()` — needs the type change to `Arc<Vec<CompiledFunction>>`\n\nThe desired end state:\n```rust\nself.functions = Arc::new({ let mut v = module.functions.clone(); v.extend(prelude); v });\nlet functions = Arc::clone(&self.functions);   // O(1)\n```\n\nThe `concurrent.rs` change is the blocker that prevented this fix in task 515 (it lies outside that task's scope lock). This task should scope both files together.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T15:06:28.592Z",
+        "updatedAt": "2026-04-23T17:27:11.693Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/lib.rs",
@@ -42578,7 +42578,7 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:298-310` implements `ModifyKind::Draft` by taking `step_handles.last()` as the plane reference instead of evaluating the `plane` argument expression. A comment acknowledges the placeholder.\n\nResult: Draft produces incorrect output whenever the plane argument doesn't happen to be the most recent step. The `target_id` is correctly resolved via `resolve_geom_ref`, but `plane_id` is hard-coded.\n\nFix:\n1. Plumb the plane argument through as a `GeomRef` (or full expression that evaluates to a face/plane reference), then resolve it via `resolve_geom_ref` like `target`.\n2. Add an integration test that draft-operates on a non-most-recent step to catch regression.\n\nAlso audit related ops in this file for the same placeholder pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42598,7 +42598,7 @@
             "crates/reify-test-support/src/helpers.rs"
           ]
         },
-        "updatedAt": "2026-04-22T11:55:37.179Z"
+        "updatedAt": "2026-04-23T17:27:11.802Z"
       },
       {
         "id": "2011",
@@ -44896,11 +44896,11 @@
         "description": "`crates/reify-compiler/src/types.rs:454-461` — the doc comment on `RealizationDecl.name` says `None for anonymous realizations that have no direct let-binding (e.g. intermediate guarded-group params without a user-visible name)`, but after Task 2011 all three compile-time call sites in `entity.rs` (lines 1345, 1371, 1887 — including the guarded-geometry path) populate `Some(param.name.clone())`. The only production of `name: None` is the `TopologyTemplateBuilder::realization()` test-support helper.\n\nOptions: (a) rewrite the doc to say `Some(...)` for every let-binding/named param emitted by the compiler; `None` is only produced by test scaffolding. (b) If a legitimate compile-time `None` case exists, add it back in entity.rs; otherwise narrow the type to `String` once test-support is updated.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T16:58:04.680Z",
+        "updatedAt": "2026-04-23T17:27:11.913Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/types.rs"
@@ -45723,7 +45723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:27:11.582Z",
+      "lastModified": "2026-04-23T17:27:11.913Z",
       "taskCount": 2143,
       "completedCount": 1893,
       "tags": [
