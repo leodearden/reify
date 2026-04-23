@@ -45681,23 +45681,21 @@
         "description": "Extract the inline map_err closures at crates/reify-compiler/src/module_dag.rs:234-235 and 288-289 into a `diag_invalid_path(path: &str, e: ModulePathParseError, context_phrase: &str) -> Vec<Diagnostic>` helper. Replace hard-coded \"resolving import\" with the context_phrase parameter so the top-level entry module can reuse it. Also cover the third partial-overlay site at 249-257 (wording \"add the missing module\" vs \"populate all stdlib modules\") — either extend the helper with a direction enum or add a sibling helper so all three overlay diagnostics share a single source of truth. Source: esc-2074-10 (S1+S2) + esc-2076-29 (S1).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-23T17:23:52.265Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T06:38:13.414Z",
-      "taskCount": 2142,
+      "lastModified": "2026-04-23T17:23:52.266Z",
+      "taskCount": 2143,
       "completedCount": 1893,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T17:23:38.263Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T17:23:38.284Z"
+      ]
     }
   }
 }
