@@ -41825,7 +41825,7 @@
         "description": "Delete the `phantom_let_advertisement_contract_for_future_parser_extension` integration test in `crates/reify-compiler/tests/trait_merge_tests.rs` (~1404-1522, ~120 lines).\n\nThe test is explicitly self-documented as non-distinguishing: \"all three assertions pass unconditionally today\" and \"cannot distinguish the patched binary from the unpatched one\". The behavioral assertions are tautologies against the current code — it provides zero regression coverage for the Option B fix landed in task 1951 (the in-crate unit test `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name` in conformance.rs is what actually gates the behavior).\n\nAssertion 3 in particular is a pure wording pin on a diagnostic that is never emitted in the reachable universe, so it will continue to pass even if the Option B guard is deleted. Meanwhile the test locks in source-level details (trait/member/type names, compile-cleanly expectations) that can break for unrelated reasons.\n\nAction:\n- Delete the test function (and any test-only imports it solely uses).\n- Leave a short breadcrumb comment in `conformance.rs` near the pass2_skipped guard pointing to the in-crate unit test, so a future contributor extending the parser to make `RequirementKind::Let` reachable knows where the behavioral coverage lives.\n- When `RequirementKind::Let` becomes parser-reachable, write the regression test then in the reachable form (likely follow-up to esc-1951-6 / task 1951's design_concern escalation).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestion 2).\n\nMemory hints: search \"task 1951 forward-compat placeholder phantom Let advertisement test\"; the test was added in commit 7351ae1c0 (worktree 1951 branch).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41836,7 +41836,7 @@
             "crates/reify-compiler/tests/trait_merge_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-22T11:55:30.905Z"
+        "updatedAt": "2026-04-23T18:08:18.377Z"
       },
       {
         "id": "1980",
@@ -45798,7 +45798,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T18:08:15.393Z",
+      "lastModified": "2026-04-23T18:08:18.377Z",
       "taskCount": 2147,
       "completedCount": 1896,
       "tags": [
