@@ -369,3 +369,44 @@ fn helix_arg_count_diagnostic_has_span_label() {
         "helix() expects 3 arguments",
     );
 }
+
+// ── interp() / bezier() / nurbs() ──────────────────────────────────────
+
+#[test]
+fn interp_arg_count_diagnostic_has_span_label() {
+    // interp() expects coordinate triples (at least 6 args) — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = interp(0mm, 0mm, 0mm)
+            }
+        "#,
+        "interp() expects coordinate triples",
+    );
+}
+
+#[test]
+fn bezier_arg_count_diagnostic_has_span_label() {
+    // bezier() expects coordinate triples (at least 6 args) — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = bezier(0mm, 0mm, 0mm)
+            }
+        "#,
+        "bezier() expects coordinate triples",
+    );
+}
+
+#[test]
+fn nurbs_arg_count_diagnostic_has_span_label() {
+    // nurbs() expects at least 10 arguments — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = nurbs(0mm, 0mm, 0mm)
+            }
+        "#,
+        "nurbs() expects at least 10 arguments",
+    );
+}
