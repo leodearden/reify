@@ -45696,11 +45696,16 @@
         "description": "Review suggestion from task-395. The three field-composition tests in functions.rs (tests mod ~306-423) only assert diagnostic count; a refactor that reverses producer/consumer in the error string would still pass. In field_composition_rejects_matrix_to_tensor2, assert the diagnostic message contains \"codomain of 'inner'\" and \"domain of 'outer'\" so swapping inner/outer in the error would be caught.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:27:23.635Z"
+        "updatedAt": "2026-04-23T17:44:08.517Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "f1ff190ce6a63b4bcd04146dae1802d3590f3460"
+          }
+        }
       },
       {
         "id": "2151",
@@ -45772,14 +45777,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:35:06.751Z",
+      "lastModified": "2026-04-23T17:44:08.518Z",
       "taskCount": 2146,
-      "completedCount": 1893,
+      "completedCount": 1894,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T17:36:59.078Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
