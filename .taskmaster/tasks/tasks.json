@@ -45654,11 +45654,11 @@
         "description": "Two review suggestions from task-395 review of type_compat.rs. (a) is_scalar_like_leaf allowlist lacks spec-clause citation — either add doc justification pointing to authoritative source, or flip to denylist of shape-carrying types so future Type variants default to permissive. (b) Rule 2c (Tensor<0,M,Q>→Tensor<0,N,Q>) uses `q1 == q2` without the leaf-Q guard used by Rules 2a/2b — leaves compound-Q rank-0 pairs accepted where 2a/2b would refuse. Either document why 2c doesn't need the guard (both sides already rank-0 tensors, not wildcards), or add the same is_scalar_like_leaf(q1) guard for consistency.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T16:23:33.694Z",
+        "updatedAt": "2026-04-23T17:27:12.426Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/type_compat.rs"
@@ -45674,11 +45674,11 @@
         "description": "Review suggestion from task-395. Rule 2c is only exercised with Type::Real as Q; the spec rationale is about trait conformance with dimensioned scalars. Add two tests in crates/reify-compiler/tests/implicit_conversion_tests.rs: (1) allow Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[m]&gt; (same dimension), (2) reject Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[angle]&gt; (quantity mismatch). Without the negative case a regression that accidentally drops the q1 == q2 check would still pass existing Real tests.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T16:24:11.834Z",
+        "updatedAt": "2026-04-23T17:27:12.534Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/implicit_conversion_tests.rs"
@@ -45694,11 +45694,11 @@
         "description": "Review suggestion from task-395. The three field-composition tests in functions.rs (tests mod ~306-423) only assert diagnostic count; a refactor that reverses producer/consumer in the error string would still pass. In field_composition_rejects_matrix_to_tensor2, assert the diagnostic message contains \"codomain of 'inner'\" and \"domain of 'outer'\" so swapping inner/outer in the error would be caught.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T16:24:58.611Z"
+        "updatedAt": "2026-04-23T17:27:12.654Z"
       },
       {
         "id": "2151",
@@ -45706,11 +45706,11 @@
         "description": "Extract the inline map_err closures at crates/reify-compiler/src/module_dag.rs:234-235 and 288-289 into a `diag_invalid_path(path: &str, e: ModulePathParseError, context_phrase: &str) -> Vec<Diagnostic>` helper. Replace hard-coded \"resolving import\" with the context_phrase parameter so the top-level entry module can reuse it. Also cover the third partial-overlay site at 249-257 (wording \"add the missing module\" vs \"populate all stdlib modules\") — either extend the helper with a direction enum or add a sibling helper so all three overlay diagnostics share a single source of truth. Source: esc-2074-10 (S1+S2) + esc-2076-29 (S1).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:23:52.265Z",
+        "updatedAt": "2026-04-23T17:27:12.798Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/module_dag.rs"
@@ -45734,15 +45734,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:27:12.274Z",
-      "taskCount": 2143,
+      "lastModified": "2026-04-23T17:27:12.798Z",
+      "taskCount": 2144,
       "completedCount": 1893,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T17:27:12.337Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T17:27:12.354Z"
+      ]
     }
   }
 }
