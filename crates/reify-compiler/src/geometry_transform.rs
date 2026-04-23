@@ -15,11 +15,7 @@ pub(crate) fn compile_transform_op(
     match name {
         // translate(target, dx, dy, dz)
         "translate" => {
-            if compiled_args.len() != 4 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "translate() expects 4 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("translate", compiled_args.len(), 4, None, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -38,11 +34,7 @@ pub(crate) fn compile_transform_op(
         }
         // rotate(target, ax, ay, az, angle)
         "rotate" => {
-            if compiled_args.len() != 5 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "rotate() expects 5 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("rotate", compiled_args.len(), 5, None, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -62,11 +54,7 @@ pub(crate) fn compile_transform_op(
         }
         // scale(target, factor)
         "scale" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "scale() expects 2 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("scale", compiled_args.len(), 2, None, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -83,11 +71,7 @@ pub(crate) fn compile_transform_op(
         }
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         "rotate_around" => {
-            if compiled_args.len() != 8 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "rotate_around() expects 8 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("rotate_around", compiled_args.len(), 8, None, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
