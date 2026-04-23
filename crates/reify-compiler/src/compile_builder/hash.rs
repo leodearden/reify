@@ -90,7 +90,7 @@ pub(crate) fn compute_module_hash(
 /// Encoding the count explicitly guards against collisions when a pragma has
 /// optional arguments that could be absent vs. present as an empty value.
 /// Source span is intentionally excluded — it is positional metadata, not content.
-fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
+pub(crate) fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
     let mut h = ContentHash::of_str(&p.name).combine(ContentHash::of_u64(p.args.len() as u64));
     for arg in &p.args {
         h = h.combine(hash_pragma_arg(arg));
