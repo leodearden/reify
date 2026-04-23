@@ -38943,18 +38943,21 @@
         "description": "Boolean op regression tests (lib.rs:2317-2356) only cover union and union_all. There are no tests for intersection, difference, or intersection_all. A typo in the BooleanOp mapping (e.g., swapping Intersection and Difference) would not be caught.\n\nAdd at minimum:\n1. compile_boolean_op_difference_via_compile — difference is the only non-commutative boolean op, making it the most important to verify correct operand ordering (left vs right).\n2. compile_boolean_op_intersection_all_via_compile — covers the _all fold path for a non-union op.\n\nmemory_hints:\n- search: \"boolean op compile test union intersection difference\"\n- entity: compile_boolean_op, BooleanOp",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:28:26.912Z",
+        "updatedAt": "2026-04-23T20:40:07.540Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "fbac25f4c3b67433bb491787cacc65d3a84c8261"
+          }
         }
       },
       {
@@ -46164,15 +46167,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:29:30.838Z",
-      "taskCount": 2161,
-      "completedCount": 1918,
+      "lastModified": "2026-04-23T20:40:07.540Z",
+      "taskCount": 2162,
+      "completedCount": 1919,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T20:32:45.556Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T20:39:59.241Z"
+      ]
     }
   }
 }
