@@ -407,6 +407,47 @@ fn module_pragma_change_changes_module_content_hash() {
     );
 }
 
+/// Changing a block-level pragma value must produce a different content_hash,
+/// and compiling the same source twice must produce an identical hash (determinism).
+///
+/// This exercises a different path than `module_pragma_change_changes_module_content_hash`:
+/// block-level pragmas are stored on `TopologyTemplate.pragmas` (via entity.rs:1772
+/// `pragmas: structure.pragmas.to_vec()`), and the template's `content_hash` is
+/// computed in the `let content_hash = { ... }` block in entity.rs. The module hash
+/// incorporates templates via `ctx.templates.iter().map(|t| t.content_hash)` (hash.rs:27),
+/// so block-level pragma changes must propagate: template.content_hash → module.content_hash.
+///
+/// EXPECTED: FAILS on current main because `TopologyTemplate::content_hash` (entity.rs)
+/// does not fold `structure.pragmas` into the template hash, so the pragma arg difference
+/// does not reach `compiled.content_hash` via the templates chain.
+#[test]
+fn block_pragma_change_changes_module_content_hash() {
+    let path = reify_types::ModulePath::single("m");
+
+    let source_a = "structure S { #precision(bits=32) param x : Real }";
+    let parsed_a = reify_syntax::parse(source_a, path.clone());
+    assert!(parsed_a.errors.is_empty(), "parse errors in a: {:?}", parsed_a.errors);
+    let compiled_a = reify_compiler::compile(&parsed_a);
+
+    let source_b = "structure S { #precision(bits=64) param x : Real }";
+    let parsed_b = reify_syntax::parse(source_b, path.clone());
+    assert!(parsed_b.errors.is_empty(), "parse errors in b: {:?}", parsed_b.errors);
+    let compiled_b = reify_compiler::compile(&parsed_b);
+
+    assert_ne!(
+        compiled_a.content_hash, compiled_b.content_hash,
+        "sources differing only in block-level pragma should produce different content_hashes"
+    );
+
+    // Determinism: compiling the same source twice yields the same hash.
+    let parsed_a2 = reify_syntax::parse(source_a, path.clone());
+    let compiled_a2 = reify_compiler::compile(&parsed_a2);
+    assert_eq!(
+        compiled_a.content_hash, compiled_a2.content_hash,
+        "same source compiled twice should produce identical content_hashes"
+    );
+}
+
 // ── Step C: characterization tests ───────────────────────────────────────────
 
 /// Characterization: block-level pragma on an occurrence def is propagated to
