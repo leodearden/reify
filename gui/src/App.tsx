@@ -63,6 +63,9 @@ import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
+import { loadSidecar } from './stores/sidecarPersistence';
+import { loadViewPersistence } from './stores/viewPersistence';
+import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -97,6 +100,20 @@ const App: Component = () => {
   const viewStateStore = createViewStateStore();
   const viewportStore = createViewportStore();
   const defPreviewStore = createDefPreviewStore();
+
+  // Track the currently-open file path so the debounced save effect can key off it.
+  const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
+
+  /**
+   * Load view state for a given file path.
+   * Priority: sidecar (.ri.views.json) > localStorage > null (defaults).
+   * Stops at the first non-null valid layer (PRD §8.1 design decision).
+   */
+  async function loadPersistedViews(path: string): Promise<PersistentViewState | null> {
+    const sidecar = await loadSidecar(path);
+    if (sidecar !== null) return sidecar;
+    return loadViewPersistence(path);
+  }
 
   // Activation hook: watches editor cursor → debounces 200ms → loads def preview
   const defPreviewActivation = createDefPreviewActivation({
@@ -260,6 +277,21 @@ const App: Component = () => {
       // Load into engine for evaluation (meshes, values, constraints)
       const guiState = await bridgeOpenFileEngine(path);
       engineStore.initFromState(guiState);
+
+      // Load persisted view state (sidecar > localStorage > null).
+      // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
+      // user views are in place when auto views are generated.
+      const persisted = await loadPersistedViews(path);
+      if (persisted !== null) {
+        viewStateStore.applyPersistedState(persisted);
+        // Restore per-viewport camera positions
+        for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
+          viewportStore.updateCamera(id, camera);
+        }
+      }
+
+      // Record the current file path for the debounced-save effect.
+      setCurrentFilePath(path);
     } catch (err) {
       const msg = errorMessage(err);
       console.error('Open file failed:', msg);
