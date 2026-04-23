@@ -328,3 +328,44 @@ fn rotate_around_arg_count_diagnostic_has_span_label() {
         "rotate_around() expects 8 arguments",
     );
 }
+
+// ── line_segment() / arc() / helix() ───────────────────────────────────
+
+#[test]
+fn line_segment_arg_count_diagnostic_has_span_label() {
+    // line_segment() expects 6 arguments — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = line_segment(0mm, 0mm, 0mm)
+            }
+        "#,
+        "line_segment() expects 6 arguments",
+    );
+}
+
+#[test]
+fn arc_arg_count_diagnostic_has_span_label() {
+    // arc() expects 9 arguments — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = arc(0mm, 0mm, 0mm)
+            }
+        "#,
+        "arc() expects 9 arguments",
+    );
+}
+
+#[test]
+fn helix_arg_count_diagnostic_has_span_label() {
+    // helix() expects 3 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = helix(10mm)
+            }
+        "#,
+        "helix() expects 3 arguments",
+    );
+}
