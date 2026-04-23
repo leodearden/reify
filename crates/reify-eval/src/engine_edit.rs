@@ -208,12 +208,12 @@ fn reapply_guard_deactivations_post_wave2(
 /// groups that have **different** `guard_cell`s, i.e. the cell is claimed by
 /// two distinct guards.  Intra-group duplicates (same `guard_cell`) are
 /// permitted and resolved by last-write-wins.
-fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (ValueCellId, u8)> {
+fn build_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (ValueCellId, u8)> {
     let capacity: usize = groups.iter().map(|g| g.members.len() + g.else_members.len()).sum();
-    let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
+    let mut roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
     for group in groups.iter() {
         for mid in &group.members {
-            let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
+            let prev = roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
             debug_assert!(
                 prev.is_none_or(|(prev_guard, _)| prev_guard == group.guard_cell),
                 "ValueCellId {:?} appeared in multiple guarded-group roles",
@@ -221,7 +221,7 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
             );
         }
         for mid in &group.else_members {
-            let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
+            let prev = roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
             debug_assert!(
                 prev.is_none_or(|(prev_guard, _)| prev_guard == group.guard_cell),
                 "ValueCellId {:?} appeared in multiple guarded-group roles",
@@ -229,7 +229,7 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
             );
         }
     }
-    old_roles
+    roles
 }
 
 /// Detect whether any guarded-group member has changed its role (guard cell or
@@ -241,10 +241,10 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
 /// ## Correctness
 ///
 /// Both `old_groups` and `new_groups` are reduced through the same
-/// [`build_old_role_map`] helper before comparison.  This applies the same
+/// [`build_role_map`] helper before comparison.  This applies the same
 /// last-write-wins semantics to both sides, so intra-group duplicates (a cell
 /// appearing in both `members` and `else_members` of the same group — an
-/// affirmatively supported pattern documented in `build_old_role_map`'s
+/// affirmatively supported pattern documented in `build_role_map`'s
 /// docstring) resolve identically on both sides.  `HashMap` equality then
 /// covers both the per-element role check **and** the dedup'd key-count check
 /// in a single comparison, eliminating the spurious mismatch that the old
@@ -256,11 +256,17 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
 /// common no-guarded-groups case.  Otherwise two O(N) passes over the group
 /// lists are performed (one per side), followed by an O(N) map-equality check —
 /// same asymptotic cost as the previous short-circuit walk, with simpler code.
+/// The previous inline walk short-circuited on the first mismatch; this
+/// implementation always materialises both maps.  For the typical case of
+/// no-flip (maps equal) the cost is unchanged; for the flip case it loses the
+/// early exit.  If guarded-group counts grow large in practice, revisit: build
+/// `build_role_map(old_groups)` first, then iterate `new_groups` with an early
+/// exit against that map plus a running count check (symmetric for duplicates).
 fn detect_role_flip(old_groups: &[GuardedGroupInfo], new_groups: &[GuardedGroupInfo]) -> bool {
     if old_groups.is_empty() && new_groups.is_empty() {
         return false;
     }
-    build_old_role_map(old_groups) != build_old_role_map(new_groups)
+    build_role_map(old_groups) != build_role_map(new_groups)
 }
 
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
@@ -1582,7 +1588,7 @@ impl Engine {
                 group.members.iter().any(|m| added.contains(m))
                     || group.else_members.iter().any(|m| added.contains(m))
             });
-            // Detect role flips via symmetric `build_old_role_map` comparison.
+            // Detect role flips via symmetric `build_role_map` comparison.
             // `detect_role_flip` applies the same last-write-wins reduction to
             // both sides so intra-group duplicates resolve identically, then
             // compares the two `HashMap`s for equality — this subsumes both the
@@ -2383,12 +2389,12 @@ mod tests {
     /// Happy-path characterization: two valid groups with non-overlapping
     /// members produce the expected four-entry role map.
     #[test]
-    fn build_old_role_map_returns_expected_map_for_valid_groups() {
+    fn build_role_map_returns_expected_map_for_valid_groups() {
         use std::collections::HashMap;
 
         use crate::graph::GuardedGroupInfo;
 
-        use super::build_old_role_map;
+        use super::build_role_map;
 
         let g1 = ValueCellId::new("E1", "guard");
         let g2 = ValueCellId::new("E2", "guard");
@@ -2412,7 +2418,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_old_role_map(&[group1, group2]);
+        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_role_map(&[group1, group2]);
 
         assert_eq!(map.len(), 4);
         assert_eq!(map.get(&a), Some(&(g1.clone(), 0u8)));
@@ -2430,10 +2436,10 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "appeared in multiple guarded-group roles")]
     #[test]
-    fn build_old_role_map_panics_on_duplicate_member() {
+    fn build_role_map_panics_on_duplicate_member() {
         use crate::graph::GuardedGroupInfo;
 
-        use super::build_old_role_map;
+        use super::build_role_map;
 
         let g1 = ValueCellId::new("E1", "guard");
         let g2 = ValueCellId::new("E2", "guard");
@@ -2455,25 +2461,25 @@ mod tests {
         };
 
         // Must panic: `shared` appears in two groups.
-        build_old_role_map(&[group1, group2]);
+        build_role_map(&[group1, group2]);
     }
 
     /// A ValueCellId in both `members` and `else_members` of the *same* group
     /// must NOT panic: intra-group duplicates are permitted and resolved by
     /// last-write semantics (else_members entry wins).
     ///
-    /// This exercises the second `insert` call-site in `build_old_role_map` and
+    /// This exercises the second `insert` call-site in `build_role_map` and
     /// pins the observable behavior for callers: the cell ends up mapped to
     /// `(guard_cell, 1u8)` (the else-branch tag) when it appears in both
     /// branches.  Real compiled modules can produce this pattern (e.g. an
     /// "effective" output cell that is active in both guard branches).
     #[test]
-    fn build_old_role_map_intra_group_duplicate_last_write_wins() {
+    fn build_role_map_intra_group_duplicate_last_write_wins() {
         use std::collections::HashMap;
 
         use crate::graph::GuardedGroupInfo;
 
-        use super::build_old_role_map;
+        use super::build_role_map;
 
         let g1 = ValueCellId::new("E1", "guard");
         let shared = ValueCellId::new("E1", "shared");
@@ -2488,7 +2494,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_old_role_map(&[group]);
+        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_role_map(&[group]);
 
         // One entry; else_members (branch 1) overwrites members (branch 0).
         assert_eq!(map.len(), 1);
@@ -2500,10 +2506,10 @@ mod tests {
     /// `else_members` of the same group on both sides.
     ///
     /// This pins the bug fix: the old inline probe would spuriously return `true`
-    /// for this shape because `build_old_role_map` last-write-wins maps the cell
+    /// for this shape because `build_role_map` last-write-wins maps the cell
     /// to tag=1, but the new-graph walk sees tag=0 first (members iterated first),
     /// causing a per-element mismatch before the count check.  Symmetric
-    /// `build_old_role_map` on both sides resolves identically → maps equal →
+    /// `build_role_map` on both sides resolves identically → maps equal →
     /// no flip.
     #[test]
     fn detect_role_flip_identical_intra_group_duplicate_returns_false() {
