@@ -2491,6 +2491,44 @@ mod tests {
         assert_eq!(map.get(&shared), Some(&(g1.clone(), 1u8)));
     }
 
+    /// `detect_role_flip` must return `false` when old and new have the same
+    /// intra-group duplicate shape: a cell appearing in both `members` and
+    /// `else_members` of the same group on both sides.
+    ///
+    /// This pins the bug fix: the old inline probe would spuriously return `true`
+    /// for this shape because `build_old_role_map` last-write-wins maps the cell
+    /// to tag=1, but the new-graph walk sees tag=0 first (members iterated first),
+    /// causing a per-element mismatch before the count check.  Symmetric
+    /// `build_old_role_map` on both sides resolves identically → maps equal →
+    /// no flip.
+    #[test]
+    fn detect_role_flip_identical_intra_group_duplicate_returns_false() {
+        use crate::graph::GuardedGroupInfo;
+
+        use super::detect_role_flip;
+
+        let g1 = ValueCellId::new("E1", "guard");
+        let shared = ValueCellId::new("E1", "shared");
+
+        // Both old and new have the identical intra-group duplicate shape.
+        let make_group = || GuardedGroupInfo {
+            guard_cell: g1.clone(),
+            members: vec![shared.clone()],
+            else_members: vec![shared.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let old_groups = [make_group()];
+        let new_groups = [make_group()];
+
+        // Identical shapes → no role flip.
+        assert!(
+            !detect_role_flip(&old_groups, &new_groups),
+            "detect_role_flip must return false for identical intra-group duplicate shapes"
+        );
+    }
+
     /// When `guard_val = Bool(true)`, `reelaborate_guarded_group` must:
     ///   (a) evaluate the active-branch `members` cell's `default_expr` and
     ///       write the result into both `values` and `snapshot_values` with
