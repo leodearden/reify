@@ -237,7 +237,7 @@ pub(crate) fn compile_purpose(
             emit_deprecation_warning(
                 &template.entity_kind.to_string().to_lowercase(),
                 &param.entity_kind,
-                &msg,
+                msg,
                 param.span,
                 diagnostics,
             );

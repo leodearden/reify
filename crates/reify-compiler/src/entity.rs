@@ -477,7 +477,7 @@ pub(crate) fn compile_entity(
                         emit_deprecation_warning(
                             "structure",
                             &sub.structure_name,
-                            &msg,
+                            msg,
                             sub.span,
                             diagnostics,
                         );
@@ -556,7 +556,7 @@ pub(crate) fn compile_entity(
                 emit_deprecation_warning(
                     "trait",
                     &trait_bound.name,
-                    &msg,
+                    msg,
                     trait_bound.span,
                     diagnostics,
                 );

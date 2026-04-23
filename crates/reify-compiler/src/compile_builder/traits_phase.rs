@@ -104,7 +104,7 @@ pub(crate) fn phase_traits(
                 emit_deprecation_warning(
                     "trait",
                     refinement_name,
-                    &msg,
+                    msg,
                     trait_decl.span,
                     &mut ctx.diagnostics,
                 );

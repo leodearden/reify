@@ -207,12 +207,12 @@ pub(crate) fn validate_pragmas(
 /// Returns `Some(message)` if there is an `@deprecated("message")` annotation with a
 /// `String` first arg, `Some("")` if `@deprecated` has no args, or `None` if there
 /// is no `@deprecated` annotation at all.
-pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Option<String> {
+pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Option<&str> {
     for ann in annotations {
         if ann.name == reify_types::DEPRECATED_ANNOTATION {
             return Some(match ann.args.first() {
-                Some(reify_types::AnnotationArg::String(s)) => s.clone(),
-                _ => String::new(),
+                Some(reify_types::AnnotationArg::String(s)) => s.as_str(),
+                _ => "",
             });
         }
     }
