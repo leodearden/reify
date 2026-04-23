@@ -46034,30 +46034,6 @@
         "updatedAt": "2026-04-23T20:11:52.353Z"
       },
       {
-        "id": "2166",
-        "title": "Strengthen pragma content_hash test coverage (variants + block-pragma + legacy warning)",
-        "description": "Expand pragma hashing/diagnostic tests: cover all PragmaValue variants, block-level pragma mutation invariant, and pin absence of legacy generic unknown-pragma warning for #no_prelude.",
-        "details": "Three related test-coverage additions in `crates/reify-compiler/tests/pragma_compile_tests.rs`:\n\n1. **Block-level pragma → module hash invariant**: `module_pragma_change_changes_module_content_hash` only exercises module-level pragmas. Add a sibling test that toggles a block-level pragma (e.g. `structure S { #precision(bits=32) ... }` vs `bits=64`) and asserts different `compiled.content_hash`. Block pragmas reach templates via `structure.pragmas.to_vec()`, so this invariant depends on `TopologyTemplate::content_hash` folding in `template.pragmas`. If the test fails, block pragmas need to be folded into template hashes.\n\n2. **PragmaValue + PragmaArg variant coverage**: Current determinism test only exercises KeyValue+Number. `hash_pragma_arg` has KeyValue/Bare branches; `format_pragma_value` has four variants (Ident, Number, String, Bool). Add cases so each encoding contributes distinctively: `#precision(bare_ident_a)` vs `#precision(bare_ident_b)` (Bare+Ident), `#flag(enabled=true)` vs `#flag(enabled=false)` (KV+Bool), `#tag(name=\"a\")` vs `#tag(name=\"b\")` (KV+String).\n\n3. **Pin absence of legacy generic warning** (pragma_compile_tests.rs:340-351): `no_prelude_on_structure_emits_module_only_warning` only asserts the new \"only valid at module level\" message. Add `assert!(pragma_warnings(&module, \"unknown pragma\").is_empty())` so regressing to emit both or only the generic form would fail.\n\nMemory hints: search for \"pragma validation\" and \"content_hash\" in reify-compiler. See task 1163 commits 03cbc1e29, d17f0554a, 35bcc9dde for context.",
-        "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-23T20:15:39.276Z"
-      },
-      {
-        "id": "2167",
-        "title": "Extract shared wave2 guard-flip fixture for edit_param/edit_source regression tests",
-        "description": "Two wave2 guard-flip regression tests (edit_source.rs:2229, guard_eval.rs:2483) share ~90% of fixture. Extract helper wave2_flip_fixture() in tests-local or reify_test_support. Polish. Source: esc-2146-21.",
-        "details": "",
-        "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
-        "priority": "medium",
-        "subtasks": [],
-        "updatedAt": "2026-04-23T20:16:10.303Z"
-      },
-      {
         "id": "2168",
         "title": "Pragma hash test coverage: variants, block-pragma, legacy warning absence",
         "description": "Expand pragma hash/diagnostic tests in crates/reify-compiler/tests/pragma_compile_tests.rs.",
