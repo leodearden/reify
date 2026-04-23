@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{find_template, CompiledModule, ValueCellKind};
+use reify_compiler::{find_template, CompiledModule, ValueCellDecl, ValueCellKind};
 use reify_types::{
     AutoParam, CompiledFunction, DeterminacyState, Diagnostic, FIELD_ENTITY_PREFIX,
-    ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
-    VersionId,
+    PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
+    ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -80,6 +80,64 @@ pub(crate) fn build_demand_for_graph(
     }
     demand.rebuild_cone(graph);
     demand
+}
+
+/// Re-evaluate a guard-group cell list in the post-solver pass.
+///
+/// For each cell:
+/// - **Active branch** (`is_active_branch = true`): Param/Let cells are
+///   re-evaluated from their `default_expr` (or set to `(Undef, Undetermined)`
+///   when there is no default). Auto cells are skipped — the solver already
+///   resolved them to concrete values; overwriting would destroy solver work.
+/// - **Inactive branch** (`is_active_branch = false`): Non-Auto cells are
+///   written to `(Undef, Undetermined)`. Auto cells are **skipped** — their
+///   lifecycle is owned by the solver. See the canonical rule in
+///   `engine_edit.rs`'s module-level `//!` doc and `deactivate_if_not_auto`.
+///
+/// Called twice per guarded group — once for `members` (active when
+/// `guard = true`) and once for `else_members` (active when `guard = false`).
+fn post_solver_re_eval_guard_cells(
+    cells: &[ValueCellDecl],
+    is_active_branch: bool,
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    for cell in cells {
+        if is_active_branch {
+            if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let {
+                if let Some(ref expr) = cell.default_expr {
+                    let val = reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions)
+                            .with_meta(meta_map)
+                            .with_determinacy(snapshot_values),
+                    );
+                    values.insert(cell.id.clone(), val.clone());
+                    snapshot_values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
+                } else {
+                    values.insert(cell.id.clone(), Value::Undef);
+                    snapshot_values.insert(
+                        cell.id.clone(),
+                        (Value::Undef, DeterminacyState::Undetermined),
+                    );
+                }
+            }
+            // Auto cells in the active branch: skip.
+            // The solver already resolved them to concrete values;
+            // overwriting with Undef here would destroy solver work.
+        } else if !cell.kind.is_auto() {
+            // Inactive non-Auto: write (Undef, Undetermined).
+            // Auto cells: skip — lifecycle owned by the solver.
+            // Canonical rule: engine_edit.rs module-level doc / deactivate_if_not_auto.
+            values.insert(cell.id.clone(), Value::Undef);
+            snapshot_values.insert(
+                cell.id.clone(),
+                (Value::Undef, DeterminacyState::Undetermined),
+            );
+        }
+    }
 }
 
 impl Engine {
@@ -878,85 +936,22 @@ impl Engine {
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
-                    for cell in &group.members {
-                        if guard_is_true {
-                            if cell.kind == ValueCellKind::Param
-                                || cell.kind == ValueCellKind::Let
-                            {
-                                if let Some(ref expr) = cell.default_expr {
-                                    let val = reify_expr::eval_expr(
-                                        expr,
-                                        &reify_expr::EvalContext::new(&values, &functions)
-                                            .with_meta(&self.meta_map)
-                                            .with_determinacy(&snapshot.values),
-                                    );
-                                    values.insert(cell.id.clone(), val.clone());
-                                    snapshot.values.insert(
-                                        cell.id.clone(),
-                                        (val, DeterminacyState::Determined),
-                                    );
-                                } else {
-                                    values.insert(cell.id.clone(), Value::Undef);
-                                    snapshot.values.insert(
-                                        cell.id.clone(),
-                                        (Value::Undef, DeterminacyState::Undetermined),
-                                    );
-                                }
-                            }
-                            // Auto cells in the active branch are left untouched:
-                            // the solver already resolved them to concrete values.
-                            // Overwriting with Undef here would destroy solver work.
-                        } else if !cell.kind.is_auto() {
-                            // Auto cells: skip. Lifecycle owned by the solver —
-                            // see the canonical rule on engine_edit.rs's module-level
-                            // doc and on deactivate_if_not_auto.
-                            values.insert(cell.id.clone(), Value::Undef);
-                            snapshot.values.insert(
-                                cell.id.clone(),
-                                (Value::Undef, DeterminacyState::Undetermined),
-                            );
-                        }
-                    }
-
-                    for cell in &group.else_members {
-                        if guard_is_false {
-                            if cell.kind == ValueCellKind::Param
-                                || cell.kind == ValueCellKind::Let
-                            {
-                                if let Some(ref expr) = cell.default_expr {
-                                    let val = reify_expr::eval_expr(
-                                        expr,
-                                        &reify_expr::EvalContext::new(&values, &functions)
-                                            .with_meta(&self.meta_map)
-                                            .with_determinacy(&snapshot.values),
-                                    );
-                                    values.insert(cell.id.clone(), val.clone());
-                                    snapshot.values.insert(
-                                        cell.id.clone(),
-                                        (val, DeterminacyState::Determined),
-                                    );
-                                } else {
-                                    values.insert(cell.id.clone(), Value::Undef);
-                                    snapshot.values.insert(
-                                        cell.id.clone(),
-                                        (Value::Undef, DeterminacyState::Undetermined),
-                                    );
-                                }
-                            }
-                            // Auto cells in the active else branch are left untouched:
-                            // the solver already resolved them to concrete values.
-                            // Overwriting with Undef here would destroy solver work.
-                        } else if !cell.kind.is_auto() {
-                            // Auto cells: skip. Lifecycle owned by the solver —
-                            // see the canonical rule on engine_edit.rs's module-level
-                            // doc and on deactivate_if_not_auto.
-                            values.insert(cell.id.clone(), Value::Undef);
-                            snapshot.values.insert(
-                                cell.id.clone(),
-                                (Value::Undef, DeterminacyState::Undetermined),
-                            );
-                        }
-                    }
+                    post_solver_re_eval_guard_cells(
+                        &group.members,
+                        guard_is_true,
+                        &mut values,
+                        &mut snapshot.values,
+                        &functions,
+                        &self.meta_map,
+                    );
+                    post_solver_re_eval_guard_cells(
+                        &group.else_members,
+                        guard_is_false,
+                        &mut values,
+                        &mut snapshot.values,
+                        &functions,
+                        &self.meta_map,
+                    );
                 }
             }
         }

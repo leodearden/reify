@@ -2562,4 +2562,18 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
          Path B (eval guard=false + edit_param→true, thickness moves to inactive): {:?}",
         state_a, state_b
     );
+
+    // Also pin the concrete expected value — guards against future regressions
+    // where both paths coincidentally produce the same wrong state (e.g. None or
+    // (Undef, Undetermined)).  The solver resolved thickness = 5 mm = 0.005 SI.
+    assert!(
+        matches!(
+            state_a,
+            Some((Value::Scalar { si_value, .. }, DeterminacyState::Determined))
+                if (*si_value - 0.005).abs() < 1e-10
+        ),
+        "expected inactive-branch Auto cell to be (Scalar(5mm ≈ 0.005 SI), Determined), \
+         got {:?}",
+        state_a
+    );
 }
