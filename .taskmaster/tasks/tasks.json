@@ -45018,11 +45018,11 @@
         "description": "Three small follow-ups from the post-merge review of task 2106 in crates/reify-kernel-occt/src/lib.rs.",
         "details": "Post-merge review (reviewer_comprehensive) of task-2106's changes to validate_pipe_start_tangent flagged three small polish items:\n\n1. **Delete the wording-pin test** (lib.rs:4444-4460, `validate_pipe_start_tangent_error_mentions_tolerance`). Its sole assertion is `msg.contains(\"tolerance\")`. It exercises no behavior beyond message prose — no tolerance value, no branch selection, no coordinate reporting. Rewording the message (e.g. \"accepted margin %e\") would break the test without changing any contract; conversely a real correctness regression (wrong comparator/branch) would slip past it. The adjacent `validate_pipe_start_tangent_rejects_negative_z` test already covers the not-+Z branch with a stronger assertion. Action: delete the test.\n\n2. **Trim doc duplication** (lib.rs:98-103 + 106-109 + 602-609). The unit-vector residual derivation now lives on `PIPE_START_TANGENT_Z_EPSILON`'s doc comment, the helper's rustdoc, and the inline comment at the Pipe arm call site. Keep the residual derivation on the constant only; let the helper's rustdoc describe behavior; trim the call-site inline comment to a one-line pointer (e.g. \"Reject paths whose start-tangent is not approximately +Z; see validate_pipe_start_tangent.\"). Low priority.\n\n3. **Optional upper-bound guard** (lib.rs:108-124, `validate_pipe_start_tangent`). After filtering NaN/Inf, the comparator `t.z < 1.0 - ε` accepts arbitrarily large finite `t.z` (e.g. 1e100) and does not enforce the unit-vector invariant the doc rationale depends on. Cheap defense against upstream FFI bugs in `wire_start_tangent`: add `|| t.z > 1.0 + PIPE_START_TANGENT_Z_EPSILON` to the guard, or assert `(t.x*t.x + t.y*t.y + t.z*t.z - 1.0).abs() < 1e-3` defensively. Not blocking; pre-refactor code had the same gap.\n\nAll three are co-located polish on the helper landed in commits 5be841671..d087ef970 (task 2106). No behavior change for accepted (+Z) paths.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T15:51:40.324Z",
+        "updatedAt": "2026-04-23T17:27:12.027Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
@@ -45536,11 +45536,11 @@
         "description": "The post-wave2 cleanup in crates/reify-eval/src/engine_edit.rs:727-753 only iterates groups that Phase 1 actually re-elaborated (i.e. added to `phase1_reelaborated`). Groups that Phase 1 fired over but skipped via the per-group unchanged-guard short-circuit (line 524) are NOT in the set. Yet wave2 will still re-evaluate any inactive member of such a group whose default_expr reads a resolved auto param — overwriting the cell's prior Undef with a concrete value. Phase 3's per-group skip will then also short-circuit (guard value unchanged), so the corruption never gets repaired.\n\nThe existing test `edit_param_wave2_does_not_corrupt_inactive_members` exercises only the Phase-1-fired-for-this-group path; the Phase-1-skipped-but-dirty-guards path is untested.\n\nSuggested fix: Either (a) broaden the cleanup to iterate ALL guarded groups whose guard value is unchanged (re-assert inactive-branch deactivation regardless of whether Phase 1 ran for them), or (b) add a test that constructs two groups — one whose guard changes and one whose guard is unchanged but has an inactive member reading a resolved auto param — and asserts the unchanged group's inactive member stays Undef. If the intent is that this scenario cannot occur in practice, state the precondition and enforce it with a debug_assert.\n\nSource: post-merge review suggestion on task 2140.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T16:49:38.026Z",
+        "updatedAt": "2026-04-23T17:27:12.149Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -45623,11 +45623,11 @@
         "description": "In edit_source Phase 1 (crates/reify-eval/src/engine_edit.rs:1583-1590), the insert into `phase1_reelaborated` sits AFTER the `old_guard_val == Some(&guard_val) && !has_added_in_group && !has_role_flipped_guard_member` skip. Consequently groups reached via the role-flip or added-member triggers — whose guard value did not change — still land in the dedup set, and Phase 3 will skip them.\n\nThe new test added with task 2142 only exercises the guard-value-changed path (x=10mm → 3mm). The role-flip/added-member interaction with the new dedup set and the post-wave2 cleanup is not covered by this diff's tests. The existing role-flip test `edit_source_role_flipped_guard_member_matches_cold_eval` predates the dedup.\n\nSuggested fix: Add a regression test that combines a role-flipped guard member + resolver re-evaluation (wave2) + Phase 3 trigger, asserting results remain cold-eval-equivalent. At minimum verify `last_guard_phase_group_evals` matches the expected count. A cheap alternative: extend the existing role-flip cold-eval-equivalence test to also run under a source edit that triggers wave2.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T16:49:38.428Z",
+        "updatedAt": "2026-04-23T17:27:12.274Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -45719,16 +45719,30 @@
             "crates/reify-compiler/src"
           ]
         }
+      },
+      {
+        "id": "2152",
+        "title": "module_dag.rs: extract diag_invalid_path helper + de-dup partial-overlay format strings",
+        "description": "Extract the inline map_err closures at crates/reify-compiler/src/module_dag.rs:234-235 and 288-289 into a `diag_invalid_path(path: &str, e: ModulePathParseError, context_phrase: &str) -> Vec<Diagnostic>` helper. Replace hard-coded \"resolving import\" with the context_phrase parameter so the top-level entry module can reuse it. Also cover the third partial-overlay site at 249-257 (wording \"add the missing module\" vs \"populate all stdlib modules\") — either extend the helper with a direction enum or add a sibling helper so all three overlay diagnostics share a single source of truth. Source: esc-2074-10 (S1+S2) + esc-2076-29 (S1).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:27:11.913Z",
+      "lastModified": "2026-04-23T17:27:12.274Z",
       "taskCount": 2143,
       "completedCount": 1893,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T17:27:12.337Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T17:27:12.354Z"
     }
   }
 }
