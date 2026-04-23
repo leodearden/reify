@@ -331,3 +331,82 @@ fn boltflange_compiles_with_material_default() {
         ),
     }
 }
+
+// ─── step-11: MaterialSpec trait still usable as a trait-object param ────────
+
+/// Regression guard for task 1874's trait-typed-param feature: now that the
+/// original `Material` trait has been renamed to `MaterialSpec`, declaring a
+/// `param m : MaterialSpec` must continue to resolve to `Type::TraitObject(
+/// "MaterialSpec")` (NOT `StructureRef` — there is no struct named
+/// `MaterialSpec`), and a struct that conforms to `MaterialSpec` must remain
+/// a valid default value via the call-syntax form `SomeSteel()`. This locks in
+/// that promoting `Material` to a struct (task 1876) did not regress the
+/// trait-object pathway beneath the renamed trait.
+#[test]
+fn material_spec_trait_still_usable_as_trait_object() {
+    let source = r#"
+        structure def SomeSteel : MaterialSpec {
+            param name : String = "steel"
+            param density : Real = 7850.0
+        }
+        trait HasMat { param m : MaterialSpec }
+        structure def Widget : HasMat {
+            param m : MaterialSpec = SomeSteel()
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors compiling Widget : HasMat with `param m : MaterialSpec = SomeSteel()`; \
+         the renamed MaterialSpec trait must continue to function as a trait-object param type \
+         (task 1874 pathway) — got: {:?}",
+        errors
+    );
+
+    let widget = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template should be compiled");
+
+    let m_cell = widget
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("Widget.m should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::TraitObject("MaterialSpec".to_string()),
+        "Widget.m should resolve to Type::TraitObject(\"MaterialSpec\") (NOT StructureRef — \
+         MaterialSpec is a trait, not a struct); got {:?}",
+        m_cell.cell_type
+    );
+
+    // The default expression `SomeSteel()` must lower to a FunctionCall whose
+    // callee is `SomeSteel` — confirming the call-syntax struct constructor
+    // path survives as a valid default for a trait-typed param.
+    let default_expr = m_cell.default_expr.as_ref().expect(
+        "Widget.m should carry the recorded `SomeSteel()` default — \
+         struct-constructor call defaults must work for trait-typed params (task 1874)",
+    );
+    match &default_expr.kind {
+        CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(
+                function.name, "SomeSteel",
+                "Widget.m default should be a `SomeSteel()` call, got {:?}",
+                function.name
+            );
+        }
+        other => panic!(
+            "expected Widget.m.default_expr to be a FunctionCall for `SomeSteel()`, got {:?}",
+            other
+        ),
+    }
+}
