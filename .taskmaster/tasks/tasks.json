@@ -40783,7 +40783,7 @@
         "updatedAt": "2026-04-23T20:50:26.594Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/tests/unit_registry_tests.rs"
           ]
         }
@@ -46208,7 +46208,9 @@
       "completedCount": 1920,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T20:58:22.263Z",
+      "description": "Tasks for master context"
     }
   }
 }
