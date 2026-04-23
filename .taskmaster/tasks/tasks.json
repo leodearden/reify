@@ -45854,7 +45854,13 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T18:38:39.792Z"
+        "updatedAt": "2026-04-23T18:38:39.792Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/guard_eval.rs",
+            "crates/reify-test-support/src/mocks.rs"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -45864,7 +45870,9 @@
       "completedCount": 1903,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T18:46:50.839Z",
+      "description": "Tasks for master context"
     }
   }
 }
