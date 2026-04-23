@@ -29488,11 +29488,11 @@
         "description": "The ICE diagnostic pattern (format ICE message + DiagnosticLabel + push + fallback to Type::Real) is repeated nearly identically across four sites:\n- entity.rs:534-546 (structure param pass 2 resolution)\n- entity.rs:877-889 (port param pass 2 resolution)\n- guards.rs:269-281 (guarded member pass 2 resolution)\n\nAll share the same structure: \"internal compiler error: unresolved name '...' in pass 2\" with label \"ICE: name should have been registered in pass 1\".\n\nExtract a helper like `fn emit_ice_unresolved(diagnostics: &mut Vec<Diagnostic>, name: &str, span: Span, context: &str) -> Type` that pushes the ICE diagnostic and returns `Type::Real`. This reduces ~12 lines per site to 1 and centralizes the ICE format.\n\nmemory_hints: search(\"ICE diagnostic pattern entity guards unresolved pass 2\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:41.156Z",
+        "updatedAt": "2026-04-23T17:27:11.337Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -36935,7 +36935,7 @@
         "description": "Implement two-layer view persistence. Layer 1: localStorage for ephemeral per-file view state. Layer 2: sidecar .ri.views.json for durable/shareable persistence. Entity path exact matching on re-evaluation, stale path preservation for undo/branch-switch restoration, and fuzzy path recovery with user confirmation for renames.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 8 (View Persistence).\n\n### Implementation\n\n1. **localStorage layer** (`stores/viewPersistence.ts`)\n   - Key: `reify:views:{absoluteFilePath}`\n   - Value: JSON-serialized `PersistentViewState`:\n     - `activeViewId: string`\n     - `userViews: ViewDefinition[]` (auto views are NOT persisted — they're regenerated)\n     - `viewportCameras: Map<string, CameraState>`\n     - `timestamp: string` (ISO 8601)\n   - Save: debounced (500ms) after any view state change\n   - Load: on file open, before auto view generation\n   - Priority: sidecar file > localStorage > fresh defaults\n\n2. **Sidecar file layer** (`stores/sidecarPersistence.ts`)\n   - File: `{filename}.ri.views.json` alongside the `.ri` file\n   - Same schema as localStorage value, plus:\n     - `version: string` (schema version for forward compat)\n   - Write: on explicit \"Save views\" action (button in view management UI) + on clean app exit\n   - Read: on file open (takes priority over localStorage)\n   - New Tauri commands:\n     - `read_view_sidecar(ri_path: string) -> Option<PersistentViewState>`\n     - `write_view_sidecar(ri_path: string, state: PersistentViewState) -> Result<()>`\n   - \"Save views\" button in view selector dropdown (next to \"Manage views...\")\n\n3. **Re-evaluation reconciliation** (extend `viewStateStore.ts`)\n   - On entity tree rebuild:\n     1. Exact match: stored paths that exist in new tree → keep visibility state\n     2. New paths: not in any stored view → apply active view's default rules\n     3. Missing paths: in stored view but not in new tree → mark as \"stale\"\n   - Stale entries: kept in view state, greyed out in tree panel (if shown at all)\n   - Auto-restoration: if a stale path reappears (undo, branch switch), its stored state is restored\n\n4. **Fuzzy path recovery** (`stores/fuzzyPathMatcher.ts`)\n   - On re-evaluation, for each stale path, attempt recovery:\n     - **Suffix match**: stale `\"Assembly.flange.geometry\"`, new `\"Assembly.bolt_flange.geometry\"` — match by shared suffix under renamed parent\n     - **Structural match**: same type name + same parent type + similar child structure\n   - Never auto-apply: if fuzzy match found, show a non-blocking notification:\n     - \"Entity 'flange' was renamed. Rebind view settings to 'bolt_flange'? [Yes] [No] [Ignore]\"\n   - \"Yes\" rebinds the stored visibility to the new path\n   - \"No\" keeps the stale entry\n   - \"Ignore\" dismisses without action\n\n5. **Camera state persistence**\n   - Per-viewport camera state saved in the same persistence layers\n   - Restored on file open\n\n### Requirements covered\nP-1, P-2, P-3, P-4, P-5, P-6\n\n### memory_hints\n- search: \"localStorage persist state\"\n- search: \"viewStateStore views active\"\n- search: \"Tauri read write file\"\n- search: \"notification toast UI\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1746",
           "1747",
@@ -36993,7 +36993,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-22T11:55:36.227Z"
+        "updatedAt": "2026-04-23T17:27:11.451Z"
       },
       {
         "id": "1750",
@@ -40399,13 +40399,13 @@
         "description": "Three design-hardening follow-ups for the `inferred_let_exprs` cache and `available_defaults` map added in task 1834's conformance.rs pre-register pass. All three were surfaced by reviewer_comprehensive on task 1834 amendment round 3 (esc-1834-144) but deferred as non-urgent hardening rather than task 1834 deliverables.\n\nMemory hints: search \"task 1834 inferred_let_exprs cache available_defaults AvailableDefaultKind\"; entities: DefaultKind, AvailableDefaultKind, Type, compile_expr.",
         "details": "Three independent changes in `crates/reify-compiler/src/conformance.rs`. Each is small; bundling avoids repeated touch-passes on the same code region.\n\n1. **Error-cascade suppression (robustness)** — conformance.rs:~236-246\n   When `compile_expr` fails in the unannotated-let pre-register path (e.g. forward reference to a name not yet registered), `result_type` falls back to `Type::Real` (compile_expr error-recovery type). That `Type::Real` then flows into `inferred_let_exprs`, `available_defaults`, and the injected cell_type — causing a secondary `type mismatch for trait member … available default has Real` diagnostic whose wording leaks an implementation detail instead of the real cause (unresolved identifier).\n   Fix: Track a per-default compile-error bit (snapshot `diagnostics.len()` before/after `compile_expr`); when it trips, either skip inserting into `inferred_let_exprs` / return `None` from the `available_defaults` filter_map for that name, OR prefer a \"missing required member\" diagnostic over \"available default has Real\". Goal: a single unresolved-identifier error, not a cascade.\n   Add regression test: `unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch` in let_type_disambiguation_tests.rs — input like `trait HasA { let a = b + 1mm } structure S : HasA {}` must produce the unresolved-name diagnostic only, NOT a secondary \"available default has Real\" type-mismatch.\n\n2. **Kind-keyed cache (architecture)** — conformance.rs:~167-208\n   The cache's name-only key (`HashMap<String, CompiledExpr>`) is safe today under three documented invariants (no cross-kind writes; kind-guarded reads; `collect_all_requirements` dedup). Two of those invariants are enforced in a different function 100+ lines away. The symmetric `(String, AvailableDefaultKind)` key already exists on the `available_defaults` map ~70 lines below. Changing the cache key to match eliminates the cross-module invariant dependency at near-zero cost.\n   Fix: `HashMap<(String, AvailableDefaultKind), CompiledExpr>`, keyed on `(name.clone(), AvailableDefaultKind::Let)` at insert/read. Delete invariant #1 and #2 from the doc comment; keep #3 (dedup) since that is still load-bearing for the no-double-compile guarantee. Remove the `If any of these ever drift, key the cache on (String, AvailableDefaultKind) for symmetry` note.\n\n3. **Shared advertised-type helper (code_reuse)** — conformance.rs:~293-299 and ~536-538\n   Two sites compute \"annotation wins, else inferred\" for a Let default's advertised type, with slightly different formulations:\n   - `available_defaults` builder: `cell_type.clone().unwrap_or_else(|| inferred_let_exprs.get(name).map(|e| e.result_type.clone()).unwrap_or(Type::Real))`\n   - injection loop: `cell_type.clone().unwrap_or_else(|| compiled_expr.result_type.clone())`\n   Fix: Extract a small helper (module-private fn or closure) like `resolve_let_advertised_type(cell_type: &Option<Type>, inferred: Option<&CompiledExpr>) -> Type` that both sites call, centralizing the \"Real fallback on inference failure\" rule. Note: suggestion #1 above may remove the `Type::Real` safety net entirely (by dropping failed entries from the cache) — coordinate design order: if #1 lands first, the helper's fallback arm disappears.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: esc-1834-144 triage. Reviewer comments captured in that escalation detail. Task 1834 is complete as-is; this follow-up is pure design hardening.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1834"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T17:02:02.104Z",
+        "updatedAt": "2026-04-23T17:27:11.582Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -45723,7 +45723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:27:11.224Z",
+      "lastModified": "2026-04-23T17:27:11.582Z",
       "taskCount": 2143,
       "completedCount": 1893,
       "tags": [
