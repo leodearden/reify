@@ -45725,37 +45725,40 @@
         "description": "Extract the inline map_err closures at crates/reify-compiler/src/module_dag.rs:234-235 and 288-289 into a `diag_invalid_path(path: &str, e: ModulePathParseError, context_phrase: &str) -> Vec<Diagnostic>` helper. Replace hard-coded \"resolving import\" with the context_phrase parameter so the top-level entry module can reuse it. Also cover the third partial-overlay site at 249-257 (wording \"add the missing module\" vs \"populate all stdlib modules\") — either extend the helper with a direction enum or add a sibling helper so all three overlay diagnostics share a single source of truth. Source: esc-2074-10 (S1+S2) + esc-2076-29 (S1).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:27:16.722Z",
+        "updatedAt": "2026-04-23T18:27:10.968Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/module_dag.rs"
           ],
           "modules": [
             "crates/reify-compiler/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "d0b07b916b9f2b160ce6b00083aa9dab94f8075c"
+          }
         }
       },
       {
         "id": "2152",
         "title": "module_dag.rs: extract diag_invalid_path helper + de-dup partial-overlay format strings",
-        "description": "Refactor the partial-overlay diagnostic infrastructure in module_dag.rs to be DRY, parameterized, and structurally discriminable by tests — eliminating both duplicate format strings and prose-based test coupling in a single coherent pass.",
+        "description": "Refactor the diag_invalid_path and partial-overlay diagnostic infrastructure in module_dag.rs to be DRY and structurally discriminable — extracting the helper without a context_phrase parameter (both call sites use the same literal), relaxing the brittle phrase-matching test, and adding a structural discriminator to the partial-overlay regression test.",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "details": "1. **Extract `diag_invalid_path` helper** (module_dag.rs:234-235 and 288-289): Pull the inline `map_err` closures into `diag_invalid_path(path: &str, e: ModulePathParseError, context_phrase: &str) -> Vec<Diagnostic>`. Replace the hard-coded \"resolving import\" literal with the `context_phrase` parameter so the top-level entry-module path can reuse the helper.\n\n2. **Cover the third partial-overlay site** (module_dag.rs:249-257): The wording \"add the missing module\" vs \"populate all stdlib modules\" distinguishes two sub-paths today. Either extend the helper with a direction/mode enum, or introduce two named helpers — whichever approach also provides the structural discriminator required in item 3.\n\n3. **Add a structural path discriminator** (module_dag.rs:230 entry-guard vs module_dag.rs:385 deferred-commit, tested at module_dag_tests.rs:1498-1507): The regression test currently substring-matches the word \"transitive\" in diagnostic prose to distinguish these two call sites, both of which route through the shared `partial_overlay_fs_over_embedded_diag` helper. Add a `kind` field or variant to the diagnostic output (or split into two named helpers with distinct output markers) so the test can assert structural identity rather than prose wording. Update module_dag_tests.rs:1498-1507 to use the structural discriminator instead of the prose substring match.\n\n4. **De-dup residual format string literals**: After the helper extraction and discrimination work, remove any remaining duplicate format string literals across the affected call sites.",
-        "testStrategy": "",
+        "details": "1. **Extract `diag_invalid_path` helper WITHOUT `context_phrase`** (module_dag.rs:234-235 and 288-289): Pull the inline `map_err` closures into `diag_invalid_path(path: &str, e: ModulePathParseError) -> Vec<Diagnostic>`. Both current call sites (lines 331 and 385) pass the identical literal \"resolving import\" — inline it directly in the format string. YAGNI: if a future call site genuinely needs a different phrase, re-introduce the parameter then. Do NOT add a `context_phrase: &str` parameter.\n\n2. **Relax the brittle context-phrase unit test** (module_dag.rs:502-509, currently named `diag_invalid_path_formats_message_with_context_phrase`): This test was written against a parameterized design. Drop the context-phrase variant assertion; replace with a plain behavioral check that the formatted diagnostic mentions the path and the error text. Rename the test to `diag_invalid_path_formats_message`.\n\n3. **Cover the third partial-overlay site** (module_dag.rs:249-257): The wording \"add the missing module\" vs \"populate all stdlib modules\" distinguishes two sub-paths today. Either extend the helper with a direction/mode enum, or introduce two named helpers — whichever approach also provides the structural discriminator required in item 4.\n\n4. **Add a structural path discriminator** (module_dag.rs:230 entry-guard vs module_dag.rs:385 deferred-commit, tested at module_dag_tests.rs:1498-1507): The regression test currently substring-matches the word \"transitive\" in diagnostic prose to distinguish the two call sites through the shared `partial_overlay_fs_over_embedded_diag` helper. Add a `kind` field/variant to diagnostic output, or split into two named helpers with distinct output markers, so module_dag_tests.rs:1498-1507 can assert structural identity instead of prose wording.\n\n5. **De-dup residual format string literals**: After the extraction and discrimination work, remove any remaining duplicate inline format string literals across the partial-overlay paths.",
+        "testStrategy": null,
         "subtasks": [],
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/module_dag.rs"
           ],
           "curator_action": "combine",
-          "curator_justification": "The candidate and Task 2152 share the same subsystem (partial-overlay diagnostic infrastructure in module_dag.rs) and the same module lock. Task 2152 already proposes extracting a helper and de-duping format strings across the same call sites (module_dag.rs:234-235, 288-289, 249-257). The candidate's structural-discriminator work is the natural complement: once the helpers are extracted and possibly split or given an enum parameter (already hinted in 2152's \"either extend the helper with a direc",
-          "combined_at": "2026-04-23T18:17:46.711862+00:00"
+          "curator_justification": "Task 2152 (pending, combine_eligible) is about to introduce `diag_invalid_path` WITH a `context_phrase: &str` parameter; the candidate argues YAGNI — both call sites at lines 331 and 385 already pass the identical literal \"resolving import\", so the parameter should never be introduced in the first place. These two items resolve the same function in the same file via opposing design decisions, making a coherent unified rewrite: extract the helper *without* the parameter (hardcode \"resolving impor",
+          "combined_at": "2026-04-23T18:24:37.206542+00:00"
         }
       },
       {
@@ -45813,9 +45816,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T18:18:39.251Z",
+      "lastModified": "2026-04-23T18:27:10.970Z",
       "taskCount": 2147,
-      "completedCount": 1898,
+      "completedCount": 1899,
       "tags": [
         "master"
       ]
