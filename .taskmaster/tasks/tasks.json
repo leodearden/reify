@@ -41715,7 +41715,7 @@
         "id": "1975",
         "title": "Broaden or reword constraint-def param \"unknown type\" diagnostic to avoid false positives on struct/entity/trait names",
         "description": "Three tightly-coupled improvements to `phase_constraint_defs` in `crates/reify-compiler/src/compile_builder/defs_phase.rs`, all centred on the `structure_names` HashSet build (~lines 149-163) and the diagnostic that consumes it:\n\n1. **Whitelist broadening** (~lines 113-132): `compile_constraint_def`'s unknown-type diagnostic only whitelists builtins (via `resolve_type_expr_with_aliases`), type parameters, aliases, and enums — it does NOT recognise structure/entity/trait names in scope. A user writing `constraint def Foo { param s: MyStructure ... }` now gets a false-positive error even though the raw `ConstraintDef` previously compiled fine. Extend the whitelist lookup to include names drawn from `structure_names` (built at ~lines 149-163 from `seen_entity_names`).\n\n2. **Error message correction** (lines 104-107): Update the error message so that 'occurrence' appears alongside 'structure' in the list of acceptable categories.\n\n3. **Early-return / lazy-build optimization** (~lines 149-163): `structure_names: HashSet<String>` is currently allocated unconditionally, scanning every prelude's templates even for modules that contain zero `constraint def` declarations. Add an early-return (option a) before building the set when `parsed.declarations` contains no `Declaration::Constraint`, or build the set lazily (option b). Either approach eliminates wasted allocation for modules with large preludes but no constraint defs.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "details": "### Whitelist fix (original task 1975)\nFile: `crates/reify-compiler/src/compile_builder/defs_phase.rs` ~lines 113-132 (`compile_constraint_def` diagnostic).\nFile: `crates/reify-compiler/tests/constraint_def_compile_tests.rs` — add/update test covering structure/entity/trait param types that must no longer produce false-positive unknown-type errors.\n\n### Error message fix (esc-1966-3)\nFile: `crates/reify-compiler/src/compile_builder/defs_phase.rs` lines 104-107 (error message).\nExisting test: `constraint_def_unknown_type_error_lists_acceptable_categories` in `crates/reify-compiler/tests/constraint_def_compile_tests.rs:1264-1283` — update assertions to verify 'occurrence' appears in the error message alongside 'structure'.\n\n### Early-return / lazy optimization (esc-1966-3, reviewer_comprehensive)\nFile: `crates/reify-compiler/src/compile_builder/defs_phase.rs` ~lines 149-163 (`structure_names: HashSet<String>` build from prelude templates).\nOption (a): early-return before building the set if `parsed.declarations` contains no `Declaration::Constraint`.\nOption (b): build `structure_names` lazily on first access.\nAdd a smoke test asserting that a module with zero constraint defs still compiles cleanly (no regression from the early-return path).\n\nThis is a pure optimization for option (b) / early-return path — no behaviour change beyond the whitelist broadening above; no additional tests strictly required for the skip logic beyond the smoke test.",
@@ -41729,9 +41729,14 @@
           ],
           "curator_action": "combine",
           "curator_justification": "The candidate (lazy/early-return for `structure_names` at defs_phase.rs:149-163) and Task 1975 touch the exact same function body and lines. Task 1975 already explicitly cites `defs_phase.rs ~149-163 (structure_names build from seen_entity_names)` as a file it must modify. Implementing both independently would produce a merge conflict on those lines. The candidate is tiny (< 300 chars of real detail, single file). Both serialize on the same module lock (`crates/reify-compiler/src/compile_builder",
-          "combined_at": "2026-04-22T15:22:44.856568+00:00"
+          "combined_at": "2026-04-22T15:22:44.856568+00:00",
+          "done_provenance": {
+            "commit": "0c75bcd2a1257f41d45db63102d17820a867c73f",
+            "commit_input": "0c75bcd2a",
+            "note": "Fast-forward landing on main via commit cluster bf32022f7/0c75bcd2a/75058f30b/fc5bceb85. Orchestrator's merge 961cc89b CAS-raced and never reached main, but the task payload (adding 'occurrence' to constraint-def unknown-type diagnostic) is on main. External reinstatement flipped status back to in-progress at 2026-04-22 17:47."
+          }
         },
-        "updatedAt": "2026-04-22T15:44:25.093Z"
+        "updatedAt": "2026-04-23T06:21:51.068Z"
       },
       {
         "id": "1976",
@@ -45670,9 +45675,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T20:50:53.586Z",
+      "lastModified": "2026-04-23T06:21:51.068Z",
       "taskCount": 2142,
-      "completedCount": 1891,
+      "completedCount": 1892,
       "tags": [
         "master"
       ]
