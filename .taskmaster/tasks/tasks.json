@@ -46049,8 +46049,9 @@
           "spawn_context": "steward-triage",
           "spawned_from": "1163",
           "modules": [
-            "crates/reify-compiler/tests/pragma_compile_tests.rs",
-            "crates/reify-compiler/src/compile_builder"
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs"
           ]
         }
       },
@@ -46074,7 +46075,9 @@
       "completedCount": 1916,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T20:19:44.478Z",
+      "description": "Tasks for master context"
     }
   }
 }
