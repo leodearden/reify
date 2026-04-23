@@ -31987,7 +31987,7 @@
         "id": "1505",
         "title": "Recursive detection: domain-tag hash, hoist constant, DRY compile_all, test comment",
         "description": "Eliminate magic-value fragility and format-string discriminator/payload collision risks across `crates/reify-compiler/src/compile_builder`, and clean up duplicate test infrastructure in `recursive_detection_tests.rs`.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "All items address ContentHash encoding correctness or test-infrastructure quality in the same module footprint:\n\n**hash.rs — pragma hash structural combines**\n- `hash.rs:111-120` (`format_pragma_value`): Strings like `\"str:foo\"` and `\"ident:foo\"` are fed into `ContentHash::of_str`. A `String` value whose bytes begin with `ident:` is only distinguishable from an `Ident` because the surrounding prefix differs — fragile if grammar ever allows colon-bearing idents. Replace with structurally separate combines:\n  ```rust\n  match v {\n      PragmaValue::String(s) => ContentHash::of_str(\"str\").combine(ContentHash::of_str(s)),\n      PragmaValue::Ident(s)  => ContentHash::of_str(\"ident\").combine(ContentHash::of_str(s)),\n      // ... other variants\n  }\n  ```\n- `hash.rs:94` (`hash_pragma`): Replace `format!(\"{name}|{count}\")` with `ContentHash::of_str(&p.name).combine(ContentHash::of_u64(p.args.len() as u64))`. Add a `combine_u64` helper if one does not already exist.\n- Also eliminates per-call `format!` allocations.\n- After these changes: verify all existing pragma tests still pass (absolute hash values will shift; update any snapshot or persistence test that pins exact hash bytes).\n\n**lib.rs:634 — recursive detection domain tag**\n- Replace magic `ContentHash::of(&[1u8])` with `ContentHash::of_str(\"is_recursive\")` for explicit domain-tagging.\n- Hoist the resulting constant above the enclosing loop as a loop-invariant binding.\n\n**recursive_detection_tests.rs — test infrastructure cleanup**\n- Lines 571-577: Refactor `compile_all` to call `compile_module` internally rather than duplicating its body.\n- Lines 588-623: Add a comment on `is_recursive_mixed_into_content_hash` noting that the test assumes A's content hash does not transitively include B's resolved hash.",
@@ -32002,7 +32002,8 @@
           "curator_action": "combine",
           "curator_justification": "The candidate (structural pragma hash combines in hash.rs) and Task 1505 (domain-tag magic-byte replacement + loop-invariant hoist + DRY test infra) share the same unified concern: eliminating magic-value/fragile-embedding patterns from ContentHash encoding in `crates/reify-compiler/src/compile_builder`. An implementer loading compile_builder context once can address all items together. The union of files_to_modify stays within the existing lock keys (compile_builder + recursive_detection_tests.",
           "combined_at": "2026-04-23T20:13:38.767938+00:00"
-        }
+        },
+        "updatedAt": "2026-04-23T20:19:34.357Z"
       },
       {
         "id": "1506",
@@ -46068,7 +46069,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:19:14.710Z",
+      "lastModified": "2026-04-23T20:19:34.357Z",
       "taskCount": 2157,
       "completedCount": 1916,
       "tags": [
