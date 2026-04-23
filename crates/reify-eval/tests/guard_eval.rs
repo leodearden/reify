@@ -2895,7 +2895,8 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
 /// integration failures.
 #[test]
 fn post_solver_active_branch_dispatches_param_let_and_skips_auto() {
-    let active_id = ValueCellId::new("S", "active");
+    // `S.active` (Bool param, default=true) drives the guard; its id is used
+    // implicitly via the `value_ref_typed` guard_expr below.
     let guard_id = ValueCellId::new("S", "__guard_0");
     let resolved_id = ValueCellId::new("S", "resolved");
     let param_inner_id = ValueCellId::new("S", "param_inner");
@@ -2903,9 +2904,12 @@ fn post_solver_active_branch_dispatches_param_let_and_skips_auto() {
 
     let guard_expr = value_ref_typed("S", "active", Type::Bool);
 
-    // Member 1: Auto cell — same id as the top-level auto_param so the solver
-    // resolves it to 5mm.  The post-solver re-eval must SKIP this cell
-    // (Auto-skip arm) and preserve the solver-resolved value.
+    // Member 1: Auto cell — this deliberately reuses the top-level auto_param id
+    // (`resolved`) so the solver writes a concrete value (5mm) that the Auto-skip
+    // arm of `post_solver_re_eval_guard_cells` must then preserve unchanged.
+    // Having two decls for the same id (top-level + guarded-group member) is a
+    // valid module shape: the group's Auto decl just shadows the top-level one
+    // for the group scope, and the solver resolves both to the same value.
     let auto_inner_decl = ValueCellDecl {
         id: resolved_id.clone(),
         kind: ValueCellKind::Auto { free: false },
@@ -3058,6 +3062,4 @@ fn post_solver_active_branch_dispatches_param_let_and_skips_auto() {
         "let_inner must be Determined in snapshot"
     );
 
-    // Suppress unused-variable warning for active_id (used only for conceptual clarity).
-    let _ = active_id;
 }
