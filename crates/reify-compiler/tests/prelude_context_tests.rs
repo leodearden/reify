@@ -129,9 +129,58 @@ fn new_two_module_prelude_preserves_enum_order() {
 
 // ─── step-5: compile_with_prelude_context parity ───────────────────────────
 
+/// Asserts that two `CompiledModule` values are observationally identical for
+/// parity testing purposes: same content_hash, same error count, same template
+/// names, same enum_def names, same trait_def names, same function names.
+///
+/// `content_hash` alone captures full content; the structural checks below
+/// guard against subtle mismatches that might not surface in the hash
+/// (e.g. wrong number of outputs even with matching hash).
+fn assert_compiled_module_parity(actual: &reify_compiler::CompiledModule, expected: &reify_compiler::CompiledModule, label: &str) {
+    assert_eq!(
+        actual.content_hash, expected.content_hash,
+        "{label}: content_hash must match"
+    );
+    assert_eq!(
+        actual.diagnostics.len(), expected.diagnostics.len(),
+        "{label}: diagnostics count must match"
+    );
+    let actual_error_count = actual.diagnostics.iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .count();
+    let expected_error_count = expected.diagnostics.iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .count();
+    assert_eq!(
+        actual_error_count, expected_error_count,
+        "{label}: error diagnostics count must match"
+    );
+    assert_eq!(
+        actual.enum_defs, expected.enum_defs,
+        "{label}: enum_defs must match"
+    );
+    let actual_template_names: Vec<&str> = actual.templates.iter().map(|t| t.name.as_str()).collect();
+    let expected_template_names: Vec<&str> = expected.templates.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        actual_template_names, expected_template_names,
+        "{label}: template names must match"
+    );
+    let actual_trait_names: Vec<&str> = actual.trait_defs.iter().map(|t| t.name.as_str()).collect();
+    let expected_trait_names: Vec<&str> = expected.trait_defs.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        actual_trait_names, expected_trait_names,
+        "{label}: trait_def names must match"
+    );
+    let actual_fn_names: Vec<&str> = actual.functions.iter().map(|f| f.name.as_str()).collect();
+    let expected_fn_names: Vec<&str> = expected.functions.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        actual_fn_names, expected_fn_names,
+        "{label}: function names must match"
+    );
+}
+
 /// Case (a): empty prelude — compile_with_prelude_context(&parsed, &ctx)
-/// must produce a CompiledModule identical (content_hash, diagnostics, enum_defs,
-/// templates, trait_defs, functions) to compile(&parsed).
+/// must produce a CompiledModule identical to compile_with_prelude(&parsed, &[]).
 #[test]
 fn compile_with_prelude_context_parity_empty_prelude() {
     let source = r#"
@@ -146,36 +195,12 @@ structure def S {
     let ctx = PreludeContext::from_slice(&[]);
     let actual = compile_with_prelude_context(&parsed, &ctx);
 
-    assert_eq!(
-        actual.content_hash, expected.content_hash,
-        "content_hash must match for empty-prelude compile"
-    );
-    assert_eq!(
-        actual.diagnostics, expected.diagnostics,
-        "diagnostics must match for empty-prelude compile"
-    );
-    assert_eq!(
-        actual.enum_defs, expected.enum_defs,
-        "enum_defs must match for empty-prelude compile"
-    );
-    assert_eq!(
-        actual.templates, expected.templates,
-        "templates must match for empty-prelude compile"
-    );
-    assert_eq!(
-        actual.trait_defs, expected.trait_defs,
-        "trait_defs must match for empty-prelude compile"
-    );
-    assert_eq!(
-        actual.functions, expected.functions,
-        "functions must match for empty-prelude compile"
-    );
+    assert_compiled_module_parity(&actual, &expected, "empty-prelude");
 }
 
 /// Case (b): non-empty 2-module synthetic prelude with at least one enum.
-/// compile_with_prelude_context must produce a CompiledModule identical
-/// (content_hash, diagnostics, enum_defs, templates, trait_defs, functions)
-/// to compile_with_prelude for the same prelude.
+/// compile_with_prelude_context must produce a CompiledModule identical to
+/// compile_with_prelude for the same prelude.
 #[test]
 fn compile_with_prelude_context_parity_two_module_prelude_with_enum() {
     let enum_status = EnumDef {
@@ -211,28 +236,5 @@ structure def Widget {
     let ctx = PreludeContext::from_slice(&prelude);
     let actual = compile_with_prelude_context(&parsed, &ctx);
 
-    assert_eq!(
-        actual.content_hash, expected.content_hash,
-        "content_hash must match for two-module prelude compile"
-    );
-    assert_eq!(
-        actual.diagnostics, expected.diagnostics,
-        "diagnostics must match for two-module prelude compile"
-    );
-    assert_eq!(
-        actual.enum_defs, expected.enum_defs,
-        "enum_defs must match for two-module prelude compile"
-    );
-    assert_eq!(
-        actual.templates, expected.templates,
-        "templates must match for two-module prelude compile"
-    );
-    assert_eq!(
-        actual.trait_defs, expected.trait_defs,
-        "trait_defs must match for two-module prelude compile"
-    );
-    assert_eq!(
-        actual.functions, expected.functions,
-        "functions must match for two-module prelude compile"
-    );
+    assert_compiled_module_parity(&actual, &expected, "two-module-prelude");
 }

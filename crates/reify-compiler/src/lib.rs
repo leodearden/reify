@@ -144,6 +144,110 @@ pub fn merge_prelude_functions(
     result
 }
 
+/// Compile a parsed module using a pre-built [`PreludeContext`].
+///
+/// Like [`compile_with_prelude`] but skips re-flattening prelude enum
+/// definitions on every call: the flattening is done once at
+/// [`PreludeContext`] construction time, so callers that compile many
+/// user modules against the same prelude (e.g. `compile_with_stdlib`) pay
+/// the allocation cost only once.
+///
+/// For the stdlib hot-path, prefer [`compile_with_stdlib`] which already
+/// delegates to a `&'static PreludeContext` after the refactor in step-9.
+///
+/// # Parity
+///
+/// Produces output identical to `compile_with_prelude(parsed, prelude)` for
+/// any prelude whose [`PreludeContext::from_slice`] was built from that
+/// same `prelude` slice.
+pub fn compile_with_prelude_context(
+    parsed: &reify_syntax::ParsedModule,
+    ctx: &PreludeContext,
+) -> CompiledModule {
+    compile_with_prelude_refs_ctx(parsed, ctx)
+}
+
+/// Inner implementation for [`compile_with_prelude_context`].
+///
+/// Mirrors [`compile_with_prelude_refs`] exactly, with a single difference:
+/// the enums phase calls [`compile_builder::enums_phase::build_resolution_enums_from_cache`]
+/// (which clones from `ctx.resolution_enums()`) instead of
+/// [`compile_builder::enums_phase::build_resolution_enums`] (which re-flatmaps
+/// the prelude slice). All other phases receive `ctx.modules()` in place of the
+/// `prelude: &[&CompiledModule]` parameter — same slice contents, same behavior.
+pub(crate) fn compile_with_prelude_refs_ctx(
+    parsed: &reify_syntax::ParsedModule,
+    ctx: &PreludeContext,
+) -> CompiledModule {
+    let mut compile_ctx = compile_builder::ctx::CompilationCtx::new();
+
+    compile_builder::pre_pass::forward_parse_errors(&mut compile_ctx, parsed);
+    compile_builder::pre_pass::validate_module_pragmas(&mut compile_ctx, parsed);
+
+    // Respect #no_prelude: if the pragma is present, treat as empty prelude.
+    let prelude_refs: &[&CompiledModule] =
+        compile_builder::pre_pass::effective_prelude(parsed, ctx.modules());
+
+    let decl_refs = compile_builder::pre_pass::collect_decl_refs(&mut compile_ctx, parsed);
+
+    compile_builder::units_phase::phase_units(&mut compile_ctx, prelude_refs, &decl_refs.unit_refs);
+    compile_builder::aliases_phase::phase_aliases(&mut compile_ctx, &decl_refs.alias_refs);
+
+    // KEY DIFFERENCE: use the pre-built resolution_enums from the context
+    // instead of re-flattening the prelude modules on every call.
+    // When #no_prelude is active, prelude_refs is empty and the cache would be
+    // non-empty (it was built from the full prelude), so we must guard here.
+    if prelude_refs.is_empty() && !ctx.modules().is_empty() {
+        // #no_prelude: suppress prelude enum contribution, build from empty.
+        compile_builder::enums_phase::build_resolution_enums_from_cache(&mut compile_ctx, &[]);
+    } else {
+        compile_builder::enums_phase::build_resolution_enums_from_cache(
+            &mut compile_ctx,
+            ctx.resolution_enums(),
+        );
+    }
+
+    compile_builder::functions_phase::phase_functions(
+        &mut compile_ctx,
+        prelude_refs,
+        &decl_refs.fn_refs,
+    );
+
+    let trait_names = compile_builder::traits_phase::phase_traits(
+        &mut compile_ctx,
+        prelude_refs,
+        &decl_refs.trait_refs,
+    );
+
+    compile_builder::fields_phase::phase_fields(&mut compile_ctx, &decl_refs.field_refs);
+
+    compile_builder::defs_phase::phase_constraint_defs(
+        &mut compile_ctx,
+        parsed,
+        prelude_refs,
+        &trait_names,
+    );
+
+    compile_builder::entities_phase::phase_entities(
+        &mut compile_ctx,
+        parsed,
+        &trait_names,
+        prelude_refs,
+    );
+
+    compile_builder::entities_phase::phase_pending_bound_checks(&mut compile_ctx, prelude_refs);
+
+    compile_builder::post_passes::phase_recursion_detection(&mut compile_ctx);
+    compile_builder::post_passes::phase_dup_sig_check(&mut compile_ctx);
+    compile_builder::post_passes::phase_field_composition(&mut compile_ctx);
+
+    let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut compile_ctx, parsed);
+    let content_hash =
+        compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
+
+    compile_ctx.into_compiled_module(parsed, compiled_purposes, content_hash)
+}
+
 /// Compile a parsed module with prelude definitions provided as references.
 ///
 /// This is the inner implementation used by the module DAG to avoid cloning
