@@ -38910,11 +38910,11 @@
         "description": "The arg-count-check → diagnostic → return None pattern is repeated verbatim across all arms in geometry_boolean.rs, geometry_transform.rs, geometry_modify.rs, and geometry_curve.rs. A small helper like `fn check_arg_count(name: &str, got: usize, expected: usize, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>) -> bool` could eliminate ~60 lines of boilerplate across the four files.\n\nThis is a pure DRY refactor — no behavioral changes.\n\nmemory_hints:\n- search: \"geometry arg count check diagnostic pattern\"\n- entity: compile_boolean_op, compile_transform_op, compile_modify_op, compile_curve_op",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T10:08:52.249Z",
+        "updatedAt": "2026-04-23T19:46:45.050Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry_arg_check.rs",
@@ -46000,7 +46000,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T19:46:44.627Z",
+      "lastModified": "2026-04-23T19:46:45.050Z",
       "taskCount": 2154,
       "completedCount": 1913,
       "tags": [
