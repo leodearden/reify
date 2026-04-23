@@ -81,7 +81,7 @@ pub(crate) fn compile_curve_op(
                 diagnostics.push(Diagnostic::error(format!(
                     "interp() expects coordinate triples (at least 6 args for 2 points), got {}",
                     compiled_args.len()
-                )));
+                )).with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")));
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
@@ -101,7 +101,7 @@ pub(crate) fn compile_curve_op(
                 diagnostics.push(Diagnostic::error(format!(
                     "bezier() expects coordinate triples (at least 6 args for 2 points), got {}",
                     compiled_args.len()
-                )));
+                )).with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")));
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
@@ -121,7 +121,7 @@ pub(crate) fn compile_curve_op(
                 diagnostics.push(Diagnostic::error(format!(
                     "nurbs() expects at least 10 arguments (degree + n_points + coords + weights), got {}",
                     compiled_args.len()
-                )));
+                )).with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")));
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
