@@ -274,3 +274,57 @@ fn fillet_arg_count_diagnostic_has_span_label() {
         "fillet() expects 2 arguments",
     );
 }
+
+// ── translate() / rotate() / scale() / rotate_around() ─────────────────
+
+#[test]
+fn translate_arg_count_diagnostic_has_span_label() {
+    // translate() expects 4 arguments — passing 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let t = translate(1mm, 2mm)
+            }
+        "#,
+        "translate() expects 4 arguments",
+    );
+}
+
+#[test]
+fn rotate_arg_count_diagnostic_has_span_label() {
+    // rotate() expects 5 arguments — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let r = rotate(box(10mm, 10mm, 10mm), 0.0, 0.0)
+            }
+        "#,
+        "rotate() expects 5 arguments",
+    );
+}
+
+#[test]
+fn scale_arg_count_diagnostic_has_span_label() {
+    // scale() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let s = scale(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "scale() expects 2 arguments",
+    );
+}
+
+#[test]
+fn rotate_around_arg_count_diagnostic_has_span_label() {
+    // rotate_around() expects 8 arguments — passing 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let r = rotate_around(box(10mm, 10mm, 10mm), 1mm)
+            }
+        "#,
+        "rotate_around() expects 8 arguments",
+    );
+}
