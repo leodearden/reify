@@ -545,10 +545,13 @@ pub(crate) fn compile_entity(
             diagnostics,
         );
 
-        // Deprecation check: warn for each trait bound that references a @deprecated trait.
+        // Trait-bound checks: deprecation warning and parameterized type-argument deferral.
+        // One registry lookup per bound handles both checks.
         for trait_bound in structure.trait_bounds {
-            if let Some(compiled_trait) = trait_registry.get(&trait_bound.name)
-                && let Some(msg) = deprecation_message(&compiled_trait.annotations)
+            let compiled_trait = trait_registry.get(&trait_bound.name);
+            // Deprecation check: warn if the referenced trait is @deprecated.
+            if let Some(ct) = compiled_trait
+                && let Some(msg) = deprecation_message(&ct.annotations)
             {
                 emit_deprecation_warning(
                     "trait",
@@ -558,14 +561,11 @@ pub(crate) fn compile_entity(
                     diagnostics,
                 );
             }
-        }
-
-        // Defer type argument checking on parameterized trait bounds (e.g., Container<Bolt>)
-        // to the post-compilation pass so forward references are resolved correctly.
-        for trait_bound in structure.trait_bounds {
+            // Defer type argument checking on parameterized trait bounds (e.g., Container<Bolt>)
+            // to the post-compilation pass so forward references are resolved correctly.
             if !trait_bound.type_args.is_empty()
-                && let Some(compiled_trait) = trait_registry.get(&trait_bound.name)
-                && !compiled_trait.type_params.is_empty()
+                && let Some(ct) = compiled_trait
+                && !ct.type_params.is_empty()
             {
                 let resolved_args: Vec<Type> = trait_bound
                     .type_args
@@ -597,7 +597,7 @@ pub(crate) fn compile_entity(
                 // TraitConformance: type_params are known now from the compiled
                 // trait, so they're carried directly in the enum variant.
                 pending_bound_checks.push(PendingBoundCheck::TraitConformance {
-                    type_params: compiled_trait.type_params.clone(),
+                    type_params: ct.type_params.clone(),
                     type_args: resolved_args,
                     target_name: trait_bound.name.clone(),
                     span: trait_bound.span,
