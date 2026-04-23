@@ -44896,11 +44896,11 @@
         "description": "`crates/reify-compiler/src/types.rs:454-461` — the doc comment on `RealizationDecl.name` says `None for anonymous realizations that have no direct let-binding (e.g. intermediate guarded-group params without a user-visible name)`, but after Task 2011 all three compile-time call sites in `entity.rs` (lines 1345, 1371, 1887 — including the guarded-geometry path) populate `Some(param.name.clone())`. The only production of `name: None` is the `TopologyTemplateBuilder::realization()` test-support helper.\n\nOptions: (a) rewrite the doc to say `Some(...)` for every let-binding/named param emitted by the compiler; `None` is only produced by test scaffolding. (b) If a legitimate compile-time `None` case exists, add it back in entity.rs; otherwise narrow the type to `String` once test-support is updated.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:27:11.913Z",
+        "updatedAt": "2026-04-23T17:27:19.909Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/types.rs"
@@ -45735,7 +45735,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:27:19.344Z",
+      "lastModified": "2026-04-23T17:27:19.910Z",
       "taskCount": 2144,
       "completedCount": 1893,
       "tags": [
