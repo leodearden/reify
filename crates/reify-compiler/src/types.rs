@@ -222,12 +222,23 @@ pub enum EntityKind {
     Occurrence,
 }
 
+impl EntityKind {
+    /// Returns the canonical string label for this variant as a `&'static str`.
+    ///
+    /// This is the single source of truth for the `"structure"` / `"occurrence"`
+    /// literals used across the compiler and GUI. The `Display` impl delegates
+    /// here so `as_label()` and `to_string()` can never diverge.
+    pub const fn as_label(&self) -> &'static str {
+        match self {
+            EntityKind::Structure => "structure",
+            EntityKind::Occurrence => "occurrence",
+        }
+    }
+}
+
 impl std::fmt::Display for EntityKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EntityKind::Structure => f.write_str("structure"),
-            EntityKind::Occurrence => f.write_str("occurrence"),
-        }
+        f.write_str(self.as_label())
     }
 }
 

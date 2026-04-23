@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
+use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
     ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
@@ -551,10 +551,7 @@ impl EngineSession {
         let mut map = HashMap::new();
 
         for template in &compiled.templates {
-            let entity_kind = match template.entity_kind {
-                EntityKind::Structure => "structure",
-                EntityKind::Occurrence => "occurrence",
-            };
+            let entity_kind = template.entity_kind.as_label();
 
             // Template-level entry
             let sub_count = template.sub_components.len();
@@ -916,10 +913,7 @@ pub(crate) fn build_template_node(
     compiled: &reify_compiler::CompiledModule,
 ) -> EntityTreeNode {
 
-    let kind = match template.entity_kind {
-        EntityKind::Structure => "structure",
-        EntityKind::Occurrence => "occurrence",
-    };
+    let kind = template.entity_kind.as_label();
 
     let mut children = Vec::new();
 

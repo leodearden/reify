@@ -1745,10 +1745,7 @@ pub(crate) fn compile_entity(
         }
     }
 
-    let context = match entity_kind {
-        EntityKind::Structure => "structure",
-        EntityKind::Occurrence => "occurrence",
-    };
+    let context = entity_kind.as_label();
     let annotations = lower_annotations(structure.annotations, diagnostics);
     validate_annotations(&annotations, context, diagnostics);
     validate_pragmas(structure.pragmas, context, diagnostics);
