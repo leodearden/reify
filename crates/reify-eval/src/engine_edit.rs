@@ -91,8 +91,15 @@ fn reelaborate_guarded_group(
 /// After wave2, the constraint solver may have re-evaluated inactive-branch
 /// members (whose `default_expr` reads a resolved auto param) that Phase 1
 /// previously deactivated (`Undef`). This cleanup restores Phase 1's
-/// deactivation state so that Phase 3's `phase1_reelaborated` skip yields
-/// a correct final result.
+/// deactivation state so that Phase 3's `phase1_reelaborated` skip (when the
+/// guard value is unchanged since Phase 1) yields a correct final result.
+///
+/// `phase1_reelaborated` maps each re-elaborated guard_cell to the guard value
+/// Phase 1 recorded (task 2146). The value is NOT used here — this helper only
+/// re-deactivates the current-inactive branch using the *current* guard value,
+/// which may already differ from the Phase-1 recorded value if wave2 has
+/// flipped the guard. Phase 3's flip-detection (comparing the recorded value
+/// against the current guard value) handles that case separately.
 ///
 /// Called from both `edit_param` post-wave2 (task 2140) and `edit_source`
 /// post-wave2 (task 2142). Does nothing when `phase1_reelaborated` is empty.
@@ -101,7 +108,7 @@ fn reelaborate_guarded_group(
 /// is required at either call site.
 fn reapply_phase1_deactivations(
     graph: &EvaluationGraph,
-    phase1_reelaborated: &HashSet<ValueCellId>,
+    phase1_reelaborated: &HashMap<ValueCellId, Value>,
     values: &mut ValueMap,
     snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
 ) {
@@ -109,7 +116,7 @@ fn reapply_phase1_deactivations(
         return;
     }
     for group in &graph.guarded_groups {
-        if !phase1_reelaborated.contains(&group.guard_cell) {
+        if !phase1_reelaborated.contains_key(&group.guard_cell) {
             continue;
         }
         let guard_val = values
