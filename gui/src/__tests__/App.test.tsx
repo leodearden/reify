@@ -3190,3 +3190,130 @@ describe('App persistence wiring — file open (step-29)', () => {
     expect(screen.getByTestId('app-layout')).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step-31: debounced-save tests
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — debounced save (step-31)', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+  }
+
+  /**
+   * Flush all pending microtask queues from handleOpen's async chain.
+   * handleOpen has ~6 awaits; each `await Promise.resolve()` flushes one
+   * microtask level.  We call it 10× to be safe, without advancing fake timers.
+   */
+  async function flushHandleOpen() {
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  it('no localStorage write happens before 500ms after a view-state mutation', async () => {
+    // Render with real timers so App init completes, then switch to fake timers.
+    // Only timers created AFTER the switch (i.e. the debounce timer) are faked.
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/bracket.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/bracket.ri', content: '' });
+    await renderAndWaitForReady();
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      // Flush handleOpen's await chain (Promise microtasks, not timer-based)
+      await flushHandleOpen();
+
+      // Advance 499ms — debounce threshold not yet reached
+      await vi.advanceTimersByTimeAsync(499);
+
+      expect(localStorage.getItem('reify:views:/test/bracket.ri')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('single localStorage write happens 500ms after the last mutation', async () => {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/bracket.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/bracket.ri', content: '' });
+    await renderAndWaitForReady();
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushHandleOpen();
+
+      // Advance past the 500ms debounce window
+      await vi.advanceTimersByTimeAsync(501);
+
+      expect(localStorage.getItem('reify:views:/test/bracket.ri')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('three rapid mutations within 500ms produce exactly one localStorage write', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/bracket.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/bracket.ri', content: '' });
+    await renderAndWaitForReady();
+    // Confirm eye icon is present before switching timers (init fetches entity tree)
+    await waitFor(() => screen.getByTestId('eye-icon-Root.A'));
+
+    vi.useFakeTimers();
+    try {
+      const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
+
+      // Mutation 1: open file (currentFilePath changes → debounce schedule starts)
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushHandleOpen(); // let handleOpen complete; timer T1 set at t=0
+      await vi.advanceTimersByTimeAsync(100); // t=100ms, T1 still has 400ms
+
+      // Mutation 2: eye-icon click (viewStateStore.state changes → timer resets)
+      fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+      await vi.advanceTimersByTimeAsync(100); // t=200ms, T2 set, 400ms remaining
+
+      // Mutation 3: second eye-icon click
+      fireEvent.click(screen.getByTestId('eye-icon-Root.A'));
+      await vi.advanceTimersByTimeAsync(100); // t=300ms, T3 set, 400ms remaining
+
+      // At t=699ms: 399ms elapsed since last mutation (300ms + 399ms advance)
+      // 500ms timer has NOT fired (399 < 500)
+      await vi.advanceTimersByTimeAsync(399); // t=699ms
+      const writesBeforeWindow = setItemSpy.mock.calls.filter(
+        ([k]) => k === 'reify:views:/test/bracket.ri',
+      ).length;
+      expect(writesBeforeWindow).toBe(0);
+
+      // 1ms more → exactly 500ms since last mutation → debounce fires once
+      await vi.advanceTimersByTimeAsync(1); // t=700ms
+      const writesAfterWindow = setItemSpy.mock.calls.filter(
+        ([k]) => k === 'reify:views:/test/bracket.ri',
+      ).length;
+      expect(writesAfterWindow).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('write key is reify:views:{path} and payload includes version and timestamp', async () => {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/bracket.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/bracket.ri', content: '' });
+    await renderAndWaitForReady();
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushHandleOpen();
+      await vi.advanceTimersByTimeAsync(501);
+
+      const raw = localStorage.getItem('reify:views:/test/bracket.ri');
+      expect(raw).not.toBeNull();
+      const parsed = JSON.parse(raw!);
+      expect(parsed.version).toBe('1');
+      expect(typeof parsed.timestamp).toBe('string');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
