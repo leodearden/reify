@@ -19,6 +19,18 @@ fn entity_kind_display() {
     assert_eq!(format!("{:?}", EntityKind::Structure), "Structure");
 }
 
+#[test]
+fn entity_kind_as_label() {
+    // as_label() returns the correct &'static str for each variant
+    let s: &'static str = EntityKind::Structure.as_label();
+    assert_eq!(s, "structure");
+    let o: &'static str = EntityKind::Occurrence.as_label();
+    assert_eq!(o, "occurrence");
+    // as_label() and to_string() must stay in sync (Display delegates to as_label)
+    assert_eq!(EntityKind::Structure.as_label(), EntityKind::Structure.to_string());
+    assert_eq!(EntityKind::Occurrence.as_label(), EntityKind::Occurrence.to_string());
+}
+
 // --- Verify new geometry function calls compile into realizations ---
 
 #[test]
