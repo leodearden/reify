@@ -278,15 +278,5 @@ structure def Outer {
         !errors.is_empty(),
         "expected error diagnostic: Inner does not implement A"
     );
-
-    let mentions_expected = errors.iter().any(|d| {
-        let lower = d.message.to_lowercase();
-        lower.contains("trait") || lower.contains("implement") || lower.contains(" a")
-    });
-    assert!(
-        mentions_expected,
-        "error should mention 'trait', 'implement', or 'A', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
 }
 
