@@ -445,7 +445,11 @@ impl ModuleDag {
             let compiled = {
                 let preludes: Vec<&CompiledModule> = import_paths
                     .iter()
-                    .filter_map(|p| self.modules.get(p.as_str()))
+                    .filter_map(|p| {
+                        let result = self.modules.get(p.as_str());
+                        debug_assert!(result.is_some(), "import '{}' not yet compiled", p);
+                        result
+                    })
                     .collect();
                 crate::compile_with_prelude_refs(&parsed, &preludes)
             };
@@ -631,7 +635,9 @@ pub fn compile_project(
             .iter()
             .filter_map(|d| {
                 if let reify_syntax::Declaration::Import(import) = d {
-                    dag.modules.get(&import.path)
+                    let result = dag.modules.get(&import.path);
+                    debug_assert!(result.is_some(), "import '{}' not yet compiled", import.path);
+                    result
                 } else {
                     None
                 }
