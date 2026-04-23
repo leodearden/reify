@@ -45856,7 +45856,18 @@
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/guard_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "ValueCellKind",
+              "post_solver_re_eval_guard_cells",
+              "engine_eval.rs"
+            ],
+            "queries": [
+              "post_solver_re_eval_guard_cells active branch dispatch ValueCellKind",
+              "match exhaustive ValueCellKind Auto Param Let variants compiler warning"
+            ]
+          }
         }
       },
       {
@@ -45924,7 +45935,9 @@
       "completedCount": 1905,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T18:57:36.335Z",
+      "description": "Tasks for master context"
     }
   }
 }
