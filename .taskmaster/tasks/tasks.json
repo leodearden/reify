@@ -46031,7 +46031,16 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:11:52.353Z"
+        "updatedAt": "2026-04-23T20:11:52.353Z",
+        "metadata": {
+          "source": "steward-triage",
+          "spawn_context": "steward-triage",
+          "spawned_from": "1163",
+          "modules": [
+            "crates/reify-compiler/tests/pragma_compile_tests.rs",
+            "crates/reify-compiler/src/compile_builder"
+          ]
+        }
       },
       {
         "id": "2168",
