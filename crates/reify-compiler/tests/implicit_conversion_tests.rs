@@ -299,6 +299,18 @@ fn tensor0_to_tensor1_rejected() {
     );
 }
 
+/// Dimensioned-scalar variant of Rule 2c: Tensor<0,3,Scalar[m]> -> Tensor<0,5,Scalar[m]>
+/// must be allowed (same dimensioned quantity, different N, rank-0).
+#[test]
+fn tensor0_different_n_scalar_quantity_convertible() {
+    let from = Type::tensor(0, 3, Type::length());
+    let to = Type::tensor(0, 5, Type::length());
+    assert!(
+        implicitly_converts_to(&from, &to),
+        "Tensor<0,3,Scalar[m]> should convert to Tensor<0,5,Scalar[m]> (same dimensioned quantity, N ignored for rank-0)"
+    );
+}
+
 // ── Rules 2a/2b compound-type guard tests ─────────────────────────────────
 //
 // Rules 2a/2b use wildcard arms (`from_ty` / `to_ty`). Without a guard, any
