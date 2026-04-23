@@ -1646,3 +1646,44 @@ fn compile_boolean_op_union_all_via_compile() {
         }
     ));
 }
+
+#[test]
+fn compile_boolean_op_difference_via_compile() {
+    let source = r#"structure S {
+    let a = difference(sphere(1), cylinder(1, 2))
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bool_difference"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    let ops = &template.realizations[0].operations;
+    // Expected: Primitive(Sphere), Primitive(Cylinder), Boolean{Difference, Step(0), Step(1)}
+    assert_eq!(ops.len(), 3, "expected 3 ops, got {}: {:?}", ops.len(), ops);
+    assert!(matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
+    assert!(matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }));
+    match &ops[2] {
+        CompiledGeometryOp::Boolean { op: BooleanOp::Difference, left: GeomRef::Step(0), right: GeomRef::Step(1) } => {}
+        other => panic!("expected Boolean{{Difference, Step(0), Step(1)}}, got {:?}", other),
+    }
+}
+
+#[test]
+fn compile_boolean_op_intersection_all_via_compile() {
+    let source = r#"structure S {
+    let a = intersection_all(sphere(1), sphere(2), sphere(3))
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bool_intersection_all"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    let ops = &template.realizations[0].operations;
+    // Expected left-fold: Sphere(0), Sphere(1), Boolean{Intersection,0,1}(2), Sphere(3), Boolean{Intersection,2,3}(4)
+    assert_eq!(ops.len(), 5, "expected 5 ops, got {}: {:?}", ops.len(), ops);
+    assert!(matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
+    assert!(matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
+    assert!(matches!(ops[2], CompiledGeometryOp::Boolean { op: BooleanOp::Intersection, .. }));
+    assert!(matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
+    assert!(matches!(ops[4], CompiledGeometryOp::Boolean { op: BooleanOp::Intersection, .. }));
+}
