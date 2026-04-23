@@ -835,7 +835,7 @@ pub(crate) fn compile_geometry_call(
         ),
         // --- Curve constructors ---
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
-            compile_curve_op(name, compiled_args, diagnostics, sub_ops)
+            compile_curve_op(name, compiled_args, expr.span, diagnostics, sub_ops)
         }
         _ => {
             diagnostics.push(Diagnostic::error(unsupported_geometry_fn_message(name)));
