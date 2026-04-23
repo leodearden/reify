@@ -45874,6 +45874,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2159",
+        "title": "conformance cleanup: dedupe kind-keyed cache test, single-bind composite key lookup, re-evaluate resolve_let_advertised_type helper",
+        "description": "Three small code/test cleanups on task 1914's kind-keyed cache and advertised-type helper in `crates/reify-compiler/src/conformance/{checker.rs,mod.rs}`.\n\nMemory hints: search \"task 1914 resolve_let_advertised_type inferred_let_exprs composite key\"; entities: resolve_let_advertised_type, AvailableDefaultKind.",
+        "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestions #1 (mod.rs:1345-1401), #3 (checker.rs:506-518), #5 (checker.rs:32-39).\n\n**#1 — Remove the duplicate cache-shape compile-tripwire test.**\n`check_phase_pre_register_default_types_cache_is_kind_keyed` (mod.rs ~line 1345) is a near-exact duplicate of `check_phase_pre_register_default_types_pass2_success_caches_unannotated_let` (immediately above). Both build identical AST (`let y = 2.5`), call the same pass, and assert `contains_key(&(\"y\".to_string(), AvailableDefaultKind::Let))` + same `result_type`. The composite-key compile-tripwire already exists in the predecessor test.\n\nAction: delete `check_phase_pre_register_default_types_cache_is_kind_keyed`. If a cross-kind-collision test is desired instead (a `Param`-named `x` AND a `Let`-named `x` coexist in `inferred_let_exprs` without collision), write *that* — it exercises the invariant that the composite key uniquely protects. Otherwise, simple deletion is fine.\n\n**#3 — Single-bind the composite-key lookup in `check_phase_build_available_defaults_map`.**\nAt checker.rs ~lines 506-518, the unannotated-let arm allocates the `(String, AvailableDefaultKind)` tuple twice per default:\n  - once inside `debug_assert!(... contains_key(&(name.to_string(), AvailableDefaultKind::Let)))`\n  - once for `inferred_let_exprs.get(&(name.to_string(), AvailableDefaultKind::Let))`\n\nEach allocates a String clone of `name`. Bind once:\n```\nlet key = (name.to_string(), AvailableDefaultKind::Let);\nlet entry = inferred_let_exprs.get(&key);\ndebug_assert!(cell_type.is_some() || entry.is_some(), \"...\");\nlet resolved = resolve_let_advertised_type(cell_type, entry);\n```\nSingle allocation, single lookup.\n\n**#5 — Re-evaluate `resolve_let_advertised_type` helper.**\nNow that suggestion #1 (pass2_compile_errors) has landed on task 1914, the helper's `Type::Real` fallback arm is defensive-only at both call sites:\n  - site 1 (available_defaults builder): the `debug_assert!` guards the fallback, so in release it's unreachable under the invariant\n  - site 2 (injection loop): always passes `Some(&compiled_expr)`, so the fallback is structurally unreachable\n\nOptions:\n  A. **Inline the helper at both sites.** Site 2 reverts to `cell_type.clone().unwrap_or_else(|| compiled_expr.result_type.clone())`. Site 1 becomes the single-bind form from #3 directly. Delete the three unit tests (their behavior is exercised end-to-end by conformance tests).\n  B. **Keep the helper but drop the \"falls back to Real when neither annotation nor inferred\" unit test** — its own doc says \"this arm should not be reached in practice.\"\n\nChoose based on whether centralizing the rule adds clarity (two call sites, one formula) or is a micro-abstraction. Both are defensible; lead's call. Note the helper doc comment is longer than the body — if kept, tighten the comment.\n\n**Coordination:** #3 depends on the single-bind rewrite from #5 option A (or the helper-preserving path from #5 option B). Sequence: pick #5 direction first, then apply #3.\n\nVerify: `cargo test -p reify-compiler`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --check`.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1914"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45886,7 +45899,7 @@
       ],
       "created": "2026-04-23T18:46:50.839Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-23T18:46:57.953Z"
+      "updated": "2026-04-23T18:47:44.750Z"
     }
   }
 }
