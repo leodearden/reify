@@ -106,27 +106,35 @@ fn post_solver_re_eval_guard_cells(
 ) {
     for cell in cells {
         if is_active_branch {
-            if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let {
-                if let Some(ref expr) = cell.default_expr {
-                    let val = reify_expr::eval_expr(
-                        expr,
-                        &reify_expr::EvalContext::new(values, functions)
-                            .with_meta(meta_map)
-                            .with_determinacy(snapshot_values),
-                    );
-                    values.insert(cell.id.clone(), val.clone());
-                    snapshot_values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
-                } else {
-                    values.insert(cell.id.clone(), Value::Undef);
-                    snapshot_values.insert(
-                        cell.id.clone(),
-                        (Value::Undef, DeterminacyState::Undetermined),
-                    );
+            match cell.kind {
+                ValueCellKind::Param | ValueCellKind::Let => {
+                    if let Some(ref expr) = cell.default_expr {
+                        let val = reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(values, functions)
+                                .with_meta(meta_map)
+                                .with_determinacy(snapshot_values),
+                        );
+                        values.insert(cell.id.clone(), val.clone());
+                        snapshot_values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
+                    } else {
+                        values.insert(cell.id.clone(), Value::Undef);
+                        snapshot_values.insert(
+                            cell.id.clone(),
+                            (Value::Undef, DeterminacyState::Undetermined),
+                        );
+                    }
+                }
+                ValueCellKind::Auto { .. } => {
+                    // Active-branch Auto: skip.
+                    // The solver already resolved these to concrete values;
+                    // overwriting with Undef here would destroy solver work.
+                    // An exhaustive match (rather than an implicit else-skip)
+                    // ensures a future ValueCellKind variant triggers a
+                    // compile error at this site, forcing a reviewed decision
+                    // instead of a silent skip.
                 }
             }
-            // Auto cells in the active branch: skip.
-            // The solver already resolved them to concrete values;
-            // overwriting with Undef here would destroy solver work.
         } else if !cell.kind.is_auto() {
             // Inactive non-Auto: write (Undef, Undetermined).
             // Auto cells: skip — lifecycle owned by the solver.
