@@ -234,6 +234,38 @@ fn deprecated_structure_used_as_purpose_param_emits_warning() {
     );
 }
 
+// ── Step 10: deprecated occurrence used as purpose parameter emits warning ────
+
+#[test]
+fn deprecated_occurrence_used_as_purpose_param_emits_warning() {
+    let source = r#"
+        @deprecated("Use NewOcc")
+        occurrence def OldOcc { param m : Length = 10mm }
+
+        purpose P(subject : OldOcc) {
+            constraint 1 > 0
+        }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = deprecation_warnings(&module, "OldOcc");
+    assert!(
+        !warns.is_empty(),
+        "expected deprecation warning for OldOcc, got warnings: {:?}",
+        warnings_only(&module)
+    );
+    assert!(
+        warns[0].message.contains("Use NewOcc"),
+        "expected warning to mention 'Use NewOcc', got: {}",
+        warns[0].message
+    );
+}
+
 // ── Step 11: edge cases ──────────────────────────────────────────────────────
 
 #[test]
