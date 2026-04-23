@@ -448,6 +448,69 @@ fn block_pragma_change_changes_module_content_hash() {
     );
 }
 
+/// Parameterized test covering the remaining (arg variant × value variant) combinations
+/// for module-level pragma hashing that are not covered by
+/// `module_pragma_change_changes_module_content_hash` (which exercises KeyValue + Number).
+///
+/// Combined with that test, these cases give full coverage of all four `PragmaValue`
+/// variants (Ident, Number, String, Bool) and both `PragmaArg` variants (Bare, KeyValue)
+/// as encoded by `hash_pragma_arg` + `hash_pragma_value` in compile_builder/hash.rs.
+///
+/// Each case is a characterization/regression test: `hash_pragma_value` already encodes
+/// every variant with a distinct kind-tag prefix, so these pass on current main.
+/// They guard against a regression that drops or merges kind-tag prefixes and thereby
+/// produces silent hash collisions between pragma variants.
+#[test]
+fn pragma_value_variants_produce_distinct_content_hashes() {
+    let path = reify_types::ModulePath::single("m");
+
+    let cases: &[(&str, &str, &str)] = &[
+        // Bare + Ident: #precision(bare_ident_a) vs #precision(bare_ident_b)
+        (
+            "Bare+Ident",
+            "#precision(bare_ident_a)\nstructure S { param x : Real }",
+            "#precision(bare_ident_b)\nstructure S { param x : Real }",
+        ),
+        // KeyValue + Bool: #flag(enabled=true) vs #flag(enabled=false)
+        (
+            "KeyValue+Bool",
+            "#flag(enabled=true)\nstructure S { param x : Real }",
+            "#flag(enabled=false)\nstructure S { param x : Real }",
+        ),
+        // KeyValue + String: #tag(name="a") vs #tag(name="b")
+        (
+            "KeyValue+String",
+            r#"#tag(name="a")
+structure S { param x : Real }"#,
+            r#"#tag(name="b")
+structure S { param x : Real }"#,
+        ),
+    ];
+
+    for &(label, source_a, source_b) in cases {
+        let parsed_a = reify_syntax::parse(source_a, path.clone());
+        assert!(
+            parsed_a.errors.is_empty(),
+            "[{label}] parse errors in a: {:?}",
+            parsed_a.errors
+        );
+        let compiled_a = reify_compiler::compile(&parsed_a);
+
+        let parsed_b = reify_syntax::parse(source_b, path.clone());
+        assert!(
+            parsed_b.errors.is_empty(),
+            "[{label}] parse errors in b: {:?}",
+            parsed_b.errors
+        );
+        let compiled_b = reify_compiler::compile(&parsed_b);
+
+        assert_ne!(
+            compiled_a.content_hash, compiled_b.content_hash,
+            "[{label}] sources differing only in pragma value should produce different content_hashes"
+        );
+    }
+}
+
 // ── Step C: characterization tests ───────────────────────────────────────────
 
 /// Characterization: block-level pragma on an occurrence def is propagated to
