@@ -46063,23 +46063,21 @@
         "description": "Two wave2 guard-flip regression tests (edit_source.rs:2229, guard_eval.rs:2483) share ~90% of fixture. Extract helper wave2_flip_fixture() in tests-local or reify_test_support. Polish. Source: esc-2146-21.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-23T20:16:10.303Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:15:39.276Z",
-      "taskCount": 2158,
+      "lastModified": "2026-04-23T20:16:10.303Z",
+      "taskCount": 2159,
       "completedCount": 1915,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T20:16:03.533Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T20:16:03.559Z"
+      ]
     }
   }
 }
