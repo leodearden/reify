@@ -1624,13 +1624,10 @@ fn compile_boolean_op_union_all_via_compile() {
             ..
         }
     ));
-    assert!(matches!(
-        ops[2],
-        CompiledGeometryOp::Boolean {
-            op: BooleanOp::Union,
-            ..
-        }
-    ));
+    match &ops[2] {
+        CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(0), right: GeomRef::Step(1) } => {}
+        other => panic!("expected Boolean{{Union, Step(0), Step(1)}}, got {:?}", other),
+    }
     assert!(matches!(
         ops[3],
         CompiledGeometryOp::Primitive {
@@ -1638,13 +1635,10 @@ fn compile_boolean_op_union_all_via_compile() {
             ..
         }
     ));
-    assert!(matches!(
-        ops[4],
-        CompiledGeometryOp::Boolean {
-            op: BooleanOp::Union,
-            ..
-        }
-    ));
+    match &ops[4] {
+        CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(2), right: GeomRef::Step(3) } => {}
+        other => panic!("expected Boolean{{Union, Step(2), Step(3)}}, got {:?}", other),
+    }
 }
 
 #[test]
