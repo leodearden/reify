@@ -45738,23 +45738,21 @@
         "description": "In crates/reify-compiler/tests/module_dag_tests.rs:1455-1473, the three substring assertions (\"overlay/partial\", \"filesystem/embedded\", \"std.foo\") overlap loosely — they would pass even if the wrong error path (e.g. entry-guard variant rather than the new deferred-commit variant) were taken. Add an assertion for the distinguishing phrase \"transitive\" (or the exact context clause produced by the deferred-commit branch) so this test is tightly bound to the bug it guards. Source: esc-2076-29 (S2).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-23T17:28:10.200Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:27:23.635Z",
-      "taskCount": 2144,
+      "lastModified": "2026-04-23T17:28:10.200Z",
+      "taskCount": 2145,
       "completedCount": 1893,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T17:28:06.652Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T17:28:06.692Z"
+      ]
     }
   }
 }
