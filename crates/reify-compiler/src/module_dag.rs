@@ -492,6 +492,26 @@ impl ModuleDag {
 mod tests {
     use super::*;
 
+    #[track_caller]
+    fn assert_fs_over_embedded(diag: &Diagnostic, expected_marker: &str, forbidden_marker: &str) {
+        assert!(diag.message.contains("std.foo"));
+        assert!(diag.message.contains("/tmp/stdlib"));
+        assert!(diag.message.contains("resolved on the filesystem"));
+        assert!(diag.message.contains("embedded stdlib"));
+        assert!(
+            diag.message.contains(expected_marker),
+            "diagnostic must contain the structural marker '{}', got: {}",
+            expected_marker,
+            diag.message
+        );
+        assert!(
+            !diag.message.contains(forbidden_marker),
+            "diagnostic must NOT contain the forbidden marker '{}', got: {}",
+            forbidden_marker,
+            diag.message
+        );
+    }
+
     #[test]
     fn partial_overlay_diag_fs_over_embedded_format() {
         let stdlib_root = std::path::PathBuf::from("/tmp/stdlib");
