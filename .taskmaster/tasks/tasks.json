@@ -41757,11 +41757,11 @@
         "description": "Three coupled improvements to the Option B fix landed in task 1951 (`crates/reify-compiler/src/conformance.rs` ~344-351 and the in-crate unit test ~932-1115).\n\n1. **Over-broad guard (robustness)** — conformance.rs:344-351. The current guard `if pass2_skipped.contains(name) { return None; }` fires on the WHOLE `DefaultKind::Let` arm regardless of `cell_type`. If two traits both provide a Let default for the same name — one annotated (Pass 1 registers it as a real cell) and one unannotated (Pass 2 records the name in `pass2_skipped`) — the guard drops BOTH from `available_defaults`. Meanwhile the injection loop at ~520-527 still emits a cell for the annotated Let, so the advertisement map is asymmetric with injection in the OPPOSITE direction the comment claims. A future `RequirementKind::Let` lookup against that name would emit a bogus \"missing required member\" instead of matching the legitimately injected annotated Let. Latent (RequirementKind::Let is not parser-reachable today, same reason esc-1951-6 and the unit test had to hand-build one), but a regression waiting for the parser extension.\n\n   Fix: tighten to `if cell_type.is_none() && pass2_skipped.contains(name) { return None; }`. That preserves Option B for the unannotated skipped Let while keeping any sibling annotated-Let advertisement intact, matching what the injection loop actually does. Update the rationale comment at ~324-334 to reflect the narrower scope.\n\n2. **Missing annotated-Let coverage (test_coverage)** — conformance.rs:932-1115 unit test. The current test covers the pass2_skipped-triggered-by-Param case but not pass2_skipped-triggered-by-annotated-Let. That latter case (Trait A: `let x : Length = 1mm`, Trait B: `let x = 5.0`) is exactly where the over-broad guard above would silently drop a legitimate annotated-Let advertisement. Add a second sub-case (or sibling test) where Pass 1 registers an annotated Let, Pass 2 records pass2_skipped from an unannotated Let with the same name, and a hand-built `RequirementKind::Let` requirement of the matching type is satisfied (no \"missing required member\" diagnostic emitted).\n\n3. **Single-letter substring match in test (test_quality)** — conformance.rs:1095-1105. The filter `d.message.contains('x')` matches incidental `x` letters in diagnostic prose (\"expr\", \"exists\", \"expect\", \"syntax\", \"mismatch\", etc.). Tighten to a delimited match — diagnostics quote member names as `'{}'`, so use `d.message.contains(\"'x'\")` or `d.message.contains(\"member 'x'\")`. Apply on both the phantom-diagnostic filter and the missing-member filter.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestions 1 + 3 + 4). Distinct from task 1952 (Pass 1 ↔ Pass 2 cell-injection symmetry — that's about the injection loop; this is about the advertisement builder) and from task 1914 #3 (shared advertised-type helper — the helper extraction would touch the same region; coordinate sequencing if both land).\n\nMemory hints: search \"task 1951 pass2_skipped phantom Let advertisement Option B\"; entities: DefaultKind, AvailableDefaultKind, RequirementKind.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T18:08:15.390Z",
+        "updatedAt": "2026-04-23T18:49:17.279Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/conformance.rs"
@@ -45907,7 +45907,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T18:49:12.689Z",
+      "lastModified": "2026-04-23T18:49:17.279Z",
       "taskCount": 2152,
       "completedCount": 1904,
       "tags": [
