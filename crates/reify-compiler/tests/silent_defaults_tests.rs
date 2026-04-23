@@ -161,8 +161,6 @@ trait Configurable {
             reify_compiler::DefaultKind::Constraint(_) => {
                 // Constraints may or may not have names — not checked here
             }
-            // DefaultKind is #[non_exhaustive]; wildcard catches future variants.
-            _ => {}
         }
     }
 }

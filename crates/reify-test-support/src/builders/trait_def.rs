@@ -94,8 +94,6 @@ impl TraitDefBuilder {
                     DefaultKind::Param { .. } => "Param",
                     DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
-                    // DefaultKind is #[non_exhaustive]; wildcard catches future variants.
-                    _ => "Unknown",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });
@@ -223,8 +221,6 @@ impl CompiledTraitBuilder {
                     DefaultKind::Param { .. } => "Param",
                     DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
-                    // DefaultKind is #[non_exhaustive]; wildcard catches future variants.
-                    _ => "Unknown",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });
