@@ -429,9 +429,9 @@ fn module_pragma_change_changes_module_content_hash() {
 /// incorporates templates via `ctx.templates.iter().map(|t| t.content_hash)` (hash.rs:27),
 /// so block-level pragma changes must propagate: template.content_hash → module.content_hash.
 ///
-/// EXPECTED: FAILS on current main because `TopologyTemplate::content_hash` (entity.rs)
-/// does not fold `structure.pragmas` into the template hash, so the pragma arg difference
-/// does not reach `compiled.content_hash` via the templates chain.
+/// Pins the block-level pragma → template.content_hash → module.content_hash propagation
+/// chain now implemented in entity.rs (pragma folding in the `let content_hash = { ... }` block,
+/// entity.rs:1530-1543). This is a passing regression guard — not a known-failing test.
 #[test]
 fn block_pragma_change_changes_module_content_hash() {
     let path = reify_types::ModulePath::single("m");
@@ -472,6 +472,11 @@ fn block_pragma_change_changes_module_content_hash() {
 /// every variant with a distinct kind-tag prefix, so these pass on current main.
 /// They guard against a regression that drops or merges kind-tag prefixes and thereby
 /// produces silent hash collisions between pragma variants.
+///
+/// Module-level coverage is sufficient here because both module-level and block-level pragma
+/// hashing call the same `hash_pragma` helper (compile_builder/hash.rs). A variant-encoding
+/// bug in `hash_pragma_value` would surface identically on either path; the block-level
+/// path is independently verified by `block_pragma_change_changes_module_content_hash`.
 #[test]
 fn pragma_value_variants_produce_distinct_content_hashes() {
     let path = reify_types::ModulePath::single("m");
