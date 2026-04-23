@@ -41832,7 +41832,7 @@
         "metadata": {
           "files": [],
           "modules": [
-            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/conformance",
             "crates/reify-compiler/tests/trait_merge_tests.rs"
           ]
         },
