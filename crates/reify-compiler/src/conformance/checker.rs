@@ -217,15 +217,12 @@ pub(super) fn check_phase_collect_trait_bounds(
 ///   already claimed (Pass 1 registered an annotated Param or Let), the name is added to
 ///   `pass2_skipped` and the Let-cell injection is suppressed in phase 6.
 ///
-/// # INVARIANTS for `inferred_let_exprs` name-only key
+/// # INVARIANT for `inferred_let_exprs` composite key
 ///
-/// 1. Only `DefaultKind::Let { cell_type: None }` inserts into this cache — no cross-kind
-///    writes, so a `Param`-named `x` and a `Let`-named `x` never collide on this map.
-/// 2. Only the `DefaultKind::Let` arm of the injection loop (phase 6) reads from this cache
-///    — reads are kind-guarded by the enclosing match, so the lookup cannot be satisfied by
-///    a non-Let entry.
-/// 3. `collect_all_requirements` deduplicates defaults by (name, kind) across the trait-bound
-///    set, so at most one unannotated-let default with a given name reaches this loop.
+/// `collect_all_requirements` deduplicates defaults by (name, kind) across the trait-bound
+/// set, so at most one unannotated-let default with a given name reaches this loop. The
+/// composite `(String, AvailableDefaultKind)` key makes cross-kind collisions structurally
+/// impossible: a `Param`-named `x` and a `Let`-named `x` occupy distinct slots by type.
 ///
 /// # PASS 2 COMPILE-ERROR SUPPRESSION (`pass2_compile_errors`, task 1914 suggestion #1)
 ///
@@ -268,8 +265,8 @@ pub(super) fn check_phase_pre_register_default_types(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
-) -> (HashMap<String, CompiledExpr>, HashSet<String>, HashSet<String>) {
-    let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+) -> (HashMap<(String, AvailableDefaultKind), CompiledExpr>, HashSet<String>, HashSet<String>) {
+    let mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> = HashMap::new();
     // Unannotated-let defaults whose scope slot was already claimed by an annotated
     // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
     // insert so the injection loop does not emit a duplicate Let cell alongside the
@@ -385,7 +382,7 @@ pub(super) fn check_phase_pre_register_default_types(
                     // injection for this name and avoids duplicate (entity, member) cells.
                     pass2_skipped.insert(name.to_string());
                 } else {
-                    inferred_let_exprs.insert(name.clone(), compiled_expr);
+                    inferred_let_exprs.insert((name.clone(), AvailableDefaultKind::Let), compiled_expr);
                 }
             }
         }
@@ -439,7 +436,7 @@ pub(super) fn check_phase_pre_register_default_types(
 /// A `debug_assert!` guards the fallback to catch any drift.
 pub(super) fn check_phase_build_available_defaults_map(
     ctx: &MergeContext,
-    inferred_let_exprs: &HashMap<String, CompiledExpr>,
+    inferred_let_exprs: &HashMap<(String, AvailableDefaultKind), CompiledExpr>,
     pass2_skipped: &HashSet<String>,
     pass2_compile_errors: &HashSet<String>,
 ) -> HashMap<(String, AvailableDefaultKind), Type> {
@@ -469,14 +466,14 @@ pub(super) fn check_phase_build_available_defaults_map(
                     }
                     let resolved = cell_type.clone().unwrap_or_else(|| {
                         debug_assert!(
-                            inferred_let_exprs.contains_key(name),
-                            "unannotated Let '{name}' absent from inferred_let_exprs and not in \
-                             pass2_skipped or pass2_compile_errors — Pass 2 contract broken; \
-                             Type::Real fallback would re-introduce the phantom-type-mismatch \
-                             bug fixed by task 1951 Option B"
+                            inferred_let_exprs.contains_key(&(name.to_string(), AvailableDefaultKind::Let)),
+                            "unannotated Let '{name}' absent from inferred_let_exprs (composite key \
+                             (name, Let)) and not in pass2_skipped or pass2_compile_errors — Pass 2 \
+                             contract broken; Type::Real fallback would re-introduce the \
+                             phantom-type-mismatch bug fixed by task 1951 Option B"
                         );
                         inferred_let_exprs
-                            .get(name)
+                            .get(&(name.to_string(), AvailableDefaultKind::Let))
                             .map(|e| e.result_type.clone())
                             .unwrap_or(Type::Real)
                     });
@@ -673,7 +670,7 @@ pub(super) fn check_phase_inject_defaults(
     structure: &EntityDefRef<'_>,
     structure_members: &HashMap<String, Type>,
     structure_constraint_labels: &HashSet<String>,
-    mut inferred_let_exprs: HashMap<String, CompiledExpr>,
+    mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr>,
     pass2_skipped: &HashSet<String>,
     pass2_compile_errors: &HashSet<String>,
     scope: &mut CompilationScope,
@@ -760,7 +757,7 @@ pub(super) fn check_phase_inject_defaults(
                             compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
                         }
                         None => {
-                            match inferred_let_exprs.remove(name) {
+                            match inferred_let_exprs.remove(&(name.to_string(), AvailableDefaultKind::Let)) {
                                 Some(ce) => ce,
                                 None => {
                                     if pass2_skipped.contains(name) {

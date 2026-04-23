@@ -1321,11 +1321,11 @@ mod tests {
             "Expected no pass2_compile_errors for a successful compilation"
         );
         assert!(
-            inferred_let_exprs.contains_key("y"),
-            "Expected 'y' in inferred_let_exprs after Pass 2 compiled the unannotated let"
+            inferred_let_exprs.contains_key(&("y".to_string(), AvailableDefaultKind::Let)),
+            "Expected composite key ('y', Let) in inferred_let_exprs after Pass 2 compiled the unannotated let"
         );
         assert_eq!(
-            inferred_let_exprs["y"].result_type,
+            inferred_let_exprs[&("y".to_string(), AvailableDefaultKind::Let)].result_type,
             Type::Real,
             "Expected Type::Real for a floating-point number literal 2.5"
         );
@@ -1542,7 +1542,7 @@ mod tests {
             },
         ];
 
-        let inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> = HashMap::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
 
@@ -1862,7 +1862,7 @@ mod tests {
 
         let structure_members: HashMap<String, Type> = HashMap::new();
         let structure_constraint_labels: HashSet<String> = HashSet::new();
-        let inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> = HashMap::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
         let mut scope = CompilationScope::new("S");
