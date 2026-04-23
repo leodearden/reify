@@ -689,16 +689,31 @@ pub(super) fn check_phase_check_members_against_requirements(
                         // No default of the required kind — treat as missing.
                         // A param requirement with only a let default in scope means the
                         // structure must provide a settable param slot itself.
-                        let kind_str = match required_default_kind {
-                            AvailableDefaultKind::Param => "param",
-                            AvailableDefaultKind::Let => "let",
+                        // Only mention the required kind when the structure declares the
+                        // name in the opposite-kind map (the actionable "wrong kind" case);
+                        // otherwise the suffix is noise — the user simply forgot the member.
+                        let opposite_kind_members = match required_default_kind {
+                            AvailableDefaultKind::Param => structure_let_members,
+                            AvailableDefaultKind::Let => structure_param_members,
                         };
-                        diagnostics.push(
-                            Diagnostic::error(format!(
+                        let message = if opposite_kind_members.contains_key(&req.name) {
+                            let kind_str = match required_default_kind {
+                                AvailableDefaultKind::Param => "param",
+                                AvailableDefaultKind::Let => "let",
+                            };
+                            format!(
                                 "missing required member '{}' (expected type: {}; requires a `{}` slot)",
                                 req.name, expected_type, kind_str
-                            ))
-                            .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
+                            )
+                        } else {
+                            format!(
+                                "missing required member '{}' (expected type: {})",
+                                req.name, expected_type
+                            )
+                        };
+                        diagnostics.push(
+                            Diagnostic::error(message)
+                                .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                         );
                     }
                 }
