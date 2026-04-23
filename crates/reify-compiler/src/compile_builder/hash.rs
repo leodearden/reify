@@ -90,7 +90,7 @@ pub(crate) fn compute_module_hash(
 /// Encoding the count explicitly guards against collisions when a pragma has
 /// optional arguments that could be absent vs. present as an empty value.
 /// Source span is intentionally excluded — it is positional metadata, not content.
-fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
+pub(crate) fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
     let mut h = ContentHash::of_str(&p.name).combine(ContentHash::of_u64(p.args.len() as u64));
     for arg in &p.args {
         h = h.combine(hash_pragma_arg(arg));
@@ -161,6 +161,70 @@ mod tests {
         assert_ne!(
             h_bool, h_str,
             "Bool(true) and String(\"true\") must produce distinct hashes"
+        );
+    }
+
+    /// Pins the arg-level discriminator collision invariant: `Bare(v)` and
+    /// `KeyValue { key: "", value: v }` must hash differently even when the key
+    /// is empty and the value is identical.
+    ///
+    /// With an empty key the KeyValue branch reduces to:
+    ///   `ContentHash::of_str("kv") + of_str("") + hash_pragma_value(v)`
+    /// while Bare reduces to:
+    ///   `ContentHash::of_str("bare") + hash_pragma_value(v)`
+    ///
+    /// The test guards against a format-string regression that drops the leading
+    /// "bare"/"kv" kind-tag, which would cause a zero-length-key KeyValue to
+    /// collide with the Bare variant and silently invalidate cache keys.
+    #[test]
+    fn pragma_arg_bare_vs_keyvalue_differ_for_same_value() {
+        let v = reify_syntax::PragmaValue::Ident("x".to_string());
+        let h_bare = hash_pragma_arg(&reify_syntax::PragmaArg::Bare(v.clone()));
+        let h_kv = hash_pragma_arg(&reify_syntax::PragmaArg::KeyValue {
+            key: "".to_string(),
+            value: v,
+        });
+        assert_ne!(
+            h_bare, h_kv,
+            "Bare(v) and KeyValue {{ key: \"\", value: v }} must produce distinct hashes \
+             — the 'bare'/'kv' kind-tag prefixes must diverge even when the key is empty \
+             and values match"
+        );
+    }
+
+    /// Pins the pragma name/arg-count encoding invariant: a zero-arg pragma and a
+    /// one-arg pragma with the same name must produce distinct hashes.
+    ///
+    /// `hash_pragma` encodes `p.args.len()` as a u64 explicitly so that a pragma
+    /// with optional arguments absent (`args: vec![]`) cannot collide with the same
+    /// pragma name where the optional argument is present as an empty value.
+    ///
+    /// > "Encoding the count explicitly guards against collisions when a pragma has
+    /// > optional arguments that could be absent vs. present as an empty value."
+    ///   — hash_pragma docstring
+    ///
+    /// Span is set to `SourceSpan::new(0, 0)` because span is positional metadata
+    /// explicitly excluded from the hash (per the docstring), so span choice is
+    /// irrelevant to the assertion.
+    #[test]
+    fn pragma_arg_count_encoded_distinctly() {
+        let p_empty = reify_syntax::Pragma {
+            name: "foo".to_string(),
+            args: vec![],
+            span: reify_types::SourceSpan::new(0, 0),
+        };
+        let p_one = reify_syntax::Pragma {
+            name: "foo".to_string(),
+            args: vec![reify_syntax::PragmaArg::Bare(reify_syntax::PragmaValue::Ident(
+                "x".to_string(),
+            ))],
+            span: reify_types::SourceSpan::new(0, 0),
+        };
+        assert_ne!(
+            hash_pragma(&p_empty),
+            hash_pragma(&p_one),
+            "zero-arg and one-arg pragmas with the same name must hash distinctly \
+             — arg count is encoded to prevent optional-absent vs empty-present collisions"
         );
     }
 }

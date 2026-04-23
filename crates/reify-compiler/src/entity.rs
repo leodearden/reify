@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use crate::compile_builder::hash::hash_pragma;
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
@@ -1527,6 +1528,11 @@ pub(crate) fn compile_entity(
             [ContentHash::of_str(k), ContentHash::of_str(v)]
         });
 
+        // Block-level pragma hashes (in declaration order; span excluded as positional).
+        // Appended last so pragma-free templates retain identical hashes to pre-pragma-hashing
+        // compilations — mirrors the module-level convention in compile_builder/hash.rs:69-81.
+        let pragma_hashes = structure.pragmas.iter().map(hash_pragma);
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
@@ -1534,7 +1540,8 @@ pub(crate) fn compile_entity(
             .chain(guard_hashes)
             .chain(port_hashes)
             .chain(connection_hashes)
-            .chain(meta_hashes);
+            .chain(meta_hashes)
+            .chain(pragma_hashes);
 
         ContentHash::combine_all(all_hashes)
     };

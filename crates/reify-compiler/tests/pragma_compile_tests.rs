@@ -336,6 +336,13 @@ fn known_block_pragma_solver_no_warning_on_trait() {
 
 /// Module-only pragma `#no_prelude` on a structure block should emit a
 /// "only valid at module level" warning, not the generic "unknown pragma" one.
+///
+/// The new assertion `pragma_warnings(&module, "unknown pragma").is_empty()` pins
+/// the absence of the legacy generic warning so a regression that emits both
+/// (module-only + unknown-pragma), or reverts the classify_pragma split in
+/// annotations.rs back to a single generic-unknown branch, would fail here.
+/// Contract: `#no_prelude` on a block emits *exactly* the module-only warning —
+/// neither less nor more.
 #[test]
 fn no_prelude_on_structure_emits_module_only_warning() {
     let module = compile_source(r#"structure S { #no_prelude param x : Real }"#);
@@ -349,6 +356,11 @@ fn no_prelude_on_structure_emits_module_only_warning() {
         warns.iter().any(|d| d.message.contains("only valid at module level")),
         "expected warning to mention 'only valid at module level', got: {:?}",
         warns
+    );
+    assert!(
+        pragma_warnings(&module, "unknown pragma").is_empty(),
+        "expected no legacy 'unknown pragma' warning for #no_prelude on a block, got: {:?}",
+        pragma_warnings(&module, "unknown pragma")
     );
 }
 
@@ -405,6 +417,115 @@ fn module_pragma_change_changes_module_content_hash() {
         compiled_a.content_hash, compiled_a2.content_hash,
         "same source compiled twice should produce identical content_hashes"
     );
+}
+
+/// Changing a block-level pragma value must produce a different content_hash,
+/// and compiling the same source twice must produce an identical hash (determinism).
+///
+/// This exercises a different path than `module_pragma_change_changes_module_content_hash`:
+/// block-level pragmas are stored on `TopologyTemplate.pragmas` (via entity.rs:1772
+/// `pragmas: structure.pragmas.to_vec()`), and the template's `content_hash` is
+/// computed in the `let content_hash = { ... }` block in entity.rs. The module hash
+/// incorporates templates via `ctx.templates.iter().map(|t| t.content_hash)` (hash.rs:27),
+/// so block-level pragma changes must propagate: template.content_hash → module.content_hash.
+///
+/// Pins the block-level pragma → template.content_hash → module.content_hash propagation
+/// chain now implemented in entity.rs (pragma folding in the `let content_hash = { ... }` block,
+/// entity.rs:1530-1543). This is a passing regression guard — not a known-failing test.
+#[test]
+fn block_pragma_change_changes_module_content_hash() {
+    let path = reify_types::ModulePath::single("m");
+
+    let source_a = "structure S { #precision(bits=32) param x : Real }";
+    let parsed_a = reify_syntax::parse(source_a, path.clone());
+    assert!(parsed_a.errors.is_empty(), "parse errors in a: {:?}", parsed_a.errors);
+    let compiled_a = reify_compiler::compile(&parsed_a);
+
+    let source_b = "structure S { #precision(bits=64) param x : Real }";
+    let parsed_b = reify_syntax::parse(source_b, path.clone());
+    assert!(parsed_b.errors.is_empty(), "parse errors in b: {:?}", parsed_b.errors);
+    let compiled_b = reify_compiler::compile(&parsed_b);
+
+    assert_ne!(
+        compiled_a.content_hash, compiled_b.content_hash,
+        "sources differing only in block-level pragma should produce different content_hashes"
+    );
+
+    // Determinism: compiling the same source twice yields the same hash.
+    let parsed_a2 = reify_syntax::parse(source_a, path.clone());
+    let compiled_a2 = reify_compiler::compile(&parsed_a2);
+    assert_eq!(
+        compiled_a.content_hash, compiled_a2.content_hash,
+        "same source compiled twice should produce identical content_hashes"
+    );
+}
+
+/// Parameterized test covering the remaining (arg variant × value variant) combinations
+/// for module-level pragma hashing that are not covered by
+/// `module_pragma_change_changes_module_content_hash` (which exercises KeyValue + Number).
+///
+/// Combined with that test, these cases give full coverage of all four `PragmaValue`
+/// variants (Ident, Number, String, Bool) and both `PragmaArg` variants (Bare, KeyValue)
+/// as encoded by `hash_pragma_arg` + `hash_pragma_value` in compile_builder/hash.rs.
+///
+/// Each case is a characterization/regression test: `hash_pragma_value` already encodes
+/// every variant with a distinct kind-tag prefix, so these pass on current main.
+/// They guard against a regression that drops or merges kind-tag prefixes and thereby
+/// produces silent hash collisions between pragma variants.
+///
+/// Module-level coverage is sufficient here because both module-level and block-level pragma
+/// hashing call the same `hash_pragma` helper (compile_builder/hash.rs). A variant-encoding
+/// bug in `hash_pragma_value` would surface identically on either path; the block-level
+/// path is independently verified by `block_pragma_change_changes_module_content_hash`.
+#[test]
+fn pragma_value_variants_produce_distinct_content_hashes() {
+    let path = reify_types::ModulePath::single("m");
+
+    let cases: &[(&str, &str, &str)] = &[
+        // Bare + Ident: #precision(bare_ident_a) vs #precision(bare_ident_b)
+        (
+            "Bare+Ident",
+            "#precision(bare_ident_a)\nstructure S { param x : Real }",
+            "#precision(bare_ident_b)\nstructure S { param x : Real }",
+        ),
+        // KeyValue + Bool: #flag(enabled=true) vs #flag(enabled=false)
+        (
+            "KeyValue+Bool",
+            "#flag(enabled=true)\nstructure S { param x : Real }",
+            "#flag(enabled=false)\nstructure S { param x : Real }",
+        ),
+        // KeyValue + String: #tag(name="a") vs #tag(name="b")
+        (
+            "KeyValue+String",
+            r#"#tag(name="a")
+structure S { param x : Real }"#,
+            r#"#tag(name="b")
+structure S { param x : Real }"#,
+        ),
+    ];
+
+    for &(label, source_a, source_b) in cases {
+        let parsed_a = reify_syntax::parse(source_a, path.clone());
+        assert!(
+            parsed_a.errors.is_empty(),
+            "[{label}] parse errors in a: {:?}",
+            parsed_a.errors
+        );
+        let compiled_a = reify_compiler::compile(&parsed_a);
+
+        let parsed_b = reify_syntax::parse(source_b, path.clone());
+        assert!(
+            parsed_b.errors.is_empty(),
+            "[{label}] parse errors in b: {:?}",
+            parsed_b.errors
+        );
+        let compiled_b = reify_compiler::compile(&parsed_b);
+
+        assert_ne!(
+            compiled_a.content_hash, compiled_b.content_hash,
+            "[{label}] sources differing only in pragma value should produce different content_hashes"
+        );
+    }
 }
 
 // ── Step C: characterization tests ───────────────────────────────────────────
