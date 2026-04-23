@@ -420,6 +420,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn partial_overlay_diag_fs_over_embedded_format() {
+        let stdlib_root = std::path::PathBuf::from("/tmp/stdlib");
+        let diag = partial_overlay_diag(
+            "std.foo",
+            OverlayDirection::FsOverEmbedded {
+                context: "earlier std.* imports were served from the embedded stdlib",
+            },
+            &stdlib_root,
+        );
+        assert_eq!(
+            diag.message,
+            "partial stdlib overlay: 'std.foo' resolved on the filesystem but earlier std.* imports were served from the embedded stdlib; \
+             either populate all stdlib modules under '/tmp/stdlib' or remove that directory to use the embedded stdlib exclusively"
+        );
+    }
+
+    #[test]
+    fn partial_overlay_diag_embedded_over_fs_format() {
+        let stdlib_root = std::path::PathBuf::from("/tmp/stdlib");
+        let diag = partial_overlay_diag(
+            "std.bar",
+            OverlayDirection::EmbeddedOverFs,
+            &stdlib_root,
+        );
+        assert_eq!(
+            diag.message,
+            "partial stdlib overlay: 'std.bar' not found on the filesystem under '/tmp/stdlib' \
+             but earlier std.* imports were resolved from the filesystem; either add the missing module to '/tmp/stdlib' \
+             or remove that directory to use the embedded stdlib exclusively"
+        );
+    }
+
+    #[test]
     fn diag_invalid_path_formats_message_with_context_phrase() {
         // Case 1: Empty error, "resolving import" context (matches existing inline closures)
         let diags = diag_invalid_path("foo", ModulePathParseError::Empty, "resolving import");
