@@ -406,3 +406,70 @@ fn module_pragma_change_changes_module_content_hash() {
         "same source compiled twice should produce identical content_hashes"
     );
 }
+
+// ── Step C: characterization tests ───────────────────────────────────────────
+
+/// Characterization: block-level pragma on an occurrence def is propagated to
+/// TopologyTemplate.pragmas via EntityDefRef::from(&OccurrenceDef) → compile_entity
+/// → pragmas: structure.pragmas.to_vec().
+///
+/// Mirrors `structure_pragma_propagated_to_topology_template`, but for occurrences.
+/// No implementation change needed — this guards existing behavior.
+#[test]
+fn occurrence_pragma_propagated_to_topology_template() {
+    let module =
+        compile_source(r#"occurrence def O { #solver(backend="ipopt") param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "O")
+        .expect("template named 'O' not found");
+
+    assert_eq!(
+        template.entity_kind,
+        reify_compiler::EntityKind::Occurrence,
+        "expected entity_kind Occurrence"
+    );
+    assert_eq!(
+        template.pragmas.len(),
+        1,
+        "expected 1 pragma on occurrence template, got {}: {:?}",
+        template.pragmas.len(),
+        template.pragmas
+    );
+    let solver = &template.pragmas[0];
+    assert_eq!(solver.name, "solver", "expected pragma name 'solver'");
+    assert_eq!(solver.args.len(), 1, "expected 1 arg on #solver");
+    match &solver.args[0] {
+        reify_syntax::PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "backend");
+            assert_eq!(
+                value,
+                &reify_syntax::PragmaValue::String("ipopt".to_string())
+            );
+        }
+        other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
+    }
+}
+
+/// Characterization: `#no_prelude` at module level is stored on CompiledModule.pragmas
+/// via `pragmas: parsed.pragmas.clone()` in ctx.rs.
+///
+/// Complements the behavioral tests (no_prelude_simple_structure_compiles_clean,
+/// no_prelude_suppresses_stdlib_units) with a storage assertion. Guards ctx.rs:161.
+#[test]
+fn no_prelude_is_stored_on_compiled_module_pragmas() {
+    let module =
+        compile_source_with_stdlib("#no_prelude\nstructure S { param x : Real = 1.0 }");
+    assert!(
+        module.pragmas.iter().any(|p| p.name == "no_prelude"),
+        "expected #no_prelude in module.pragmas, got: {:?}",
+        module.pragmas
+    );
+}
