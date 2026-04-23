@@ -234,13 +234,11 @@ pub(crate) fn compile_purpose(
         if let Some(template) = template_registry.get(&param.entity_kind)
             && let Some(msg) = deprecation_message(&template.annotations)
         {
-            emit_deprecation_warning(
-                &template.entity_kind.to_string().to_lowercase(),
-                &param.entity_kind,
-                msg,
-                param.span,
-                diagnostics,
-            );
+            let kind_label: &'static str = match template.entity_kind {
+                EntityKind::Structure => "structure",
+                EntityKind::Occurrence => "occurrence",
+            };
+            emit_deprecation_warning(kind_label, &param.entity_kind, msg, param.span, diagnostics);
         }
     }
 
