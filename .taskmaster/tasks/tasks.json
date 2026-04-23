@@ -45936,6 +45936,17 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2161",
+        "title": "module_dag.rs: DRY partial_overlay_diag_fs_over_embedded_format test with shared helper",
+        "description": "Extract a `assert_fs_over_embedded(diag: &Diagnostic, expected_marker: &str, forbidden_marker: &str)` helper in the module_dag.rs tests to de-duplicate the Entry vs Transitive sub-tests of `partial_overlay_diag_fs_over_embedded_format` (crates/reify-compiler/src/module_dag.rs:497-543). Both variants share four assertions (path substring, root substring, \"resolved on the filesystem\", \"embedded stdlib\") plus the positive/negative structural marker checks — extract these into a single helper that takes the diagnostic and the expected/forbidden markers, then call it twice. Makes adding a future commit-site variant trivial.",
+        "details": "Source: review suggestion on task 2152 (esc-2152-11, reviewer_comprehensive).\n\nScope:\n- Only the test module in crates/reify-compiler/src/module_dag.rs (lines 497-543).\n- Do NOT change production code (partial_overlay_diag, OVERLAY_PREFIX, OVERLAY_SUFFIX) — the review noted that placement was fine and this is purely a test-DRYness change.\n\nAcceptance:\n- `assert_fs_over_embedded(&entry_diag, \"(fs-over-embedded/entry)\", \"(fs-over-embedded/transitive)\")` + analogous transitive call replace the duplicated assertion blocks.\n- Helper asserts: contains path, contains root, contains \"resolved on the filesystem\", contains \"embedded stdlib\", contains expected_marker, does not contain forbidden_marker.\n- `cargo test -p reify-compiler module_dag` passes.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45945,7 +45956,10 @@
       "completedCount": 1905,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T19:15:04.585Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T19:15:04.665Z"
     }
   }
 }
