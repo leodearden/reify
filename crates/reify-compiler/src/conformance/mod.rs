@@ -30,11 +30,21 @@ pub(crate) fn check_trait_conformance(
     // structure declares a member by name (conflict-suppression, injection-skip, scope
     // pre-registration). Phases that must distinguish param from let members use
     // `structure_param_members` / `structure_let_members` directly (phase 5).
-    let structure_all_members: HashMap<String, Type> = structure_param_members
-        .iter()
-        .chain(structure_let_members.iter())
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    //
+    // Parser invariant: a single structure cannot declare both `param x` and `let x`.
+    // The debug_assert below catches any regression in that invariant early (in
+    // development builds) rather than silently dropping one of the entries.
+    debug_assert!(
+        structure_param_members
+            .keys()
+            .all(|k| !structure_let_members.contains_key(k)),
+        "param/let member names must be disjoint — parser invariant violated"
+    );
+    // Use clone+extend instead of chain-collect to avoid materialising a third
+    // intermediate iterator while still allocating only one combined map.
+    let mut structure_all_members = structure_param_members.clone();
+    structure_all_members
+        .extend(structure_let_members.iter().map(|(k, v)| (k.clone(), v.clone())));
 
     let ctx = check_phase_collect_trait_bounds(
         structure,

@@ -1093,13 +1093,12 @@ structure def S : A {
         "expected an error: let x does not satisfy param x requirement, but got no errors"
     );
 
-    let mentions_missing = errors.iter().any(|d| {
-        let lower = d.message.to_lowercase();
-        (lower.contains("missing") || lower.contains("param")) && lower.contains("x")
-    });
+    let mentions_missing = errors
+        .iter()
+        .any(|d| d.message.contains("missing required member") && d.message.contains("'x'"));
     assert!(
         mentions_missing,
-        "error should mention missing/param requirement for 'x', got: {:?}",
+        "error should mention missing required member 'x', got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }

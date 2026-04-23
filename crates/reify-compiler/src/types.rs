@@ -65,12 +65,15 @@ pub struct TraitDefault {
 
 /// The kind of default a trait provides.
 ///
-/// This enum is marked `#[non_exhaustive]` so that adding new variant shapes
-/// in future tasks does not break downstream crates that pattern-match on it.
-/// Internal crate code (in `trait_requirements.rs`, `traits.rs`, and
-/// `conformance/checker.rs`) may still match exhaustively because
-/// `#[non_exhaustive]` only restricts out-of-crate consumers.
-#[non_exhaustive]
+/// All consumers of this enum live within the same workspace (`reify-compiler`
+/// and its test crates), so `#[non_exhaustive]` is deliberately omitted.
+/// Exhaustive matching is preferred here: if a new variant is added, the
+/// compiler will immediately flag every match site that needs updating, rather
+/// than silently routing new variants through a `_ => "Unknown"` wildcard that
+/// could produce incorrect content-hash collisions or other subtle bugs.
+/// When adding a new variant, update every `match` on `DefaultKind` in
+/// `trait_requirements.rs`, `traits.rs`, `conformance/checker.rs`, and any
+/// downstream test helpers.
 #[derive(Debug, Clone)]
 pub enum DefaultKind {
     /// A param with a default expression: `param x : Length = 10mm`
