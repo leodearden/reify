@@ -46080,23 +46080,21 @@
         "description": "The 10-group fixture (10 `param uN: Bool = true` lines + 10 `where uN { let xN = 1mm }` lines) is duplicated ~4 times across perf-lock tests: T1's module_a and module_b in crates/reify-eval/tests/edit_source.rs:2326-2374, T4's module_src in crates/reify-eval/tests/guard_eval.rs:2201-2222, and the pre-existing fixture in `edit_param_phase1_and_3_skip_unchanged_guarded_groups`. Each copy is ~20 lines and they differ only in group 3's guard text. Extract a shared `fn ten_bool_guarded_groups(group3_guard_expr: &str) -> String` helper (likely in a tests/common module or directly in tests/edit_source.rs if that's where the existing pattern lives) and call it with `\"u3\"` / `\"u3 && true\"` in T1 and `\"u3\"` in T4. Eliminates ~60 lines of near-identical source literals and makes the reader-intent (\"only group 3's guard text differs\") visible in one line. Source: post-merge review on task 2138.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-23T20:22:40.022Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:22:23.836Z",
-      "taskCount": 2157,
+      "lastModified": "2026-04-23T20:22:40.022Z",
+      "taskCount": 2158,
       "completedCount": 1916,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T20:22:28.115Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T20:22:28.137Z"
+      ]
     }
   }
 }
