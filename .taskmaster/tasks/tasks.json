@@ -25373,7 +25373,7 @@
         "description": "Consolidates pragma validation consolidation with context-aware diagnostics, module-level pragma inclusion in CompiledModule content_hash, and missing pragma test coverage (occurrences and #no_prelude storage).",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 1163 plus 2 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 1163: Consolidate pragma validation and add context-aware diagnostics\n\n\nTwo related improvements to pragma validation in the compiler:\n\n1. **Use `_context` parameter in `validate_pragmas`** (lib.rs:4732-4746): The `_context` parameter is accepted but never read. Unlike `validate_annotations` which uses context for context-specific warnings, `validate_pragmas` only does name-lookup. Use the context to provide better diagnostics (e.g., \"#no_prelude is only valid at module level\" when found on a block).\n\n2. **Consolidate known pragma name lists** (lib.rs:3905 and 4737): `KNOWN_MODULE_PRAGMAS` (5 entries) and `KNOWN_BLOCK_PRAGMAS` (3 entries, a subset) are defined independently with no compiler-enforced link. Extract to a shared location or add cross-references.\n\nMemory hints: search for \"pragma validation\" and \"known pragma names\" in reify-compiler.\n\n### Absorbed from task 1164: Include module-level pragmas in CompiledModule content hash\nThe content hash computation for CompiledModule (lib.rs:4530-4552) does not include module-level pragmas. If pragmas like `#precision(value=64)` are semantically meaningful for downstream compilation (solver config, numeric precision), a change to pragmas alone won't invalidate cached content hashes, risking stale results in incremental compilation.\n\nEither:\n- Hash the pragmas vector into `all_hashes` if they affect semantics, OR\n- Document that pragmas are intentionally excluded from the content hash if they are purely advisory/metadata.\n\nMemory hints: search for \"content hash\" and \"CompiledModule\" in reify-compiler. Check task 12 for content-hash caching context.\n\n### Absorbed from task 1165: Add missing pragma test coverage: occurrences and #no_prelude storage\nTwo test coverage gaps in pragma_compile_tests.rs:\n\n1. **Occurrence-level pragmas untested**: Tests cover pragma propagation for structures, traits, and purposes, but not occurrences. The `From<&'a OccurrenceDef>` → `EntityDefRef` conversion path that carries pragmas is untested. Add a test like `occurrence_pragma_propagated_to_topology_template`.\n\n2. **#no_prelude not verified in CompiledModule.pragmas**: Existing tests verify the behavioral effect (suppressing stdlib units) but not that `#no_prelude` itself appears in `module.pragmas`. Add an assertion like `module.pragmas.iter().any(|p| p.name == \"no_prelude\")` to `no_prelude_simple_structure_compiles_clean` or a new test.\n\nBoth are low-risk (shared code paths / behavioral coverage exists) but worth closing.\n\nMemory hints: search for \"pragma compile tests\" and \"EntityDefRef\" in reify-compiler.\n",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -25389,9 +25389,13 @@
             "1165"
           ],
           "bundled_at": "2026-04-11",
-          "bundle_key": "F"
+          "bundle_key": "F",
+          "done_provenance": {
+            "commit": "6b903ef078eac07f7961666eaf45d8a3128a44cd",
+            "note": "Task 1163 bundle merged to main via fast-forward (last commit in the task series)."
+          }
         },
-        "updatedAt": "2026-04-23T19:26:40.313Z"
+        "updatedAt": "2026-04-23T20:19:14.710Z"
       },
       {
         "id": "1164",
@@ -46064,14 +46068,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:18:02.696Z",
+      "lastModified": "2026-04-23T20:19:14.710Z",
       "taskCount": 2157,
-      "completedCount": 1915,
+      "completedCount": 1916,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T20:19:10.045Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
