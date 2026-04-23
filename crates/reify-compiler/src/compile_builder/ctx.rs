@@ -53,7 +53,7 @@ pub(crate) struct CompilationCtx {
     pub(crate) unit_registry: UnitRegistry,
     pub(crate) alias_registry: TypeAliasRegistry,
     /// Enum defs available for resolution: prelude enum_defs chained with
-    /// module-local `enum_defs`. Populated by `enums_phase::build_resolution_enums`.
+    /// module-local `enum_defs`. Populated by `enums_phase::build_resolution_enums_from_cache`.
     pub(crate) resolution_enums: Vec<reify_types::EnumDef>,
     /// Function table available for resolution: user functions merged with
     /// prelude functions via [`crate::merge_prelude_functions`]. Populated by
