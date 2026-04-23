@@ -64,6 +64,13 @@ pub struct TraitDefault {
 }
 
 /// The kind of default a trait provides.
+///
+/// This enum is marked `#[non_exhaustive]` so that adding new variant shapes
+/// in future tasks does not break downstream crates that pattern-match on it.
+/// Internal crate code (in `trait_requirements.rs`, `traits.rs`, and
+/// `conformance/checker.rs`) may still match exhaustively because
+/// `#[non_exhaustive]` only restricts out-of-crate consumers.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum DefaultKind {
     /// A param with a default expression: `param x : Length = 10mm`
