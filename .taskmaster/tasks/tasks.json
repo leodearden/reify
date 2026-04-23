@@ -46034,18 +46034,6 @@
         "updatedAt": "2026-04-23T20:11:52.353Z"
       },
       {
-        "id": "2165",
-        "title": "Extract shared wave2 guard-flip fixture for edit_param/edit_source regression tests",
-        "description": "The two wave2 guard-flip regression tests (crates/reify-eval/tests/edit_source.rs:2229 and crates/reify-eval/tests/guard_eval.rs:2483 — edit_param variant) share ~90% of their fixture verbatim: identical guard_expr, m_decl/n_decl, constraint wiring, and sequenced solver values (depth 8mm → 3mm). Extract a helper (e.g. `fn wave2_flip_fixture()`) in a tests-local module or reify_test_support. Keep the two #[test] functions as thin wrappers that invoke edit_param vs. edit_source and assert cell states. Low priority / polish. Source: esc-2146-21 (reviewer_comprehensive).",
-        "details": "",
-        "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
-        "priority": "medium",
-        "subtasks": [],
-        "updatedAt": "2026-04-23T20:14:36.835Z"
-      },
-      {
         "id": "2166",
         "title": "Strengthen pragma content_hash test coverage (variants + block-pragma + legacy warning)",
         "description": "Expand pragma hashing/diagnostic tests: cover all PragmaValue variants, block-level pragma mutation invariant, and pin absence of legacy generic unknown-pragma warning for #no_prelude.",
@@ -46089,7 +46077,9 @@
       "completedCount": 1915,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T20:17:26.469Z",
+      "description": "Tasks for master context"
     }
   }
 }
