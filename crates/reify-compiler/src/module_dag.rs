@@ -123,26 +123,58 @@ fn diag_invalid_path(
     ))]
 }
 
-/// Build a "partial stdlib overlay: filesystem-over-embedded" [`Diagnostic`].
+/// Direction of a partial stdlib overlay conflict.
 ///
-/// Both check sites in `compile_module` — the entry guard (Embedded already committed
-/// when a new filesystem path arrives) and the deferred-commit block (a transitive
-/// `std.*` import committed Embedded during recursion) — produce a structurally
-/// identical diagnostic that differs only in the middle clause. This helper keeps
-/// the two sites from drifting.
-fn partial_overlay_fs_over_embedded_diag(
+/// Used by [`partial_overlay_diag`] to select the appropriate diagnostic wording.
+/// The two directions warrant different user guidance:
+/// - [`FsOverEmbedded`]: filesystem module arrived after embedded was committed — user
+///   must populate *all* stdlib modules (adding just one won't cure the prior embedded
+///   commit) or remove the directory entirely.
+/// - [`EmbeddedOverFs`]: embedded fallback triggered after filesystem mode was committed
+///   because a module is missing from `stdlib_root` — user can fix by adding *that
+///   specific module*.
+#[derive(Debug)]
+enum OverlayDirection<'a> {
+    /// A `std.*` module resolved on the filesystem, but an earlier `std.*` import
+    /// was served from the embedded stdlib. The `context` field carries the
+    /// human-readable clause describing when the embedded commit happened.
+    FsOverEmbedded { context: &'a str },
+    /// A `std.*` module was not found on the filesystem, but an earlier `std.*` import
+    /// was resolved from the filesystem.
+    EmbeddedOverFs,
+}
+
+/// Build a "partial stdlib overlay" [`Diagnostic`].
+///
+/// Consolidates three call sites in `compile_module` — the entry guard
+/// (EmbeddedOverFs or FsOverEmbedded when Embedded is already committed) and the
+/// deferred-commit block (FsOverEmbedded when a transitive import committed Embedded
+/// during recursion). Each direction produces distinct remediation guidance; both share
+/// the same prefix and suffix, preventing future wording drift between sites.
+fn partial_overlay_diag(
     module_path: &str,
-    context: &str,
+    direction: OverlayDirection<'_>,
     stdlib_root: &Path,
 ) -> Diagnostic {
-    Diagnostic::error(format!(
-        "partial stdlib overlay: '{}' resolved on the filesystem but {}; \
-         either populate all stdlib modules under '{}' or remove that directory \
-         to use the embedded stdlib exclusively",
-        module_path,
-        context,
-        stdlib_root.display(),
-    ))
+    match direction {
+        OverlayDirection::FsOverEmbedded { context } => Diagnostic::error(format!(
+            "partial stdlib overlay: '{}' resolved on the filesystem but {}; \
+             either populate all stdlib modules under '{}' or remove that directory \
+             to use the embedded stdlib exclusively",
+            module_path,
+            context,
+            stdlib_root.display(),
+        )),
+        OverlayDirection::EmbeddedOverFs => Diagnostic::error(format!(
+            "partial stdlib overlay: '{}' not found on the filesystem under '{}' \
+             but earlier std.* imports were resolved from the filesystem; either \
+             add the missing module to '{}' or remove that directory to use the \
+             embedded stdlib exclusively",
+            module_path,
+            stdlib_root.display(),
+            stdlib_root.display(),
+        )),
+    }
 }
 
 impl Default for ModuleDag {
@@ -243,9 +275,11 @@ impl ModuleDag {
                 // All-or-nothing invariant: if a prior std.* was served from the
                 // embedded stdlib, mixing in a filesystem-resolved module is unsafe.
                 if self.stdlib_mode == Some(StdlibMode::Embedded) {
-                    return Err(vec![partial_overlay_fs_over_embedded_diag(
+                    return Err(vec![partial_overlay_diag(
                         module_path,
-                        "earlier std.* imports were served from the embedded stdlib",
+                        OverlayDirection::FsOverEmbedded {
+                            context: "earlier std.* imports were served from the embedded stdlib",
+                        },
                         &resolver.stdlib_root,
                     )]);
                 }
@@ -262,15 +296,11 @@ impl ModuleDag {
                 // All-or-nothing invariant: if a prior std.* was served from the
                 // filesystem, falling back to embedded now would mix sources.
                 if self.stdlib_mode == Some(StdlibMode::FileSystem) {
-                    return Err(vec![Diagnostic::error(format!(
-                        "partial stdlib overlay: '{}' not found on the filesystem under '{}' \
-                         but earlier std.* imports were resolved from the filesystem; either \
-                         add the missing module to '{}' or remove that directory to use the \
-                         embedded stdlib exclusively",
+                    return Err(vec![partial_overlay_diag(
                         module_path,
-                        resolver.stdlib_root.display(),
-                        resolver.stdlib_root.display(),
-                    ))]);
+                        OverlayDirection::EmbeddedOverFs,
+                        &resolver.stdlib_root,
+                    )]);
                 }
                 // Consult the embedded stdlib. We commit to Embedded mode only after
                 // confirming the module exists there — an unknown std.* path (e.g. a
@@ -398,9 +428,11 @@ impl ModuleDag {
             // silently mix stdlib sources — exactly the partial-overlay scenario
             // the all-or-nothing invariant exists to reject.
             if self.stdlib_mode == Some(StdlibMode::Embedded) {
-                return Err(vec![partial_overlay_fs_over_embedded_diag(
+                return Err(vec![partial_overlay_diag(
                     module_path,
-                    "a transitive std.* import was served from the embedded stdlib",
+                    OverlayDirection::FsOverEmbedded {
+                        context: "a transitive std.* import was served from the embedded stdlib",
+                    },
                     &resolver.stdlib_root,
                 )]);
             }
