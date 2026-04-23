@@ -371,3 +371,38 @@ fn known_block_pragma_kernel_no_warning_on_purpose() {
         warns
     );
 }
+
+// ── Step B: module pragma contributes to content_hash ────────────────────────
+
+/// Changing a module-level pragma value must produce a different content_hash,
+/// and compiling the same source twice must produce an identical hash (determinism).
+///
+/// Fails on current main: `compute_module_hash` does not include `parsed.pragmas`,
+/// so two sources differing only in `#precision(value=...)` produce identical hashes.
+#[test]
+fn module_pragma_change_changes_module_content_hash() {
+    let path = reify_types::ModulePath::single("m");
+
+    let source_a = "#precision(value=32)\nstructure S { param x : Real }";
+    let parsed_a = reify_syntax::parse(source_a, path.clone());
+    assert!(parsed_a.errors.is_empty(), "parse errors in a: {:?}", parsed_a.errors);
+    let compiled_a = reify_compiler::compile(&parsed_a);
+
+    let source_b = "#precision(value=64)\nstructure S { param x : Real }";
+    let parsed_b = reify_syntax::parse(source_b, path.clone());
+    assert!(parsed_b.errors.is_empty(), "parse errors in b: {:?}", parsed_b.errors);
+    let compiled_b = reify_compiler::compile(&parsed_b);
+
+    assert_ne!(
+        compiled_a.content_hash, compiled_b.content_hash,
+        "sources differing only in module-level pragma should produce different content_hashes"
+    );
+
+    // Determinism: compiling the same source twice yields the same hash.
+    let parsed_a2 = reify_syntax::parse(source_a, path.clone());
+    let compiled_a2 = reify_compiler::compile(&parsed_a2);
+    assert_eq!(
+        compiled_a.content_hash, compiled_a2.content_hash,
+        "same source compiled twice should produce identical content_hashes"
+    );
+}
