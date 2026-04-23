@@ -440,16 +440,16 @@ impl ModuleDag {
                  this invariant is guaranteed by the DFS loop above"
             );
 
-            // Build prelude slice from the collected import paths.
-            // NB: self.modules is stable for shared borrowing here — no more mutations
-            // until after compile_with_prelude_refs returns.
-            let preludes: Vec<&CompiledModule> = import_paths
-                .iter()
-                .filter_map(|p| self.modules.get(p.as_str()))
-                .collect();
-
-            // Compile this module with prelude context so imported constraint defs are visible.
-            Ok(crate::compile_with_prelude_refs(&parsed, &preludes))
+            // Block-scope the shared borrows of self.modules so they are
+            // dropped before the mutable insert on line 487.
+            let compiled = {
+                let preludes: Vec<&CompiledModule> = import_paths
+                    .iter()
+                    .filter_map(|p| self.modules.get(p.as_str()))
+                    .collect();
+                crate::compile_with_prelude_refs(&parsed, &preludes)
+            };
+            Ok(compiled)
         })();
 
         // Always remove from in-progress, whether the inner block succeeded or failed.
