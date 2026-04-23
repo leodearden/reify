@@ -24,3 +24,14 @@ export { generateDefaultView, generateAllGeometryView, generatePurposeViews, def
 export type { ViewDefinition } from './autoViewGenerator';
 
 export { loadSidecar, saveSidecar } from './sidecarPersistence';
+
+export {
+  loadViewPersistence,
+  saveViewPersistence,
+  createDebouncedSaver,
+  STORAGE_KEY_PREFIX,
+} from './viewPersistence';
+export type { DebouncedSaver } from './viewPersistence';
+
+export { findFuzzyCandidate, suffixMatch, structuralMatch } from './fuzzyPathMatcher';
+export type { StalePathMetadata } from './fuzzyPathMatcher';
