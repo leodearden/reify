@@ -1,4 +1,4 @@
-use super::*;
+use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
 
 /// Returns `true` when `got == expected`.
 ///
@@ -74,12 +74,9 @@ mod tests {
         let result = check_arg_count_exact("translate", 2, 4, None, &mut diagnostics);
         assert!(!result, "expected false when got != expected");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("translate() expects 4 arguments, got 2"),
-            "unexpected message: {:?}",
-            diagnostics[0].message
+        assert_eq!(
+            diagnostics[0].message,
+            "translate() expects 4 arguments, got 2"
         );
         assert!(
             diagnostics[0].labels.is_empty(),
@@ -95,12 +92,9 @@ mod tests {
         let result = check_arg_count_exact("translate", 2, 4, Some(span), &mut diagnostics);
         assert!(!result, "expected false when got != expected");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("translate() expects 4 arguments, got 2"),
-            "unexpected message: {:?}",
-            diagnostics[0].message
+        assert_eq!(
+            diagnostics[0].message,
+            "translate() expects 4 arguments, got 2"
         );
         assert_eq!(diagnostics[0].labels.len(), 1, "expected one label");
         assert_eq!(
@@ -150,12 +144,9 @@ mod tests {
         let result = check_arg_count_at_least("loft", 1, 2, None, &mut diagnostics);
         assert!(!result, "expected false when got < min");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("loft() expects at least 2 arguments, got 1"),
-            "unexpected message: {:?}",
-            diagnostics[0].message
+        assert_eq!(
+            diagnostics[0].message,
+            "loft() expects at least 2 arguments, got 1"
         );
         assert!(
             diagnostics[0].labels.is_empty(),
@@ -171,12 +162,9 @@ mod tests {
         let result = check_arg_count_at_least("loft", 1, 2, Some(span), &mut diagnostics);
         assert!(!result, "expected false when got < min");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("loft() expects at least 2 arguments, got 1"),
-            "unexpected message: {:?}",
-            diagnostics[0].message
+        assert_eq!(
+            diagnostics[0].message,
+            "loft() expects at least 2 arguments, got 1"
         );
         assert_eq!(diagnostics[0].labels.len(), 1, "expected one label");
         assert_eq!(
