@@ -157,13 +157,32 @@ enum OverlayDirection {
     EmbeddedOverFs,
 }
 
+/// Shared prefix for all partial-stdlib-overlay diagnostics.
+///
+/// Referenced by both match arms in [`partial_overlay_diag`] so the prefix
+/// string cannot drift between arms.
+const OVERLAY_PREFIX: &str = "partial stdlib overlay";
+
+/// Shared suffix for all partial-stdlib-overlay diagnostics.
+///
+/// Referenced by both match arms in [`partial_overlay_diag`] so the remediation
+/// tail cannot drift between arms.
+const OVERLAY_SUFFIX: &str = "or remove that directory to use the embedded stdlib exclusively";
+
 /// Build a "partial stdlib overlay" [`Diagnostic`].
 ///
 /// Consolidates three call sites in `compile_module` — the entry guard
 /// (EmbeddedOverFs or FsOverEmbedded when Embedded is already committed) and the
 /// deferred-commit block (FsOverEmbedded when a transitive import committed Embedded
 /// during recursion). Each direction produces distinct remediation guidance; both share
-/// the same prefix and suffix, preventing future wording drift between sites.
+/// [`OVERLAY_PREFIX`] and [`OVERLAY_SUFFIX`], preventing future wording drift between
+/// sites.
+///
+/// The rendered message embeds a stable, machine-parsable kind marker immediately after
+/// the prefix: `(fs-over-embedded/entry)`, `(fs-over-embedded/transitive)`, or
+/// `(embedded-over-fs)`. The marker is structurally distinct from prose (slash+hyphen
+/// form, parenthesised) so tests and downstream tooling can match it without depending
+/// on natural-language phrasing.
 fn partial_overlay_diag(
     module_path: &str,
     direction: OverlayDirection,
@@ -171,31 +190,36 @@ fn partial_overlay_diag(
 ) -> Diagnostic {
     match direction {
         OverlayDirection::FsOverEmbedded { commit_site } => {
-            let context = match commit_site {
-                CommitSite::Entry => {
-                    "earlier std.* imports were served from the embedded stdlib"
-                }
-                CommitSite::Transitive => {
-                    "a transitive std.* import was served from the embedded stdlib"
-                }
+            let (kind_marker, context) = match commit_site {
+                CommitSite::Entry => (
+                    "fs-over-embedded/entry",
+                    "earlier std.* imports were served from the embedded stdlib",
+                ),
+                CommitSite::Transitive => (
+                    "fs-over-embedded/transitive",
+                    "a transitive std.* import was served from the embedded stdlib",
+                ),
             };
             Diagnostic::error(format!(
-                "partial stdlib overlay: '{}' resolved on the filesystem but {}; \
-                 either populate all stdlib modules under '{}' or remove that directory \
-                 to use the embedded stdlib exclusively",
+                "{} ({}): '{}' resolved on the filesystem but {}; \
+                 either populate all stdlib modules under '{}' {}",
+                OVERLAY_PREFIX,
+                kind_marker,
                 module_path,
                 context,
                 stdlib_root.display(),
+                OVERLAY_SUFFIX,
             ))
         }
         OverlayDirection::EmbeddedOverFs => Diagnostic::error(format!(
-            "partial stdlib overlay: '{}' not found on the filesystem under '{}' \
+            "{} (embedded-over-fs): '{}' not found on the filesystem under '{}' \
              but earlier std.* imports were resolved from the filesystem; either \
-             add the missing module to '{}' or remove that directory to use the \
-             embedded stdlib exclusively",
+             add the missing module to '{}' {}",
+            OVERLAY_PREFIX,
             module_path,
             stdlib_root.display(),
             stdlib_root.display(),
+            OVERLAY_SUFFIX,
         )),
     }
 }
