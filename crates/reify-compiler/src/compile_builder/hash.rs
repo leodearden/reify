@@ -85,13 +85,13 @@ pub(crate) fn compute_module_hash(
 
 /// Produce a deterministic [`ContentHash`] for a single module-level pragma.
 ///
-/// Combines the pragma name and argument count (as `"name|count"`) with each argument's
-/// kind, key (for key-value), and value.  Encoding the count explicitly guards against
-/// collisions when a pragma has optional arguments that could be absent vs. present as
-/// an empty value.  Source span is intentionally excluded — it is positional metadata,
-/// not content.
+/// Combines the pragma name hash with a u64-encoded argument count, then combines
+/// each argument's kind, key (for key-value), and value in declaration order.
+/// Encoding the count explicitly guards against collisions when a pragma has
+/// optional arguments that could be absent vs. present as an empty value.
+/// Source span is intentionally excluded — it is positional metadata, not content.
 fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
-    let mut h = ContentHash::of_str(&format!("{}|{}", p.name, p.args.len()));
+    let mut h = ContentHash::of_str(&p.name).combine(ContentHash::of_u64(p.args.len() as u64));
     for arg in &p.args {
         h = h.combine(hash_pragma_arg(arg));
     }
