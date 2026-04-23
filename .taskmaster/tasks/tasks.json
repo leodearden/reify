@@ -28072,8 +28072,12 @@
         "updatedAt": "2026-04-23T18:49:30.053Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler/src/connect.rs",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/scc.rs",
+            "crates/reify-compiler/src/termination.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/termination_check_tests.rs"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
@@ -45920,7 +45924,9 @@
       "completedCount": 1905,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T18:56:14.454Z",
+      "description": "Tasks for master context"
     }
   }
 }
