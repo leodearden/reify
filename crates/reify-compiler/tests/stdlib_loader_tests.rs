@@ -51,7 +51,7 @@ fn all_stdlib_modules_have_no_errors() {
     }
 }
 
-/// materials_mechanical.ri traits are present in the stdlib (Material, Elastic,
+/// materials_mechanical.ri traits are present in the stdlib (MaterialSpec, Elastic,
 /// Strong, Hard, FatigueRated, FractureTough, Ductile, ImpactResistant, Damping).
 #[test]
 fn materials_mechanical_traits_present() {

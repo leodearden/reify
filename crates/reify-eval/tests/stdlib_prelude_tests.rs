@@ -514,9 +514,9 @@ structure S {
 // ─── step-9: End-to-end prelude pipeline ─────────────────────────────
 
 /// Full pipeline: .ri source → compile_with_prelude → Engine::eval.
-/// User code conforms to both Material and Elastic prelude traits.
+/// User code conforms to both MaterialSpec and Elastic prelude traits.
 /// Asserts: (1) no compile errors, (2) eval returns values for all 5 params,
-/// (3) trait_bounds on template include both Material and Elastic.
+/// (3) trait_bounds on template include both MaterialSpec and Elastic.
 #[test]
 fn end_to_end_material_elastic_conformance() {
     let source = steel_material_elastic_source();
@@ -537,15 +537,15 @@ fn end_to_end_material_elastic_conformance() {
         compile_errors
     );
 
-    // (3) trait_bounds on template include both Material and Elastic
+    // (3) trait_bounds on template include both MaterialSpec and Elastic
     let template = compiled
         .templates
         .iter()
         .find(|t| t.name == "Steel")
         .expect("Steel template should exist in compiled module");
     assert!(
-        template.trait_bounds.contains(&"Material".to_string()),
-        "Steel should have 'Material' trait bound, got: {:?}",
+        template.trait_bounds.contains(&"MaterialSpec".to_string()),
+        "Steel should have 'MaterialSpec' trait bound, got: {:?}",
         template.trait_bounds
     );
     assert!(

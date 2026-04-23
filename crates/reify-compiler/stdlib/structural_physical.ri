@@ -5,10 +5,10 @@
 
 // ── Physical body trait ─────────────────────────────────────────────────────
 
-// Physical refines Material (from materials_mechanical.ri), adding volume
+// Physical refines MaterialSpec (from materials_mechanical.ri), adding volume
 // and centroid position. The computed `mass` default uses volume * density
-// where density comes from the Material refinement.
-trait Physical : Material {
+// where density comes from the MaterialSpec refinement.
+trait Physical : MaterialSpec {
     param volume : Real
     param centroid_x : Real
     param centroid_y : Real

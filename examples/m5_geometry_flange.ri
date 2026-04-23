@@ -5,7 +5,7 @@ structure def BoltFlange : Rigid {
     param bolt_circle_radius : Length = 45mm
     param hole_radius : Length = 4mm
 
-    // Material trait requirements
+    // MaterialSpec trait requirements (density + name, inherited via Physical)
     param density : Real = 7850
     param name : String = "steel"
 

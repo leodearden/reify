@@ -5,7 +5,11 @@
 
 // ── Base material trait ──────────────────────────────────────────────────────
 
-trait Material {
+// MaterialSpec is the trait-level contract every material-like structure
+// must satisfy. The canonical first-class `Material` struct (added later in
+// this module) provides a concrete value type for callers that want to
+// supply a material by construction — e.g., `Material(name: "steel", ...)`.
+trait MaterialSpec {
     param density : Real
     param name : String
 }
