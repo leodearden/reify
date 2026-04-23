@@ -1780,6 +1780,7 @@ mod tests {
                     "sweep profile fallback should be Step(step_offset=3), not {:?}",
                     profiles[0]
                 );
+                assert_eq!(profiles[1], GeomRef::Step(4), "sweep path fallback should be Step(step_offset+1=4)");
             }
             other => panic!("expected Sweep(Sweep), got {:?}", other),
         }
