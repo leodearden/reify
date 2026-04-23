@@ -37226,11 +37226,11 @@
         "description": "Three small robustness/doc improvements in the reify-compiler prelude compilation path, all stemming from the task-1392 refactor:\n\n1. **Block-scope the shared borrow in compile_module** (module_dag.rs ~lines 191-199): compile_project already wraps its collect_import_preludes + compile_with_prelude_refs in an explicit block scope (lines 261-264) so the shared borrow of modules is visually bounded. compile_module relies on a comment instead. Wrap lines 196-199 in a block: `let compiled = { let preludes = collect_import_preludes(&parsed, &self.modules); crate::compile_with_prelude_refs(&parsed, &preludes) };` to make both call sites consistent.\n\n2. **Add debug_assert in collect_import_preludes** (module_dag.rs lines 20-35): The function silently skips imports not found in the modules map. Add `debug_assert!(result.is_some(), \"import '{}' not yet compiled\", import.path);` inside the filter_map to surface invariant violations during development.\n\n3. **Fix misleading doc on compile_with_prelude** (lib.rs ~lines 74-81): The performance note says callers in a hot loop should use compile_with_prelude_refs \"directly\", but that function is pub(crate) so external callers cannot. Amend to: \"crate-internal callers in a hot loop should use compile_with_prelude_refs directly to avoid repeated allocation.\"\n\nmemory_hints: search \"collect_import_preludes block scope borrow\" and \"compile_with_prelude doc\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T19:17:51.973Z",
+        "updatedAt": "2026-04-23T19:46:40.457Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -37238,7 +37238,10 @@
           "files": [
             "crates/reify-compiler/src/module_dag.rs",
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "83b232c88c33e6670037e7531061b351b9e2a884"
+          }
         }
       },
       {
@@ -45997,9 +46000,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T19:34:13.770Z",
+      "lastModified": "2026-04-23T19:46:40.458Z",
       "taskCount": 2154,
-      "completedCount": 1912,
+      "completedCount": 1913,
       "tags": [
         "master"
       ]
