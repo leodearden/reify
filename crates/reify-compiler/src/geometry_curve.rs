@@ -19,11 +19,7 @@ pub(crate) fn compile_curve_op(
     match name {
         // line_segment(x1, y1, z1, x2, y2, z2)
         "line_segment" => {
-            if compiled_args.len() != 6 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "line_segment() expects 6 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("line_segment", compiled_args.len(), 6, None, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -42,11 +38,7 @@ pub(crate) fn compile_curve_op(
         }
         // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
         "arc" => {
-            if compiled_args.len() != 9 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "arc() expects 9 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("arc", compiled_args.len(), 9, None, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -68,11 +60,7 @@ pub(crate) fn compile_curve_op(
         }
         // helix(radius, pitch, height)
         "helix" => {
-            if compiled_args.len() != 3 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "helix() expects 3 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("helix", compiled_args.len(), 3, None, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
