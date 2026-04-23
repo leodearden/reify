@@ -146,12 +146,14 @@ structure def S {
         "expected error diagnostic for unknown trait"
     );
 
-    let error_msg = format!("{:?}", errors);
-    let lower = error_msg.to_lowercase();
+    let mentions_expected_keywords = errors.iter().any(|d| {
+        let lower = d.message.to_lowercase();
+        lower.contains("trait") && (lower.contains("not found") || lower.contains("unknown"))
+    });
     assert!(
-        lower.contains("trait") && (lower.contains("not found") || lower.contains("unknown")),
-        "error should mention 'trait' and 'not found'/'unknown', got: {}",
-        error_msg
+        mentions_expected_keywords,
+        "error should mention 'trait' and 'not found'/'unknown', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -188,11 +190,13 @@ structure def S : A {
         "expected error diagnostic for missing trait member"
     );
 
-    let error_msg = format!("{:?}", errors);
+    let mentions_nonexistent = errors
+        .iter()
+        .any(|d| d.message.to_lowercase().contains("nonexistent"));
     assert!(
-        error_msg.contains("nonexistent"),
-        "error should mention 'nonexistent', got: {}",
-        error_msg
+        mentions_nonexistent,
+        "error should mention 'nonexistent', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -273,6 +277,16 @@ structure def Outer {
     assert!(
         !errors.is_empty(),
         "expected error diagnostic: Inner does not implement A"
+    );
+
+    let mentions_expected = errors.iter().any(|d| {
+        let lower = d.message.to_lowercase();
+        lower.contains("trait") || lower.contains("implement") || lower.contains(" a")
+    });
+    assert!(
+        mentions_expected,
+        "error should mention 'trait', 'implement', or 'A', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
