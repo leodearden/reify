@@ -45379,11 +45379,11 @@
       {
         "id": "2134",
         "title": "engine_edit tests: resolve symmetry-test redundancy and fix hardcoded line ref",
-        "description": "Follow-up cleanups from post-merge reviews of tasks 2131 and 2144. Four related comment/docstring quality issues across engine_edit.rs and guard_eval.rs — all caused by hardcoded positional references that drift as the file evolves.",
+        "description": "Five doc-comment and test-quality cleanups across the reify-eval perf-lock and guard test suite — all caused by misleading, hardcoded, or stale references that drift as the file evolves.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "details": "1. **Symmetry-test redundancy** (engine_edit.rs:2423-2470): `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values` duplicates invariants already pinned by `reelaborate_guarded_group_leaves_active_members_with_no_default_expr_untouched`, `..._absent_from_graph_untouched`, and `reelaborate_guarded_group_activates_else_members_when_guard_false` (:2480). Recommended action (a): delete the symmetry test; per-branch tests give tighter failure localization and symmetry is implicit in having both guard=true and guard=false covered.\n\n2. **Hardcoded line reference in doc comment** (engine_edit.rs:2412-2414): Doc comment references `engine_edit.rs:68`; replace with landmark-style phrasing (e.g. \"the guard-elaboration loop\") or remove entirely if the symmetry test is deleted per item 1.\n\n3. **Drifted line-number cites in `reapply_guard_deactivations_post_wave2` docstring** (engine_edit.rs ~lines 114-163): The docstring pins specific line numbers (e.g. \"line 589\", \"line 593\", \"line 432-437\", \"line 564\", \"lines 833 / 1892\") that have already drifted relative to the current file. Replace all exact line-number citations with symbolic references (e.g. \"Phase 1 in edit_param\", \"the snapshot-to-value rewrite loop\") so the docstring remains accurate as the file evolves.\n\n4. **Loosen test counter comment in guard_eval.rs**: Post-merge review suggestion from task 2144 to replace a fragile counter-specific comment (referencing a fixed call count) with phrasing that will not drift as surrounding code changes.",
+        "details": "1. **Symmetry-test redundancy** (engine_edit.rs:2423-2470): Delete `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values`; per-branch tests (`..._leaves_active_members_with_no_default_expr_untouched`, `..._absent_from_graph_untouched`, `..._activates_else_members_when_guard_false`) already give tighter failure localization and symmetry is implicit in having both guard=true and guard=false covered.\n\n2. **Hardcoded line reference in doc comment** (engine_edit.rs:2412-2414): Doc comment references `engine_edit.rs:68`; replace with landmark-style phrasing (e.g. \"the guard-elaboration loop\") or remove entirely if the symmetry test is deleted per item 1.\n\n3. **Drifted line-number cites in `reapply_guard_deactivations_post_wave2` docstring** (engine_edit.rs ~lines 114-163): The docstring pins specific line numbers (\"line 589\", \"line 593\", \"line 432-437\", \"line 564\", \"lines 833 / 1892\") that have already drifted. Replace all exact line-number citations with symbolic references (e.g. \"Phase 1 in edit_param\", \"the snapshot-to-value rewrite loop\") so the docstring remains accurate as the file evolves.\n\n4. **Loosen test counter comment in guard_eval.rs**: Post-merge review suggestion from task 2144 to replace a fragile counter-specific comment (referencing a fixed call count) with phrasing that will not become misleading if the count changes.\n\n5. **T2 perf-lock doc/fixture reconciliation** (edit_source.rs:2412-2431): The doc comment for `edit_source_added_member_in_unchanged_guard_group_forces_non_skip` describes the regression class as \"an added `let` on the inactive branch would silently retain a Determined value instead of being deactivated\", but the fixture puts the added member `b` on the ACTIVE branch (`where u { let a = 1mm; let b = 2mm }` with u=true). Fix the doc comment to accurately describe the fixture's actual active-branch scenario — or, if the intent was to exercise the inactive-branch path, adjust the fixture so `b` is placed on the inactive branch instead. Preserve the concrete symbol names `edit_source_added_member_in_unchanged_guard_group_forces_non_skip`, `has_added_in_group`, and the fixture parameter names verbatim.",
         "testStrategy": "",
         "subtasks": [],
         "metadata": {
@@ -45391,8 +45391,8 @@
             "crates/reify-eval/src/engine_edit.rs"
           ],
           "curator_action": "combine",
-          "curator_justification": "The candidate is two tiny comment/docstring cleanups in engine_edit.rs and guard_eval.rs (both reify-eval module). Task 2134 is also tiny (2 items, engine_edit.rs only) and specifically includes fixing a hardcoded line-number citation in a doc comment — the same root cause as the candidate's drifted line-number cites in the reapply_guard_deactivations_post_wave2 docstring. All four items share the same subsystem concept (stale/hardcoded positional references in comments), both tasks are low-prio",
-          "combined_at": "2026-04-23T19:29:56.620301+00:00"
+          "curator_justification": "The candidate is tiny (1 file, pure doc-comment fix) and shares the same root concern and module-lock key (reify-eval perf-lock test documentation) as Task 2134, which is already pending and combine_eligible. Task 2134 already addresses hardcoded line refs and misleading doc comments in the same crate's test infrastructure. Adding the T2 fixture-phrasing reconciliation brings Task 2134 to exactly 5 distinct concerns (within budget) and adds only edit_source.rs to the lock set — both files are in",
+          "combined_at": "2026-04-23T20:24:03.492128+00:00"
         }
       },
       {
@@ -46085,6 +46085,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-23T20:22:40.022Z"
+      },
+      {
+        "id": "2170",
+        "title": "Add runtime guard for T3 role-flip perf-lock premise (content_hash must not incorporate member role)",
+        "description": "In crates/reify-eval/tests/edit_source.rs around 2464-2466/2558-2563, test `edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip` (T3) asserts that the role-flip probe is the SOLE signal driving `has_dirty_guards`. That premise depends on `ValueCellNode::content_hash` NOT incorporating the member/else_member role; if content_hash is ever extended to hash that role, `changed` would include x and y on its own and the role-flip probe would no longer be the sole signal — the test would keep passing but for the wrong reason. Author flagged this in the doc comment but added no runtime guard. Add either (a) a test hook to snapshot the `diff_value_cells` output between the two modules and assert `changed.is_empty() && added.is_empty() && removed.is_empty()` for x and y, or (b) a `debug_assert!` near the counter assertion that pins the premise so a regression produces a targeted error rather than silent test-drift. Source: post-merge review on task 2138.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -46094,7 +46105,10 @@
       "completedCount": 1916,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T20:24:03.518Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T20:25:09.354Z"
     }
   }
 }
