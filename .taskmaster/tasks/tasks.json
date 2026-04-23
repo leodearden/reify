@@ -8298,7 +8298,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -8315,7 +8315,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:28.081Z"
+        "updatedAt": "2026-04-23T21:04:27.952Z"
       },
       {
         "id": "388",
@@ -46209,14 +46209,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T21:00:15.619Z",
+      "lastModified": "2026-04-23T21:04:27.952Z",
       "taskCount": 2164,
       "completedCount": 1921,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T21:04:26.850Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
