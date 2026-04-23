@@ -45829,11 +45829,17 @@
         "description": "In `crates/reify-eval/src/engine_eval.rs` (~lines 85-140), the active-branch arm of `post_solver_re_eval_guard_cells` uses `if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let` with an implicit else-skip. Today only `Auto { free }` falls into the skip path, which is intended, but if a new `ValueCellKind` variant is added in the future it will be silently skipped with no compiler warning.\n\nRefactor to an exhaustive `match cell.kind { Param | Let => ..., Auto { .. } => { /* skip, solver-owned */ } }`. This converts future variants into a compile error and documents the three-way decision in the code itself. Source: post-merge review suggestion on task 2143.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T18:37:51.643Z"
+        "updatedAt": "2026-04-23T18:43:41.077Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/guard_eval.rs"
+          ]
+        }
       },
       {
         "id": "2157",
@@ -45850,14 +45856,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T18:41:57.078Z",
+      "lastModified": "2026-04-23T18:43:41.077Z",
       "taskCount": 2149,
       "completedCount": 1902,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T18:42:46.931Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
