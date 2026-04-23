@@ -3641,4 +3641,42 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByTestId('toast')).toBeNull();
   });
+
+  it('(f) clicking [No] suppresses the same stale→candidate pair on the next tree update', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // Set explicit visibility: show → ghost
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // First tree update: Assembly.flange.geometry is gone; Assembly.bolt_flange.geometry appears
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      2,
+    );
+
+    // Wait for toast and click [No]
+    await waitFor(() => screen.getByRole('button', { name: /^no$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^no$/i }));
+
+    // Toast dismissed
+    await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());
+
+    // Trigger the SAME tree update again — same stale+candidate pair
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      3,
+    );
+
+    // No new toast should appear — [No] must suppress this pair for the session,
+    // just like [Ignore] does. This is the regression the reviewer required.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId('toast')).toBeNull();
+  });
 });
