@@ -7,7 +7,7 @@
 //!   4. Matrix -> Tensor                (NOT implicit)
 
 use reify_compiler::{implicitly_converts_to, type_compatible};
-use reify_types::{DimensionVector, Type};
+use reify_types::Type;
 
 // ── Rule 1: Vector<N,Q> <-> Tensor<1,N,Q> (bidirectional) ──────────────────
 

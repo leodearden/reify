@@ -1,0 +1,802 @@
+use crate::*;
+
+/// Tag used when cross-checking requirements against available defaults.
+/// A `param` requirement can only be satisfied by a `param` default, and a `let`
+/// requirement only by a `let` default. A kind mismatch is treated the same as "no
+/// default" so the user sees "missing required member" rather than a confusing
+/// kind-mismatch error (the fix is the same either way: provide the member).
+///
+/// See also `DefaultKindTag` (module-level) — this enum intentionally omits
+/// `Constraint` because constraints are never candidates for satisfying requirements.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum AvailableDefaultKind {
+    Param,
+    Let,
+}
+
+/// Phase 1 of trait conformance checking: resolve structure member types and collect
+/// constraint labels.
+///
+/// Builds two outputs from the structure's member list:
+/// - `structure_members`: a `HashMap<String, Type>` mapping each param/let member name
+///   to its resolved type. Let bindings are only included when they carry an explicit
+///   type annotation; unannotated lets are omitted here and handled by the pre-register
+///   pass (phase 3).
+/// - `structure_constraint_labels`: a `HashSet<String>` of constraint label names, used
+///   by phase 6 to detect member overrides before injecting trait defaults.
+///
+/// # Type resolution order
+///
+/// For each Named type annotation the closure calls `resolve_type_with_aliases` (builtin →
+/// alias registry → trait-name fallback) and then checks `enum_defs` for a matching enum.
+/// Unresolved names and dimensional-op annotations emit a root-cause diagnostic and return
+/// `Type::Error` (poison sentinel) to suppress cascade "type mismatch" errors downstream
+/// via the asymmetric producer-side wildcard in `type_compat.rs:3–26`.
+pub(super) fn check_phase_resolve_structure_members(
+    structure: &EntityDefRef<'_>,
+    trait_names: &HashSet<String>,
+    enum_defs: &[reify_types::EnumDef],
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (HashMap<String, Type>, HashSet<String>) {
+    // Collect all structure member names for conformance checking.
+    let empty_params: HashSet<String> = HashSet::new();
+    // Build a HashSet of enum names once (O(E)) so the filter_map below performs
+    // O(1) membership checks per member instead of a fresh O(E) scan each time.
+    let enum_names: HashSet<&str> = enum_defs.iter().map(|e| e.name.as_str()).collect();
+
+    // Shared resolution logic for Param and Let type annotations in the filter_map.
+    // Receives `diagnostics` as an explicit parameter (rather than capturing it) so
+    // the filter_map closure can also push to `diagnostics` for the "missing annotation"
+    // case without a mutable-borrow conflict.
+    //
+    // When a type name cannot be resolved (Named arm, unwrap_or_else branch) or when a
+    // dimensional-op annotation is encountered (DimensionalOp arm), the closure pushes
+    // a root-cause "unresolved type in conformance check" error diagnostic and then
+    // returns `Type::Error` — NOT `Type::Real`.
+    //
+    // Rationale: `structure_members` (populated by this closure's output) is consumed
+    // by the `RequirementKind::{Param,Let}` arm of the requirement-checking loop below,
+    // where `actual_type` is passed as the `from`/producer side of
+    // `implicitly_converts_to(actual_type, expected_type)`.  The asymmetric
+    // producer-side wildcard in `type_compat.rs:3–26` short-circuits
+    // `implicitly_converts_to(Error, _)` to `true`, suppressing the cascade
+    // "type mismatch for trait member" diagnostic that would otherwise appear on top of
+    // the root-cause error already emitted here.  Returning `Type::Real` instead would
+    // poison the downstream requirement check whenever the trait requires a non-Real type
+    // (e.g. Length), generating a misleading second diagnostic and obscuring the actual
+    // problem for the user.
+    let resolve_member_annotation_type =
+        |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
+            match &te.kind {
+                reify_syntax::TypeExprKind::Named { name, type_args } => {
+                    resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
+                        .or_else(|| {
+                            enum_names.contains(name.as_str()).then(|| {
+                                if !type_args.is_empty() {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "enum `{}` does not accept type arguments",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            te.span,
+                                            "enum types are not generic",
+                                        )),
+                                    );
+                                }
+                                Type::Enum(name.to_string())
+                            })
+                        })
+                        .unwrap_or_else(|| {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unresolved type in conformance check: {}",
+                                    name
+                                ))
+                                .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                            );
+                            // Return Type::Error (poison sentinel) so the downstream
+                            // `implicitly_converts_to` / `type_compatible` producer-side
+                            // wildcard (type_compat.rs:3-26, :119-130) suppresses the
+                            // cascade "type mismatch for trait member" diagnostic.
+                            // The diagnostic emitted on the preceding line is the root
+                            // cause; a second mismatch diagnostic would mislead the user.
+                            Type::Error
+                        })
+                }
+                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unresolved type in conformance check: {}",
+                            te
+                        ))
+                        .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
+                    );
+                    // Return Type::Error (poison sentinel) — same rationale as the Named
+                    // arm above: suppress downstream "type mismatch for trait member"
+                    // cascade via the type_compat.rs producer-side wildcard.
+                    Type::Error
+                }
+            }
+        };
+
+    let structure_members: HashMap<String, Type> = structure
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            reify_syntax::MemberDecl::Param(p) => {
+                let ty = match p.type_expr.as_ref() {
+                    Some(te) => resolve_member_annotation_type(te, diagnostics),
+                    None => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "trait member '{}' has no type annotation; cannot infer type",
+                                p.name
+                            ))
+                            .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
+                        );
+                        Type::Real
+                    }
+                };
+                Some((p.name.clone(), ty))
+            }
+            reify_syntax::MemberDecl::Let(l) => {
+                // let bindings get their type from expression inference, not annotations.
+                // Only include in structure_members when there is an explicit type annotation;
+                // omitting is safe because if a trait requires this member, the conformance
+                // check will report "missing required member" rather than a spurious
+                // "no type annotation" error.
+                let te = l.type_expr.as_ref()?;
+                Some((l.name.clone(), resolve_member_annotation_type(te, diagnostics)))
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Collect structure constraint labels.
+    let structure_constraint_labels: HashSet<String> = structure
+        .members
+        .iter()
+        .filter_map(|m| {
+            if let reify_syntax::MemberDecl::Constraint(c) = m {
+                c.label.clone()
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    (structure_members, structure_constraint_labels)
+}
+
+/// Phase 2 of trait conformance checking: collect all requirements and defaults from
+/// all trait bounds in the structure's trait bound list.
+///
+/// Creates a fresh `MergeContext` and calls `collect_all_requirements` for each trait bound,
+/// which recursively walks refinement chains and deduplicates requirements/defaults across
+/// the full bound set. The returned `MergeContext` carries both `requirements` and `defaults`
+/// for use by later phases.
+///
+/// `MergeContext` bundles the output accumulators (`requirements`, `defaults`) and the 5 mutable
+/// tracking maps (`visited`, `seen_names`, `seen_defaults`, `seen_let_hashes`,
+/// `seen_let_conflict_names`) so the recursive `collect_all_requirements` signature stays
+/// within Clippy's argument-count limit.
+pub(super) fn check_phase_collect_trait_bounds(
+    structure: &EntityDefRef<'_>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_members: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> MergeContext {
+    let mut ctx = MergeContext::new();
+
+    for trait_bound in structure.trait_bounds {
+        collect_all_requirements(
+            &trait_bound.name,
+            trait_registry,
+            &mut ctx,
+            structure_members,
+            structure.span,
+            0,
+            diagnostics,
+        );
+    }
+
+    ctx
+}
+
+/// Phase 3 of trait conformance checking: pre-register default types into the compilation scope.
+///
+/// Implements a two-pass pre-registration strategy:
+/// - **Pass 1** registers every *annotated* default (Param + Let with `Some(cell_type)`) into
+///   `scope` using `register_if_absent`. No expression compilation happens here, so ordering
+///   within `ctx.defaults` does not matter for the annotated types made visible to Pass 2.
+/// - **Pass 2** compiles each *unannotated* Let's expression against the fully-populated
+///   annotated scope from Pass 1, caches the compiled expression in `inferred_let_exprs`, and
+///   registers the inferred `result_type`. When `register_if_absent` finds the scope slot
+///   already claimed (Pass 1 registered an annotated Param or Let), the name is added to
+///   `pass2_skipped` and the Let-cell injection is suppressed in phase 6.
+///
+/// # INVARIANTS for `inferred_let_exprs` name-only key
+///
+/// 1. Only `DefaultKind::Let { cell_type: None }` inserts into this cache — no cross-kind
+///    writes, so a `Param`-named `x` and a `Let`-named `x` never collide on this map.
+/// 2. Only the `DefaultKind::Let` arm of the injection loop (phase 6) reads from this cache
+///    — reads are kind-guarded by the enclosing match, so the lookup cannot be satisfied by
+///    a non-Let entry.
+/// 3. `collect_all_requirements` deduplicates defaults by (name, kind) across the trait-bound
+///    set, so at most one unannotated-let default with a given name reaches this loop.
+///
+/// # TWO-PASS DESIGN RATIONALE (task 1834 amendment)
+///
+/// The split restores the pre-1834 tolerance for forward references to any *annotated* member:
+/// before this amendment, Pass 1+2 were a single pass that walked `ctx.defaults` in source
+/// order, so an unannotated `let a = b + 1mm` appearing before `let b : Length = 2mm` would
+/// compile against a scope that did not yet contain `b`. Both passes run BEFORE
+/// `available_defaults` is built so Pass 2's inference results feed requirement-matching.
+///
+/// # DESIGN LIMITATION
+///
+/// Pass 2 still walks `ctx.defaults` in source order. Two *unannotated* lets that
+/// forward-reference each other will fail inference for the forward-referencing binding
+/// (`b` is not in scope when `a`'s expression is compiled), yielding an `unresolved name`
+/// diagnostic. Annotating *either* binding unblocks the case. A topological ordering pass
+/// would remove the limitation but is out of scope ("documenting as intentional simplification").
+#[allow(clippy::too_many_arguments)]
+pub(super) fn check_phase_pre_register_default_types(
+    ctx: &MergeContext,
+    structure_members: &HashMap<String, Type>,
+    structure_name: &str,
+    scope: &mut CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (HashMap<String, CompiledExpr>, HashSet<String>) {
+    let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+    // Unannotated-let defaults whose scope slot was already claimed by an annotated
+    // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
+    // insert so the injection loop does not emit a duplicate Let cell alongside the
+    // Param/annotated-Let cell that will already be injected for the same name.
+    // The injection loop uses this set to distinguish a deliberate skip from drift.
+    let mut pass2_skipped: HashSet<String> = HashSet::new();
+
+    // Shared conflict logger for `register_if_absent` Occupied returns.  Captures
+    // `structure_name` from the enclosing scope so both Pass 1 and Pass 2 call
+    // sites stay structurally identical — no drift risk if the message or fields
+    // ever change.
+    let log_conflict = |name: &str, ignored_ty: Type| {
+        tracing::debug!(
+            target: "reify_compiler::conformance",
+            name = %name,
+            entity = %structure_name,
+            ignored_ty = ?ignored_ty,
+            "trait-merge conflict: second default with same name ignored; first-seen type wins"
+        );
+    };
+
+    // Pass 1: register all *annotated* defaults (Param, Let-with-annotation).
+    // Unannotated lets and constraints are deferred to Pass 2 / injection.
+    // register_if_absent provides the no-overwrite guarantee: first-seen type
+    // wins, and the method itself is safe against cross-kind overwrites
+    // without a call-site guard.
+    for default in &ctx.defaults {
+        if let Some(name) = &default.name
+            && !structure_members.contains_key(name)
+        {
+            let ty = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let {
+                    cell_type: Some(annotation_ty),
+                    ..
+                } => annotation_ty.clone(),
+                // Deferred to Pass 2 — needs Pass 1's scope to compile against.
+                DefaultKind::Let { cell_type: None, .. } => continue,
+                DefaultKind::Constraint(_) => continue,
+            };
+            // First-seen type wins. `ty` is moved into `register_if_absent`; on
+            // the cold Occupied (conflict) path the method hands it back via
+            // `Some(ignored_ty)` for the debug emission, so no clone is needed on
+            // the hot Vacant insertion path.
+            if let Some(ignored_ty) = scope.register_if_absent(name, ty) {
+                log_conflict(name, ignored_ty);
+            }
+        }
+    }
+
+    // Pass 2: compile each *unannotated* Let's expression against the
+    // fully-populated annotated scope from Pass 1 and register its inferred
+    // type.  When `register_if_absent` finds the scope slot already claimed
+    // (Pass 1 registered an annotated Param or Let), the compiled expression
+    // is discarded and the name is recorded in `pass2_skipped` so the
+    // injection loop skips Let-cell injection — preventing a duplicate
+    // (entity, member) cell alongside the annotated-type injection.  When the
+    // slot is vacant, the expression is cached in `inferred_let_exprs` for
+    // reuse by the injection loop (avoids double compilation) and by
+    // `available_defaults` (so requirement-matching uses the inferred type
+    // instead of the old `Type::Real` fallback).
+    for default in &ctx.defaults {
+        if let Some(name) = &default.name
+            && !structure_members.contains_key(name)
+            && let DefaultKind::Let {
+                cell_type: None,
+                let_decl,
+            } = &default.kind
+        {
+            let compiled_expr =
+                compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
+            let inferred_ty = compiled_expr.result_type.clone();
+            if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {
+                log_conflict(name, ignored_ty);
+                // Scope slot already claimed by an annotated type (Pass 1).
+                // Record in pass2_skipped so the injection loop skips Let-cell
+                // injection for this name and avoids duplicate (entity, member) cells.
+                pass2_skipped.insert(name.to_string());
+            } else {
+                inferred_let_exprs.insert(name.clone(), compiled_expr);
+            }
+        }
+    }
+
+    (inferred_let_exprs, pass2_skipped)
+}
+
+/// Phase 4 of trait conformance checking: build the `available_defaults` advertisement map.
+///
+/// Produces a `HashMap<(String, AvailableDefaultKind), Type>` keyed by `(name, kind)` so that
+/// `Param` and `Let` defaults for the same member name occupy separate slots and can be looked
+/// up independently. A `Param` default can satisfy a `Param` requirement; a `Let` default can
+/// satisfy a `Let` requirement — they do not interfere with each other.
+///
+/// ## Key structure rationale
+///
+/// The composite `(name, AvailableDefaultKind)` key was chosen over a two-level map or a
+/// single-key map with a kind guard on the value for two reasons:
+/// 1. **Pre-filtering**: the requirement-checking loop (phase 5) looks up
+///    `(req.name.clone(), required_kind)` directly, performing kind-filtering inside the
+///    HashMap lookup rather than in the match branch — the key *is* the filter.
+/// 2. **Allocation cost**: `.get(&(req.name.clone(), kind))` allocates a String per lookup
+///    because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`. Requirements
+///    are small in practice so this is acceptable; a two-level map is the escape hatch if
+///    it ever becomes a hot path.
+///
+/// ## `pass2_skipped` exclusion (Option B, task 1951)
+///
+/// Names in `pass2_skipped` are excluded from the `Let` arm: Pass 1 already claimed the scope
+/// slot for those names with an annotated `Param` or `Let`, so the injection loop (phase 6)
+/// will `continue` past them — no `Let` cell is ever injected. Advertising a phantom
+/// `(name, Let)` entry for a skipped name would violate the "one default per `(name, kind)`"
+/// invariant: a `RequirementKind::Let` lookup would kind-match and emit a spurious type-mismatch
+/// diagnostic instead of the clearer "missing required member".
+///
+/// ## Unannotated let defaults
+///
+/// For `DefaultKind::Let { cell_type: None, .. }` entries, the advertised type is the inferred
+/// result type from `inferred_let_exprs` (populated by phase 3's Pass 2). Falls back to
+/// `Type::Real` if the name is absent from the cache — this covers the edge case where Pass 2
+/// itself encountered a compilation error for the let expression. A `debug_assert!` guards the
+/// fallback: any name reaching it must be in `pass2_skipped` (which would have short-circuited
+/// above), so hitting the `Type::Real` branch in practice indicates a Pass-2 contract break — the
+/// same drift mode that would re-introduce the phantom-type-mismatch bug task 1951 Option B fixed.
+pub(super) fn check_phase_build_available_defaults_map(
+    ctx: &MergeContext,
+    inferred_let_exprs: &HashMap<String, CompiledExpr>,
+    pass2_skipped: &HashSet<String>,
+) -> HashMap<(String, AvailableDefaultKind), Type> {
+    ctx.defaults
+        .iter()
+        .filter_map(|d| {
+            let name = d.name.as_deref()?;
+            let (kind, ty) = match &d.kind {
+                DefaultKind::Param { cell_type, .. } => {
+                    (AvailableDefaultKind::Param, cell_type.clone())
+                }
+                DefaultKind::Let { cell_type, .. } => {
+                    // Do not advertise a phantom Let entry for names that Pass 2
+                    // recorded in pass2_skipped: the injection loop will not emit
+                    // a Let cell for those names, so advertising one here would
+                    // violate the "one default per (name, kind)" invariant.
+                    if pass2_skipped.contains(name) {
+                        return None;
+                    }
+                    let resolved = cell_type.clone().unwrap_or_else(|| {
+                        debug_assert!(
+                            inferred_let_exprs.contains_key(name),
+                            "unannotated Let '{name}' absent from inferred_let_exprs and not in pass2_skipped — Pass 2 contract broken; Type::Real fallback would re-introduce the phantom-type-mismatch bug fixed by task 1951 Option B"
+                        );
+                        inferred_let_exprs
+                            .get(name)
+                            .map(|e| e.result_type.clone())
+                            .unwrap_or(Type::Real)
+                    });
+                    (AvailableDefaultKind::Let, resolved)
+                }
+                DefaultKind::Constraint(_) => return None,
+            };
+            Some(((name.to_string(), kind), ty))
+        })
+        .collect()
+}
+
+/// Phase 5 of trait conformance checking: verify structure members against trait requirements.
+///
+/// For each requirement in `ctx.requirements`, checks that either:
+/// 1. The structure provides a member of the correct type (type-mismatch branch), OR
+/// 2. Another trait in the merged bound set provides a same-kind default with a compatible
+///    type (`available_defaults` lookup), OR
+/// 3. Neither — emits "missing required member" diagnostic.
+///
+/// ## Same-kind default satisfaction
+///
+/// Only a same-kind default satisfies a requirement: a `let` default does NOT satisfy a
+/// `param` requirement (param slots must be externally settable at call-site). The composite
+/// `(name, AvailableDefaultKind)` key in `available_defaults` encodes this: lookups are
+/// inherently kind-filtered and require no additional guard on the match arm.
+///
+/// ## Anti-cascade via `Type::Error`
+///
+/// Structure members with an unresolved annotation are stored as `Type::Error` by phase 1.
+/// `implicitly_converts_to(Error, _)` short-circuits to `true` (producer-side wildcard in
+/// `type_compat.rs:3–26`), so a single root-cause diagnostic suppresses the cascade
+/// "type mismatch" that would otherwise appear here.
+///
+/// ## Allocation note
+///
+/// `.get(&(req.name.clone(), kind))` allocates a `String` per lookup because
+/// `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`. Requirement counts are
+/// small in practice; the escape hatch is a two-level `HashMap<String, HashMap<K, V>>`.
+pub(super) fn check_phase_check_members_against_requirements(
+    ctx: &MergeContext,
+    structure: &EntityDefRef<'_>,
+    structure_members: &HashMap<String, Type>,
+    available_defaults: &HashMap<(String, AvailableDefaultKind), Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for req in &ctx.requirements {
+        // A `param` requirement can only be satisfied by a `param` default and a `let`
+        // requirement by a `let` default; `sub` is handled separately below. Binding the
+        // kind tag and expected type in a single match arm keeps the pairing exhaustive:
+        // adding a new `RequirementKind` variant forces a decision here rather than
+        // falling through a stale `unreachable!()`.
+        let (required_default_kind, expected_type) = match &req.kind {
+            RequirementKind::Param(expected) => (AvailableDefaultKind::Param, expected),
+            RequirementKind::Let(expected) => (AvailableDefaultKind::Let, expected),
+            RequirementKind::Sub(structure_name) => {
+                let has_sub = structure.members.iter().any(|m| {
+                    if let reify_syntax::MemberDecl::Sub(s) = m {
+                        s.name == req.name && s.structure_name == *structure_name
+                    } else {
+                        false
+                    }
+                });
+                if !has_sub {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "missing required sub-component '{}' of type '{}'",
+                            req.name, structure_name
+                        ))
+                        .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
+                    );
+                }
+                continue;
+            }
+        };
+        match structure_members.get(&req.name) {
+            Some(actual_type) => {
+                if !implicitly_converts_to(actual_type, expected_type) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type mismatch for trait member '{}': expected {}, got {}",
+                            req.name, expected_type, actual_type
+                        ))
+                        .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
+                    );
+                }
+            }
+            None => {
+                // Check if a matching default from another trait satisfies this requirement.
+                // Only a same-kind default can satisfy: a `let` default does NOT satisfy
+                // a `param` requirement (param slots must be externally settable).
+                // The (name, kind) composite key means the lookup is already kind-filtered —
+                // no additional kind-guard is needed on the match arms.
+                //
+                // Note: `.get(&(req.name.clone(), ...))` allocates a String on every lookup
+                // because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`.
+                // Requirement counts are small in practice so this is not a hot path; if it
+                // ever becomes one, switch to a two-level map `HashMap<String, HashMap<K, V>>`.
+                match available_defaults.get(&(req.name.clone(), required_default_kind)) {
+                    Some(default_type)
+                        if implicitly_converts_to(default_type, expected_type) =>
+                    {
+                        // Same-kind default with matching type satisfies the requirement.
+                    }
+                    Some(default_type) => {
+                        // Same-kind default but wrong type → type mismatch.
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "type mismatch for trait member '{}': \
+                                 requirement expects {}, available default has {}",
+                                req.name, expected_type, default_type
+                            ))
+                            .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
+                        );
+                    }
+                    None => {
+                        // No default of the required kind — treat as missing.
+                        // A param requirement with only a let default in scope means the
+                        // structure must provide a settable param slot itself.
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "missing required member '{}' (expected type: {})",
+                                req.name, expected_type
+                            ))
+                            .with_label(
+                                DiagnosticLabel::new(structure.span, "required by trait"),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Phase 6 of trait conformance checking: inject trait defaults for non-overridden members.
+///
+/// For each entry in `ctx.defaults`, if the structure does not already declare a member
+/// with that name (checked via `structure_members`), injects the default as a `ValueCellDecl`
+/// or `CompiledConstraint`. Handles three default kinds:
+///
+/// ## `DefaultKind::Param`
+///
+/// Creates a `ValueCellKind::Param` cell with an optional compiled default expression.
+/// The `default_decl.default` expression (if present) is compiled on the fly via `compile_expr`.
+///
+/// ## `DefaultKind::Let`
+///
+/// Creates a `ValueCellKind::Let` cell. For **annotated** lets (`cell_type: Some(_)`) the
+/// expression is compiled freshly. For **unannotated** lets the compiled expression is taken
+/// from `inferred_let_exprs` (populated by phase 3's Pass 2), consuming the entry via `.remove()`.
+///
+/// ### Cache miss handling — two cases
+///
+/// - **Deliberate skip** (`pass2_skipped.contains(name)`): Pass 2 found an annotated `Param`
+///   or `Let` already occupying the scope slot and did not cache this expression. Silent `continue`
+///   — the `Param`/annotated-`Let` injection arm will inject its own cell for this name. This
+///   prevents duplicate `(entity, member)` cells.
+/// - **Unexpected drift**: a refactor decoupled the pre-register guard from this injection guard
+///   (e.g. changed the cache key). `debug_assert!(false, …)` fires in dev/test; an error
+///   diagnostic fires in release rather than silently recompiling (which would risk duplicating
+///   diagnostics already pushed by Pass 2 for the same AST node).
+///
+/// ### Annotation-vs-expression type check
+///
+/// When the `Let` default carries an annotation, `type_compatible` (not `implicitly_converts_to`)
+/// is used to honor `Int→Real` widening: `let x : Real = 42.0` parses the literal as `Int`
+/// (parser quirk, `expr.rs:102-109`) but the annotation captures the user's `Real` intent.
+/// This matches the widening relation applied throughout the rest of the compiler
+/// (`type_compat.rs:81`). See task 1834 `esc-1834-58` for the trade-off.
+///
+/// The annotation is authoritative on the injected cell type when present; the inferred
+/// expression type is the fallback.
+///
+/// ## `DefaultKind::Constraint`
+///
+/// Compiles the constraint expression and pushes a `CompiledConstraint` onto `constraints`,
+/// unless the structure already declares a constraint with the same label
+/// (`structure_constraint_labels` lookup). `constraint_index` is incremented for each injected
+/// constraint (consistent with the entity-level index allocation in `entity.rs`).
+///
+/// ## Ownership note
+///
+/// `inferred_let_exprs` is consumed by value because this loop calls `.remove()` on it —
+/// each unannotated-let default is reused exactly once. Callers should pass ownership
+/// after phase 4 finishes reading it for the advertisement map.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn check_phase_inject_defaults(
+    ctx: &MergeContext,
+    structure: &EntityDefRef<'_>,
+    structure_members: &HashMap<String, Type>,
+    structure_constraint_labels: &HashSet<String>,
+    mut inferred_let_exprs: HashMap<String, CompiledExpr>,
+    pass2_skipped: &HashSet<String>,
+    scope: &mut CompilationScope,
+    value_cells: &mut Vec<ValueCellDecl>,
+    constraints: &mut Vec<CompiledConstraint>,
+    constraint_index: &mut u32,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Inject defaults for members not overridden by the structure.
+    for default in &ctx.defaults {
+        match &default.kind {
+            DefaultKind::Param {
+                cell_type,
+                default_decl,
+            } => {
+                let name = default
+                    .name
+                    .as_deref()
+                    .expect("DefaultKind::Param always has Some(name)");
+                if !structure_members.contains_key(name) {
+                    // Inject default param into value_cells
+                    let cell_id = ValueCellId {
+                        entity: structure.name.to_string(),
+                        member: name.to_string(),
+                    };
+
+                    let default_expr = default_decl
+                        .default
+                        .as_ref()
+                        .map(|expr| compile_expr(expr, scope, enum_defs, functions, diagnostics));
+
+                    value_cells.push(ValueCellDecl {
+                        id: cell_id,
+                        kind: ValueCellKind::Param,
+                        visibility: Visibility::Private,
+                        cell_type: cell_type.clone(),
+                        default_expr,
+                        solver_hints: Vec::new(),
+                        span: default.span,
+                    });
+                }
+            }
+            DefaultKind::Let {
+                cell_type,
+                let_decl,
+            } => {
+                let name = default
+                    .name
+                    .as_deref()
+                    .expect("DefaultKind::Let always has Some(name)");
+                if !structure_members.contains_key(name) {
+                    let cell_id = ValueCellId {
+                        entity: structure.name.to_string(),
+                        member: name.to_string(),
+                    };
+
+                    // Reuse the compiled_expr cached by the pre-register/inference
+                    // pass (task 1834 step-9) to avoid a second compilation of the
+                    // same expression.  The dispatch mirrors the pre-register
+                    // branches: unannotated lets populate the cache unless Pass 2
+                    // found the scope slot already claimed (recorded in `pass2_skipped`);
+                    // annotated lets never use the cache.
+                    //
+                    // Cache miss handling: two reasons a `None` arm miss can occur:
+                    //   (a) Deliberate skip (`pass2_skipped.contains(name)`): Pass 2
+                    //       found an annotated type claiming the scope slot and did not
+                    //       cache the expression.  Silent `continue` — the Param/
+                    //       annotated-Let default will inject its own cell for this name.
+                    //   (b) Unexpected drift: a refactor decoupled the pre-register
+                    //       guard from the injection guard or changed the cache key.
+                    //       `debug_assert!(false, …)` fires in dev/test; the error
+                    //       diagnostic fires in release rather than silently recompiling
+                    //       (which would risk duplicating diagnostics already pushed by
+                    //       Pass 2 for the same AST node).
+                    let compiled_expr = match cell_type {
+                        Some(_) => {
+                            compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
+                        }
+                        None => {
+                            match inferred_let_exprs.remove(name) {
+                                Some(ce) => ce,
+                                None => {
+                                    if pass2_skipped.contains(name) {
+                                        // Deliberate skip: Pass 2 found an annotated
+                                        // type already occupying the scope slot and
+                                        // did not cache this expression (see the `pass2_skipped`
+                                        // parameter populated by check_phase_pre_register_default_types).
+                                        // The Param/annotated-Let default will
+                                        // inject its own cell; skip Let injection here
+                                        // to prevent duplicate (entity, member) cells.
+                                        continue;
+                                    }
+                                    // Unexpected: pre-register guard and injection guard
+                                    // have diverged, or the cache key changed.
+                                    debug_assert!(
+                                        false,
+                                        "unannotated let '{}' has no cached compiled expression \
+                                         and is not in pass2_skipped — drift between the \
+                                         pre-register guard and the injection guard in \
+                                         check_phase_pre_register_default_types / check_phase_inject_defaults",
+                                        name
+                                    );
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "internal error: compiled expression for unannotated \
+                                             trait let '{}' was not cached by the pre-register \
+                                             pass; this indicates a drift between the pre-register \
+                                             and injection guards in \
+                                             check_phase_pre_register_default_types / check_phase_inject_defaults",
+                                            name
+                                        ))
+                                        .with_label(
+                                            DiagnosticLabel::new(
+                                                default.span,
+                                                "internal consistency",
+                                            ),
+                                        ),
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+
+                    // Cross-check the expression type against the let's annotation.
+                    // The annotation captures user intent; any drift here is an error.
+                    //
+                    // Use `type_compatible` (not `implicitly_converts_to`) so the check
+                    // honors Int→Real widening — `let x : Real = 42.0` parses the
+                    // expression as `Int` (parser quirk on whole-number `.0` literals,
+                    // expr.rs:102-109) and the annotation captures the user's `Real`
+                    // intent.  `type_compatible` is the same widening relation applied
+                    // throughout type checking (type_compat.rs:81), so accepting it here
+                    // matches the rest of the compiler instead of being stricter at this
+                    // one site.  See task 1834 esc-1834-58 for the trade-off; the
+                    // requirement-vs-member sites inside `check_phase_check_members_against_requirements`
+                    // keep the stricter `implicitly_converts_to` because they compare two
+                    // annotated types (no Int-literal source).
+                    if let Some(annotation_ty) = cell_type
+                        && !type_compatible(annotation_ty, &compiled_expr.result_type)
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "type mismatch for trait let '{}': annotation expects {}, expression evaluates to {}",
+                                name, annotation_ty, compiled_expr.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(default.span, "type mismatch")),
+                        );
+                    }
+
+                    // Annotation is authoritative on the injected cell type when present
+                    // (matches the scope pre-registration in check_phase_pre_register_default_types
+                    // (Pass 1) which also prefers the annotation over the inferred expression type).
+                    // Fall back to the inferred expression type only when there
+                    // is no annotation.
+                    let injected_cell_type = cell_type
+                        .clone()
+                        .unwrap_or_else(|| compiled_expr.result_type.clone());
+
+                    value_cells.push(ValueCellDecl {
+                        id: cell_id,
+                        kind: ValueCellKind::Let,
+                        visibility: Visibility::Private,
+                        cell_type: injected_cell_type,
+                        default_expr: Some(compiled_expr),
+                        solver_hints: Vec::new(),
+                        span: default.span,
+                    });
+                }
+            }
+            DefaultKind::Constraint(constraint_decl) => {
+                let label = constraint_decl.label.as_deref();
+                let already_has = label.is_some_and(|l| structure_constraint_labels.contains(l));
+                if !already_has {
+                    let compiled_expr = compile_expr(
+                        &constraint_decl.expr,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                    );
+
+                    let constraint_id = ConstraintNodeId {
+                        entity: structure.name.to_string(),
+                        index: *constraint_index,
+                    };
+                    *constraint_index += 1;
+
+                    constraints.push(CompiledConstraint {
+                        id: constraint_id,
+                        label: constraint_decl.label.clone(),
+                        expr: compiled_expr,
+                        span: default.span,
+                        domain: None,
+                        optimized_target: None,
+                    });
+                }
+            }
+        }
+    }
+}
