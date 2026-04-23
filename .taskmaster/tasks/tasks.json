@@ -46039,23 +46039,21 @@
         "description": "The two wave2 guard-flip regression tests (crates/reify-eval/tests/edit_source.rs:2229 and crates/reify-eval/tests/guard_eval.rs:2483 — edit_param variant) share ~90% of their fixture verbatim: identical guard_expr, m_decl/n_decl, constraint wiring, and sequenced solver values (depth 8mm → 3mm). Extract a helper (e.g. `fn wave2_flip_fixture()`) in a tests-local module or reify_test_support. Keep the two #[test] functions as thin wrappers that invoke edit_param vs. edit_source and assert cell states. Low priority / polish. Source: esc-2146-21 (reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-23T20:14:36.835Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:11:52.353Z",
-      "taskCount": 2156,
+      "lastModified": "2026-04-23T20:14:36.835Z",
+      "taskCount": 2157,
       "completedCount": 1915,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T20:12:22.369Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T20:14:24.425Z"
+      ]
     }
   }
 }
