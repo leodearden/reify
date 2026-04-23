@@ -2166,6 +2166,125 @@ fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
     );
 }
 
+// ── edit_param Phase 1-only: same-value edit on structure_controlling cell ─────
+
+/// Phase 1 fires (u3 is structure_controlling and edit_param unconditionally
+/// inserts it into changed_set) but every per-group skip applies (guard VALUE
+/// unchanged for all groups), so no group is re-elaborated. Phase 3 never
+/// iterates (no guard value changed). Overall `last_guard_phase_group_evals()`
+/// == 0. This is the edit_param analogue of the edit_source T1 test.
+///
+/// Scenario: Same 10-group fixture as `edit_param_phase1_and_3_skip_unchanged_guarded_groups`.
+/// `edit_param(u3, Bool(true))` — setting u3 to its CURRENT value (true → true).
+/// `changed_set` unconditionally contains u3 (engine_edit.rs:424-425), the
+/// dirty cone includes __guard_3 as u3's dependent, and u3 is
+/// structure_controlling → `has_dirty_guards` true. Every group's guard VALUE
+/// stays true (u3's value is unchanged). Phase 1 enters the body but the
+/// per-group skip at engine_edit.rs:629 (`if old_guard_val == Some(&guard_val)
+/// { continue; }`) suppresses all 10 groups. Phase 3: `guard_changed` false
+/// → never iterates.
+///
+/// Note: scenario (b) from task 2138 — Phase 3 fires while Phase 1 does NOT —
+/// is already covered by `edit_param_phase3_fires_for_auto_driven_guard_change`
+/// at guard_eval.rs:2186 (counter == 1). T4 is the edit_param analogue of T1
+/// and covers the complementary per-group skip path for same-value edits.
+///
+/// Regression catches:
+/// == 1 → per-group skip regressed (over-fires on no-op edits to
+///         structure_controlling cells, e.g. old_guard_val == Some(&guard_val)
+///         arm dropped at engine_edit.rs:629).
+/// > 1  → multi-group regression or Phase 3 guard_changed gate regression.
+///
+/// Task 2138 — edit_param Phase-1-only perf lock (T4).
+#[test]
+fn edit_param_phase1_fires_but_skips_when_same_value_edit_on_structure_controlling_cell() {
+    let module_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    param u2: Bool = true
+    param u3: Bool = true
+    param u4: Bool = true
+    param u5: Bool = true
+    param u6: Bool = true
+    param u7: Bool = true
+    param u8: Bool = true
+    param u9: Bool = true
+    where u0 { let x0 = 1mm }
+    where u1 { let x1 = 1mm }
+    where u2 { let x2 = 1mm }
+    where u3 { let x3 = 1mm }
+    where u4 { let x4 = 1mm }
+    where u5 { let x5 = 1mm }
+    where u6 { let x6 = 1mm }
+    where u7 { let x7 = 1mm }
+    where u8 { let x8 = 1mm }
+    where u9 { let x9 = 1mm }
+}"#;
+    let module = parse_and_compile(module_src);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval: all u0..u9 = true → all guards true → all x0..x9 = 1mm.
+    let initial = engine.eval(&module);
+
+    // Snapshot all 10 cell values before the no-op edit.
+    let cell_ids: Vec<ValueCellId> = (0..10)
+        .map(|n| ValueCellId::new("S", format!("x{}", n)))
+        .collect();
+    let pre_edit_values: Vec<Option<Value>> = cell_ids
+        .iter()
+        .map(|id| initial.values.get(id).cloned())
+        .collect();
+
+    // Edit u3 to its CURRENT value (true → true). Semantically a no-op, but
+    // edit_param unconditionally inserts u3 into changed_set (engine_edit.rs:424-425),
+    // making has_dirty_guards true (u3 is structure_controlling via guard cell
+    // __guard_3 which is in structure_controlling per reify-compiler/src/guards.rs:242).
+    let u3_id = ValueCellId::new("S", "u3");
+    let edited = engine
+        .edit_param(u3_id, Value::Bool(true))
+        .expect("edit_param must succeed");
+
+    // (a) All 10 cells must retain their pre-edit values (no guard value
+    // changed, so no deactivation or re-evaluation of any member).
+    for (id, pre_val) in cell_ids.iter().zip(pre_edit_values.iter()) {
+        let post_val = edited.values.get(id);
+        assert_eq!(
+            post_val,
+            pre_val.as_ref(),
+            "cell {id} must retain pre-edit value after no-op edit_param(u3, true); \
+             pre={:?}, post={:?}",
+            pre_val, post_val
+        );
+    }
+
+    // (b) Performance lock: counter == 0.
+    // has_dirty_guards fires Phase 1 (u3 is structure_controlling and in
+    // changed_set). But all 10 groups' guard VALUES are unchanged (true → true)
+    // so the per-group skip (`if old_guard_val == Some(&guard_val) { continue }`)
+    // suppresses all 10. Phase 3: guard_changed false → never iterates.
+    // Expected: 0 group iterations in total.
+    //
+    // Regression catches:
+    // == 1 → per-group skip regressed for same-value edits on structure_controlling
+    //         cells (old_guard_val == Some(&guard_val) arm dropped at
+    //         engine_edit.rs:629; group 3 would be spuriously re-elaborated).
+    // > 1  → multi-group regression or Phase 3 guard_changed gate regressed.
+    let counter = engine.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 0,
+        "expected 0 non-skipped guard-phase group iterations \
+         (Phase 1 body runs via has_dirty_guards but per-group skip suppresses \
+          all 10 groups since guard values are unchanged; Phase 3 never fires); \
+         got {} — \
+         if 1, per-group skip regressed for same-value edits on structure_controlling \
+           cells (old_guard_val == Some(&guard_val) arm dropped at engine_edit.rs:629); \
+         if > 1, multi-group regression or Phase 3 guard_changed gate regressed",
+        counter
+    );
+}
+
 // ── Phase 3 carve-out: resolver-driven guard change bypasses dedup ─────────────
 
 /// Phase 3 fires for a group whose guard is flipped by solver resolution rather
