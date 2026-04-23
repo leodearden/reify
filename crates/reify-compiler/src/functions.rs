@@ -8,8 +8,10 @@ pub(crate) fn compile_function(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     let empty_params = HashSet::new();
-    // Functions are compiled before the trait registry is built, so trait-name
-    // resolution is not applied inside function signatures. Pass an empty set.
+    // Functions are compiled before the trait/structure registries are built,
+    // so trait-name and structure-name resolution is not applied inside
+    // function signatures. Pass empty sets.
+    let empty_structs: HashSet<String> = HashSet::new();
     let empty_traits: HashSet<String> = HashSet::new();
     // Resolve parameter types
     let mut params = Vec::new();
@@ -19,6 +21,7 @@ pub(crate) fn compile_function(
             &empty_params,
             alias_registry,
             diagnostics,
+            &empty_structs,
             &empty_traits,
         ) {
             Some(t) => t,
@@ -41,6 +44,7 @@ pub(crate) fn compile_function(
                 &empty_params,
                 alias_registry,
                 diagnostics,
+                &empty_structs,
                 &empty_traits,
             ) {
                 Some(t) => t,
@@ -127,21 +131,28 @@ pub(crate) fn resolve_field_type_name(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
     let empty_params = HashSet::new();
-    // Field types do not currently resolve trait names into TraitObject; pass
-    // an empty trait-name set so behavior is unchanged for fields.
+    // Field types do not currently resolve trait or structure names into
+    // TraitObject/StructureRef via the unified resolver path; pass empty sets
+    // so behavior is unchanged for fields.
+    let empty_structs: HashSet<String> = HashSet::new();
     let empty_traits: HashSet<String> = HashSet::new();
-    resolve_type_with_aliases(name, &empty_params, alias_registry, &empty_traits).unwrap_or_else(
-        || {
-            diagnostics.push(
-                Diagnostic::warning(format!(
-                    "unresolved field type '{}', treating as structure reference",
-                    name
-                ))
-                .with_label(DiagnosticLabel::new(span, "unknown type name")),
-            );
-            Type::StructureRef(name.to_string())
-        },
+    resolve_type_with_aliases(
+        name,
+        &empty_params,
+        alias_registry,
+        &empty_structs,
+        &empty_traits,
     )
+    .unwrap_or_else(|| {
+        diagnostics.push(
+            Diagnostic::warning(format!(
+                "unresolved field type '{}', treating as structure reference",
+                name
+            ))
+            .with_label(DiagnosticLabel::new(span, "unknown type name")),
+        );
+        Type::StructureRef(name.to_string())
+    })
 }
 
 /// Compile a field declaration into a CompiledField.

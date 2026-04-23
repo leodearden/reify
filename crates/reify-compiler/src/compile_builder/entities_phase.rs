@@ -54,6 +54,24 @@ pub(crate) fn phase_entities(
 
     let constraint_def_registry = build_constraint_def_registry(&ctx.constraint_defs, prelude);
 
+    // Build the set of structure/occurrence names known at compile time so
+    // `param material : Material` (structure name) resolves to
+    // Type::StructureRef("Material") rather than falling through to the
+    // trait-name fallback.  Collected from local structure/occurrence decls
+    // (already in `ctx.seen_entity_names` from pre_pass::collect_decl_refs)
+    // and every prelude module's exported templates. See task 1876.
+    let structure_names: HashSet<String> = ctx
+        .seen_entity_names
+        .iter()
+        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+        .map(|(name, _)| name.clone())
+        .chain(
+            prelude
+                .iter()
+                .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
+        )
+        .collect();
+
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
@@ -64,6 +82,7 @@ pub(crate) fn phase_entities(
                         &ctx.resolution_enums,
                         &ctx.resolution_functions,
                         &trait_registry,
+                        &structure_names,
                         trait_names,
                         &field_registry,
                         &constraint_def_registry,
@@ -107,6 +126,7 @@ pub(crate) fn phase_entities(
                         &ctx.resolution_enums,
                         &ctx.resolution_functions,
                         &trait_registry,
+                        &structure_names,
                         trait_names,
                         &field_registry,
                         &constraint_def_registry,
@@ -157,6 +177,7 @@ fn compile_entity_decl(
     resolution_enums: &[EnumDef],
     resolution_functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     field_registry: &HashMap<String, &CompiledField>,
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
@@ -172,6 +193,7 @@ fn compile_entity_decl(
         resolution_enums,
         resolution_functions,
         trait_registry,
+        structure_names,
         trait_names,
         field_registry,
         constraint_def_registry,

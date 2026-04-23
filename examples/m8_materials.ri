@@ -4,7 +4,7 @@
 // traits through the full parse → compile_with_stdlib → eval pipeline.
 //
 // AluminumBracket conforms to three stdlib traits:
-//   Physical : Material  — name, density, volume, centroid_*, computed mass = volume*density
+//   Physical : MaterialSpec — name, density, volume, centroid_*, computed mass = volume*density
 //   Elastic              — youngs_modulus, poissons_ratio, shear_modulus
 //   Strong               — yield_strength, uts, compressive_strength (+ constraint uts >= yield_strength)
 //
@@ -13,7 +13,7 @@
 // mass = volume * density = 0.0004 * 2700 = 1.08 (exact in f64).
 
 structure def AluminumBracket : Physical + Elastic + Strong {
-    // Material (via Physical) params
+    // MaterialSpec (via Physical) params
     param name : String = "Aluminium 6061-T6"
     param density : Real = 2700.0
 

@@ -231,6 +231,7 @@ pub(crate) fn compile_entity(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     field_registry: &HashMap<String, &CompiledField>,
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
@@ -313,6 +314,7 @@ pub(crate) fn compile_entity(
                         &type_param_names,
                         alias_registry,
                         diagnostics,
+                        structure_names,
                         trait_names,
                     ) {
                         Some(t) => t,
@@ -395,6 +397,7 @@ pub(crate) fn compile_entity(
                     diagnostics,
                     &type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     &mut known_geometry_lets,
                 );
@@ -405,6 +408,7 @@ pub(crate) fn compile_entity(
                     diagnostics,
                     &type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     &mut known_geometry_lets,
                 );
@@ -436,6 +440,7 @@ pub(crate) fn compile_entity(
                                     &type_param_names,
                                     alias_registry,
                                     diagnostics,
+                                    structure_names,
                                     trait_names,
                                 )
                                 .unwrap_or_else(|| {
@@ -535,6 +540,7 @@ pub(crate) fn compile_entity(
         check_trait_conformance(
             structure,
             trait_registry,
+            structure_names,
             trait_names,
             &mut scope,
             &mut value_cells,
@@ -712,6 +718,7 @@ pub(crate) fn compile_entity(
                     let_decl.type_expr.as_ref(),
                     &type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     diagnostics,
                 );
@@ -975,6 +982,7 @@ pub(crate) fn compile_entity(
                     &mut constraint_index,
                     &type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     &known_geometry_lets,
                 );
@@ -1086,6 +1094,7 @@ pub(crate) fn compile_entity(
                                 let_decl.type_expr.as_ref(),
                                 &type_param_names,
                                 alias_registry,
+                                structure_names,
                                 trait_names,
                                 diagnostics,
                             );
@@ -2107,6 +2116,7 @@ pub(crate) fn fixup_option_none_for_let(
     type_expr: Option<&reify_syntax::TypeExpr>,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -2117,6 +2127,7 @@ pub(crate) fn fixup_option_none_for_let(
             type_param_names,
             alias_registry,
             diagnostics,
+            structure_names,
             trait_names,
         )
         && matches!(&resolved, Type::Option(_))

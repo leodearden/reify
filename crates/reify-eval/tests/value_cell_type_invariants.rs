@@ -1,8 +1,14 @@
 //! Regression lock for the value-cell cell_type invariant relied upon by
 //! `value_type_kind_matches` (crates/reify-eval/src/lib.rs): post-compilation,
-//! no ValueCellDecl.cell_type carries Type::TypeParam, Type::StructureRef, or
-//! Type::Geometry — those three variants have no Value counterpart and would
-//! fall through the match to the default-reject path.
+//! no ValueCellDecl.cell_type carries Type::TypeParam or Type::Geometry —
+//! those variants have no Value counterpart and would fall through the match
+//! to the default-reject path.
+//!
+//! `Type::StructureRef` is intentionally NOT checked here (task 1876):
+//! user code may declare `param x : SomeStruct = SomeStruct(...)` which
+//! compiles to a ValueCellDecl with cell_type = StructureRef. The struct-call
+//! default evaluates to Value::Undef (structure constructors are not
+//! builtins), and Undef is accepted by the kind-match for any type.
 
 use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellDecl};
 use reify_types::{ModulePath, Severity, Type};
@@ -27,11 +33,15 @@ fn assert_template_cells_representable(template: &TopologyTemplate) {
     // this path (e.g. extra synthetic cells produced during resolution), this
     // walker will need to be extended to reach them.
     let check = |cell: &ValueCellDecl| {
+        // Aligned with (a) the module docstring lines 7-11 which explicitly
+        // documents that `Type::StructureRef` is intentionally NOT checked
+        // (task 1876 — user code may declare `param x : SomeStruct =
+        // SomeStruct(...)`; the struct-call default evaluates to `Value::Undef`
+        // which passes the kind-match for any type), and (b) the runtime
+        // invariant in crates/reify-eval/src/engine_eval.rs which forbids
+        // only `Type::TypeParam(_) | Type::Geometry`.
         assert!(
-            !matches!(
-                &cell.cell_type,
-                Type::TypeParam(_) | Type::StructureRef(_) | Type::Geometry
-            ),
+            !matches!(&cell.cell_type, Type::TypeParam(_) | Type::Geometry),
             "template `{}` cell `{}` has unrepresentable cell_type {:?}",
             template.name,
             cell.id,
@@ -72,6 +82,35 @@ fn user_fixture_value_cells_are_representable() {
     let parsed = reify_syntax::parse(&source, ModulePath::single("math_linalg"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    assert_module_cells_representable(&compiled);
+}
+
+#[test]
+fn boltflange_value_cells_are_representable() {
+    // Exercise the task-1876 case the module docstring calls out explicitly:
+    // `examples/m5_geometry_flange.ri` declares
+    //     param material : Material = Material(name: "steel", density: 7850.0, ...)
+    // The compiled cell for `material` carries cell_type =
+    // Type::StructureRef("Material"), which is the exact variant the walker
+    // must tolerate per the runtime invariant in
+    // crates/reify-eval/src/engine_eval.rs (forbids only TypeParam | Geometry).
+    //
+    // BoltFlange conforms to `Rigid` and uses the stdlib `Material` struct, so
+    // compile with full stdlib prelude (unlike math_linalg.ri which is
+    // stdlib-independent).
+    const PATH_BOLTFLANGE: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
+    let source = std::fs::read_to_string(PATH_BOLTFLANGE)
+        .expect("m5_geometry_flange.ri fixture");
+    let parsed = reify_syntax::parse(&source, ModulePath::single("m5_geometry_flange"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()

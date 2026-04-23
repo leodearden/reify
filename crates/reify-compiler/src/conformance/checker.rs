@@ -71,6 +71,7 @@ pub(super) fn resolve_let_advertised_type(
 /// via the asymmetric producer-side wildcard in `type_compat.rs:3–26`.
 pub(super) fn check_phase_resolve_structure_members(
     structure: &EntityDefRef<'_>,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     enum_defs: &[reify_types::EnumDef],
     alias_registry: &TypeAliasRegistry,
@@ -108,7 +109,13 @@ pub(super) fn check_phase_resolve_structure_members(
      -> Type {
         match &te.kind {
             reify_syntax::TypeExprKind::Named { name, type_args } => {
-                resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
+                resolve_type_with_aliases(
+                    name,
+                    &empty_params,
+                    alias_registry,
+                    structure_names,
+                    trait_names,
+                )
                     .or_else(|| {
                         enum_names.contains(name.as_str()).then(|| {
                             if !type_args.is_empty() {

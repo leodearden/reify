@@ -7,6 +7,7 @@ use super::*;
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     scope: &mut CompilationScope,
     value_cells: &mut Vec<ValueCellDecl>,
@@ -20,6 +21,7 @@ pub(crate) fn check_trait_conformance(
     let (structure_param_members, structure_let_members, structure_constraint_labels) =
         check_phase_resolve_structure_members(
             structure,
+            structure_names,
             trait_names,
             enum_defs,
             alias_registry,
@@ -296,6 +298,7 @@ mod tests {
         let trait_registry: HashMap<String, &CompiledTrait> =
             traits.iter().map(|t| (t.name.clone(), t)).collect();
         let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let structure_names: HashSet<String> = HashSet::new();
         let mut scope = CompilationScope::new(&structure_def.name);
         let mut value_cells: Vec<ValueCellDecl> = vec![];
         let mut constraints: Vec<CompiledConstraint> = vec![];
@@ -307,6 +310,7 @@ mod tests {
         check_trait_conformance(
             &entity_ref,
             &trait_registry,
+            &structure_names,
             &trait_names,
             &mut scope,
             &mut value_cells,
@@ -1346,6 +1350,7 @@ mod tests {
         };
 
         let entity_ref = EntityDefRef::from(&structure_def);
+        let structure_names: HashSet<String> = HashSet::new();
         let trait_names: HashSet<String> = HashSet::new();
         let alias_registry = TypeAliasRegistry::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -1353,6 +1358,7 @@ mod tests {
         let (structure_param_members, structure_let_members, structure_constraint_labels) =
             check_phase_resolve_structure_members(
                 &entity_ref,
+                &structure_names,
                 &trait_names,
                 &[],
                 &alias_registry,
