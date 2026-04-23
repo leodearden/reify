@@ -45968,23 +45968,21 @@
         "description": "In crates/reify-compiler/src/types.rs (around line 218-232), `EntityKind` has a `Display` impl that maps `Structure -> \"structure\"` and `Occurrence -> \"occurrence\"`. Task 1150 added a new match producing the same literals at crates/reify-compiler/src/traits.rs:237-240 to avoid a `to_string().to_lowercase()` allocation, creating a second source of truth that must stay in sync if a new variant is added.\n\nFix: expose `fn as_label(&self) -> &'static str` on `EntityKind` in types.rs that returns the same literals, and (a) have the Display impl delegate to it, (b) replace the match at traits.rs:237-240 with a call to `template.entity_kind.as_label()`. Check other call-sites for similar patterns.\n\nmemory_hints: search \"EntityKind Display\" in reify-compiler/src/types.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-23T19:26:24.737Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T19:18:10.828Z",
-      "taskCount": 2153,
+      "lastModified": "2026-04-23T19:26:24.737Z",
+      "taskCount": 2154,
       "completedCount": 1907,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T19:26:19.968Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T19:26:19.989Z"
+      ]
     }
   }
 }
