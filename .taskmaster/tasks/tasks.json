@@ -45955,7 +45955,12 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T19:15:07.383Z"
+        "updatedAt": "2026-04-23T19:15:07.383Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/module_dag.rs"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -45965,7 +45970,9 @@
       "completedCount": 1907,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T19:18:10.314Z",
+      "description": "Tasks for master context"
     }
   }
 }
