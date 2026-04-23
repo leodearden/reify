@@ -332,6 +332,26 @@ fn known_block_pragma_solver_no_warning_on_trait() {
     );
 }
 
+// ── Step A: context-aware module-only pragma warning ─────────────────────────
+
+/// Module-only pragma `#no_prelude` on a structure block should emit a
+/// "only valid at module level" warning, not the generic "unknown pragma" one.
+#[test]
+fn no_prelude_on_structure_emits_module_only_warning() {
+    let module = compile_source(r#"structure S { #no_prelude param x : Real }"#);
+    let warns = pragma_warnings(&module, "no_prelude");
+    assert!(
+        !warns.is_empty(),
+        "expected a warning for #no_prelude on structure, got none; all warnings: {:?}",
+        warnings_only(&module)
+    );
+    assert!(
+        warns.iter().any(|d| d.message.contains("only valid at module level")),
+        "expected warning to mention 'only valid at module level', got: {:?}",
+        warns
+    );
+}
+
 /// Known block pragma `#kernel` on a purpose should NOT emit an unknown-pragma warning.
 #[test]
 fn known_block_pragma_kernel_no_warning_on_purpose() {
