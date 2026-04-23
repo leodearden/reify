@@ -44427,13 +44427,13 @@
         "description": "Task 2084's lock `edit_source_role_flipped_guard_member_matches_cold_eval` in crates/reify-eval/tests/edit_source.rs only covers the active→inactive direction of the role flip (a member that was Determined becoming Undef). The symmetric case — a member previously suppressed to Undef on the inactive branch becoming a live Determined value on the active branch — is not pinned.\n\nSince the fix relies on Phase 1 running the full activation/deactivation pass for the whole group, the symmetric case exercises a different path in `deactivate_if_not_auto` / activation that is worth a dedicated lock.\n\nAdd a companion test where `moving` starts on the else-branch (Undef under `use_thick=true`), then in module B moves to the where-branch. Assert cold and incremental agree on the now-Determined value. Reuse `parse_and_compile` / `fresh_engine` for minimal extra code. Mirror the dual-assertion pattern (relative + positive anchor) from the existing test so a \"both wrong\" regression cannot slip through.\n\nmemory_hints:\n- search: \"edit_source role-flipped guard member test\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2084"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:32.159Z",
+        "updatedAt": "2026-04-23T18:30:42.356Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -45820,7 +45820,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T18:30:40.066Z",
+      "lastModified": "2026-04-23T18:30:42.356Z",
       "taskCount": 2147,
       "completedCount": 1900,
       "tags": [
