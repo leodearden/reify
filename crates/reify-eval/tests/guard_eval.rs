@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use reify_eval::Engine;
-use reify_test_support::builders::{ge, gt, literal, value_ref, value_ref_typed};
+use reify_test_support::builders::{and, ge, gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintSolver, SequencedMockConstraintSolver,
@@ -2418,5 +2418,223 @@ fn edit_param_wave2_does_not_corrupt_inactive_members() {
          if m is a concrete value (e.g. 3mm), wave2 corrupted the inactive member \
          and the post-wave2 cleanup is missing or broken. Got {:?}",
         edited.values.get(&m_id),
+    );
+}
+
+/// Symmetric regression test for the wave2 guard-flip bug in `edit_param`.
+/// Task 2146.
+///
+/// ## Bug
+///
+/// `phase1_reelaborated` (formerly `HashSet<ValueCellId>`) did not record the
+/// guard value Phase 1 observed. When wave2 subsequently flipped the guard,
+/// Phase 3's dedup skipped the group entirely (both the `phase1_reelaborated`
+/// check and the old-vs-new check blocked re-elaboration), leaving else_members
+/// that should be Determined stuck at `Undef`.
+///
+/// ## Fixture
+///
+/// Single module S:
+/// - `param x: Length = -1mm` (default negative → guard starts false)
+/// - `auto depth: Length` (resolved by solver to depth >= x)
+/// - Composite guard: `(x > 0mm) && (depth > 5mm)`
+///   Reads BOTH x (triggers Phase 1 via dirty_cone) and depth (triggers wave2
+///   flip when solver updates depth after the edit).
+/// - `members: [let m = 99mm]` — literal, does NOT read depth
+/// - `else_members: [let n = 42mm]` — literal, does NOT read depth
+///
+/// ## Sequence for edit_param(x, 1mm)
+///
+/// 1. Initial `eval`: x=-1mm, guard=(-1>0)&&...=false. m=Undef, n=42mm.
+///    Solver (call 1): depth=8mm.
+/// 2. `edit_param(x, 1mm)`:
+///    - **Phase 1** fires (guard_cell in dirty_cone(x)).
+///      Evaluates with x=1mm, depth=8mm (stale): (1>0)&&(8>5) = true.
+///      old_guard=false ≠ Phase-1 guard=true → re-elaborates.
+///      Records `{guard_cell: Bool(true)}`. m=99mm, n=Undef.
+///    - **Solver** (call 2): depth=3mm (constraint depth≥x=1mm).
+///    - **Wave2**: guard_cell reads depth → re-eval: (1>0)&&(3>5) = false.
+///      Guard flips true→false.
+///    - **reapply_phase1_deactivations**: m deactivated (Undef). n skipped
+///      (else_members; is_active=true under guard=false).
+///    - **Phase 3** (OLD, buggy): `phase1_reelaborated.contains(guard_cell)` →
+///      true → `continue` → n stays Undef. ALSO old_guard=false==current false
+///      → old-vs-new skip would fire too.
+///    - **Phase 3** (FIXED): guard_changed trigger detects Phase-1 flip-then-
+///      revert (recorded Bool(true) ≠ current Bool(false)) → guard_changed=true.
+///      Per-group match: recorded Bool(true) ≠ current Bool(false) → case (b) →
+///      falls through unconditionally → n's literal default_expr evaluated →
+///      n=42mm (Determined).
+/// 3. Assert: m=Undef (members inactive), n=42mm (else_members active).
+///    Cross-check against cold eval of a module with x default=-1mm (same as
+///    the pre-edit module but with solver returning depth=3mm and guard=false):
+///    n should match.
+///
+/// This test passes immediately after the task-2146 fix (step-2) and guards
+/// against a future refactor that regresses only the edit_param path while
+/// leaving the edit_source path intact.
+#[test]
+fn edit_param_wave2_guard_flip_activates_else_members() {
+    let x_id = ValueCellId::new("S", "x");
+    let depth_id = ValueCellId::new("S", "depth");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let m_id = ValueCellId::new("S", "m");
+    let n_id = ValueCellId::new("S", "n");
+
+    // Composite guard: (x > 0mm) && (depth > 5mm).
+    // Reads x (triggers Phase 1 via dirty_cone) AND depth (triggers wave2 flip).
+    let guard_expr = and(
+        gt(value_ref("S", "x"), literal(mm(0.0))),
+        gt(value_ref("S", "depth"), literal(mm(5.0))),
+    );
+
+    // Member m: literal 99mm — does NOT read depth (wave2 won't touch it).
+    let m_decl = ValueCellDecl {
+        id: m_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(99.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Else-member n: literal 42mm — does NOT read depth (wave2 won't touch it).
+    // This is the cell that must become Determined after the guard flips.
+    let n_decl = ValueCellDecl {
+        id: n_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(42.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        // x: param with default -1mm so the guard starts false (x > 0 = false)
+        .param("S", "x", Type::length(), Some(literal(mm(-1.0))))
+        // depth: auto param resolved by solver (constraint: depth >= x)
+        .auto_param("S", "depth", Type::length())
+        // constraint depth >= x; reads both depth and x → dirty when x changes
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_x"),
+            ge(value_ref("S", "depth"), value_ref("S", "x")),
+        )
+        // guarded group: composite guard reads x and depth;
+        // literal member m (active when guard=true);
+        // literal else_member n (active when guard=false)
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![m_decl],
+            vec![],
+            vec![n_decl],
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Sequenced solver:
+    // call 1 (initial eval): depth=8mm (>5mm, but guard still false because x=-1<0)
+    // call 2 (edit_param):   depth=3mm (≤5mm; wave2 flips guard true→false)
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_id.clone(), mm(8.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_id.clone(), mm(3.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
+    ]);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval: x=-1mm, guard=false, solver→depth=8mm.
+    // m=Undef (members inactive), n=42mm (else_members active).
+    let initial = engine.eval(&module);
+    assert!(
+        matches!(initial.values.get(&m_id), Some(Value::Undef)),
+        "initial eval: m should be Undef (guard=false; x=-1mm < 0mm). Got {:?}",
+        initial.values.get(&m_id),
+    );
+    assert!(
+        matches!(initial.values.get(&n_id), Some(Value::Scalar { si_value, .. })
+            if (*si_value - 0.042).abs() < 1e-10),
+        "initial eval: n should be 42mm (else_members active; guard=false). Got {:?}",
+        initial.values.get(&n_id),
+    );
+
+    // edit_param(x, 1mm):
+    // Phase 1: guard_cell in dirty_cone(x); eval with x=1mm, depth=8mm(stale)
+    //   → (1>0)&&(8>5)=true. old=false≠new=true → Phase 1 fires.
+    //   phase1_reelaborated = {guard_cell: Bool(true)}. m=99mm, n=Undef.
+    // Solver: constraint depth>=x reads x (dirty) → depth=3mm.
+    // Wave2: guard_cell reads depth → re-eval: (1>0)&&(3>5)=false. Guard flips!
+    // reapply: m deactivated (Undef). n skipped (else_members; active branch).
+    // Phase 3 (OLD, buggy): guard_cell in phase1_reelaborated → skip. Also
+    //   old_guard==current_guard==false → old-vs-new skip fires too. n=Undef. BUG.
+    // Phase 3 (FIXED): guard_changed detects Phase-1 flip-then-revert (task 2146).
+    //   Per-group case (b): recorded Bool(true) ≠ current Bool(false) → re-elaborate.
+    //   n's literal default_expr evaluated → n=42mm. FIX.
+    let edited = engine
+        .edit_param(x_id.clone(), Value::length(0.001)) // 1mm in SI
+        .expect("edit_param must succeed");
+
+    // (a) m must be Undef: guard ended up false → members branch inactive.
+    assert!(
+        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        "m must be Undef after guard ends up false (x=1mm; guard=(1>0)&&(3>5)=false). \
+         Got {:?}",
+        edited.values.get(&m_id),
+    );
+
+    // (b) n must be 42mm (Determined): guard is false → else_members branch active.
+    // BUG (pre-fix): n remains Undef because Phase 3's guard_changed is false
+    // (old=false==current=false) and phase1_reelaborated check blocks the fallback.
+    assert!(
+        matches!(edited.values.get(&n_id), Some(Value::Scalar { si_value, .. })
+            if (*si_value - 0.042).abs() < 1e-10),
+        "n must be 42mm (else_members active; guard ended up false after wave2 flip); \
+         if n is Undef, Phase 3 incorrectly skipped the group via stale \
+         phase1_reelaborated (task 2146 bug). Got {:?}",
+        edited.values.get(&n_id),
+    );
+
+    // (c) Cross-check: incremental result must match cold eval with depth=3mm, guard=false.
+    // Build a fresh engine with a solver that returns depth=3mm for the cold eval.
+    let mut cold_solved = HashMap::new();
+    cold_solved.insert(depth_id.clone(), mm(3.0));
+    let cold_solver = SequencedMockConstraintSolver::new(vec![SolveResult::Solved {
+        values: cold_solved,
+        unique: true,
+    }]);
+    let cold_checker = MockConstraintChecker::new();
+    let mut cold_engine =
+        Engine::new(Box::new(cold_checker), None).with_solver(Box::new(cold_solver));
+    // Cold eval of the same module with x=-1mm default (guard=false → n=42mm, m=Undef).
+    // Note: x default is -1mm, which gives guard=false regardless of depth.
+    let cold = cold_engine.eval(&module);
+
+    assert_eq!(
+        edited.values.get(&m_id),
+        cold.values.get(&m_id),
+        "m: incremental edit_param result must match cold eval",
+    );
+    assert_eq!(
+        edited.values.get(&n_id),
+        cold.values.get(&n_id),
+        "n: incremental edit_param result must match cold eval",
     );
 }
