@@ -902,14 +902,15 @@ impl Engine {
                             // Auto cells in the active branch are left untouched:
                             // the solver already resolved them to concrete values.
                             // Overwriting with Undef here would destroy solver work.
-                        } else {
+                        } else if !cell.kind.is_auto() {
+                            // Auto cells: skip. Lifecycle owned by the solver —
+                            // see the canonical rule on engine_edit.rs's module-level
+                            // doc and on deactivate_if_not_auto.
                             values.insert(cell.id.clone(), Value::Undef);
-                            let det = if cell.kind.is_auto() {
-                                DeterminacyState::Auto
-                            } else {
-                                DeterminacyState::Undetermined
-                            };
-                            snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
+                            snapshot.values.insert(
+                                cell.id.clone(),
+                                (Value::Undef, DeterminacyState::Undetermined),
+                            );
                         }
                     }
 
@@ -941,14 +942,15 @@ impl Engine {
                             // Auto cells in the active else branch are left untouched:
                             // the solver already resolved them to concrete values.
                             // Overwriting with Undef here would destroy solver work.
-                        } else {
+                        } else if !cell.kind.is_auto() {
+                            // Auto cells: skip. Lifecycle owned by the solver —
+                            // see the canonical rule on engine_edit.rs's module-level
+                            // doc and on deactivate_if_not_auto.
                             values.insert(cell.id.clone(), Value::Undef);
-                            let det = if cell.kind.is_auto() {
-                                DeterminacyState::Auto
-                            } else {
-                                DeterminacyState::Undetermined
-                            };
-                            snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
+                            snapshot.values.insert(
+                                cell.id.clone(),
+                                (Value::Undef, DeterminacyState::Undetermined),
+                            );
                         }
                     }
                 }

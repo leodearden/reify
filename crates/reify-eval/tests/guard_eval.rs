@@ -1808,23 +1808,23 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         Some(&Value::length(0.011)),
         "Phase 1: p1 should be 11mm"
     );
-    // a2: inactive else_member (guard=true → else branch deactivated by post-solver re-eval → Undef)
-    // The solver resolves a2=7mm, but engine_eval.rs's post-solver guard re-eval overwrites
-    // inactive-branch Auto params with Undef (det=Auto). Auto-skip is an edit_param-only
-    // mechanism; initial eval always deactivates inactive members regardless of Auto kind.
+    // a2: inactive else_member (guard=true → else branch inactive).
+    // Canonical rule: Auto cell lifecycle is owned by the solver. The post-solver pass
+    // in engine_eval.rs now skips Auto cells on the inactive branch (same as
+    // deactivate_if_not_auto in engine_edit.rs), so a2 retains its solver-resolved
+    // value of 7mm with DeterminacyState::Determined.
     let a2_p1 = result1.values.get(&a2_id);
-    assert_eq!(
-        a2_p1,
-        Some(&Value::Undef),
-        "Phase 1: a2 should be Undef (inactive else_member when guard=true), got {:?}",
+    assert!(
+        matches!(a2_p1, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
+        "Phase 1: a2 should retain solver-resolved 7mm (inactive else_member, Auto-skip), got {:?}",
         a2_p1
     );
     let snap1 = engine.snapshot().expect("snapshot after eval");
     let (_, a2_det1) = snap1.values.get(&a2_id).expect("a2 in snapshot after eval");
     assert_eq!(
         *a2_det1,
-        DeterminacyState::Auto,
-        "Phase 1: a2 DeterminacyState should be Auto (inactive else_member, Auto kind)"
+        DeterminacyState::Determined,
+        "Phase 1: a2 DeterminacyState should be Determined (solver resolved, Auto-skip preserves it)"
     );
     // p2: else_member deactivated → Undef
     assert_eq!(
@@ -1861,20 +1861,21 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         Some(&Value::Undef),
         "Phase 2: p1 should be Undef after members deactivate"
     );
-    // a2: else_members activate; Auto with no default_expr → stays Undef (solver constraint
-    // a2_gt_3mm is not in the dirty cone when `active` changes, so solver does not run for a2).
+    // a2: else_members activate; Auto with no default_expr, retained 7mm from Phase 1
+    // (deactivate_if_not_auto Auto-skip preserved the solver value). Activating an Auto
+    // cell with no default_expr leaves the value as-is (no default to restore), so a2
+    // retains its 7mm/Determined state.
     let a2_p2 = result2.values.get(&a2_id);
-    assert_eq!(
-        a2_p2,
-        Some(&Value::Undef),
-        "Phase 2: a2 should be Undef (else_members activated but solver not triggered), got {:?}",
+    assert!(
+        matches!(a2_p2, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
+        "Phase 2: a2 should retain 7mm after else_members activate (solver-resolved value preserved), got {:?}",
         a2_p2
     );
     let (_, a2_det2) = snap2.values.get(&a2_id).expect("a2 in snapshot after guard→false");
     assert_eq!(
         *a2_det2,
-        DeterminacyState::Auto,
-        "Phase 2: a2 DeterminacyState must be Auto (Auto kind, value still Undef)"
+        DeterminacyState::Determined,
+        "Phase 2: a2 DeterminacyState must remain Determined (Auto-skip preserved solver value)"
     );
     // p2: else_member activates → default 13mm
     assert_eq!(
@@ -1904,21 +1905,20 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
         Some(&Value::length(0.011)),
         "Phase 3: p1 should be 11mm after members re-activated"
     );
-    // a2: Auto-skip in else_members deactivate (site #2) → Undef preserved
+    // a2: Auto-skip in else_members deactivate (site #2) → 7mm preserved.
     // deactivate_if_not_auto skips a2 (Auto kind) so the snapshot is not touched.
     let a2_p3 = result3.values.get(&a2_id);
-    assert_eq!(
-        a2_p3,
-        Some(&Value::Undef),
-        "Phase 3: a2 should remain Undef after else_members deactivate (Auto-skip preserves Undef), got {:?}",
+    assert!(
+        matches!(a2_p3, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
+        "Phase 3: a2 should retain 7mm after else_members deactivate (Auto-skip preserves solver value), got {:?}",
         a2_p3
     );
     let snap3 = engine.snapshot().expect("snapshot after guard→true");
     let (_, a2_det3) = snap3.values.get(&a2_id).expect("a2 in snapshot after guard→true");
     assert_eq!(
         *a2_det3,
-        DeterminacyState::Auto,
-        "Phase 3: a2 DeterminacyState must remain Auto after else Auto-skip"
+        DeterminacyState::Determined,
+        "Phase 3: a2 DeterminacyState must remain Determined after else Auto-skip"
     );
     // p2: Param in else_members → Undef after deactivation
     assert_eq!(
