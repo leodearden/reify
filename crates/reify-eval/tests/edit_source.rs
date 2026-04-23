@@ -2534,6 +2534,124 @@ fn edit_source_added_member_in_unchanged_guard_group_forces_non_skip() {
     );
 }
 
+// ── has_role_flipped_guard_member forces non-skip: counter == 1 ──────────────
+
+/// `has_role_flipped_guard_member` forces Phase 1 re-elaboration for the
+/// affected group even when the guard VALUE is unchanged. Phase 3 does not
+/// fire (no guard value change). Overall `last_guard_phase_group_evals()` == 1.
+///
+/// Scenario: Module A: `where u { let x = 1mm } else { let y = 2mm }` with
+/// `u: Bool = true`. Module B swaps branches: `where u { let y = 2mm } else
+/// { let x = 1mm }`. `u` unchanged (true); `x` and `y` have the same id +
+/// same default_expr → same content_hash → classified as neither `changed` nor
+/// `added`. Role-flip detected via `build_old_role_map` (engine_edit.rs:211)
+/// and probe at engine_edit.rs:1563-1590: `has_role_flipped_guard_member` true
+/// → `has_dirty_guards` fires. Guard VALUE unchanged (still true). For group 0:
+/// old == new == true, `has_added_in_group` false, BUT
+/// `has_role_flipped_guard_member` true → skip clause at engine_edit.rs:1642
+/// fails → process → counter == 1. Phase 3: `guard_changed` false → never
+/// iterates.
+///
+/// Assert values match cold eval: x=Undef, y=≈2mm (guard=true; x now on else
+/// branch, y now on active branch).
+///
+/// Regression catch: dropping `has_role_flipped_guard_member` from the Phase 1
+/// skip guard (engine_edit.rs:1642) reduces counter to 0 — the guard loop skips
+/// the group entirely and role-flipped members retain their old-branch values
+/// (e.g. x remains Determined=1mm instead of deactivating to Undef).
+///
+/// Task 2138 — has_role_flipped_guard_member forces non-skip perf lock (T3).
+#[test]
+fn edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip() {
+    // Module A: x on active (where) branch, y on else branch.
+    // With u=true: x=1mm (active), y=Undef (inactive).
+    let module_a_src = r#"structure S {
+    param u: Bool = true
+    where u {
+        let x = 1mm
+    } else {
+        let y = 2mm
+    }
+}"#;
+    // Module B: branches swapped. x and y have the same id + same expr →
+    // same content_hash → neither `changed` nor `added`. Role-flip detected:
+    // x moved members→else, y moved else→members.
+    // With u=true: y now active (2mm), x now inactive (Undef).
+    let module_b_src = r#"structure S {
+    param u: Bool = true
+    where u {
+        let y = 2mm
+    } else {
+        let x = 1mm
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchors (both needed to prevent "both wrong" false pass):
+    //   - x is now on the else (inactive) branch → must be Undef.
+    //   - y is now on the active branch → must be ≈2mm.
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    assert!(
+        matches!(incr.values.get(&x_id), Some(Value::Undef)),
+        "x must deactivate to Undef after role-flip (x moved to inactive else \
+         branch with u=true); got {:?}",
+        incr.values.get(&x_id)
+    );
+    assert!(
+        matches!(
+            incr.values.get(&y_id),
+            Some(Value::Scalar { si_value, .. }) if (*si_value - 0.002).abs() < 1e-12
+        ),
+        "y must activate to ≈2mm after role-flip (y moved to active members \
+         branch with u=true); got {:?}",
+        incr.values.get(&y_id)
+    );
+
+    // (c) Performance lock: counter == 1.
+    // `has_role_flipped_guard_member` is true → the per-group skip at
+    // engine_edit.rs:1642 is suppressed even though the guard value is
+    // unchanged → group 0 is re-elaborated in Phase 1 → counter == 1.
+    // Phase 3's outer `guard_changed` gate is false (guard value did not
+    // change) → Phase 3 never iterates.
+    //
+    // Locks: detection via `build_old_role_map` (engine_edit.rs:211) and
+    // probe at engine_edit.rs:1563-1590; skip clause at engine_edit.rs:1642.
+    //
+    // Regression catches:
+    // == 0 → `has_role_flipped_guard_member` dropped from skip clause
+    //         (role-flipped members retain old-branch values; e.g. x remains
+    //         Determined=1mm instead of deactivating to Undef).
+    // > 1  → Phase 3 guard_changed gate fired spuriously despite unchanged value.
+    let counter = incremental.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 1,
+        "expected exactly 1 non-skipped guard-phase group iteration \
+         (Phase 1 re-elaborates group 0 because has_role_flipped_guard_member=true, \
+          despite guard value being unchanged; Phase 3 does not fire); \
+         got {} — \
+         if 0, has_role_flipped_guard_member clause was dropped from skip condition \
+           at engine_edit.rs:1642 (role-flipped members would retain old-branch values); \
+         if > 1, Phase 3 guard_changed gate regressed",
+        counter
+    );
+}
+
 // ── Wave2 interaction: inactive members must stay Undef after cleanup ─────────
 
 /// Regression guard for the post-wave2 cleanup (task 2142):
