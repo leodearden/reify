@@ -46097,6 +46097,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-23T20:25:22.202Z"
+      },
+      {
+        "id": "2171",
+        "title": "Add runtime guard for T3 role-flip perf-lock premise (content_hash must not incorporate member role)",
+        "description": "In crates/reify-eval/tests/edit_source.rs around 2464-2466/2558-2563, test `edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip` (T3) asserts that the role-flip probe is the SOLE signal driving `has_dirty_guards`. That premise depends on `ValueCellNode::content_hash` NOT incorporating the member/else_member role; if content_hash is ever extended to hash that role, `changed` would include x and y on its own and the role-flip probe would no longer be the sole signal — the test would keep passing but for the wrong reason. Author flagged this in the doc comment but added no runtime guard. Add either (a) a test hook to snapshot the `diff_value_cells` output between the two modules and assert `changed.is_empty() && added.is_empty() && removed.is_empty()` for x and y, or (b) a `debug_assert!` near the counter assertion that pins the premise so a regression produces a targeted error rather than silent test-drift. Source: post-merge review on task 2138.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -46106,7 +46117,10 @@
       "completedCount": 1916,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T20:25:27.469Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T20:25:27.620Z"
     }
   }
 }
