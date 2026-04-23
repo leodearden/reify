@@ -13,7 +13,7 @@
 
 use reify_compiler::{EntityKind, stdlib_loader};
 use reify_test_support::compile_source_with_stdlib;
-use reify_types::{Severity, Type};
+use reify_types::{CompiledExprKind, Severity, Type};
 
 // ─── step-3: canonical Material struct is present in the stdlib ─────────────
 
@@ -139,4 +139,85 @@ fn param_material_resolves_to_struct_ref() {
          is a canonical struct (not the old trait); got {:?}",
         material_cell.cell_type
     );
+}
+
+// ─── step-7: struct-call is a valid default for a struct-typed param ────────
+
+/// `param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)`
+/// must compile cleanly: the param type is `Type::StructureRef("Material")`,
+/// and the default expression is recorded as a call to `Material` carrying the
+/// three supplied arguments. This is the core "`: Material = Material(...)` is
+/// meaningful" assertion for task 1876 — default-expression type-checking must
+/// accept a struct-constructor call whose return type matches the declared
+/// param type.
+#[test]
+fn material_struct_call_is_valid_param_default() {
+    let source = r#"
+        structure def Part {
+            param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors compiling `Part` with a Material(...) default, got: {:?}",
+        errors
+    );
+
+    let part = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Part")
+        .expect("Part template should be compiled");
+
+    let material_cell = part
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "material")
+        .expect("Part.material should exist");
+
+    assert_eq!(
+        material_cell.cell_type,
+        Type::StructureRef("Material".to_string()),
+        "Part.material should have type Type::StructureRef(\"Material\"); got {:?}",
+        material_cell.cell_type
+    );
+
+    let default_expr = material_cell.default_expr.as_ref().expect(
+        "Part.material should have a recorded default_expr (the `Material(...)` call) — \
+         default-expression compilation must not drop struct-constructor calls",
+    );
+
+    // Struct-constructor calls lower to `CompiledExprKind::FunctionCall` with
+    // a ResolvedFunction whose `name` is the struct's simple name and whose
+    // `qualified_name` starts with the module prefix (e.g. `std::Material`).
+    // Named-arg reordering is handled by the compiler; here we only care that
+    // the callee is `Material` and that all three supplied values survived.
+    match &default_expr.kind {
+        CompiledExprKind::FunctionCall { function, args } => {
+            assert_eq!(
+                function.name, "Material",
+                "default_expr should be a call to `Material`, got function.name={:?}",
+                function.name
+            );
+            assert_eq!(
+                args.len(),
+                3,
+                "Material(...) should lower to a call with 3 args, got {}: {:?}",
+                args.len(),
+                args
+            );
+        }
+        other => panic!(
+            "expected Part.material.default_expr to be a FunctionCall for `Material(...)`, \
+             got {:?}",
+            other
+        ),
+    }
 }
