@@ -399,6 +399,35 @@ impl ModuleDag {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::ModulePathParseError;
+
+    #[test]
+    fn diag_invalid_path_formats_message_with_context_phrase() {
+        // Case 1: Empty error, "resolving import" context (matches existing inline closures)
+        let diags = diag_invalid_path("foo", ModulePathParseError::Empty, "resolving import");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(
+            diags[0].message,
+            "invalid module path while resolving import 'foo': module path must not be empty"
+        );
+
+        // Case 2: EmptySegment error, custom context phrase (proves parameterization works)
+        let diags = diag_invalid_path(
+            "foo.bar",
+            ModulePathParseError::EmptySegment { input: "a..b".into() },
+            "loading entry module",
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(
+            diags[0].message,
+            "invalid module path while loading entry module 'foo.bar': module path must not contain empty segments (e.g. 'a..b'), got: 'a..b'"
+        );
+    }
+}
+
 /// Compile a project starting from an entry file.
 ///
 /// Builds the full module DAG, detects cycles, and returns modules in
