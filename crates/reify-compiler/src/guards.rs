@@ -123,6 +123,7 @@ pub(crate) fn register_guarded_names<'a>(
     diagnostics: &mut Vec<Diagnostic>,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     known_geometry_lets: &mut HashSet<&'a str>,
 ) {
@@ -135,6 +136,7 @@ pub(crate) fn register_guarded_names<'a>(
                         type_param_names,
                         alias_registry,
                         diagnostics,
+                        structure_names,
                         trait_names,
                     )
                     .unwrap_or_else(|| {
@@ -186,6 +188,7 @@ pub(crate) fn register_guarded_names<'a>(
                     diagnostics,
                     type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     known_geometry_lets,
                 );
@@ -196,6 +199,7 @@ pub(crate) fn register_guarded_names<'a>(
                     diagnostics,
                     type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     known_geometry_lets,
                 );
@@ -224,6 +228,7 @@ pub(crate) fn compile_block_guard(
     constraint_index: &mut u32,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     known_geometry_lets: &HashSet<&str>,
 ) {
@@ -261,6 +266,7 @@ pub(crate) fn compile_block_guard(
         constraint_index,
         type_param_names,
         alias_registry,
+        structure_names,
         trait_names,
         known_geometry_lets,
     );
@@ -286,6 +292,7 @@ pub(crate) fn compile_block_guard(
             constraint_index,
             type_param_names,
             alias_registry,
+            structure_names,
             trait_names,
             known_geometry_lets,
         );
@@ -329,6 +336,7 @@ pub(crate) fn compile_guarded_members(
     constraint_index: &mut u32,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     known_geometry_lets: &HashSet<&str>,
 ) {
@@ -430,6 +438,7 @@ pub(crate) fn compile_guarded_members(
                     let_decl.type_expr.as_ref(),
                     type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     diagnostics,
                 );
@@ -506,6 +515,7 @@ pub(crate) fn compile_guarded_members(
                     constraint_index,
                     type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     known_geometry_lets,
                 );

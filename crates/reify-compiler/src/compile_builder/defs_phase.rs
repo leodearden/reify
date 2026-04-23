@@ -92,6 +92,7 @@ fn compile_constraint_def(
                     &type_param_names,
                     alias_registry,
                     diagnostics,
+                    structure_names,
                     trait_names,
                 )
                 .is_none()

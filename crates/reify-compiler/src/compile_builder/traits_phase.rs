@@ -78,12 +78,31 @@ pub(crate) fn phase_traits(
         )
         .collect();
 
+    // Build the set of structure/occurrence names known at compile time so trait
+    // members whose types reference a first-class structure (e.g. the canonical
+    // stdlib `Material` struct from task 1876) resolve to Type::StructureRef
+    // rather than falling through to "unresolved type".  Collected from local
+    // structure/occurrence decls (already in `ctx.seen_entity_names` from
+    // pre_pass::collect_decl_refs) and every prelude module's exported templates.
+    let structure_names: HashSet<String> = ctx
+        .seen_entity_names
+        .iter()
+        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+        .map(|(name, _)| name.clone())
+        .chain(
+            prelude
+                .iter()
+                .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
+        )
+        .collect();
+
     // 2. Compile each trait (depends on resolution_enums for enum type resolution in params).
     for trait_decl in trait_refs {
         let compiled_trait = compile_trait(
             trait_decl,
             &ctx.resolution_enums,
             &ctx.alias_registry,
+            &structure_names,
             &trait_names,
             &mut ctx.diagnostics,
         );
