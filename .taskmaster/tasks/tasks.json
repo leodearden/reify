@@ -45685,18 +45685,21 @@
         "description": "Review suggestion from task-395. Rule 2c is only exercised with Type::Real as Q; the spec rationale is about trait conformance with dimensioned scalars. Add two tests in crates/reify-compiler/tests/implicit_conversion_tests.rs: (1) allow Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[m]&gt; (same dimension), (2) reject Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[angle]&gt; (quantity mismatch). Without the negative case a regression that accidentally drops the q1 == q2 check would still pass existing Real tests.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:27:22.311Z",
+        "updatedAt": "2026-04-23T18:08:18.989Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/implicit_conversion_tests.rs"
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "5f00e6f91ec9cf5a6a7b6f704cd5befc80aabf8a"
+          }
         }
       },
       {
@@ -45798,9 +45801,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T18:08:18.377Z",
+      "lastModified": "2026-04-23T18:08:18.990Z",
       "taskCount": 2147,
-      "completedCount": 1896,
+      "completedCount": 1897,
       "tags": [
         "master"
       ]
