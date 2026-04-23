@@ -14,6 +14,30 @@ pub(super) enum AvailableDefaultKind {
     Let,
 }
 
+/// Centralised "annotation wins, else inferred, else Type::Real" rule for let defaults.
+///
+/// Both call sites in the trait-conformance pipeline share this three-way precedence:
+/// 1. **`check_phase_build_available_defaults_map`** (site 1): passes
+///    `inferred_let_exprs.get(&(name.to_string(), AvailableDefaultKind::Let))` as
+///    `inferred`; names in `pass2_compile_errors` or `pass2_skipped` are excluded
+///    before reaching this helper.
+/// 2. **`check_phase_inject_defaults`** (site 2): passes `Some(&compiled_expr)` because
+///    the injection loop already has the compiled expression in hand.
+///
+/// After task 1914 suggestion #1, the `Type::Real` fallback arm is a defensive-default
+/// — actual callers either hold an annotation (`cell_type` is `Some`) or have a valid
+/// inferred expression (the `pass2_compile_errors` filter excludes compile-error names
+/// before this helper is reached). The `debug_assert!` at site 1 guards the fallback
+/// to catch any drift between the filter sets and this helper.
+pub(super) fn resolve_let_advertised_type(
+    cell_type: &Option<Type>,
+    inferred: Option<&CompiledExpr>,
+) -> Type {
+    cell_type
+        .clone()
+        .unwrap_or_else(|| inferred.map(|e| e.result_type.clone()).unwrap_or(Type::Real))
+}
+
 /// Phase 1 of trait conformance checking: resolve structure member types and collect
 /// constraint labels.
 ///
@@ -464,19 +488,22 @@ pub(super) fn check_phase_build_available_defaults_map(
                     if pass2_compile_errors.contains(name) {
                         return None;
                     }
-                    let resolved = cell_type.clone().unwrap_or_else(|| {
-                        debug_assert!(
-                            inferred_let_exprs.contains_key(&(name.to_string(), AvailableDefaultKind::Let)),
-                            "unannotated Let '{name}' absent from inferred_let_exprs (composite key \
-                             (name, Let)) and not in pass2_skipped or pass2_compile_errors — Pass 2 \
-                             contract broken; Type::Real fallback would re-introduce the \
-                             phantom-type-mismatch bug fixed by task 1951 Option B"
-                        );
-                        inferred_let_exprs
-                            .get(&(name.to_string(), AvailableDefaultKind::Let))
-                            .map(|e| e.result_type.clone())
-                            .unwrap_or(Type::Real)
-                    });
+                    // Guard: unannotated names without an annotation must have a
+                    // cache entry (pass2_compile_errors and pass2_skipped names were
+                    // excluded above; anything else means the Pass 2 contract is broken).
+                    debug_assert!(
+                        cell_type.is_some()
+                            || inferred_let_exprs
+                                .contains_key(&(name.to_string(), AvailableDefaultKind::Let)),
+                        "unannotated Let '{name}' absent from inferred_let_exprs (composite key \
+                         (name, Let)) and not in pass2_skipped or pass2_compile_errors — Pass 2 \
+                         contract broken; Type::Real fallback would re-introduce the \
+                         phantom-type-mismatch bug fixed by task 1951 Option B"
+                    );
+                    let resolved = resolve_let_advertised_type(
+                        cell_type,
+                        inferred_let_exprs.get(&(name.to_string(), AvailableDefaultKind::Let)),
+                    );
                     (AvailableDefaultKind::Let, resolved)
                 }
                 DefaultKind::Constraint(_) => return None,
@@ -840,11 +867,10 @@ pub(super) fn check_phase_inject_defaults(
                     // Annotation is authoritative on the injected cell type when present
                     // (matches the scope pre-registration in check_phase_pre_register_default_types
                     // (Pass 1) which also prefers the annotation over the inferred expression type).
-                    // Fall back to the inferred expression type only when there
-                    // is no annotation.
-                    let injected_cell_type = cell_type
-                        .clone()
-                        .unwrap_or_else(|| compiled_expr.result_type.clone());
+                    // Falls back to the inferred expression type, then to Type::Real (defensive).
+                    // Uses the shared resolve_let_advertised_type helper for site 2 of 2.
+                    let injected_cell_type =
+                        resolve_let_advertised_type(cell_type, Some(&compiled_expr));
 
                     value_cells.push(ValueCellDecl {
                         id: cell_id,
