@@ -1784,6 +1784,9 @@ mod tests {
             }
             other => panic!("expected Sweep(Sweep), got {:?}", other),
         }
+        assert_eq!(diagnostics.len(), 2);
+        assert!(diagnostics[0].message.contains("profile"));
+        assert!(diagnostics[1].message.contains("path"));
     }
 
     #[test]
