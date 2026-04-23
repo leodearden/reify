@@ -433,22 +433,16 @@ impl ModuleDag {
                 }
             }
 
-            // Topological ordering guarantees every import was just compiled and inserted.
-            debug_assert!(
-                import_paths.iter().all(|p| self.modules.contains_key(p.as_str())),
-                "all imports must be compiled and in self.modules before prelude collection; \
-                 this invariant is guaranteed by the DFS loop above"
-            );
-
             // Block-scope the shared borrows of self.modules so they are
-            // dropped before the mutable insert on line 487.
+            // dropped before the later self.modules.insert call.
             let compiled = {
+                // Topological ordering guarantees every import was just compiled and inserted.
+                // Use .map().expect() so a violation is loud in both debug and release builds.
                 let preludes: Vec<&CompiledModule> = import_paths
                     .iter()
-                    .filter_map(|p| {
-                        let result = self.modules.get(p.as_str());
-                        debug_assert!(result.is_some(), "import '{}' not yet compiled", p);
-                        result
+                    .map(|p| {
+                        self.modules.get(p.as_str())
+                            .expect("invariant: import compiled before prelude collection")
                     })
                     .collect();
                 crate::compile_with_prelude_refs(&parsed, &preludes)
@@ -627,20 +621,23 @@ pub fn compile_project(
     // Block-scope the preludes so the shared borrows of dag.modules are
     // dropped before the mutable borrow in dag.modules.insert below.
     let compiled_entry = {
-        // Inline the same prelude-collection pattern used by compile_module:
-        // iterate import declarations once, filter_map to look up compiled modules.
-        // All imports were recursively compiled above, so every lookup succeeds.
+        // Collect only Import declarations, then look up each compiled module.
+        // All imports were recursively compiled above, so every lookup is infallible.
+        // Splitting the filter from the lookup lets .expect() make any violation
+        // loud in both debug and release builds.
         let preludes: Vec<&CompiledModule> = parsed
             .declarations
             .iter()
             .filter_map(|d| {
                 if let reify_syntax::Declaration::Import(import) = d {
-                    let result = dag.modules.get(&import.path);
-                    debug_assert!(result.is_some(), "import '{}' not yet compiled", import.path);
-                    result
+                    Some(import)
                 } else {
                     None
                 }
+            })
+            .map(|import| {
+                dag.modules.get(&import.path)
+                    .expect("invariant: import compiled before entry prelude collection")
             })
             .collect();
         crate::compile_with_prelude_refs(&parsed, &preludes)
