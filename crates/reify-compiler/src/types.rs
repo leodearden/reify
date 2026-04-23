@@ -468,10 +468,18 @@ pub struct CompiledConstraint {
 #[derive(Debug, Clone)]
 pub struct RealizationDecl {
     pub id: RealizationNodeId,
-    /// The user-facing let-binding name for this realization (e.g. `"body"`
-    /// for `let body = cylinder(r, h)`).  `None` for anonymous realizations
-    /// that have no direct let-binding (e.g. intermediate guarded-group
-    /// params without a user-visible name).
+    /// The user-facing name for this realization.
+    ///
+    /// The compiler always emits `Some(name)` for every `RealizationDecl` it
+    /// produces.  `name` is either the let-binding name (`let body =
+    /// cylinder(r, h)` → `"body"`) or the Solid-typed param name (`param body:
+    /// Solid = ...` → `"body"`), including guarded-group Solid params handled
+    /// by `emit_guarded_geometry_realizations`.
+    ///
+    /// `None` only arises from the
+    /// `TopologyTemplateBuilder::realization(...)` test-support helper in
+    /// `crates/reify-test-support/src/builders/topology.rs`.  Tests that need
+    /// a user-visible name use `realization_named(...)` instead.
     pub name: Option<String>,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
