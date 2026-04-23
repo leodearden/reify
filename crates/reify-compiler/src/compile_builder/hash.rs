@@ -123,3 +123,44 @@ fn hash_pragma_value(v: &reify_syntax::PragmaValue) -> ContentHash {
             .combine(ContentHash::of_str(if *b { "true" } else { "false" })),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Ident("true")` and `Bool(true)` share the same payload text but must
+    /// hash differently because their kind-tags differ (`"ident"` vs `"bool"`).
+    #[test]
+    fn pragma_value_ident_vs_bool_differ() {
+        let h_ident = hash_pragma_value(&reify_syntax::PragmaValue::Ident("true".to_string()));
+        let h_bool = hash_pragma_value(&reify_syntax::PragmaValue::Bool(true));
+        assert_ne!(
+            h_ident, h_bool,
+            "Ident(\"true\") and Bool(true) must produce distinct hashes"
+        );
+    }
+
+    /// `Ident("42")` and `Number(42.0)` share numerically equal payloads but
+    /// must hash differently because their kind-tags differ (`"ident"` vs `"num"`).
+    #[test]
+    fn pragma_value_ident_vs_number_differ() {
+        let h_ident = hash_pragma_value(&reify_syntax::PragmaValue::Ident("42".to_string()));
+        let h_num = hash_pragma_value(&reify_syntax::PragmaValue::Number(42.0_f64));
+        assert_ne!(
+            h_ident, h_num,
+            "Ident(\"42\") and Number(42) must produce distinct hashes"
+        );
+    }
+
+    /// `Bool(true)` and `String("true")` share the same payload text but must
+    /// hash differently because their kind-tags differ (`"bool"` vs `"str"`).
+    #[test]
+    fn pragma_value_bool_vs_string_differ() {
+        let h_bool = hash_pragma_value(&reify_syntax::PragmaValue::Bool(true));
+        let h_str = hash_pragma_value(&reify_syntax::PragmaValue::String("true".to_string()));
+        assert_ne!(
+            h_bool, h_str,
+            "Bool(true) and String(\"true\") must produce distinct hashes"
+        );
+    }
+}

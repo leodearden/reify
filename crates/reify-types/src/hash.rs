@@ -18,6 +18,11 @@ impl ContentHash {
     }
 
     /// Hash a `u64` via its little-endian byte representation.
+    ///
+    /// **Stable wire format.** The little-endian encoding is part of the
+    /// on-disk incremental-compile cache contract. Do not change the byte order
+    /// or width without also bumping the cache format version, or cached hashes
+    /// from prior builds will silently collide with hashes computed by new code.
     pub fn of_u64(n: u64) -> Self {
         Self::of(&n.to_le_bytes())
     }
