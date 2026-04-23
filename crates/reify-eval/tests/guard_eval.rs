@@ -2876,3 +2876,188 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
         state_a
     );
 }
+
+/// Regression lock: `post_solver_re_eval_guard_cells` active-branch dispatch.
+///
+/// Exercises all three active-branch arms in a single `eval()` call:
+/// 1. **Auto arm (skip):** `resolved` is solver-resolved to 5mm; the post-solver
+///    re-eval must preserve that value (not overwrite with Undef).
+/// 2. **Param arm:** `param_inner` has `default_expr = literal(7mm)`; the
+///    post-solver re-eval must re-evaluate it to 7mm.
+/// 3. **Let arm:** `let_inner` has `default_expr = value_ref("S","resolved")`; the
+///    post-solver re-eval must evaluate it AFTER the solver (so it reads 5mm,
+///    not the pre-solver Undef).
+///
+/// This test passes on the current `if`-based implementation and must continue
+/// to pass after the exhaustive `match`-based refactor in task 2156. A
+/// mis-refactor (e.g. collapsing Param|Let into the skip arm) would produce
+/// concrete value mismatches here rather than only surfacing as diffuse
+/// integration failures.
+#[test]
+fn post_solver_active_branch_dispatches_param_let_and_skips_auto() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let resolved_id = ValueCellId::new("S", "resolved");
+    let param_inner_id = ValueCellId::new("S", "param_inner");
+    let let_inner_id = ValueCellId::new("S", "let_inner");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Member 1: Auto cell — same id as the top-level auto_param so the solver
+    // resolves it to 5mm.  The post-solver re-eval must SKIP this cell
+    // (Auto-skip arm) and preserve the solver-resolved value.
+    let auto_inner_decl = ValueCellDecl {
+        id: resolved_id.clone(),
+        kind: ValueCellKind::Auto { free: false },
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Member 2: Param cell — the post-solver re-eval must evaluate
+    // default_expr (literal 7mm) to 7mm (Param arm).
+    let param_inner_decl = ValueCellDecl {
+        id: param_inner_id.clone(),
+        kind: ValueCellKind::Param,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(7.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Member 3: Let cell — default_expr reads `resolved`.  The post-solver
+    // re-eval must evaluate this AFTER the solver has written 5mm into
+    // `resolved`, so let_inner = 5mm (Let arm).
+    let let_inner_decl = ValueCellDecl {
+        id: let_inner_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "resolved")),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        // Bool param that drives the guard (default=true → members are active).
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        // Top-level auto_param so the resolution phase finds `resolved`.
+        .auto_param("S", "resolved", Type::length())
+        // Constraint so the solver has something to work with.
+        .constraint(
+            "S",
+            0,
+            Some("resolved_gt_2mm"),
+            gt(value_ref("S", "resolved"), literal(mm(2.0))),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![auto_inner_decl, param_inner_decl, let_inner_decl], // members (active when guard=true)
+            vec![],  // constraints
+            vec![],  // else_members
+            vec![],  // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Mock solver: resolves `resolved` to 5mm = 0.005 SI.
+    let mut solved_values = HashMap::new();
+    solved_values.insert(resolved_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // ── Assert on result.values ──────────────────────────────────────────────
+
+    // Auto-skip arm: solver-resolved value must be preserved (not overwritten).
+    let resolved_val = result.values.get(&resolved_id);
+    assert!(
+        matches!(resolved_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "resolved (Auto) should be 5mm (0.005 SI) — Auto-skip arm must preserve solver work, got {:?}",
+        resolved_val
+    );
+
+    // Param arm: default_expr (7mm) must be re-evaluated by the post-solver pass.
+    let param_val = result.values.get(&param_inner_id);
+    assert!(
+        matches!(param_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10),
+        "param_inner (Param) should be 7mm (0.007 SI) — Param arm must re-evaluate default_expr, got {:?}",
+        param_val
+    );
+
+    // Let arm: default_expr = value_ref("S","resolved") must be evaluated AFTER
+    // the solver, so let_inner reads the solver-resolved 5mm, not pre-solver Undef.
+    let let_val = result.values.get(&let_inner_id);
+    assert!(
+        matches!(let_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "let_inner (Let) should be 5mm (0.005 SI) — Let arm must re-evaluate default_expr after solver resolved Auto, got {:?}",
+        let_val
+    );
+
+    // ── Assert on engine.snapshot().values ──────────────────────────────────
+
+    let snapshot = engine.snapshot().expect("snapshot must exist after eval");
+
+    let (snap_resolved, snap_resolved_det) = snapshot
+        .values
+        .get(&resolved_id)
+        .expect("resolved must be in snapshot");
+    assert!(
+        matches!(snap_resolved, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "resolved in snapshot should be 5mm, got {:?}",
+        snap_resolved
+    );
+    assert_eq!(
+        *snap_resolved_det,
+        DeterminacyState::Determined,
+        "resolved must be Determined in snapshot (Auto-skip arm preserved solver state)"
+    );
+
+    let (snap_param, snap_param_det) = snapshot
+        .values
+        .get(&param_inner_id)
+        .expect("param_inner must be in snapshot");
+    assert!(
+        matches!(snap_param, Value::Scalar { si_value, .. } if (*si_value - 0.007).abs() < 1e-10),
+        "param_inner in snapshot should be 7mm, got {:?}",
+        snap_param
+    );
+    assert_eq!(
+        *snap_param_det,
+        DeterminacyState::Determined,
+        "param_inner must be Determined in snapshot"
+    );
+
+    let (snap_let, snap_let_det) = snapshot
+        .values
+        .get(&let_inner_id)
+        .expect("let_inner must be in snapshot");
+    assert!(
+        matches!(snap_let, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "let_inner in snapshot should be 5mm (reads solver-resolved Auto via value_ref), got {:?}",
+        snap_let
+    );
+    assert_eq!(
+        *snap_let_det,
+        DeterminacyState::Determined,
+        "let_inner must be Determined in snapshot"
+    );
+
+    // Suppress unused-variable warning for active_id (used only for conceptual clarity).
+    let _ = active_id;
+}
