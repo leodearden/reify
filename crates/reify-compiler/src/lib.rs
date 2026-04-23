@@ -13,6 +13,7 @@ mod geometry_modify;
 mod geometry_transform;
 mod guards;
 pub mod module_dag;
+pub mod prelude_context;
 mod scc;
 mod scope;
 pub mod si_units;
@@ -25,6 +26,7 @@ mod type_resolution;
 mod types;
 mod units;
 
+pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
 
