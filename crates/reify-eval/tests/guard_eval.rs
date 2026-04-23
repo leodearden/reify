@@ -2420,3 +2420,146 @@ fn edit_param_wave2_does_not_corrupt_inactive_members() {
         edited.values.get(&m_id),
     );
 }
+
+/// Invariant: two paths to the same final guard configuration produce identical
+/// Auto-cell snapshot state (task 2143).
+///
+/// Path A (direct eval, inactive Auto at start):
+///   Module with `param active: Bool = true`, `auto_param thickness: length`,
+///   constraint `thickness > 2mm`, guarded_group where thickness is in
+///   `else_members` (active only when guard=false).  Running `eval(&module_a)`
+///   with guard=true means thickness is on the INACTIVE else_members branch.
+///   The solver resolves thickness=5mm before the post-solver guard re-evaluation
+///   pass; the pre-fix code then overwrites inactive Auto cells to `(Undef, Auto)`,
+///   destroying solver work.
+///
+/// Path B (eval then edit_param, flip inactive):
+///   Module with `param active: Bool = false` (else_members ACTIVE).  Running
+///   `eval(&module_b)` with guard=false makes thickness active; solver resolves
+///   5mm.  Then `edit_param(active_id, Value::Bool(true))` flips the guard to
+///   true; `deactivate_if_not_auto` in edit_param's Phase 1 / post-wave2 cleanup
+///   skips the Auto cell, preserving `(Scalar(5mm), Determined)`.
+///
+/// The two paths should produce identical final snapshot state for `thickness`.
+/// Under the pre-fix code this test FAILS because Path A produces `(Undef, Auto)`
+/// while Path B produces `(Scalar(5mm), Determined)`.  After the fix (wrapping
+/// the inactive-branch `Value::Undef` writes in `if !cell.kind.is_auto()`) both
+/// paths produce `(Scalar(5mm), Determined)`.
+///
+/// The canonical rule — Auto cell lifecycle is owned by the constraint solver,
+/// not by guard activation/deactivation — is documented on the module-level `//!`
+/// doc of `engine_edit.rs` and on `deactivate_if_not_auto`.
+#[test]
+fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
+    let thickness_decl = || ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto { free: false },
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Module A: active=true → guard=true → else_members (thickness) INACTIVE at eval()
+    let template_a = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            Some("thickness_gt_2mm"),
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .guarded_group(
+            guard_expr.clone(),
+            guard_id.clone(),
+            vec![],               // members (nothing active when guard=true)
+            vec![],               // constraints
+            vec![thickness_decl()], // else_members (active only when guard=false)
+            vec![],               // else_constraints
+        )
+        .build();
+    let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .build();
+
+    // Module B: active=false → guard=false → else_members (thickness) ACTIVE at eval()
+    let template_b = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            Some("thickness_gt_2mm"),
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .guarded_group(
+            guard_expr.clone(),
+            guard_id.clone(),
+            vec![],               // members
+            vec![],               // constraints
+            vec![thickness_decl()], // else_members (active when guard=false)
+            vec![],               // else_constraints
+        )
+        .build();
+    let module_b = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_b)
+        .build();
+
+    // Both solvers resolve thickness=5mm
+    let mut solved = HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver_a = MockConstraintSolver::new_solved(solved.clone());
+    let solver_b = MockConstraintSolver::new_solved(solved);
+
+    // ── Path A: direct eval with guard=true (else_members inactive at start) ──
+    let checker_a = MockConstraintChecker::new();
+    let mut engine_a = Engine::new(Box::new(checker_a), None).with_solver(Box::new(solver_a));
+    engine_a.eval(&module_a);
+    let snap_a = engine_a
+        .snapshot()
+        .expect("Engine A must have a snapshot after eval");
+
+    // ── Path B: eval with guard=false (else_members active), then flip to true ──
+    let checker_b = MockConstraintChecker::new();
+    let mut engine_b = Engine::new(Box::new(checker_b), None).with_solver(Box::new(solver_b));
+    engine_b.eval(&module_b);
+    engine_b
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param should succeed");
+    let snap_b = engine_b
+        .snapshot()
+        .expect("Engine B must have a snapshot after edit_param");
+
+    // Both paths must produce identical thickness snapshot state.
+    // The canonical rule: Auto cell lifecycle is owned by the solver —
+    // inactive-branch Auto cells retain their solver-resolved value.
+    let state_a = snap_a.values.get(&thickness_id);
+    let state_b = snap_b.values.get(&thickness_id);
+    assert_eq!(
+        state_a, state_b,
+        "eval() and eval()+edit_param() paths must produce identical snapshot state \
+         for inactive-branch Auto param 'thickness'.\n\
+         Path A (direct eval, guard=true → else_members inactive): {:?}\n\
+         Path B (eval guard=false + edit_param→true, thickness moves to inactive): {:?}",
+        state_a, state_b
+    );
+}
