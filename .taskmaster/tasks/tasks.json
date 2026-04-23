@@ -41913,7 +41913,7 @@
             "crates/reify-compiler/src/conformance.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance"
           ]
         },
         "updatedAt": "2026-04-23T18:11:57.022Z"
@@ -45742,18 +45742,20 @@
       {
         "id": "2152",
         "title": "module_dag.rs: extract diag_invalid_path helper + de-dup partial-overlay format strings",
-        "description": "Extract the inline map_err closures at crates/reify-compiler/src/module_dag.rs:234-235 and 288-289 into a `diag_invalid_path(path: &str, e: ModulePathParseError, context_phrase: &str) -> Vec<Diagnostic>` helper. Replace hard-coded \"resolving import\" with the context_phrase parameter so the top-level entry module can reuse it. Also cover the third partial-overlay site at 249-257 (wording \"add the missing module\" vs \"populate all stdlib modules\") — either extend the helper with a direction enum or add a sibling helper so all three overlay diagnostics share a single source of truth. Source: esc-2074-10 (S1+S2) + esc-2076-29 (S1).",
-        "details": "",
-        "testStrategy": "",
+        "description": "Refactor the partial-overlay diagnostic infrastructure in module_dag.rs to be DRY, parameterized, and structurally discriminable by tests — eliminating both duplicate format strings and prose-based test coupling in a single coherent pass.",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
+        "details": "1. **Extract `diag_invalid_path` helper** (module_dag.rs:234-235 and 288-289): Pull the inline `map_err` closures into `diag_invalid_path(path: &str, e: ModulePathParseError, context_phrase: &str) -> Vec<Diagnostic>`. Replace the hard-coded \"resolving import\" literal with the `context_phrase` parameter so the top-level entry-module path can reuse the helper.\n\n2. **Cover the third partial-overlay site** (module_dag.rs:249-257): The wording \"add the missing module\" vs \"populate all stdlib modules\" distinguishes two sub-paths today. Either extend the helper with a direction/mode enum, or introduce two named helpers — whichever approach also provides the structural discriminator required in item 3.\n\n3. **Add a structural path discriminator** (module_dag.rs:230 entry-guard vs module_dag.rs:385 deferred-commit, tested at module_dag_tests.rs:1498-1507): The regression test currently substring-matches the word \"transitive\" in diagnostic prose to distinguish these two call sites, both of which route through the shared `partial_overlay_fs_over_embedded_diag` helper. Add a `kind` field or variant to the diagnostic output (or split into two named helpers with distinct output markers) so the test can assert structural identity rather than prose wording. Update module_dag_tests.rs:1498-1507 to use the structural discriminator instead of the prose substring match.\n\n4. **De-dup residual format string literals**: After the helper extraction and discrimination work, remove any remaining duplicate format string literals across the affected call sites.",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:32:49.225Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/module_dag.rs"
-          ]
+          ],
+          "curator_action": "combine",
+          "curator_justification": "The candidate and Task 2152 share the same subsystem (partial-overlay diagnostic infrastructure in module_dag.rs) and the same module lock. Task 2152 already proposes extracting a helper and de-duping format strings across the same call sites (module_dag.rs:234-235, 288-289, 249-257). The candidate's structural-discriminator work is the natural complement: once the helpers are extracted and possibly split or given an enum parameter (already hinted in 2152's \"either extend the helper with a direc",
+          "combined_at": "2026-04-23T18:17:46.711862+00:00"
         }
       },
       {
@@ -45811,7 +45813,9 @@
       "completedCount": 1897,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T18:17:46.738Z",
+      "description": "Tasks for master context"
     }
   }
 }
