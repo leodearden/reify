@@ -31,20 +31,13 @@ pub(crate) fn check_trait_conformance(
     // pre-registration). Phases that must distinguish param from let members use
     // `structure_param_members` / `structure_let_members` directly (phase 5).
     //
-    // Parser invariant: a single structure cannot declare both `param x` and `let x`.
-    // The debug_assert below catches any regression in that invariant early (in
-    // development builds) rather than silently dropping one of the entries.
-    debug_assert!(
-        structure_param_members
-            .keys()
-            .all(|k| !structure_let_members.contains_key(k)),
-        "param/let member names must be disjoint — parser invariant violated"
-    );
-    // Use clone+extend instead of chain-collect to avoid materialising a third
-    // intermediate iterator while still allocating only one combined map.
-    let mut structure_all_members = structure_param_members.clone();
-    structure_all_members
-        .extend(structure_let_members.iter().map(|(k, v)| (k.clone(), v.clone())));
+    // If a name appears in both maps (no upstream diagnostic prevents it today),
+    // the param entry wins: let-first chain means param entries overwrite let entries.
+    let structure_all_members: HashMap<String, Type> = structure_let_members
+        .iter()
+        .chain(structure_param_members.iter())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     let ctx = check_phase_collect_trait_bounds(
         structure,
@@ -1891,6 +1884,83 @@ mod tests {
         assert!(
             diagnostics[0].message.contains("'w'"),
             "Expected member name 'w' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Phase-contract test: a structure `param` member does NOT satisfy a `RequirementKind::Let`
+    /// requirement.
+    ///
+    /// `RequirementKind::Let` is not parser-reachable from reify source today — the parser maps
+    /// `let x = …` in a trait body to `DefaultKind::Let` (a default), not a requirement.  This
+    /// unit test hand-builds the fixture to lock down the kind-aware routing in
+    /// `check_phase_check_members_against_requirements`: when the requirement is `Let`, the
+    /// checker looks in `structure_let_members` (not `structure_param_members`), so a structure
+    /// `param x` does not satisfy it.
+    ///
+    /// This is the symmetric counterpart to the integration test
+    /// `structure_let_does_not_satisfy_param_requirement` in `trait_conformance_tests.rs`.
+    #[test]
+    fn param_member_does_not_satisfy_let_requirement() {
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        // Hand-built RequirementKind::Let — not reachable from the parser today.
+        ctx.requirements = vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Let(Type::length()),
+            span: SourceSpan::empty(0),
+        }];
+
+        // Structure provides `param x : Length` (in param map), NOT in let map.
+        let mut structure_param_members: HashMap<String, Type> = HashMap::new();
+        structure_param_members.insert("x".to_string(), Type::length());
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
+        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_check_members_against_requirements(
+            &ctx,
+            &entity_ref,
+            &structure_param_members,
+            &structure_let_members,
+            &available_defaults,
+            &mut diagnostics,
+        );
+
+        // A param member must NOT satisfy a let requirement — the checker looks in
+        // structure_let_members for Let requirements, so it finds nothing and emits missing-member.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected 1 diagnostic: param 'x' must not satisfy let requirement 'x'; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0].message.contains("missing required member"),
+            "Expected 'missing required member' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("'x'"),
+            "Expected member name 'x' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("let"),
+            "Expected kind 'let' mentioned in diagnostic; got: {}",
             diagnostics[0].message
         );
     }

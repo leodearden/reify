@@ -1101,4 +1101,16 @@ structure def S : A {
         "error should mention missing required member 'x', got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+
+    // Also verify the diagnostic names the required kind so users can see WHY the
+    // let member didn't satisfy the param requirement (not just that it's missing).
+    let mentions_param_kind = errors
+        .iter()
+        .any(|d| d.message.contains("param") || d.message.contains("requires a"));
+    assert!(
+        mentions_param_kind,
+        "error should explain that a `param` slot is required (not just that the member is missing), \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }

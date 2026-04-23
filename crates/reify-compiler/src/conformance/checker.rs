@@ -689,10 +689,14 @@ pub(super) fn check_phase_check_members_against_requirements(
                         // No default of the required kind — treat as missing.
                         // A param requirement with only a let default in scope means the
                         // structure must provide a settable param slot itself.
+                        let kind_str = match required_default_kind {
+                            AvailableDefaultKind::Param => "param",
+                            AvailableDefaultKind::Let => "let",
+                        };
                         diagnostics.push(
                             Diagnostic::error(format!(
-                                "missing required member '{}' (expected type: {})",
-                                req.name, expected_type
+                                "missing required member '{}' (expected type: {}; requires a `{}` slot)",
+                                req.name, expected_type, kind_str
                             ))
                             .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                         );
