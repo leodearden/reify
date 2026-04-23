@@ -42081,7 +42081,7 @@
         "description": "Tighten guard at conformance.rs:344-351 to `cell_type.is_none() && pass2_skipped.contains(name)` so annotated-Let advertisements aren't dropped. Add unit-test sub-case for pass2_skipped triggered by annotated-Let. Replace `.contains('x')` with `.contains(\"'x'\")` in test filters at ~1095-1105.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -42092,9 +42092,14 @@
           ],
           "modules": [
             "crates/reify-compiler/src/conformance"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "1d8c7ea218f7a82b6bdc45fe7f2af03f4f501bb1",
+            "commit_input": "1d8c7ea21",
+            "note": "Task 1988 scope (s1+s3+s4) already landed on main via three commits: 6b0a77edc (RED test), 797a6c87a (tightened guard), 1d8c7ea21 (filter refactor). Duplicate requeue pattern akin to Task 1985/1986."
+          }
         },
-        "updatedAt": "2026-04-23T19:28:27.963Z"
+        "updatedAt": "2026-04-23T19:34:13.770Z"
       },
       {
         "id": "1989",
@@ -45992,14 +45997,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T19:31:36.703Z",
+      "lastModified": "2026-04-23T19:34:13.770Z",
       "taskCount": 2154,
-      "completedCount": 1911,
+      "completedCount": 1912,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T19:34:06.487Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
