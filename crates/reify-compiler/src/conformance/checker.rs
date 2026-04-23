@@ -248,6 +248,13 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// composite `(String, AvailableDefaultKind)` key makes cross-kind collisions structurally
 /// impossible: a `Param`-named `x` and a `Let`-named `x` occupy distinct slots by type.
 ///
+/// **Currently only `AvailableDefaultKind::Let` is inserted or read** — the `Param` arm is
+/// never used here because only unannotated `Let` defaults are compiled in Pass 2. The composite
+/// key is kept for structural symmetry with `available_defaults` (which uses the same
+/// `(String, AvailableDefaultKind)` shape) and to reserve per-kind slots without a cache
+/// redesign if a future pass adds `Param`-inference.
+/// TODO(future-kinds): revert to `HashMap<String, CompiledExpr>` if no second kind is added.
+///
 /// # PASS 2 COMPILE-ERROR SUPPRESSION (`pass2_compile_errors`, task 1914 suggestion #1)
 ///
 /// Pass 2 snapshots `diagnostics.len()` before each `compile_expr` call. When the length
@@ -386,6 +393,10 @@ pub(super) fn check_phase_pre_register_default_types(
             // Snapshot before compilation so we can detect if compile_expr pushed
             // any new diagnostic (including partial error-recovery cases that return
             // a non-Error type such as Type::Scalar{DIMENSIONLESS}).
+            // ASSUMPTION: compile_expr only emits Severity::Error diagnostics (no
+            // warnings or info).  If that ever changes, a non-error diagnostic would
+            // incorrectly suppress a successfully-typed expression.  Verified: no
+            // Severity::Warning usages in expr.rs as of task 1914.
             let diag_before = diagnostics.len();
             let compiled_expr =
                 compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
@@ -660,11 +671,11 @@ pub(super) fn check_phase_check_members_against_requirements(
 ///   or `Let` already occupying the scope slot and did not cache this expression. Silent `continue`
 ///   — the `Param`/annotated-`Let` injection arm will inject its own cell for this name. This
 ///   prevents duplicate `(entity, member)` cells.
-/// - **(c) Pass 2 compile error** (`pass2_compile_errors.contains(name)`): Pass 2's `compile_expr`
+/// - **(b) Pass 2 compile error** (`pass2_compile_errors.contains(name)`): Pass 2's `compile_expr`
 ///   call pushed at least one diagnostic; the expression is broken. Silent `continue` — the
 ///   root-cause diagnostic has already been emitted. Injecting a cell with a poisoned type would
 ///   add noise without corrective value. (task 1914 suggestion #1)
-/// - **Unexpected drift**: a refactor decoupled the pre-register guard from this injection guard
+/// - **(c) Unexpected drift**: a refactor decoupled the pre-register guard from this injection guard
 ///   (e.g. changed the cache key). `debug_assert!(false, …)` fires in dev/test; an error
 ///   diagnostic fires in release rather than silently recompiling (which would risk duplicating
 ///   diagnostics already pushed by Pass 2 for the same AST node).
@@ -770,11 +781,11 @@ pub(super) fn check_phase_inject_defaults(
                     //       found an annotated type claiming the scope slot and did not
                     //       cache the expression.  Silent `continue` — the Param/
                     //       annotated-Let default will inject its own cell for this name.
-                    //   (c) Pass 2 compile error (`pass2_compile_errors.contains(name)`):
+                    //   (b) Pass 2 compile error (`pass2_compile_errors.contains(name)`):
                     //       compile_expr pushed at least one diagnostic; expression broken.
                     //       Silent `continue` — the root-cause diagnostic was already
                     //       emitted; injecting a poisoned cell adds noise, not value.
-                    //   (b) Unexpected drift: a refactor decoupled the pre-register
+                    //   (c) Unexpected drift: a refactor decoupled the pre-register
                     //       guard from the injection guard or changed the cache key.
                     //       `debug_assert!(false, …)` fires in dev/test; the error
                     //       diagnostic fires in release rather than silently recompiling
@@ -799,14 +810,14 @@ pub(super) fn check_phase_inject_defaults(
                                         continue;
                                     }
                                     if pass2_compile_errors.contains(name) {
-                                        // (c) Pass 2 compile error: compile_expr pushed at
+                                        // (b) Pass 2 compile error: compile_expr pushed at
                                         // least one diagnostic for this expression — the
                                         // root-cause error is already in diagnostics.
                                         // Silently skip injection to avoid a poisoned cell
                                         // with no additional user value.
                                         continue;
                                     }
-                                    // (b) Unexpected: pre-register guard and injection guard
+                                    // (c) Unexpected: pre-register guard and injection guard
                                     // have diverged, or the cache key changed.
                                     debug_assert!(
                                         false,
