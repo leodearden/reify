@@ -24,18 +24,23 @@ pub(crate) fn check_trait_conformance(
     let ctx =
         check_phase_collect_trait_bounds(structure, trait_registry, &structure_members, diagnostics);
 
-    let (inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
-        &ctx,
-        &structure_members,
-        structure.name,
-        scope,
-        enum_defs,
-        functions,
-        diagnostics,
-    );
+    let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            structure.name,
+            scope,
+            enum_defs,
+            functions,
+            diagnostics,
+        );
 
-    let available_defaults =
-        check_phase_build_available_defaults_map(&ctx, &inferred_let_exprs, &pass2_skipped);
+    let available_defaults = check_phase_build_available_defaults_map(
+        &ctx,
+        &inferred_let_exprs,
+        &pass2_skipped,
+        &pass2_compile_errors,
+    );
 
     check_phase_check_members_against_requirements(
         &ctx,
@@ -52,6 +57,7 @@ pub(crate) fn check_trait_conformance(
         &structure_constraint_labels,
         inferred_let_exprs,
         &pass2_skipped,
+        &pass2_compile_errors,
         scope,
         value_cells,
         constraints,
@@ -1217,7 +1223,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -1239,6 +1245,10 @@ mod tests {
         assert!(
             pass2_skipped.is_empty(),
             "Expected no pass2_skipped for a param-only context"
+        );
+        assert!(
+            pass2_compile_errors.is_empty(),
+            "Expected no pass2_compile_errors for a param-only context"
         );
         // Verify "x" was registered in scope: a second register_if_absent call for "x"
         // should find it occupied (Some(..)) — no direct lookup API needed.
@@ -1287,7 +1297,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -1305,6 +1315,10 @@ mod tests {
         assert!(
             pass2_skipped.is_empty(),
             "Expected no pass2_skipped when no scope collision occurred"
+        );
+        assert!(
+            pass2_compile_errors.is_empty(),
+            "Expected no pass2_compile_errors for a successful compilation"
         );
         assert!(
             inferred_let_exprs.contains_key("y"),
@@ -1379,7 +1393,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped) = check_phase_pre_register_default_types(
+        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) = check_phase_pre_register_default_types(
             &ctx,
             &structure_members,
             "S",
@@ -1399,6 +1413,10 @@ mod tests {
         assert!(
             pass2_skipped.contains("x"),
             "Expected 'x' in pass2_skipped after Pass 2 found its scope slot already claimed"
+        );
+        assert!(
+            pass2_compile_errors.is_empty(),
+            "Expected no pass2_compile_errors for a successful compilation"
         );
     }
 
@@ -1450,9 +1468,14 @@ mod tests {
 
         let inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
+        let pass2_compile_errors: HashSet<String> = HashSet::new();
 
-        let available_defaults =
-            check_phase_build_available_defaults_map(&ctx, &inferred_let_exprs, &pass2_skipped);
+        let available_defaults = check_phase_build_available_defaults_map(
+            &ctx,
+            &inferred_let_exprs,
+            &pass2_skipped,
+            &pass2_compile_errors,
+        );
 
         assert_eq!(
             available_defaults.len(),
@@ -1765,6 +1788,7 @@ mod tests {
         let structure_constraint_labels: HashSet<String> = HashSet::new();
         let inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
+        let pass2_compile_errors: HashSet<String> = HashSet::new();
         let mut scope = CompilationScope::new("S");
         let mut value_cells: Vec<ValueCellDecl> = vec![];
         let mut constraints: Vec<CompiledConstraint> = vec![];
@@ -1778,6 +1802,7 @@ mod tests {
             &structure_constraint_labels,
             inferred_let_exprs,
             &pass2_skipped,
+            &pass2_compile_errors,
             &mut scope,
             &mut value_cells,
             &mut constraints,

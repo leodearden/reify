@@ -227,6 +227,23 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// 3. `collect_all_requirements` deduplicates defaults by (name, kind) across the trait-bound
 ///    set, so at most one unannotated-let default with a given name reaches this loop.
 ///
+/// # PASS 2 COMPILE-ERROR SUPPRESSION (`pass2_compile_errors`, task 1914 suggestion #1)
+///
+/// Pass 2 snapshots `diagnostics.len()` before each `compile_expr` call. When the length
+/// grows (i.e., a diagnostic was pushed), the expression itself failed to compile (e.g.
+/// unresolved forward reference, unknown unit). In that case the name is recorded in
+/// `pass2_compile_errors` and **excluded from `inferred_let_exprs`** (the scope slot is
+/// also not claimed via `register_if_absent`, so no poisoned type propagates into scope).
+///
+/// The `pass2_compile_errors` set is threaded through `check_phase_build_available_defaults_map`
+/// (where names in the set are excluded from the advertisement — no phantom `(name, Let) →
+/// poison_type` entry) and `check_phase_inject_defaults` (where names in the set silently
+/// `continue` in the Let-injection cache-miss branch, parallel to `pass2_skipped`).
+///
+/// Using `diagnostics.len()` rather than `matches!(result_type, Type::Error)` is more robust:
+/// some error-recovery paths in `expr.rs` (e.g. unknown-unit at expr.rs:278–290) return
+/// `Type::Scalar{DIMENSIONLESS}` instead of `Type::Error`, and would escape a type-based check.
+///
 /// # TWO-PASS DESIGN RATIONALE (task 1834 amendment)
 ///
 /// The split restores the pre-1834 tolerance for forward references to any *annotated* member:
@@ -251,7 +268,7 @@ pub(super) fn check_phase_pre_register_default_types(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
-) -> (HashMap<String, CompiledExpr>, HashSet<String>) {
+) -> (HashMap<String, CompiledExpr>, HashSet<String>, HashSet<String>) {
     let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
     // Unannotated-let defaults whose scope slot was already claimed by an annotated
     // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
@@ -259,6 +276,20 @@ pub(super) fn check_phase_pre_register_default_types(
     // Param/annotated-Let cell that will already be injected for the same name.
     // The injection loop uses this set to distinguish a deliberate skip from drift.
     let mut pass2_skipped: HashSet<String> = HashSet::new();
+    // Unannotated-let defaults whose Pass 2 `compile_expr` call pushed at least one
+    // diagnostic (i.e. the expression itself failed to compile — e.g. unresolved
+    // forward reference or unknown unit).  These names are excluded from
+    // `inferred_let_exprs` (no poisoned entry in the cache) and excluded from
+    // `available_defaults` (no phantom advertisement) and silently skipped by the
+    // injection loop (the root-cause diagnostic was already emitted; injecting a
+    // poisoned cell would add noise, not value).
+    //
+    // Distinct from `pass2_skipped`:
+    //   `pass2_skipped`        — Pass 1 occupied the slot; a valid Param/annotated-Let
+    //                            cell WILL be injected for this name.
+    //   `pass2_compile_errors` — The let expression itself is broken; NO cell is
+    //                            injected for this name (root cause already reported).
+    let mut pass2_compile_errors: HashSet<String> = HashSet::new();
 
     // Shared conflict logger for `register_if_absent` Occupied returns.  Captures
     // `structure_name` from the enclosing scope so both Pass 1 and Pass 2 call
@@ -314,6 +345,14 @@ pub(super) fn check_phase_pre_register_default_types(
     // reuse by the injection loop (avoids double compilation) and by
     // `available_defaults` (so requirement-matching uses the inferred type
     // instead of the old `Type::Real` fallback).
+    //
+    // Error suppression (task 1914 suggestion #1): snapshot `diagnostics.len()`
+    // before each compile_expr call.  If the length grew, the expression failed
+    // to compile (root-cause diagnostic already emitted).  In that case the name
+    // is recorded in `pass2_compile_errors` and excluded from both
+    // `inferred_let_exprs` and `register_if_absent` — no poisoned entry enters
+    // the cache or the scope, preventing phantom "available default has Real/Error"
+    // cascade diagnostics downstream.
     for default in &ctx.defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
@@ -322,22 +361,37 @@ pub(super) fn check_phase_pre_register_default_types(
                 let_decl,
             } = &default.kind
         {
+            // Snapshot before compilation so we can detect if compile_expr pushed
+            // any new diagnostic (including partial error-recovery cases that return
+            // a non-Error type such as Type::Scalar{DIMENSIONLESS}).
+            let diag_before = diagnostics.len();
             let compiled_expr =
                 compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
-            let inferred_ty = compiled_expr.result_type.clone();
-            if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {
-                log_conflict(name, ignored_ty);
-                // Scope slot already claimed by an annotated type (Pass 1).
-                // Record in pass2_skipped so the injection loop skips Let-cell
-                // injection for this name and avoids duplicate (entity, member) cells.
-                pass2_skipped.insert(name.to_string());
+            let had_compile_error = diagnostics.len() > diag_before;
+
+            if had_compile_error {
+                // compile_expr itself emitted a diagnostic — the expression is
+                // broken.  Do NOT insert into inferred_let_exprs (prevents a
+                // poisoned entry advertising a phantom type in available_defaults)
+                // and do NOT claim the scope slot (prevents the poison type from
+                // propagating into scope and causing cascade type errors elsewhere).
+                pass2_compile_errors.insert(name.to_string());
             } else {
-                inferred_let_exprs.insert(name.clone(), compiled_expr);
+                let inferred_ty = compiled_expr.result_type.clone();
+                if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {
+                    log_conflict(name, ignored_ty);
+                    // Scope slot already claimed by an annotated type (Pass 1).
+                    // Record in pass2_skipped so the injection loop skips Let-cell
+                    // injection for this name and avoids duplicate (entity, member) cells.
+                    pass2_skipped.insert(name.to_string());
+                } else {
+                    inferred_let_exprs.insert(name.clone(), compiled_expr);
+                }
             }
         }
     }
 
-    (inferred_let_exprs, pass2_skipped)
+    (inferred_let_exprs, pass2_skipped, pass2_compile_errors)
 }
 
 /// Phase 4 of trait conformance checking: build the `available_defaults` advertisement map.
@@ -368,19 +422,26 @@ pub(super) fn check_phase_pre_register_default_types(
 /// invariant: a `RequirementKind::Let` lookup would kind-match and emit a spurious type-mismatch
 /// diagnostic instead of the clearer "missing required member".
 ///
+/// ## `pass2_compile_errors` exclusion (task 1914 suggestion #1)
+///
+/// Names in `pass2_compile_errors` are also excluded from the `Let` arm: Pass 2 failed to
+/// compile the let expression (root-cause diagnostic already emitted), so there is no valid
+/// inferred type to advertise. Including a phantom entry would produce a spurious
+/// "available default has Real/Error" cascade diagnostic on top of the root-cause error.
+///
 /// ## Unannotated let defaults
 ///
-/// For `DefaultKind::Let { cell_type: None, .. }` entries, the advertised type is the inferred
-/// result type from `inferred_let_exprs` (populated by phase 3's Pass 2). Falls back to
-/// `Type::Real` if the name is absent from the cache — this covers the edge case where Pass 2
-/// itself encountered a compilation error for the let expression. A `debug_assert!` guards the
-/// fallback: any name reaching it must be in `pass2_skipped` (which would have short-circuited
-/// above), so hitting the `Type::Real` branch in practice indicates a Pass-2 contract break — the
-/// same drift mode that would re-introduce the phantom-type-mismatch bug task 1951 Option B fixed.
+/// For `DefaultKind::Let { cell_type: None, .. }` entries that passed both guards, the
+/// advertised type is the inferred result type from `inferred_let_exprs` (populated by phase
+/// 3's Pass 2). Falls back to `Type::Real` if the name is absent from the cache — after task
+/// 1914 this is a defensive-default that should not be reached in practice: compile-error
+/// names are excluded by `pass2_compile_errors` and skipped names by `pass2_skipped`.
+/// A `debug_assert!` guards the fallback to catch any drift.
 pub(super) fn check_phase_build_available_defaults_map(
     ctx: &MergeContext,
     inferred_let_exprs: &HashMap<String, CompiledExpr>,
     pass2_skipped: &HashSet<String>,
+    pass2_compile_errors: &HashSet<String>,
 ) -> HashMap<(String, AvailableDefaultKind), Type> {
     ctx.defaults
         .iter()
@@ -398,10 +459,21 @@ pub(super) fn check_phase_build_available_defaults_map(
                     if pass2_skipped.contains(name) {
                         return None;
                     }
+                    // Do not advertise a phantom Let entry for names whose Pass 2
+                    // compile_expr call emitted a diagnostic (task 1914 suggestion #1).
+                    // The root-cause diagnostic was already pushed; advertising a
+                    // phantom `(name, Let) → poison_type` entry would produce a
+                    // spurious "available default has Real/Error" cascade on top of it.
+                    if pass2_compile_errors.contains(name) {
+                        return None;
+                    }
                     let resolved = cell_type.clone().unwrap_or_else(|| {
                         debug_assert!(
                             inferred_let_exprs.contains_key(name),
-                            "unannotated Let '{name}' absent from inferred_let_exprs and not in pass2_skipped — Pass 2 contract broken; Type::Real fallback would re-introduce the phantom-type-mismatch bug fixed by task 1951 Option B"
+                            "unannotated Let '{name}' absent from inferred_let_exprs and not in \
+                             pass2_skipped or pass2_compile_errors — Pass 2 contract broken; \
+                             Type::Real fallback would re-introduce the phantom-type-mismatch \
+                             bug fixed by task 1951 Option B"
                         );
                         inferred_let_exprs
                             .get(name)
@@ -557,12 +629,16 @@ pub(super) fn check_phase_check_members_against_requirements(
 /// expression is compiled freshly. For **unannotated** lets the compiled expression is taken
 /// from `inferred_let_exprs` (populated by phase 3's Pass 2), consuming the entry via `.remove()`.
 ///
-/// ### Cache miss handling — two cases
+/// ### Cache miss handling — three cases
 ///
-/// - **Deliberate skip** (`pass2_skipped.contains(name)`): Pass 2 found an annotated `Param`
+/// - **(a) Deliberate skip** (`pass2_skipped.contains(name)`): Pass 2 found an annotated `Param`
 ///   or `Let` already occupying the scope slot and did not cache this expression. Silent `continue`
 ///   — the `Param`/annotated-`Let` injection arm will inject its own cell for this name. This
 ///   prevents duplicate `(entity, member)` cells.
+/// - **(c) Pass 2 compile error** (`pass2_compile_errors.contains(name)`): Pass 2's `compile_expr`
+///   call pushed at least one diagnostic; the expression is broken. Silent `continue` — the
+///   root-cause diagnostic has already been emitted. Injecting a cell with a poisoned type would
+///   add noise without corrective value. (task 1914 suggestion #1)
 /// - **Unexpected drift**: a refactor decoupled the pre-register guard from this injection guard
 ///   (e.g. changed the cache key). `debug_assert!(false, …)` fires in dev/test; an error
 ///   diagnostic fires in release rather than silently recompiling (which would risk duplicating
@@ -599,6 +675,7 @@ pub(super) fn check_phase_inject_defaults(
     structure_constraint_labels: &HashSet<String>,
     mut inferred_let_exprs: HashMap<String, CompiledExpr>,
     pass2_skipped: &HashSet<String>,
+    pass2_compile_errors: &HashSet<String>,
     scope: &mut CompilationScope,
     value_cells: &mut Vec<ValueCellDecl>,
     constraints: &mut Vec<CompiledConstraint>,
@@ -659,14 +736,19 @@ pub(super) fn check_phase_inject_defaults(
                     // pass (task 1834 step-9) to avoid a second compilation of the
                     // same expression.  The dispatch mirrors the pre-register
                     // branches: unannotated lets populate the cache unless Pass 2
-                    // found the scope slot already claimed (recorded in `pass2_skipped`);
+                    // found the scope slot already claimed (recorded in `pass2_skipped`)
+                    // or Pass 2 compilation emitted a diagnostic (`pass2_compile_errors`);
                     // annotated lets never use the cache.
                     //
-                    // Cache miss handling: two reasons a `None` arm miss can occur:
+                    // Cache miss handling: three reasons a `None` arm miss can occur:
                     //   (a) Deliberate skip (`pass2_skipped.contains(name)`): Pass 2
                     //       found an annotated type claiming the scope slot and did not
                     //       cache the expression.  Silent `continue` — the Param/
                     //       annotated-Let default will inject its own cell for this name.
+                    //   (c) Pass 2 compile error (`pass2_compile_errors.contains(name)`):
+                    //       compile_expr pushed at least one diagnostic; expression broken.
+                    //       Silent `continue` — the root-cause diagnostic was already
+                    //       emitted; injecting a poisoned cell adds noise, not value.
                     //   (b) Unexpected drift: a refactor decoupled the pre-register
                     //       guard from the injection guard or changed the cache key.
                     //       `debug_assert!(false, …)` fires in dev/test; the error
@@ -682,7 +764,7 @@ pub(super) fn check_phase_inject_defaults(
                                 Some(ce) => ce,
                                 None => {
                                     if pass2_skipped.contains(name) {
-                                        // Deliberate skip: Pass 2 found an annotated
+                                        // (a) Deliberate skip: Pass 2 found an annotated
                                         // type already occupying the scope slot and
                                         // did not cache this expression (see the `pass2_skipped`
                                         // parameter populated by check_phase_pre_register_default_types).
@@ -691,14 +773,23 @@ pub(super) fn check_phase_inject_defaults(
                                         // to prevent duplicate (entity, member) cells.
                                         continue;
                                     }
-                                    // Unexpected: pre-register guard and injection guard
+                                    if pass2_compile_errors.contains(name) {
+                                        // (c) Pass 2 compile error: compile_expr pushed at
+                                        // least one diagnostic for this expression — the
+                                        // root-cause error is already in diagnostics.
+                                        // Silently skip injection to avoid a poisoned cell
+                                        // with no additional user value.
+                                        continue;
+                                    }
+                                    // (b) Unexpected: pre-register guard and injection guard
                                     // have diverged, or the cache key changed.
                                     debug_assert!(
                                         false,
                                         "unannotated let '{}' has no cached compiled expression \
-                                         and is not in pass2_skipped — drift between the \
-                                         pre-register guard and the injection guard in \
-                                         check_phase_pre_register_default_types / check_phase_inject_defaults",
+                                         and is not in pass2_skipped or pass2_compile_errors — \
+                                         drift between the pre-register guard and the injection \
+                                         guard in check_phase_pre_register_default_types / \
+                                         check_phase_inject_defaults",
                                         name
                                     );
                                     diagnostics.push(
