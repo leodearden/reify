@@ -86,3 +86,32 @@ fn user_fixture_value_cells_are_representable() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
     assert_module_cells_representable(&compiled);
 }
+
+#[test]
+fn boltflange_value_cells_are_representable() {
+    // Exercise the task-1876 case the module docstring calls out explicitly:
+    // `examples/m5_geometry_flange.ri` declares
+    //     param material : Material = Material(name: "steel", density: 7850.0, ...)
+    // The compiled cell for `material` carries cell_type =
+    // Type::StructureRef("Material"), which is the exact variant the walker
+    // must tolerate per the runtime invariant in
+    // crates/reify-eval/src/engine_eval.rs (forbids only TypeParam | Geometry).
+    //
+    // BoltFlange conforms to `Rigid` and uses the stdlib `Material` struct, so
+    // compile with full stdlib prelude (unlike math_linalg.ri which is
+    // stdlib-independent).
+    const PATH_BOLTFLANGE: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
+    let source = std::fs::read_to_string(PATH_BOLTFLANGE)
+        .expect("m5_geometry_flange.ri fixture");
+    let parsed = reify_syntax::parse(&source, ModulePath::single("m5_geometry_flange"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    assert_module_cells_representable(&compiled);
+}
