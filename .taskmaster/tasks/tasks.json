@@ -37113,7 +37113,7 @@
         "id": "1753",
         "title": "Sweep fallback test: add path assertion and diagnostic verification",
         "description": "Two test coverage gaps in the sweep fallback test (crates/reify-compiler/src/lib.rs ~lines 1871-1921):\n\n1. **Missing path assertion**: The test asserts profiles[0] == GeomRef::Step(3) but does not assert profiles[1] (the path argument). The test comment says path falls back to Step(step_offset + 1) = Step(4) but this is never verified. Add: assert_eq!(profiles[1], GeomRef::Step(4), \"sweep path fallback should be Step(step_offset+1=4)\");\n\n2. **Missing diagnostic assertions**: The sweep test does not verify that error diagnostics were emitted. Unlike loft (which silently falls back), sweep intentionally emits diagnostics for non-geometry profile/path args. Verify diagnostic count and content: assert_eq!(diagnostics.len(), 2); assert!(diagnostics[0].message.contains(\"profile\")); assert!(diagnostics[1].message.contains(\"path\"));\n\nmemory_hints: search \"sweep fallback test assertion path diagnostic\", search \"compile_geometry_call sweep test\"",
-        "details": "",
+        "details": "<info added on 2026-04-23T19:31:29.338Z>\nThe test `sweep_non_geom_profile_fallback_uses_step_offset` has been relocated to `crates/reify-compiler/src/geometry.rs` lines 1727-1786 due to a mid-2026 refactor. The runtime behavior remains unchanged, with the sweep emitting two diagnostics for non-geometry profile/path arguments and falling back to Step(step_offset) and Step(step_offset+1). Apply the specified path and diagnostic assertions to the test in its new location.\n</info added on 2026-04-23T19:31:29.338Z>",
         "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
