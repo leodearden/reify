@@ -110,16 +110,16 @@ pub struct ModuleDag {
 /// Build an "invalid module path" [`Diagnostic`] vec.
 ///
 /// Returns a singleton `Vec<Diagnostic>` so call sites can use it directly with
-/// `.map_err(|e| diag_invalid_path(path, e, ctx))?` where the outer `Result`
+/// `.map_err(|e| diag_invalid_path(path, e))?` where the outer `Result`
 /// error type is `Vec<Diagnostic>`.
-fn diag_invalid_path(
-    path: &str,
-    e: ModulePathParseError,
-    context_phrase: &str,
-) -> Vec<Diagnostic> {
+///
+/// The context phrase `"resolving import"` is inlined because both current call
+/// sites use that identical literal (YAGNI: if a future call site needs different
+/// wording, re-introduce the `context_phrase: &str` parameter then).
+fn diag_invalid_path(path: &str, e: ModulePathParseError) -> Vec<Diagnostic> {
     vec![Diagnostic::error(format!(
-        "invalid module path while {} '{}': {}",
-        context_phrase, path, e
+        "invalid module path while resolving import '{}': {}",
+        path, e
     ))]
 }
 
@@ -328,7 +328,7 @@ impl ModuleDag {
                 // typo like "std.unknonwn") must not taint the mode for subsequent
                 // valid imports.
                 let target = reify_types::ModulePath::from_dotted(module_path)
-                    .map_err(|e| diag_invalid_path(module_path, e, "resolving import"))?;
+                    .map_err(|e| diag_invalid_path(module_path, e))?;
                 let stdlib = crate::stdlib_loader::load_stdlib();
                 if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
                     // Commit embedded mode now that we know the module is present.
@@ -382,7 +382,7 @@ impl ModuleDag {
         let parsed = reify_syntax::parse(
             &source,
             reify_types::ModulePath::from_dotted(module_path)
-                .map_err(|e| diag_invalid_path(module_path, e, "resolving import"))?,
+                .map_err(|e| diag_invalid_path(module_path, e))?,
         );
 
         if !parsed.errors.is_empty() {
