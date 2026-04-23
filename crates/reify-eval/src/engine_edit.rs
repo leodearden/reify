@@ -517,20 +517,20 @@ impl Engine {
         // If any structure_controlling cell changed, re-evaluate guarded groups
         // to flip which branch is active/inactive, and recompute fingerprint.
         //
-        // Cross-phase dedup (task 2140): the set is non-empty only when Phase 1
-        // fires; the else arm returns an empty HashSet so no allocation is wasted
-        // when no guards are dirty. Phase 3 consults the set to skip groups
-        // already re-elaborated here. Reelaboration is idempotent for a given
-        // guard value — provided wave2 has not subsequently overwritten inactive
-        // members (the post-wave2 cleanup in the solver block re-deactivates them).
-        let phase1_reelaborated: HashSet<ValueCellId> = {
+        // Cross-phase dedup (task 2140, 2146): the map is non-empty only when
+        // Phase 1 fires; the else arm returns an empty HashMap so no allocation
+        // is wasted when no guards are dirty. Phase 3 consults the map to skip
+        // groups already re-elaborated here when the guard value is unchanged
+        // since Phase 1 — but falls through to full re-elaboration if wave2 has
+        // flipped the guard value after Phase 1 recorded it (task 2146 fix).
+        let phase1_reelaborated: HashMap<ValueCellId, Value> = {
             let graph = &new_snapshot.graph;
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             });
 
             if has_dirty_guards {
-                let mut set = HashSet::new();
+                let mut set = HashMap::new();
                 for group in &graph.guarded_groups {
                     // Re-evaluate the guard cell's expression
                     let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
@@ -575,7 +575,12 @@ impl Engine {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
-                    set.insert(group.guard_cell.clone());
+                    // Record guard_cell → guard_val so Phase 3 can detect a
+                    // wave2 flip: if the current guard value differs from the
+                    // recorded value, Phase 3 falls through to full re-elaboration
+                    // (task 2146 fix). The `.insert` sits after the skip-continue
+                    // so only actually-processed groups land in the map.
+                    set.insert(group.guard_cell.clone(), guard_val.clone());
 
                     reelaborate_guarded_group(
                         graph,
@@ -595,7 +600,7 @@ impl Engine {
                     graph.topology_fingerprint().combine(guard_state_hash);
                 set
             } else {
-                HashSet::new()
+                HashMap::new()
             }
         };
 
@@ -786,6 +791,12 @@ impl Engine {
         // re-evaluate affected guarded group members: activate the correct
         // branch (members or else_members) and deactivate the other.
         // Finally, recompute topology fingerprint to reflect guard state.
+        //
+        // `guard_changed` is also true when Phase 1 processed a group with a
+        // guard value that wave2 subsequently changed (flip-then-revert). In
+        // that case the final guard value may match the pre-edit snapshot, but
+        // Phase 1 left the group's member state inconsistent; Phase 3 must
+        // re-elaborate to fix it (task 2146).
         {
             let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
                 let new_val = values.get(&group.guard_cell);
@@ -794,7 +805,14 @@ impl Engine {
                     .as_ref()
                     .and_then(|s| s.snapshot.values.get(&group.guard_cell))
                     .map(|(v, _)| v);
-                new_val != old_val
+                if new_val != old_val {
+                    return true;
+                }
+                // Phase-1 flip-then-revert: Phase 1 recorded a different guard
+                // value than current → group state is inconsistent (task 2146).
+                phase1_reelaborated
+                    .get(&group.guard_cell)
+                    .is_some_and(|p1| Some(p1) != new_val)
             });
 
             if guard_changed {
@@ -806,24 +824,35 @@ impl Engine {
                         .get(&group.guard_cell)
                         .cloned()
                         .expect("guard cell must have a value after initial evaluation");
-                    // Cross-phase dedup: skip groups already re-elaborated by Phase 1
-                    // in this same edit_param call (task 2140). Reelaboration is
-                    // idempotent, so Phase 1's work is sufficient. The existing
-                    // old-vs-new skip below still covers groups where Phase 1 did NOT
-                    // fire (e.g. resolver-driven guard changes via auto params).
-                    if phase1_reelaborated.contains(&group.guard_cell) {
-                        continue;
-                    }
-                    // Per-group skip: if this group's guard value is unchanged vs.
-                    // the pre-edit snapshot, its activation state has not flipped
-                    // and its members don't need re-elaboration.
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
-                    if old_guard_val == Some(&guard_val) {
-                        continue;
+                    // Cross-phase dedup (task 2140, 2146): two cases:
+                    //
+                    // (a) Phase 1 processed this group with the SAME guard value as
+                    //     current → Phase 1's work is still valid → skip.
+                    //
+                    // (b) Phase 1 processed this group with a DIFFERENT guard value
+                    //     (wave2 flipped the guard after Phase 1 ran) → Phase 1 left
+                    //     the group in an intermediate state; we MUST re-elaborate
+                    //     regardless of the old-vs-new comparison, because the old and
+                    //     current guard values may coincidentally match even though the
+                    //     member state is wrong (e.g. old=false, Phase-1=true,
+                    //     current=false — guard "unchanged" but members corrupted).
+                    //
+                    // (c) Phase 1 did NOT process this group → fall through to the
+                    //     standard old-vs-new skip.
+                    match phase1_reelaborated.get(&group.guard_cell) {
+                        Some(p1_val) if p1_val == &guard_val => continue, // case (a)
+                        Some(_) => {} // case (b): fall through unconditionally
+                        None => {
+                            // case (c): standard old-vs-new skip
+                            let old_guard_val = self
+                                .eval_state
+                                .as_ref()
+                                .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                                .map(|(v, _)| v);
+                            if old_guard_val == Some(&guard_val) {
+                                continue;
+                            }
+                        }
                     }
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
@@ -1444,16 +1473,18 @@ impl Engine {
         // it is exposed via last_guard_phase_group_evals() for test assertions.
         self.last_guard_phase_group_evals = 0;
 
-        // Cross-phase dedup set (task 2142): records guard_cell IDs for every
-        // group that Phase 1 actually re-elaborated in this edit_source call.
-        // Phase 3 consults this set and skips groups already covered by Phase 1.
-        // Reelaboration is idempotent for a given guard value — provided wave2
-        // has not subsequently overwritten inactive members (the post-wave2
-        // cleanup in the solver block re-deactivates them, mirroring task 2140).
-        // Declared at function scope because edit_source's Phase 1 is a large
-        // multi-step block (role-flip probe + composite has_dirty_guards); wrapping
-        // it as a block-expression would churn more lines than necessary.
-        let mut phase1_reelaborated: HashSet<ValueCellId> = HashSet::new();
+        // Cross-phase dedup map (task 2142, 2146): maps guard_cell → guard_val for
+        // every group that Phase 1 actually re-elaborated in this edit_source call.
+        // Phase 3 consults this map: it skips groups already covered by Phase 1 when
+        // the recorded guard value matches the current value, but falls through to
+        // full re-elaboration when wave2 has flipped the guard after Phase 1 recorded
+        // it (task 2146 fix). Reelaboration is idempotent for a given guard value —
+        // provided wave2 has not subsequently overwritten inactive members (the
+        // post-wave2 cleanup in the solver block re-deactivates them, mirroring
+        // task 2140). Declared at function scope because edit_source's Phase 1 is a
+        // large multi-step block (role-flip probe + composite has_dirty_guards);
+        // wrapping it as a block-expression would churn more lines than necessary.
+        let mut phase1_reelaborated: HashMap<ValueCellId, Value> = HashMap::new();
 
         // ── Phase 1: Guard re-elaboration (dirty-cone trigger) ───────────
         // If any structure_controlling cell is in the dirty cone or
@@ -1588,13 +1619,15 @@ impl Engine {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
-                    // Record this group as re-elaborated by Phase 1 so Phase 3
-                    // can skip it (cross-phase dedup, task 2142).  The insert
-                    // sits after the skip-continue so only actually-processed
-                    // groups land in the set — guard-flip, added-member, and
-                    // role-flip triggers all satisfy "Phase 1 re-elaborated this
-                    // group", which is precisely what Phase 3 needs to know.
-                    phase1_reelaborated.insert(group.guard_cell.clone());
+                    // Record guard_cell → guard_val so Phase 3 can detect a
+                    // wave2 flip: if the current guard value differs from the
+                    // recorded value, Phase 3 falls through to full re-elaboration
+                    // (task 2146 fix). The insert sits after the skip-continue so
+                    // only actually-processed groups land in the map — guard-flip,
+                    // added-member, and role-flip triggers all satisfy "Phase 1
+                    // re-elaborated this group", which is precisely what Phase 3
+                    // needs to know.
+                    phase1_reelaborated.insert(group.guard_cell.clone(), guard_val.clone());
 
                     let is_true = matches!(&guard_val, Value::Bool(true));
                     let is_false = matches!(&guard_val, Value::Bool(false));
@@ -1840,6 +1873,12 @@ impl Engine {
         // feeds the guard, or the dirty-cone path missed an edge (defensive).
         // Uses GuardLookup::Strict because eval() has populated every guard
         // cell by this point; a missing cell would be a logic error.
+        //
+        // `guard_changed` is also true when Phase 1 processed a group with a
+        // guard value that wave2 subsequently changed (flip-then-revert). In
+        // that case the final guard value may match the pre-edit snapshot, but
+        // Phase 1 left the group's member state inconsistent; Phase 3 must
+        // re-elaborate to fix it (task 2146).
         {
             let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
                 let new_val = values.get(&group.guard_cell);
@@ -1848,7 +1887,14 @@ impl Engine {
                     .as_ref()
                     .and_then(|s| s.snapshot.values.get(&group.guard_cell))
                     .map(|(v, _)| v);
-                new_val != old_val
+                if new_val != old_val {
+                    return true;
+                }
+                // Phase-1 flip-then-revert: Phase 1 recorded a different guard
+                // value than current → group state is inconsistent (task 2146).
+                phase1_reelaborated
+                    .get(&group.guard_cell)
+                    .is_some_and(|p1| Some(p1) != new_val)
             });
 
             if guard_changed {
@@ -1864,27 +1910,37 @@ impl Engine {
                     let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
                         continue;
                     };
-                    // Cross-phase dedup (task 2142): skip groups already re-elaborated
-                    // by Phase 1 in this edit_source call. Reelaboration is idempotent
-                    // so Phase 1's work is sufficient. The existing old-vs-new skip
-                    // below still handles groups where Phase 1 did NOT fire (e.g.
-                    // resolver-driven guard changes via auto params), mirroring the
-                    // edit_param dedup at engine_edit.rs lines 782-789 (task 2140).
-                    if phase1_reelaborated.contains(&group.guard_cell) {
-                        continue;
-                    }
-                    // Per-group skip: if this group's guard value is unchanged
-                    // vs. the pre-edit snapshot, its activation state has not
-                    // flipped and its members don't need re-elaboration.
-                    // Phase 3 has no added-member or role-flip exception
-                    // (those are Phase 1 concerns only).
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
-                    if old_guard_val == Some(&guard_val) {
-                        continue;
+                    // Cross-phase dedup (task 2142, 2146): three cases:
+                    //
+                    // (a) Phase 1 processed this group with the SAME guard value as
+                    //     current → Phase 1's work is still valid → skip.
+                    //
+                    // (b) Phase 1 processed this group with a DIFFERENT guard value
+                    //     (wave2 flipped the guard after Phase 1 ran) → Phase 1 left
+                    //     the group in an intermediate state; we MUST re-elaborate
+                    //     regardless of the old-vs-new comparison, because the old and
+                    //     current guard values may coincidentally match even though the
+                    //     member state is wrong (e.g. old=false, Phase-1=true,
+                    //     current=false — guard "unchanged" but members corrupted).
+                    //
+                    // (c) Phase 1 did NOT process this group → fall through to the
+                    //     standard old-vs-new skip (resolver-driven guard changes).
+                    match phase1_reelaborated.get(&group.guard_cell) {
+                        Some(p1_val) if p1_val == &guard_val => continue, // case (a)
+                        Some(_) => {} // case (b): fall through unconditionally
+                        None => {
+                            // case (c): standard old-vs-new skip
+                            // Phase 3 has no added-member or role-flip exception
+                            // (those are Phase 1 concerns only).
+                            let old_guard_val = self
+                                .eval_state
+                                .as_ref()
+                                .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                                .map(|(v, _)| v);
+                            if old_guard_val == Some(&guard_val) {
+                                continue;
+                            }
+                        }
                     }
                     self.last_guard_phase_group_evals += 1;
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
