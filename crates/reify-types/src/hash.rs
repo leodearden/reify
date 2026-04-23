@@ -17,6 +17,16 @@ impl ContentHash {
         Self::of(s.as_bytes())
     }
 
+    /// Hash a `u64` via its little-endian byte representation.
+    ///
+    /// **Stable wire format.** The little-endian encoding is part of the
+    /// on-disk incremental-compile cache contract. Do not change the byte order
+    /// or width without also bumping the cache format version, or cached hashes
+    /// from prior builds will silently collide with hashes computed by new code.
+    pub fn of_u64(n: u64) -> Self {
+        Self::of(&n.to_le_bytes())
+    }
+
     /// Combine two hashes (order-dependent).
     pub fn combine(self, other: ContentHash) -> ContentHash {
         let mut buf = [0u8; 32];
@@ -77,5 +87,16 @@ mod tests {
         let a = ContentHash::of_str("param width: Scalar = 80mm");
         let b = ContentHash::of_str("param width:  Scalar = 80mm");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn of_u64_is_deterministic() {
+        assert_eq!(ContentHash::of_u64(42), ContentHash::of_u64(42));
+    }
+
+    #[test]
+    fn of_u64_differs_for_different_values() {
+        assert_ne!(ContentHash::of_u64(0), ContentHash::of_u64(1));
+        assert_ne!(ContentHash::of_u64(1), ContentHash::of_u64(u64::MAX));
     }
 }

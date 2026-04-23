@@ -85,13 +85,13 @@ pub(crate) fn compute_module_hash(
 
 /// Produce a deterministic [`ContentHash`] for a single module-level pragma.
 ///
-/// Combines the pragma name and argument count (as `"name|count"`) with each argument's
-/// kind, key (for key-value), and value.  Encoding the count explicitly guards against
-/// collisions when a pragma has optional arguments that could be absent vs. present as
-/// an empty value.  Source span is intentionally excluded — it is positional metadata,
-/// not content.
+/// Combines the pragma name hash with a u64-encoded argument count, then combines
+/// each argument's kind, key (for key-value), and value in declaration order.
+/// Encoding the count explicitly guards against collisions when a pragma has
+/// optional arguments that could be absent vs. present as an empty value.
+/// Source span is intentionally excluded — it is positional metadata, not content.
 fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
-    let mut h = ContentHash::of_str(&format!("{}|{}", p.name, p.args.len()));
+    let mut h = ContentHash::of_str(&p.name).combine(ContentHash::of_u64(p.args.len() as u64));
     for arg in &p.args {
         h = h.combine(hash_pragma_arg(arg));
     }
@@ -102,19 +102,65 @@ fn hash_pragma_arg(arg: &reify_syntax::PragmaArg) -> ContentHash {
     match arg {
         reify_syntax::PragmaArg::KeyValue { key, value } => ContentHash::of_str("kv")
             .combine(ContentHash::of_str(key))
-            .combine(ContentHash::of_str(&format_pragma_value(value))),
+            .combine(hash_pragma_value(value)),
         reify_syntax::PragmaArg::Bare(value) => ContentHash::of_str("bare")
-            .combine(ContentHash::of_str(&format_pragma_value(value))),
+            .combine(hash_pragma_value(value)),
     }
 }
 
-fn format_pragma_value(v: &reify_syntax::PragmaValue) -> String {
+fn hash_pragma_value(v: &reify_syntax::PragmaValue) -> ContentHash {
     match v {
-        reify_syntax::PragmaValue::Ident(s) => format!("ident:{s}"),
-        reify_syntax::PragmaValue::Number(n) => format!("num:{:016x}", n.to_bits()),
-        reify_syntax::PragmaValue::String(s) => format!("str:{s}"),
-        reify_syntax::PragmaValue::Bool(b) => {
-            if *b { "bool:true".to_string() } else { "bool:false".to_string() }
+        reify_syntax::PragmaValue::Ident(s) => {
+            ContentHash::of_str("ident").combine(ContentHash::of_str(s))
         }
+        reify_syntax::PragmaValue::Number(n) => {
+            ContentHash::of_str("num").combine(ContentHash::of_u64(n.to_bits()))
+        }
+        reify_syntax::PragmaValue::String(s) => {
+            ContentHash::of_str("str").combine(ContentHash::of_str(s))
+        }
+        reify_syntax::PragmaValue::Bool(b) => ContentHash::of_str("bool")
+            .combine(ContentHash::of_str(if *b { "true" } else { "false" })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Ident("true")` and `Bool(true)` share the same payload text but must
+    /// hash differently because their kind-tags differ (`"ident"` vs `"bool"`).
+    #[test]
+    fn pragma_value_ident_vs_bool_differ() {
+        let h_ident = hash_pragma_value(&reify_syntax::PragmaValue::Ident("true".to_string()));
+        let h_bool = hash_pragma_value(&reify_syntax::PragmaValue::Bool(true));
+        assert_ne!(
+            h_ident, h_bool,
+            "Ident(\"true\") and Bool(true) must produce distinct hashes"
+        );
+    }
+
+    /// `Ident("42")` and `Number(42.0)` share numerically equal payloads but
+    /// must hash differently because their kind-tags differ (`"ident"` vs `"num"`).
+    #[test]
+    fn pragma_value_ident_vs_number_differ() {
+        let h_ident = hash_pragma_value(&reify_syntax::PragmaValue::Ident("42".to_string()));
+        let h_num = hash_pragma_value(&reify_syntax::PragmaValue::Number(42.0_f64));
+        assert_ne!(
+            h_ident, h_num,
+            "Ident(\"42\") and Number(42) must produce distinct hashes"
+        );
+    }
+
+    /// `Bool(true)` and `String("true")` share the same payload text but must
+    /// hash differently because their kind-tags differ (`"bool"` vs `"str"`).
+    #[test]
+    fn pragma_value_bool_vs_string_differ() {
+        let h_bool = hash_pragma_value(&reify_syntax::PragmaValue::Bool(true));
+        let h_str = hash_pragma_value(&reify_syntax::PragmaValue::String("true".to_string()));
+        assert_ne!(
+            h_bool, h_str,
+            "Bool(true) and String(\"true\") must produce distinct hashes"
+        );
     }
 }

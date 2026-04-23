@@ -37,9 +37,10 @@ pub(crate) fn phase_recursion_detection(ctx: &mut CompilationCtx) {
     check_recursive_termination(&ctx.templates, &cyclic_sccs, &mut ctx.diagnostics);
 
     // Remix is_recursive into each recursive template's content_hash.
+    let recursion_tag = ContentHash::of_str("is_recursive");
     for template in &mut ctx.templates {
         if template.is_recursive {
-            template.content_hash = template.content_hash.combine(ContentHash::of(&[1u8]));
+            template.content_hash = template.content_hash.combine(recursion_tag);
         }
     }
 }

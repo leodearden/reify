@@ -668,6 +668,15 @@ structure S {
 ///
 /// Template A has identical raw content in both modules. Before the fix, both A
 /// templates have the same content_hash. After the fix they must differ.
+///
+/// ## Implicit assumption
+///
+/// This test relies on A's `content_hash` being a function of A's OWN compiled
+/// content plus (when recursive) the `"is_recursive"` domain tag — NOT a
+/// transitive closure that also incorporates B's resolved content_hash. If the
+/// hash ever evolved to transitively include resolved-sub-component hashes, the
+/// `assert_ne!` below would pass for a different (and stronger) reason, and
+/// this test would no longer isolate the `is_recursive` remix contract.
 #[test]
 fn is_recursive_mixed_into_content_hash() {
     // Module 1: A<->B mutual cycle — A.is_recursive = true
@@ -720,6 +729,63 @@ structure C {
         a_cyclic.content_hash, a_acyclic.content_hash,
         "template A with is_recursive=true must have a different content_hash \
          than the same template with is_recursive=false (incremental correctness)"
+    );
+}
+
+/// When template A has identical source content and `is_recursive = true` in
+/// two different modules, A's `content_hash` must be **equal** even though B's
+/// content differs between the modules.
+///
+/// This is the companion equality case for [`is_recursive_mixed_into_content_hash`].
+/// It directly pins the "non-transitive-closure" assumption documented there:
+/// B's resolved `content_hash` must NOT flow into A's `content_hash`. If it
+/// did, A's hashes would differ here solely because of B's changed content —
+/// and the incremental cache would incorrectly invalidate A when B changes.
+#[test]
+fn recursive_a_hash_independent_of_b_content() {
+    // Both modules have A<->B mutual cycles, so A.is_recursive = true in both.
+    // A's source is identical in both modules.
+    // B's source differs (extra param `x`) — if B's hash leaked into A's,
+    // a_v1.content_hash != a_v2.content_hash, which would be wrong.
+    let source_v1 = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    let source_v2 = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    param x : Int = 99
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    let (templates_v1, _) = compile_all(source_v1);
+    let (templates_v2, _) = compile_all(source_v2);
+
+    let a_v1 = find_template(&templates_v1, "A");
+    let a_v2 = find_template(&templates_v2, "A");
+
+    // Sanity: A is recursive in both modules.
+    assert!(a_v1.is_recursive, "A in v1 should be recursive");
+    assert!(a_v2.is_recursive, "A in v2 should be recursive");
+
+    // A's content_hash must be equal: same source, same is_recursive flag.
+    // B's changed content must NOT propagate into A's hash.
+    assert_eq!(
+        a_v1.content_hash, a_v2.content_hash,
+        "template A with identical source and is_recursive=true must have the same \
+         content_hash regardless of B's content (B's resolved hash must not flow into A)"
     );
 }
 
