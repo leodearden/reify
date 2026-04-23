@@ -473,15 +473,50 @@ mod tests {
     #[test]
     fn partial_overlay_diag_fs_over_embedded_format() {
         let stdlib_root = std::path::PathBuf::from("/tmp/stdlib");
-        let diag = partial_overlay_diag(
+
+        // Entry variant
+        let entry_diag = partial_overlay_diag(
             "std.foo",
             OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Entry },
             &stdlib_root,
         );
-        assert!(diag.message.contains("std.foo"));
-        assert!(diag.message.contains("/tmp/stdlib"));
-        assert!(diag.message.contains("resolved on the filesystem"));
-        assert!(diag.message.contains("embedded stdlib"));
+        assert!(entry_diag.message.contains("std.foo"));
+        assert!(entry_diag.message.contains("/tmp/stdlib"));
+        assert!(entry_diag.message.contains("resolved on the filesystem"));
+        assert!(entry_diag.message.contains("embedded stdlib"));
+        // Structural kind marker assertions (TDD red until step-4)
+        assert!(
+            entry_diag.message.contains("(fs-over-embedded/entry)"),
+            "entry diagnostic must contain the structural marker '(fs-over-embedded/entry)', got: {}",
+            entry_diag.message
+        );
+        assert!(
+            !entry_diag.message.contains("(fs-over-embedded/transitive)"),
+            "entry diagnostic must NOT contain the transitive marker, got: {}",
+            entry_diag.message
+        );
+
+        // Transitive variant
+        let transitive_diag = partial_overlay_diag(
+            "std.foo",
+            OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Transitive },
+            &stdlib_root,
+        );
+        assert!(transitive_diag.message.contains("std.foo"));
+        assert!(transitive_diag.message.contains("/tmp/stdlib"));
+        assert!(transitive_diag.message.contains("resolved on the filesystem"));
+        assert!(transitive_diag.message.contains("embedded stdlib"));
+        // Structural kind marker assertions (TDD red until step-4)
+        assert!(
+            transitive_diag.message.contains("(fs-over-embedded/transitive)"),
+            "transitive diagnostic must contain the structural marker '(fs-over-embedded/transitive)', got: {}",
+            transitive_diag.message
+        );
+        assert!(
+            !transitive_diag.message.contains("(fs-over-embedded/entry)"),
+            "transitive diagnostic must NOT contain the entry marker, got: {}",
+            transitive_diag.message
+        );
     }
 
     #[test]
@@ -496,6 +531,12 @@ mod tests {
         assert!(diag.message.contains("/tmp/stdlib"));
         assert!(diag.message.contains("not found on the filesystem"));
         assert!(diag.message.contains("resolved from the filesystem"));
+        // Structural kind marker assertion (TDD red until step-4)
+        assert!(
+            diag.message.contains("(embedded-over-fs)"),
+            "embedded-over-fs diagnostic must contain the structural marker '(embedded-over-fs)', got: {}",
+            diag.message
+        );
     }
 
     #[test]

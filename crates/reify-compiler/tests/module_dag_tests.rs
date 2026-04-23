@@ -1495,14 +1495,13 @@ fn partial_stdlib_overlay_errors_when_outer_fs_and_inner_embedded() {
         msg
     );
 
-    // (d) Must contain the distinguishing "transitive" token that only the
-    // deferred-commit branch emits (module_dag.rs context clause
-    // "a transitive std.* import was served from the embedded stdlib"),
-    // tying this regression test to the specific bug path it guards rather
-    // than the sibling entry-guard diagnostic.
+    // (d) Must contain the structural kind marker that only the deferred-commit branch
+    // emits, tying this regression test to the specific bug path it guards rather than
+    // the sibling entry-guard diagnostic (which emits '(fs-over-embedded/entry)').
     assert!(
-        msg.to_lowercase().contains("transitive"),
-        "diagnostic must mention 'transitive' (deferred-commit branch context clause), got: {}",
+        msg.contains("(fs-over-embedded/transitive)"),
+        "diagnostic must contain the structural kind marker '(fs-over-embedded/transitive)' \
+         to distinguish the deferred-commit branch from the entry-guard branch, got: {}",
         msg
     );
 }
