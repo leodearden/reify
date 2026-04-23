@@ -135,6 +135,38 @@ fn reapply_phase1_deactivations(
     }
 }
 
+/// Phase 3 cross-phase dedup check (tasks 2140 / 2146).
+///
+/// Returns `true` if Phase 3 should **skip** re-elaborating the guarded group
+/// whose guard cell currently holds `guard_val` — i.e. Phase 1's work is still
+/// valid. Returns `false` if the group must be re-elaborated.
+///
+/// Three cases, in priority order:
+///
+/// (a) Phase 1 processed this group **with the same guard value** as `guard_val`
+///     → Phase 1's work is still valid → skip.
+/// (b) Phase 1 processed this group **with a different guard value** (wave2
+///     flipped the guard after Phase 1 ran) → the group is in an intermediate
+///     state; must re-elaborate unconditionally, regardless of what the old
+///     snapshot says (task 2146).
+/// (c) Phase 1 **did not** touch this group → apply the standard old-vs-new
+///     skip: skip only when `old_guard_val == Some(guard_val)`.
+///
+/// Called from both `edit_param` Phase 3 and `edit_source` Phase 3 so the
+/// tri-case logic lives in exactly one place.
+fn phase3_skip_group(
+    guard_cell: &ValueCellId,
+    guard_val: &Value,
+    phase1: &HashMap<ValueCellId, Value>,
+    old_guard_val: Option<&Value>,
+) -> bool {
+    match phase1.get(guard_cell) {
+        Some(p1_val) if p1_val == guard_val => true, // (a): Phase 1 still valid
+        Some(_) => false,                            // (b): wave2 flip → must re-elaborate
+        None => old_guard_val == Some(guard_val),    // (c): unchanged → skip
+    }
+}
+
 /// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
 /// probe in `Engine::edit_source`.
 ///
@@ -575,13 +607,6 @@ impl Engine {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
-                    // Record guard_cell → guard_val so Phase 3 can detect a
-                    // wave2 flip: if the current guard value differs from the
-                    // recorded value, Phase 3 falls through to full re-elaboration
-                    // (task 2146 fix). The `.insert` sits after the skip-continue
-                    // so only actually-processed groups land in the map.
-                    set.insert(group.guard_cell.clone(), guard_val.clone());
-
                     reelaborate_guarded_group(
                         graph,
                         group,
@@ -591,6 +616,14 @@ impl Engine {
                         &functions,
                         &self.meta_map,
                     );
+                    // Record guard_cell → guard_val so Phase 3 can detect a
+                    // wave2 flip: if the current guard value differs from the
+                    // recorded value, Phase 3 falls through to full re-elaboration
+                    // (task 2146 fix). The `.insert` sits after the skip-continue
+                    // so only actually-processed groups land in the map.
+                    // guard_val is moved here (not cloned) — reelaborate_guarded_group
+                    // only borrows it by reference.
+                    set.insert(group.guard_cell.clone(), guard_val);
                 }
 
                 // Recompute topology fingerprint including guard states.
@@ -824,35 +857,19 @@ impl Engine {
                         .get(&group.guard_cell)
                         .cloned()
                         .expect("guard cell must have a value after initial evaluation");
-                    // Cross-phase dedup (task 2140, 2146): two cases:
-                    //
-                    // (a) Phase 1 processed this group with the SAME guard value as
-                    //     current → Phase 1's work is still valid → skip.
-                    //
-                    // (b) Phase 1 processed this group with a DIFFERENT guard value
-                    //     (wave2 flipped the guard after Phase 1 ran) → Phase 1 left
-                    //     the group in an intermediate state; we MUST re-elaborate
-                    //     regardless of the old-vs-new comparison, because the old and
-                    //     current guard values may coincidentally match even though the
-                    //     member state is wrong (e.g. old=false, Phase-1=true,
-                    //     current=false — guard "unchanged" but members corrupted).
-                    //
-                    // (c) Phase 1 did NOT process this group → fall through to the
-                    //     standard old-vs-new skip.
-                    match phase1_reelaborated.get(&group.guard_cell) {
-                        Some(p1_val) if p1_val == &guard_val => continue, // case (a)
-                        Some(_) => {} // case (b): fall through unconditionally
-                        None => {
-                            // case (c): standard old-vs-new skip
-                            let old_guard_val = self
-                                .eval_state
-                                .as_ref()
-                                .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                                .map(|(v, _)| v);
-                            if old_guard_val == Some(&guard_val) {
-                                continue;
-                            }
-                        }
+                    // Cross-phase dedup (tasks 2140 / 2146) — see `phase3_skip_group`.
+                    let old_guard_val = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                        .map(|(v, _)| v);
+                    if phase3_skip_group(
+                        &group.guard_cell,
+                        &guard_val,
+                        &phase1_reelaborated,
+                        old_guard_val,
+                    ) {
+                        continue;
                     }
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
@@ -1910,37 +1927,21 @@ impl Engine {
                     let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
                         continue;
                     };
-                    // Cross-phase dedup (task 2142, 2146): three cases:
-                    //
-                    // (a) Phase 1 processed this group with the SAME guard value as
-                    //     current → Phase 1's work is still valid → skip.
-                    //
-                    // (b) Phase 1 processed this group with a DIFFERENT guard value
-                    //     (wave2 flipped the guard after Phase 1 ran) → Phase 1 left
-                    //     the group in an intermediate state; we MUST re-elaborate
-                    //     regardless of the old-vs-new comparison, because the old and
-                    //     current guard values may coincidentally match even though the
-                    //     member state is wrong (e.g. old=false, Phase-1=true,
-                    //     current=false — guard "unchanged" but members corrupted).
-                    //
-                    // (c) Phase 1 did NOT process this group → fall through to the
-                    //     standard old-vs-new skip (resolver-driven guard changes).
-                    match phase1_reelaborated.get(&group.guard_cell) {
-                        Some(p1_val) if p1_val == &guard_val => continue, // case (a)
-                        Some(_) => {} // case (b): fall through unconditionally
-                        None => {
-                            // case (c): standard old-vs-new skip
-                            // Phase 3 has no added-member or role-flip exception
-                            // (those are Phase 1 concerns only).
-                            let old_guard_val = self
-                                .eval_state
-                                .as_ref()
-                                .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                                .map(|(v, _)| v);
-                            if old_guard_val == Some(&guard_val) {
-                                continue;
-                            }
-                        }
+                    // Cross-phase dedup (tasks 2142 / 2146) — see `phase3_skip_group`.
+                    // Phase 3 has no added-member or role-flip exception (those
+                    // are Phase 1 concerns only).
+                    let old_guard_val = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                        .map(|(v, _)| v);
+                    if phase3_skip_group(
+                        &group.guard_cell,
+                        &guard_val,
+                        &phase1_reelaborated,
+                        old_guard_val,
+                    ) {
+                        continue;
                     }
                     self.last_guard_phase_group_evals += 1;
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
