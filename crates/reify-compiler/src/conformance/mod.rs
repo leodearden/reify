@@ -17,25 +17,36 @@ pub(crate) fn check_trait_conformance(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let (structure_members, structure_constraint_labels) = check_phase_resolve_structure_members(
-        structure,
-        trait_names,
-        enum_defs,
-        alias_registry,
-        diagnostics,
-    );
+    let (structure_param_members, structure_let_members, structure_constraint_labels) =
+        check_phase_resolve_structure_members(
+            structure,
+            trait_names,
+            enum_defs,
+            alias_registry,
+            diagnostics,
+        );
+
+    // Build a combined name→type view for phases that only need to know whether the
+    // structure declares a member by name (conflict-suppression, injection-skip, scope
+    // pre-registration). Phases that must distinguish param from let members use
+    // `structure_param_members` / `structure_let_members` directly (phase 5).
+    let structure_all_members: HashMap<String, Type> = structure_param_members
+        .iter()
+        .chain(structure_let_members.iter())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     let ctx = check_phase_collect_trait_bounds(
         structure,
         trait_registry,
-        &structure_members,
+        &structure_all_members,
         diagnostics,
     );
 
     let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
         check_phase_pre_register_default_types(
             &ctx,
-            &structure_members,
+            &structure_all_members,
             structure.name,
             scope,
             enum_defs,
@@ -53,7 +64,8 @@ pub(crate) fn check_trait_conformance(
     check_phase_check_members_against_requirements(
         &ctx,
         structure,
-        &structure_members,
+        &structure_param_members,
+        &structure_let_members,
         &available_defaults,
         diagnostics,
     );
@@ -61,7 +73,7 @@ pub(crate) fn check_trait_conformance(
     check_phase_inject_defaults(
         &ctx,
         structure,
-        &structure_members,
+        &structure_all_members,
         &structure_constraint_labels,
         inferred_let_exprs,
         &pass2_skipped,
@@ -776,7 +788,7 @@ mod tests {
         };
         let entity_ref = EntityDefRef::from(&structure_def);
 
-        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_all_members: HashMap<String, Type> = HashMap::new();
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
@@ -784,7 +796,7 @@ mod tests {
         let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
-                &structure_members,
+                &structure_all_members,
                 "S",
                 &mut scope,
                 &[],
@@ -810,11 +822,14 @@ mod tests {
             &pass2_compile_errors,
         );
 
-        // --- Phase 5: check members against requirements ---
+        // --- Phase 5: check members against requirements (no structure members) ---
+        let empty_param_members: HashMap<String, Type> = HashMap::new();
+        let empty_let_members: HashMap<String, Type> = HashMap::new();
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &empty_param_members,
+            &empty_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -1332,7 +1347,7 @@ mod tests {
         let alias_registry = TypeAliasRegistry::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (structure_members, structure_constraint_labels) =
+        let (structure_param_members, structure_let_members, structure_constraint_labels) =
             check_phase_resolve_structure_members(
                 &entity_ref,
                 &trait_names,
@@ -1347,12 +1362,12 @@ mod tests {
             diagnostics
         );
         assert!(
-            structure_members.contains_key("width"),
-            "Expected 'width' in structure_members"
+            structure_param_members.contains_key("width"),
+            "Expected 'width' in structure_param_members"
         );
         assert!(
-            structure_members.contains_key("length"),
-            "Expected 'length' in structure_members"
+            structure_let_members.contains_key("length"),
+            "Expected 'length' in structure_let_members"
         );
         assert!(
             structure_constraint_labels.contains("bound"),
@@ -1838,14 +1853,16 @@ mod tests {
             span: SourceSpan::empty(0),
         }];
 
-        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_param_members: HashMap<String, Type> = HashMap::new();
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
         let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &structure_param_members,
+            &structure_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -1873,7 +1890,7 @@ mod tests {
     /// with the wrong type.
     ///
     /// Covers the `Some(actual_type)` arm where `implicitly_converts_to(actual, expected)`
-    /// is false — the mismatch path inside the `structure_members.get(&req.name)` match.
+    /// is false — the mismatch path inside the kind-routed map lookup.
     #[test]
     fn check_phase_check_members_against_requirements_emits_type_mismatch_for_wrong_member_type() {
         let structure_def = reify_syntax::StructureDef {
@@ -1897,16 +1914,18 @@ mod tests {
             span: SourceSpan::empty(0),
         }];
 
-        // Structure member "w" exists but has wrong type: Real, not Length
-        let mut structure_members: HashMap<String, Type> = HashMap::new();
-        structure_members.insert("w".to_string(), Type::Real);
+        // Structure param member "w" exists but has wrong type: Real, not Length
+        let mut structure_param_members: HashMap<String, Type> = HashMap::new();
+        structure_param_members.insert("w".to_string(), Type::Real);
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
         let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &structure_param_members,
+            &structure_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -1960,7 +1979,8 @@ mod tests {
         }];
 
         // No structure member "w", but there IS a same-kind (Param) default with wrong type
-        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_param_members: HashMap<String, Type> = HashMap::new();
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
         let mut available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         available_defaults.insert(
             ("w".to_string(), AvailableDefaultKind::Param),
@@ -1971,7 +1991,8 @@ mod tests {
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &structure_param_members,
+            &structure_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -2024,14 +2045,16 @@ mod tests {
             span: SourceSpan::empty(0),
         }];
 
-        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_param_members: HashMap<String, Type> = HashMap::new();
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
         let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &structure_param_members,
+            &structure_let_members,
             &available_defaults,
             &mut diagnostics,
         );
