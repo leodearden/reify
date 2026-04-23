@@ -1677,7 +1677,13 @@ fn compile_boolean_op_intersection_all_via_compile() {
     assert_eq!(ops.len(), 5, "expected 5 ops, got {}: {:?}", ops.len(), ops);
     assert!(matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
     assert!(matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
-    assert!(matches!(ops[2], CompiledGeometryOp::Boolean { op: BooleanOp::Intersection, .. }));
+    match &ops[2] {
+        CompiledGeometryOp::Boolean { op: BooleanOp::Intersection, left: GeomRef::Step(0), right: GeomRef::Step(1) } => {}
+        other => panic!("expected Boolean{{Intersection, Step(0), Step(1)}}, got {:?}", other),
+    }
     assert!(matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
-    assert!(matches!(ops[4], CompiledGeometryOp::Boolean { op: BooleanOp::Intersection, .. }));
+    match &ops[4] {
+        CompiledGeometryOp::Boolean { op: BooleanOp::Intersection, left: GeomRef::Step(2), right: GeomRef::Step(3) } => {}
+        other => panic!("expected Boolean{{Intersection, Step(2), Step(3)}}, got {:?}", other),
+    }
 }
