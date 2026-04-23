@@ -3679,4 +3679,95 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByTestId('toast')).toBeNull();
   });
+
+  it('(g) does NOT enqueue a duplicate toast when a later tree update still reports the same stale pair', async () => {
+    // Regression for reviewer blocker (gui/src/App.tsx:195-246):
+    // If the user has not yet clicked Yes/No/Ignore, subsequent tree updates
+    // that still leave the same stale→candidate pair outstanding must not
+    // stack additional toasts for that pair.
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // Stamp an explicit visibility so the path becomes "stale" once it's
+    // missing from the new tree.
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // First tree update — stale path appears with unique suffix candidate.
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      2,
+    );
+
+    await waitFor(() => screen.getByTestId('toast'));
+    expect(screen.getAllByTestId('toast').length).toBe(1);
+
+    // Second tree update — same stale→candidate pair still outstanding.
+    // Without the shown-pairs guard, this re-enters the rebind effect and
+    // enqueues a second identical toast.
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      3,
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    // Exactly one toast for this pair — no duplicate stacked.
+    expect(screen.getAllByTestId('toast').length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fix: flush debounced saver on path switch (gui/src/App.tsx:124-149)
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — flush on file switch', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+  }
+
+  async function flushHandleOpen() {
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  it('opening a second file within the 500ms debounce window flushes the pending write for the first path', async () => {
+    // Regression for reviewer blocker: previously the effect's onCleanup
+    // called saver.cancel(), silently dropping the most recent mutation for
+    // the outgoing file when the user switched files before the debounce
+    // window expired.  The fix replaces cancel() with flush() keyed on path
+    // transitions so the last state is persisted synchronously.
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+
+    // First open: /test/first.ri
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/first.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/first.ri', content: '' });
+    await renderAndWaitForReady();
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushHandleOpen();
+
+      // Advance only 100ms — well inside the 500ms debounce window; no write yet.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(localStorage.getItem('reify:views:/test/first.ri')).toBeNull();
+
+      // Switch to /test/second.ri while the timer is still pending.
+      vi.mocked(bridge.pickOpenPath).mockResolvedValue('/test/second.ri');
+      vi.mocked(bridge.openFile).mockResolvedValue({ path: '/test/second.ri', content: '' });
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushHandleOpen();
+
+      // Path transition must flush the first file's pending state synchronously.
+      expect(localStorage.getItem('reify:views:/test/first.ri')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

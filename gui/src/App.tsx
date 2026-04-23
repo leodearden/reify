@@ -64,7 +64,7 @@ import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
-import { loadViewPersistence, createDebouncedSaver } from './stores/viewPersistence';
+import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
 import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
 import type { PersistentViewState } from './types';
 import styles from './App.module.css';
@@ -105,6 +105,22 @@ const App: Component = () => {
   // Track the currently-open file path so the debounced save effect can key off it.
   const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
 
+  // Fuzzy-rebind toast bookkeeping (see the rebind effect block below).
+  //
+  // `rebindShownPairs` tracks stale→candidate pairs currently represented by
+  // a visible toast. Without this, every re-evaluation that still shows the
+  // same stale path enqueues another identical toast, which reviewers flagged
+  // as a growing stack when users do not promptly respond.
+  //
+  // `rebindToastPairs` maps toast-id → pairKey so `handleDismissToast` can
+  // clear the pair from `rebindShownPairs` regardless of how the toast was
+  // dismissed (button click, close-X, or auto-dismiss timeout).
+  //
+  // Both live at App scope so `handleDismissToast` (declared further below)
+  // can see them.
+  const rebindShownPairs = new Set<string>();
+  const rebindToastPairs = new Map<string, string>();
+
   /**
    * Load view state for a given file path.
    * Priority: sidecar (.ri.views.json) > localStorage > null (defaults).
@@ -117,36 +133,68 @@ const App: Component = () => {
   }
 
   // Debounced persistence of view state to localStorage.
-  // Runs whenever currentFilePath, viewStateStore.state, or viewport cameras change.
-  // A single saver instance is created per file path and cleaned up on path change.
-  // The composed state includes user views, active view, explicit overrides, viewport
-  // cameras, and a timestamp (PRD §8.1 design decision).
-  createEffect(() => {
-    const path = currentFilePath();
-    if (!path) return;
+  //
+  // A single `DebouncedSaver` is retained across view-state mutations for the
+  // same path so that rapid changes coalesce into one write 500ms after the
+  // last mutation (PRD §8.1 design decision).
+  //
+  // Lifecycle:
+  // - File open / file switch → flush the outgoing saver (if any), then
+  //   create a fresh saver for the new path.  Flushing on switch is required
+  //   so the last mutation made to the outgoing file is not lost when the
+  //   user switches files within the debounce window.
+  // - Component unmount → flush any pending write in onCleanup.
+  //
+  // The effect re-runs on every change to `viewStateStore.state` or
+  // `viewportStore.state`; those re-runs only reschedule on the existing
+  // saver (they do NOT recreate it), which preserves the debounce window.
+  {
+    let activeSaver: DebouncedSaver | null = null;
+    let activePath: string | null = null;
 
-    const saver = createDebouncedSaver(500);
-    onCleanup(() => saver.cancel());
+    createEffect(() => {
+      const path = currentFilePath();
 
-    // Track view state + viewport cameras reactively.
-    // Reading viewStateStore.state and viewportStore.state subscribes this
-    // effect to any of their changes.
-    void viewStateStore.state;
-    void viewportStore.state;
+      // Path transition: flush pending writes for the old path, then swap
+      // the saver.  Comparing `path !== activePath` ensures unrelated
+      // view-state changes reuse the current saver.
+      if (path !== activePath) {
+        activeSaver?.flush();
+        activeSaver = path !== null ? createDebouncedSaver(500) : null;
+        activePath = path;
+      }
 
-    const viewportCameras: Record<string, CameraState> = {};
-    for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
-      if (vp.camera) viewportCameras[id] = vp.camera;
-    }
+      if (!path || !activeSaver) return;
 
-    const composed: PersistentViewState = {
-      ...viewStateStore.serializePersistedState(),
-      viewportCameras,
-      timestamp: new Date().toISOString(),
-    };
+      // Track view state + viewport cameras reactively.
+      // Reading viewStateStore.state and viewportStore.state subscribes this
+      // effect to any of their changes.
+      void viewStateStore.state;
+      void viewportStore.state;
 
-    saver.schedule(path, composed);
-  });
+      const viewportCameras: Record<string, CameraState> = {};
+      for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
+        if (vp.camera) viewportCameras[id] = vp.camera;
+      }
+
+      const composed: PersistentViewState = {
+        ...viewStateStore.serializePersistedState(),
+        viewportCameras,
+        timestamp: new Date().toISOString(),
+      };
+
+      activeSaver.schedule(path, composed);
+    });
+
+    onCleanup(() => {
+      // Component unmount: persist any still-pending mutation rather than
+      // dropping it (the previous cancel()-on-cleanup silently lost writes
+      // when unmount/file-switch raced the 500ms timer).
+      activeSaver?.flush();
+      activeSaver = null;
+      activePath = null;
+    });
+  }
 
   // Activation hook: watches editor cursor → debounces 200ms → loads def preview
   const defPreviewActivation = createDefPreviewActivation({
@@ -189,7 +237,7 @@ const App: Component = () => {
   // Per PRD §8.5: never auto-applies — user must confirm explicitly.
   {
     // Session-scoped set of ignored stale→candidate pairs.
-    // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [Ignore].
+    // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [No]/[Ignore].
     const ignoredPairs = new Set<string>();
 
     createEffect(() => {
@@ -203,12 +251,19 @@ const App: Component = () => {
 
         const pairKey = `${stalePath}→${candidate.path}`;
         if (ignoredPairs.has(pairKey)) continue;
+        // Reviewer fix: skip when an outstanding toast already represents
+        // this pair.  Without this guard, any subsequent tree update that
+        // leaves the stale path stale (e.g. an unrelated edit) enqueues a
+        // duplicate toast, producing a growing stack for users who do not
+        // respond immediately.
+        if (rebindShownPairs.has(pairKey)) continue;
 
         // Snapshot the stale path's explicit visibility before the closure captures it.
         const staleVisibility = untrack(() => viewStateStore.state.explicit[stalePath]);
 
         const candidatePath = candidate.path;
-        showToast(
+        rebindShownPairs.add(pairKey);
+        const toastId = showToast(
           `"${stalePath}" may have been renamed to "${candidatePath}". Rebind?`,
           'info',
           [
@@ -221,6 +276,8 @@ const App: Component = () => {
                 }
                 // Remove the stale explicit entry.
                 viewStateStore.resetToInherit(stalePath);
+                // rebindShownPairs is cleared in handleDismissToast (via the
+                // toast-id → pairKey map) when the button's onDismiss fires.
               },
             },
             {
@@ -242,6 +299,10 @@ const App: Component = () => {
             },
           ],
         );
+        // Remember which pair this toast represents so handleDismissToast
+        // can clean up rebindShownPairs when the toast goes away for ANY
+        // reason (button, close-X, or auto-dismiss timeout).
+        rebindToastPairs.set(toastId, pairKey);
       }
     });
   }
@@ -312,9 +373,10 @@ const App: Component = () => {
   // Toast queue state
   const [toasts, setToasts] = createSignal<ToastMessage[]>([]);
 
-  function showToast(message: string, type: ToastMessage['type'], actions?: ToastAction[]) {
+  function showToast(message: string, type: ToastMessage['type'], actions?: ToastAction[]): string {
     const id = String(++toastIdCounter);
     setToasts((prev) => [...prev, { id, type, message, actions }]);
+    return id;
   }
 
   // Coalescer for serialization-error events — debounces and deduplicates bursts
@@ -789,6 +851,14 @@ const App: Component = () => {
   }
 
   function handleDismissToast(id: string) {
+    // If this toast was a fuzzy-rebind prompt, release the pair from the
+    // "currently-shown" guard so a legitimate later tree change can surface
+    // the prompt again (unless the user already added it to ignoredPairs).
+    const pairKey = rebindToastPairs.get(id);
+    if (pairKey !== undefined) {
+      rebindToastPairs.delete(id);
+      rebindShownPairs.delete(pairKey);
+    }
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }
 
