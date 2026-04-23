@@ -3399,3 +3399,186 @@ describe('App persistence wiring — Save views action (step-33)', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step-35: Fuzzy-rebind notification tests
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — fuzzy-rebind notification (step-35)', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+  }
+
+  /**
+   * Capture the evalStatus callback so tests can drive phase transitions.
+   * Must be called BEFORE renderAndWaitForReady().
+   */
+  function captureEvalStatus(): { get: () => ((data: any) => void) | undefined } {
+    let cb: ((data: any) => void) | undefined;
+    vi.mocked(bridge.onEvaluationStatus).mockImplementation(async (fn: any) => {
+      cb = fn;
+      return () => {};
+    });
+    return { get: () => cb };
+  }
+
+  /**
+   * Drive an evaluating→idle transition and wait for the second getEntityTree call.
+   */
+  async function triggerTreeUpdate(
+    evalCb: (data: any) => void,
+    newTree: any[],
+    expectedCallCount: number,
+  ) {
+    vi.mocked(bridge.getEntityTree).mockResolvedValueOnce(newTree);
+    evalCb({ phase: 'evaluating' });
+    evalCb({ phase: 'idle' });
+    await waitFor(() =>
+      expect(bridge.getEntityTree).toHaveBeenCalledTimes(expectedCallCount),
+    );
+  }
+
+  it('(a) toast with Yes/No/Ignore buttons appears when stale path has a unique suffix candidate', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // Set an explicit visibility on the path (click once: show → ghost)
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // Trigger a tree update: Assembly.flange.geometry is gone; Assembly.bolt_flange.geometry appears
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      2,
+    );
+
+    // A toast with [Yes][No][Ignore] buttons should appear
+    await waitFor(() => screen.getByTestId('toast'));
+    expect(screen.getByRole('button', { name: /yes/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /no/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /ignore/i })).toBeTruthy();
+    // Toast message should reference the candidate or use "rebind"
+    expect(screen.getByTestId('toast').textContent).toMatch(
+      /Assembly\.bolt_flange\.geometry|Assembly\.flange\.geometry|rebind|rename/i,
+    );
+  });
+
+  it('(b) clicking [Yes] dismisses the toast and transfers visibility to the new path', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // Cycle Assembly.flange.geometry: show → ghost
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+    expect(screen.getByTestId('eye-icon-Assembly.flange.geometry').getAttribute('aria-label')).toBe('ghost');
+
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      2,
+    );
+
+    await waitFor(() => screen.getByRole('button', { name: /yes/i }));
+    fireEvent.click(screen.getByRole('button', { name: /yes/i }));
+
+    // Toast should be dismissed
+    await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());
+
+    // New path should have the transferred visibility ('ghost')
+    const newIcon = screen.getByTestId('eye-icon-Assembly.bolt_flange.geometry');
+    expect(newIcon.getAttribute('aria-label')).toBe('ghost');
+  });
+
+  it('(c) clicking [No] dismisses the toast without transferring visibility', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // Set explicit: show → ghost
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      2,
+    );
+
+    await waitFor(() => screen.getByRole('button', { name: /no/i }));
+    fireEvent.click(screen.getByRole('button', { name: /no/i }));
+
+    // Toast dismissed
+    await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());
+
+    // New path should still have default visibility ('show') — no transfer
+    const newIcon = screen.getByTestId('eye-icon-Assembly.bolt_flange.geometry');
+    expect(newIcon.getAttribute('aria-label')).toBe('show');
+  });
+
+  it('(d) clicking [Ignore] prevents the same pair from triggering a toast on the next tree update', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      2,
+    );
+
+    await waitFor(() => screen.getByRole('button', { name: /ignore/i }));
+    fireEvent.click(screen.getByRole('button', { name: /ignore/i }));
+
+    // Toast dismissed
+    await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());
+
+    // Trigger the same tree update again — same stale+candidate pair
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      3,
+    );
+
+    // No new toast should appear for the ignored pair
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId('toast')).toBeNull();
+  });
+
+  it('(e) no toast appears when multiple candidates share the suffix of the stale path', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // Two candidates for Assembly.flange.geometry — ambiguous, no toast expected
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [
+        makeNode('Assembly.bolt_flange.geometry'),
+        makeNode('Assembly.hex_flange.geometry'),
+      ],
+      2,
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId('toast')).toBeNull();
+  });
+});
