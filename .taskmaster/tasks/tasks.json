@@ -25146,9 +25146,14 @@
         "updatedAt": "2026-04-23T18:41:57.078Z",
         "metadata": {
           "modules": [
-            "crates/reify-types/src",
-            "crates/reify-syntax/src",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/tests/deprecated_use_tests.rs",
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-syntax/tests/trait_tests.rs",
+            "crates/reify-types/src/lib.rs",
+            "crates/reify-types/src/spanned_ident.rs"
           ],
           "files": [
             "crates/reify-types/src/traits.rs",
@@ -45912,7 +45917,9 @@
       "completedCount": 1904,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T18:49:28.971Z",
+      "description": "Tasks for master context"
     }
   }
 }
