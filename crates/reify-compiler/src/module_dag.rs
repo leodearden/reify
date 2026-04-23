@@ -508,7 +508,7 @@ mod tests {
         assert!(entry_diag.message.contains("/tmp/stdlib"));
         assert!(entry_diag.message.contains("resolved on the filesystem"));
         assert!(entry_diag.message.contains("embedded stdlib"));
-        // Structural kind marker assertions (TDD red until step-4)
+        // Structural kind marker assertions
         assert!(
             entry_diag.message.contains("(fs-over-embedded/entry)"),
             "entry diagnostic must contain the structural marker '(fs-over-embedded/entry)', got: {}",
@@ -530,7 +530,7 @@ mod tests {
         assert!(transitive_diag.message.contains("/tmp/stdlib"));
         assert!(transitive_diag.message.contains("resolved on the filesystem"));
         assert!(transitive_diag.message.contains("embedded stdlib"));
-        // Structural kind marker assertions (TDD red until step-4)
+        // Structural kind marker assertions
         assert!(
             transitive_diag.message.contains("(fs-over-embedded/transitive)"),
             "transitive diagnostic must contain the structural marker '(fs-over-embedded/transitive)', got: {}",
@@ -555,7 +555,7 @@ mod tests {
         assert!(diag.message.contains("/tmp/stdlib"));
         assert!(diag.message.contains("not found on the filesystem"));
         assert!(diag.message.contains("resolved from the filesystem"));
-        // Structural kind marker assertion (TDD red until step-4)
+        // Structural kind marker assertion
         assert!(
             diag.message.contains("(embedded-over-fs)"),
             "embedded-over-fs diagnostic must contain the structural marker '(embedded-over-fs)', got: {}",
@@ -570,15 +570,9 @@ mod tests {
         let diags = diag_invalid_path("some.path", ModulePathParseError::Empty);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
-        assert!(
-            diags[0].message.contains("some.path"),
-            "message must reference the path argument, got: {}",
-            diags[0].message
-        );
-        assert!(
-            diags[0].message.contains(&ModulePathParseError::Empty.to_string()),
-            "message must reference the error's Display text, got: {}",
-            diags[0].message
+        assert_eq!(
+            diags[0].message,
+            "invalid module path while resolving import 'some.path': module path must not be empty",
         );
     }
 }
