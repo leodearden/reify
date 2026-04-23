@@ -26,6 +26,34 @@ pub(crate) fn check_arg_count_exact(
     false
 }
 
+/// Returns `true` when `got >= min_expected`.
+///
+/// On failure, pushes a `Diagnostic::error` whose message is
+/// `"{name}() expects at least {min_expected} arguments, got {got}"`.
+/// When `span` is `Some(s)`, the diagnostic is decorated with a
+/// `"wrong number of arguments"` label at that span; when `None`, no label
+/// is attached.
+pub(crate) fn check_arg_count_at_least(
+    name: &str,
+    got: usize,
+    min_expected: usize,
+    span: Option<SourceSpan>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if got >= min_expected {
+        return true;
+    }
+    let diag = Diagnostic::error(format!(
+        "{name}() expects at least {min_expected} arguments, got {got}"
+    ));
+    let diag = match span {
+        Some(s) => diag.with_label(DiagnosticLabel::new(s, "wrong number of arguments")),
+        None => diag,
+    };
+    diagnostics.push(diag);
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
