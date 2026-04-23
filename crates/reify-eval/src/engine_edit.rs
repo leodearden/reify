@@ -111,37 +111,62 @@ fn reelaborate_guarded_group(
     }
 }
 
-/// Re-deactivate inactive-branch members for every guarded group that Phase 1
-/// re-elaborated during the current edit call.
+/// Re-deactivate inactive-branch members for **all** guarded groups after wave2.
 ///
-/// After wave2, the constraint solver may have re-evaluated inactive-branch
-/// members (whose `default_expr` reads a resolved auto param) that Phase 1
-/// previously deactivated (`Undef`). This cleanup restores Phase 1's
-/// deactivation state so that Phase 3's `phase1_reelaborated` skip yields
-/// a correct final result.
+/// ## Why all groups, not just `phase1_reelaborated` (task 2144)
 ///
-/// Called from both `edit_param` post-wave2 (task 2140) and `edit_source`
-/// post-wave2 (task 2142). Does nothing when `phase1_reelaborated` is empty.
-/// By taking `graph` and `snapshot_values` as separate parameters the caller
-/// can use field-level borrow splitting — no `.clone()` of `guarded_groups`
-/// is required at either call site.
-fn reapply_phase1_deactivations(
+/// Wave2 re-evaluates every cell in the dirty cone of resolved auto-param IDs.
+/// An inactive-branch member whose `default_expr` reads a resolved auto param
+/// is in that dirty cone regardless of whether its *guard* was in Phase 1's
+/// dirty-guard trigger.  Three categories of groups may be affected:
+///
+/// (a) Groups Phase 1 **re-elaborated** — guard flipped, Phase 1 deactivated the
+///     inactive branch, wave2 then overwrote it.  Previously covered; now
+///     covered as a natural subset of "all groups".
+///
+/// (b) Groups Phase 1 **skipped via per-group unchanged-guard short-circuit** —
+///     guard is in Phase 1's iteration but its value is unchanged, so the group
+///     takes `continue` at line 593 without entering `phase1_reelaborated`.
+///     Wave2 can still overwrite the inactive-branch member.  Previously *not*
+///     covered — this was the task 2144 bug.
+///
+/// (c) Groups **outside any dirty-guard trigger** — `has_dirty_guards` was false
+///     and Phase 1 never ran at all.  The pre-edit guard value seeded from
+///     `new_snapshot.values` at edit-start is still valid in `values`.
+///
+/// The cleanup is idempotent: `deactivate_if_not_auto` writes `Undef` over
+/// `Undef` for groups wave2 did not touch, and Auto cells are always skipped.
+///
+/// ## Guard-value source
+///
+/// Phase 1 writes every group's current guard value into `values` at line 589
+/// even when it takes the per-group unchanged-guard short-circuit (line 593-595).
+/// For groups outside Phase 1's dirty-guard trigger, `values` holds the pre-edit
+/// guard value seeded from `new_snapshot.values` at edit-start (line 432-437),
+/// which is non-empty for every guard cell that `eval()` has populated.
+/// The defensive `unwrap_or(Value::Undef)` fallback mirrors how Phase 1 itself
+/// handles a missing guard node (line 564).
+///
+/// ## Note on `phase1_reelaborated`
+///
+/// This helper no longer takes `phase1_reelaborated` as a parameter — the set
+/// was only used to gate which groups to iterate, and that gate is now removed.
+/// Phase 3's cross-phase dedup (`phase1_reelaborated.contains(...)` at lines
+/// 833 / 1892) is unaffected; those sets remain in the caller.
+///
+/// Called from both `edit_param` post-wave2 and `edit_source` post-wave2.
+/// Field-level borrow splitting still applies: `graph` and `snapshot_values`
+/// are passed separately so no `.clone()` of `guarded_groups` is required.
+fn reapply_guard_deactivations_post_wave2(
     graph: &EvaluationGraph,
-    phase1_reelaborated: &HashSet<ValueCellId>,
     values: &mut ValueMap,
     snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
 ) {
-    if phase1_reelaborated.is_empty() {
-        return;
-    }
     for group in &graph.guarded_groups {
-        if !phase1_reelaborated.contains(&group.guard_cell) {
-            continue;
-        }
         let guard_val = values
             .get(&group.guard_cell)
             .cloned()
-            .expect("guard cell must have a value after Phase 1");
+            .unwrap_or(Value::Undef);
         let is_true = matches!(&guard_val, Value::Bool(true));
         let is_false = matches!(&guard_val, Value::Bool(false));
         for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)] {
@@ -787,13 +812,14 @@ impl Engine {
                     }
                 }
 
-                // Post-wave2 cleanup (task 2140): wave2 can re-evaluate
-                // inactive-branch members Phase 1 deactivated; restore
-                // those deactivations so Phase 3's phase1_reelaborated
-                // skip stays correct.  See `reapply_phase1_deactivations`.
-                reapply_phase1_deactivations(
+                // Post-wave2 cleanup (tasks 2140, 2144): wave2 can re-evaluate
+                // inactive-branch members of ANY guarded group — including groups
+                // Phase 1 skipped via the per-group unchanged-guard short-circuit
+                // (task 2144) and groups entirely outside the dirty-guard trigger.
+                // Re-deactivate all guarded groups (idempotent for groups wave2
+                // did not touch).  See `reapply_guard_deactivations_post_wave2`.
+                reapply_guard_deactivations_post_wave2(
                     &new_snapshot.graph,
-                    &phase1_reelaborated,
                     &mut values,
                     &mut new_snapshot.values,
                 );
@@ -1837,16 +1863,17 @@ impl Engine {
                     }
                 }
 
-                // Post-wave2 cleanup (task 2142): wave2 can re-evaluate
-                // inactive-branch members Phase 1 deactivated; restore
-                // those deactivations so Phase 3's phase1_reelaborated
-                // skip stays correct.  See `reapply_phase1_deactivations`.
+                // Post-wave2 cleanup (tasks 2142, 2144): wave2 can re-evaluate
+                // inactive-branch members of ANY guarded group — including groups
+                // Phase 1 skipped via the per-group unchanged-guard short-circuit
+                // (task 2144) and groups entirely outside the dirty-guard trigger.
+                // Re-deactivate all guarded groups (idempotent for groups wave2
+                // did not touch).  See `reapply_guard_deactivations_post_wave2`.
                 // edit_source's wave2 uses local new_reverse_index /
                 // new_trace_map / new_demand (not self.eval_state), so
                 // the call lives directly inside `if !all_resolved_ids…`.
-                reapply_phase1_deactivations(
+                reapply_guard_deactivations_post_wave2(
                     &new_snapshot.graph,
-                    &phase1_reelaborated,
                     &mut values,
                     &mut new_snapshot.values,
                 );
