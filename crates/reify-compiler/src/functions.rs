@@ -405,6 +405,16 @@ mod tests {
             1,
             "Matrix<3,3,Real>→Tensor<2,3,Real> should produce one diagnostic (Rule 3 is one-way)"
         );
+        assert!(
+            diagnostics[0].message.contains("codomain of 'inner'"),
+            "Expected \"codomain of 'inner'\" (producer wiring) in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("domain of 'outer'"),
+            "Expected \"domain of 'outer'\" (consumer wiring) in diagnostic; got: {}",
+            diagnostics[0].message
+        );
     }
 
     /// inner codomain = Tensor<2,3,Real>, outer domain = Matrix<3,3,Real>.
