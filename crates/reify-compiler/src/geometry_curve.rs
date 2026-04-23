@@ -20,7 +20,7 @@ pub(crate) fn compile_curve_op(
     match name {
         // line_segment(x1, y1, z1, x2, y2, z2)
         "line_segment" => {
-            if !check_arg_count_exact("line_segment", compiled_args.len(), 6, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact("line_segment", compiled_args.len(), 6, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -39,7 +39,7 @@ pub(crate) fn compile_curve_op(
         }
         // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
         "arc" => {
-            if !check_arg_count_exact("arc", compiled_args.len(), 9, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact("arc", compiled_args.len(), 9, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -61,7 +61,7 @@ pub(crate) fn compile_curve_op(
         }
         // helix(radius, pitch, height)
         "helix" => {
-            if !check_arg_count_exact("helix", compiled_args.len(), 3, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact("helix", compiled_args.len(), 3, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();

@@ -19,7 +19,7 @@ pub(crate) fn compile_boolean_op(
 ) -> Option<Vec<CompiledGeometryOp>> {
     match name {
         "union" | "intersection" | "difference" => {
-            if !check_arg_count_exact(name, args.len(), 2, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact(name, args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
             let bool_op = match name {
@@ -91,7 +91,7 @@ pub(crate) fn compile_boolean_op(
             Some(all_ops)
         }
         "union_all" | "intersection_all" => {
-            if !check_arg_count_at_least(name, args.len(), 2, Some(expr_span), diagnostics) {
+            if !check_arg_count_at_least(name, args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
             let bool_op = match name {

@@ -16,7 +16,7 @@ pub(crate) fn compile_transform_op(
     match name {
         // translate(target, dx, dy, dz)
         "translate" => {
-            if !check_arg_count_exact("translate", compiled_args.len(), 4, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact("translate", compiled_args.len(), 4, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -35,7 +35,7 @@ pub(crate) fn compile_transform_op(
         }
         // rotate(target, ax, ay, az, angle)
         "rotate" => {
-            if !check_arg_count_exact("rotate", compiled_args.len(), 5, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact("rotate", compiled_args.len(), 5, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -55,7 +55,7 @@ pub(crate) fn compile_transform_op(
         }
         // scale(target, factor)
         "scale" => {
-            if !check_arg_count_exact("scale", compiled_args.len(), 2, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact("scale", compiled_args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -72,7 +72,7 @@ pub(crate) fn compile_transform_op(
         }
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         "rotate_around" => {
-            if !check_arg_count_exact("rotate_around", compiled_args.len(), 8, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact("rotate_around", compiled_args.len(), 8, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();

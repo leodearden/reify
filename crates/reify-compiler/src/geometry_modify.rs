@@ -15,7 +15,7 @@ pub(crate) fn compile_modify_2arg(
     diagnostics: &mut Vec<Diagnostic>,
     mut sub_ops: Vec<CompiledGeometryOp>,
 ) -> Option<Vec<CompiledGeometryOp>> {
-    if !check_arg_count_exact(name, compiled_args.len(), 2, Some(expr_span), diagnostics) {
+    if !check_arg_count_exact(name, compiled_args.len(), 2, expr_span, diagnostics) {
         return None;
     }
     let mut it = compiled_args.into_iter();
@@ -51,7 +51,7 @@ pub(crate) fn compile_modify_op(
     match name {
         // shell(target, thickness, ...)
         "shell" => {
-            if !check_arg_count_at_least("shell", compiled_args.len(), 2, Some(expr_span), diagnostics) {
+            if !check_arg_count_at_least("shell", compiled_args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -84,7 +84,7 @@ pub(crate) fn compile_modify_op(
         ),
         // draft(target, angle, plane)
         "draft" => {
-            if !check_arg_count_exact("draft", compiled_args.len(), 3, Some(expr_span), diagnostics) {
+            if !check_arg_count_exact("draft", compiled_args.len(), 3, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
