@@ -432,23 +432,9 @@ fn write_view_sidecar_creates_file_next_to_ri_with_pretty_json() {
     );
 }
 
-#[test]
-fn read_view_sidecar_returns_some_when_file_exists() {
-    use crate::commands::{read_view_sidecar_impl, write_view_sidecar_impl};
-
-    let dir = tempfile::tempdir().unwrap();
-    let ri_path = dir.path().join("bracket.ri");
-    let state = make_sample_persistent_state();
-
-    write_view_sidecar_impl(ri_path.to_str().unwrap(), &state).unwrap();
-
-    let result = read_view_sidecar_impl(ri_path.to_str().unwrap());
-    assert!(result.is_ok(), "should not error on valid sidecar");
-    assert!(
-        result.unwrap().is_some(),
-        "should return Some when sidecar exists"
-    );
-}
+// Note: a separate "returns_some_when_file_exists" test was removed — the
+// `view_sidecar_roundtrip` test below asserts field equality on the loaded
+// value, which strictly subsumes the weaker is_some() check.
 
 #[test]
 fn read_view_sidecar_returns_err_on_malformed_json() {

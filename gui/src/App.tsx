@@ -1,4 +1,4 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For, untrack } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For, untrack, batch } from 'solid-js';
 import { DualViewport } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
@@ -166,12 +166,13 @@ const App: Component = () => {
 
       if (!path || !activeSaver) return;
 
-      // Track view state + viewport cameras reactively.
-      // Reading viewStateStore.state and viewportStore.state subscribes this
-      // effect to any of their changes.
-      void viewStateStore.state;
-      void viewportStore.state;
-
+      // Reactive subscriptions come from the property reads below:
+      // `Object.entries(viewportStore.state.viewports)` subscribes to
+      // viewport-store mutations, and `viewStateStore.serializePersistedState()`
+      // walks active-view / user-views / explicit overrides inside the store
+      // which subscribes to view-state mutations.  (Reading just the root
+      // `.state` property does NOT track nested mutations in Solid stores —
+      // only property access does.)
       const viewportCameras: Record<string, CameraState> = {};
       for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
         if (vp.camera) viewportCameras[id] = vp.camera;
@@ -440,16 +441,25 @@ const App: Component = () => {
       // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
       // user views are in place when auto views are generated.
       const persisted = await loadPersistedViews(path);
-      if (persisted !== null) {
-        viewStateStore.applyPersistedState(persisted);
-        // Restore per-viewport camera positions
-        for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
-          viewportStore.updateCamera(id, camera);
+      // Wrap the three store writes in a single batch so the debounced-save
+      // effect observes the path transition AND the new view/camera state
+      // atomically.  Without batch(), a future refactor that reorders or
+      // interleaves these updates could cause the effect to schedule a write
+      // with (oldPath, newState) — which the path-transition branch would
+      // then flush into the OUTGOING file's localStorage key, silently
+      // cross-corrupting sidecars.  Setting currentFilePath first inside the
+      // batch is the critical ordering: the effect sees `path !== activePath`
+      // and swaps the saver before any schedule() runs against the new state.
+      batch(() => {
+        setCurrentFilePath(path);
+        if (persisted !== null) {
+          viewStateStore.applyPersistedState(persisted);
+          // Restore per-viewport camera positions
+          for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
+            viewportStore.updateCamera(id, camera);
+          }
         }
-      }
-
-      // Record the current file path for the debounced-save effect.
-      setCurrentFilePath(path);
+      });
     } catch (err) {
       const msg = errorMessage(err);
       console.error('Open file failed:', msg);

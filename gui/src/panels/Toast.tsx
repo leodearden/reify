@@ -10,8 +10,16 @@ export interface ToastProps {
   message: string;
   type: 'success' | 'error' | 'info';
   onDismiss: () => void;
-  /** Optional action buttons. When provided, each button's onClick is called
-   *  first, then `onDismiss` is invoked to close the toast. */
+  /**
+   * Optional action buttons.  When provided, each button's `onClick` runs
+   * first and then `props.onDismiss()` is invoked unconditionally.
+   *
+   * CONTRACT (relied on by App.tsx fuzzy-rebind bookkeeping): every action
+   * click MUST produce an `onDismiss` call.  App.tsx uses `onDismiss` to
+   * release pair-keys from `rebindShownPairs`/`rebindToastPairs`; if this
+   * contract changes (e.g. an action that suppresses dismissal) update the
+   * rebind effect to call `handleDismissToast` explicitly.
+   */
   actions?: ToastAction[];
 }
 
