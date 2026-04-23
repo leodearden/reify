@@ -1911,4 +1911,62 @@ mod tests {
             diagnostics
         );
     }
+
+    // ── task 1914 step-5: unit tests for resolve_let_advertised_type helper ──
+    // These tests are compile-tripwires: they fail to compile until step-6 defines
+    // `pub(super) fn resolve_let_advertised_type` in checker.rs.
+
+    /// Pins the annotation-wins branch of `resolve_let_advertised_type`.
+    ///
+    /// When a cell_type annotation is present, the helper must return it unchanged
+    /// regardless of what the inferred expression type is. This matches the behavior
+    /// at `check_phase_build_available_defaults_map` (site 1) where annotated Let
+    /// defaults bypass the inferred cache entirely.
+    #[test]
+    fn resolve_let_advertised_type_prefers_annotation_over_inferred() {
+        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+        let result = resolve_let_advertised_type(&Some(Type::length()), Some(&inferred));
+        assert_eq!(
+            result,
+            Type::length(),
+            "Expected annotation type (Length) to win over inferred type (Real)"
+        );
+    }
+
+    /// Pins the inferred-fallback branch of `resolve_let_advertised_type`.
+    ///
+    /// When there is no cell_type annotation but an inferred CompiledExpr is available,
+    /// the helper must return the inferred expression's result_type. This is the common
+    /// path for unannotated let defaults that passed Pass 2 compilation successfully.
+    /// After task 1914 suggestion #1, this is the only non-defensive path for
+    /// unannotated lets: names in `pass2_compile_errors` never reach this helper.
+    #[test]
+    fn resolve_let_advertised_type_uses_inferred_when_no_annotation() {
+        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+        let result = resolve_let_advertised_type(&None, Some(&inferred));
+        assert_eq!(
+            result,
+            Type::Real,
+            "Expected inferred type (Real) when no annotation is present"
+        );
+    }
+
+    /// Pins the defensive-default fallback branch of `resolve_let_advertised_type`.
+    ///
+    /// When neither a cell_type annotation nor an inferred expression is available,
+    /// the helper must return `Type::Real` as a conservative default. After task 1914
+    /// suggestion #1 (`pass2_compile_errors` filter), this arm should not be reached
+    /// in practice — but the helper must be correct for the contract to hold.
+    /// The `debug_assert!` at the call site in `check_phase_build_available_defaults_map`
+    /// guards against this arm being hit with a name that survived both pass2_skipped and
+    /// pass2_compile_errors filters (which would indicate a Pass 2 contract violation).
+    #[test]
+    fn resolve_let_advertised_type_falls_back_to_real_when_neither_annotation_nor_inferred() {
+        let result = resolve_let_advertised_type(&None, None);
+        assert_eq!(
+            result,
+            Type::Real,
+            "Expected Type::Real defensive fallback when no annotation and no inferred expression"
+        );
+    }
 }
