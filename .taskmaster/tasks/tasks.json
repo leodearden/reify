@@ -45785,23 +45785,21 @@
         "description": "Two small follow-ups from the reviewer_comprehensive review of task 2119's changes in crates/reify-kernel-occt/src/lib.rs.",
         "details": "Post-merge review of task-2119 flagged two co-located polish items on validate_pipe_start_tangent and its oversize_z test:\n\n1. Move rationale into the helper's rustdoc (lib.rs ~108-120). The caller at lib.rs:612 now just says \"see validate_pipe_start_tangent\". The previous inline block at the pipe-executor call site explained WHY the restriction exists (BRepOffsetAPI_MakePipe requires profile-plane alignment with the path's start-tangent; non-+Z paths produce degenerate zero-volume solids) and referenced task-2095 for the deferred general-orientation support. That rationale is not present on validate_pipe_start_tangent's doc comment — only mechanics are documented. Action: move the OCCT profile-plane rationale + task-2095 deferred-work pointer into the rustdoc of validate_pipe_start_tangent.\n\n2. Drop the msg.contains(\"+Z\") assertion from validate_pipe_start_tangent_rejects_oversize_z (lib.rs:4506-4524). Since 1e100 is finite, is_finite() passes and only the tolerance branch can reject — the branch-disambiguating assertion is already implied by the input. The wording check adds no coverage and couples the test to the error string (same brittleness class as the wording-pin test removed in task 2119). Action: drop the msg.contains(\"+Z\") assertion and keep only the Err(OperationFailed(_)) match.\n\nBoth items are co-located polish. No behavior change for accepted (+Z) paths.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:05:58.440Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:58:47.719Z",
-      "taskCount": 2146,
+      "lastModified": "2026-04-23T18:05:58.440Z",
+      "taskCount": 2147,
       "completedCount": 1895,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-23T18:04:25.839Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-23T18:05:53.296Z"
+      ]
     }
   }
 }
