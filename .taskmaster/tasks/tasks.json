@@ -44435,13 +44435,13 @@
         "description": "Task 2084's lock `edit_source_role_flipped_guard_member_matches_cold_eval` in crates/reify-eval/tests/edit_source.rs only covers the active→inactive direction of the role flip (a member that was Determined becoming Undef). The symmetric case — a member previously suppressed to Undef on the inactive branch becoming a live Determined value on the active branch — is not pinned.\n\nSince the fix relies on Phase 1 running the full activation/deactivation pass for the whole group, the symmetric case exercises a different path in `deactivate_if_not_auto` / activation that is worth a dedicated lock.\n\nAdd a companion test where `moving` starts on the else-branch (Undef under `use_thick=true`), then in module B moves to the where-branch. Assert cold and incremental agree on the now-Determined value. Reuse `parse_and_compile` / `fresh_engine` for minimal extra code. Mirror the dual-assertion pattern (relative + positive anchor) from the existing test so a \"both wrong\" regression cannot slip through.\n\nmemory_hints:\n- search: \"edit_source role-flipped guard member test\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "2084"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T18:30:42.356Z",
+        "updatedAt": "2026-04-23T18:53:42.487Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -44456,7 +44456,10 @@
               "Phase 1 activation deactivation guarded group member test cold eval"
             ]
           },
-          "_causation_id": "1ba4db3a-cd2f-4470-9c7e-06f9d0b2963f"
+          "_causation_id": "1ba4db3a-cd2f-4470-9c7e-06f9d0b2963f",
+          "done_provenance": {
+            "commit": "13124b93ec7b9a258efd043d1b6c76dc366e8a94"
+          }
         }
       },
       {
@@ -45912,9 +45915,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T18:49:30.053Z",
+      "lastModified": "2026-04-23T18:53:42.488Z",
       "taskCount": 2152,
-      "completedCount": 1904,
+      "completedCount": 1905,
       "tags": [
         "master"
       ]
