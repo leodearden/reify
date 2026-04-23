@@ -45623,11 +45623,11 @@
         "description": "In edit_source Phase 1 (crates/reify-eval/src/engine_edit.rs:1583-1590), the insert into `phase1_reelaborated` sits AFTER the `old_guard_val == Some(&guard_val) && !has_added_in_group && !has_role_flipped_guard_member` skip. Consequently groups reached via the role-flip or added-member triggers — whose guard value did not change — still land in the dedup set, and Phase 3 will skip them.\n\nThe new test added with task 2142 only exercises the guard-value-changed path (x=10mm → 3mm). The role-flip/added-member interaction with the new dedup set and the post-wave2 cleanup is not covered by this diff's tests. The existing role-flip test `edit_source_role_flipped_guard_member_matches_cold_eval` predates the dedup.\n\nSuggested fix: Add a regression test that combines a role-flipped guard member + resolver re-evaluation (wave2) + Phase 3 trigger, asserting results remain cold-eval-equivalent. At minimum verify `last_guard_phase_group_evals` matches the expected count. A cheap alternative: extend the existing role-flip cold-eval-equivalence test to also run under a source edit that triggers wave2.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:27:12.274Z",
+        "updatedAt": "2026-04-23T17:27:16.336Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -45734,7 +45734,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T17:27:15.358Z",
+      "lastModified": "2026-04-23T17:27:16.336Z",
       "taskCount": 2144,
       "completedCount": 1893,
       "tags": [
