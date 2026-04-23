@@ -1494,6 +1494,17 @@ fn partial_stdlib_overlay_errors_when_outer_fs_and_inner_embedded() {
         "diagnostic must name the offending module 'std.foo', got: {}",
         msg
     );
+
+    // (d) Must contain the distinguishing "transitive" token that only the
+    // deferred-commit branch emits (module_dag.rs context clause
+    // "a transitive std.* import was served from the embedded stdlib"),
+    // tying this regression test to the specific bug path it guards rather
+    // than the sibling entry-guard diagnostic.
+    assert!(
+        msg.to_lowercase().contains("transitive"),
+        "diagnostic must mention 'transitive' (deferred-commit branch context clause), got: {}",
+        msg
+    );
 }
 
 // ── step-3 (task-2073): sequential embedded fallbacks don't duplicate in topo_order ──
