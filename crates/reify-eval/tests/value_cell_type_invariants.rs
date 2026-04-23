@@ -33,11 +33,15 @@ fn assert_template_cells_representable(template: &TopologyTemplate) {
     // this path (e.g. extra synthetic cells produced during resolution), this
     // walker will need to be extended to reach them.
     let check = |cell: &ValueCellDecl| {
+        // Aligned with (a) the module docstring lines 7-11 which explicitly
+        // documents that `Type::StructureRef` is intentionally NOT checked
+        // (task 1876 — user code may declare `param x : SomeStruct =
+        // SomeStruct(...)`; the struct-call default evaluates to `Value::Undef`
+        // which passes the kind-match for any type), and (b) the runtime
+        // invariant in crates/reify-eval/src/engine_eval.rs which forbids
+        // only `Type::TypeParam(_) | Type::Geometry`.
         assert!(
-            !matches!(
-                &cell.cell_type,
-                Type::TypeParam(_) | Type::StructureRef(_) | Type::Geometry
-            ),
+            !matches!(&cell.cell_type, Type::TypeParam(_) | Type::Geometry),
             "template `{}` cell `{}` has unrepresentable cell_type {:?}",
             template.name,
             cell.id,
