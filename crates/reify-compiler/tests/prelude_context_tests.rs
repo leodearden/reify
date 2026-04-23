@@ -6,7 +6,7 @@
 //!   step-5: compile_with_prelude_context parity with compile_with_prelude
 //!   step-7: load_stdlib_context caching (pointer stability + enum parity)
 
-use reify_compiler::{CompiledModule, PreludeContext, compile_with_prelude, compile_with_prelude_context};
+use reify_compiler::{CompiledModule, PreludeContext, compile_with_prelude, compile_with_prelude_context, stdlib_loader};
 use reify_test_support::CompiledModuleBuilder;
 use reify_types::{EnumDef, ModulePath};
 
@@ -237,4 +237,57 @@ structure def Widget {
     let actual = compile_with_prelude_context(&parsed, &ctx);
 
     assert_compiled_module_parity(&actual, &expected, "two-module-prelude");
+}
+
+// ─── step-7: load_stdlib_context caching ──────────────────────────────────
+
+/// load_stdlib_context() modules() is element-wise identical (ptr::eq) to
+/// load_stdlib(). The underlying CompiledModule data is the same allocation.
+#[test]
+fn load_stdlib_context_modules_same_ptr_as_load_stdlib() {
+    let stdlib = stdlib_loader::load_stdlib();
+    let ctx = stdlib_loader::load_stdlib_context();
+
+    assert_eq!(
+        ctx.modules().len(),
+        stdlib.len(),
+        "load_stdlib_context modules() length must match load_stdlib()"
+    );
+    for (i, (ctx_ref, stdlib_ref)) in ctx.modules().iter().zip(stdlib.iter()).enumerate() {
+        assert!(
+            std::ptr::eq(*ctx_ref, stdlib_ref),
+            "modules()[{i}] must be the same allocation as load_stdlib()[{i}]"
+        );
+    }
+}
+
+/// load_stdlib_context() resolution_enums() equals the manually flattened
+/// enum_defs from load_stdlib() — byte-for-byte parity.
+#[test]
+fn load_stdlib_context_resolution_enums_match_manual_flatten() {
+    let stdlib = stdlib_loader::load_stdlib();
+    let ctx = stdlib_loader::load_stdlib_context();
+
+    let expected: Vec<EnumDef> = stdlib
+        .iter()
+        .flat_map(|m| m.enum_defs.iter().cloned())
+        .collect();
+
+    assert_eq!(
+        ctx.resolution_enums(),
+        expected.as_slice(),
+        "load_stdlib_context resolution_enums must equal manually flattened stdlib enum_defs"
+    );
+}
+
+/// Two consecutive calls to load_stdlib_context() return the same &'static
+/// PreludeContext (OnceLock pointer stability).
+#[test]
+fn load_stdlib_context_is_cached() {
+    let first = stdlib_loader::load_stdlib_context();
+    let second = stdlib_loader::load_stdlib_context();
+    assert!(
+        std::ptr::eq(first, second),
+        "load_stdlib_context() should return the same &'static reference on repeated calls"
+    );
 }
