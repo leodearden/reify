@@ -6,7 +6,7 @@
 //!   step-5: compile_with_prelude_context parity with compile_with_prelude
 //!   step-7: load_stdlib_context caching (pointer stability + enum parity)
 
-use reify_compiler::{CompiledModule, PreludeContext, compile_with_prelude, compile_with_prelude_context, stdlib_loader};
+use reify_compiler::{CompiledModule, PreludeContext, compile_with_prelude, compile_with_prelude_context, compile_with_stdlib, stdlib_loader};
 use reify_test_support::CompiledModuleBuilder;
 use reify_types::{EnumDef, ModulePath};
 
@@ -290,4 +290,65 @@ fn load_stdlib_context_is_cached() {
         std::ptr::eq(first, second),
         "load_stdlib_context() should return the same &'static reference on repeated calls"
     );
+}
+
+// ─── amendment: additional parity tests ───────────────────────────────────
+
+/// #no_prelude parity: a module with the #no_prelude pragma compiled against a
+/// non-empty 2-module synthetic prelude must yield identical output from both
+/// compile_with_prelude and compile_with_prelude_context.  This covers the
+/// `prelude_refs.is_empty()` guard in compile_with_prelude_context that
+/// suppresses the pre-built enum cache when the pragma is active.
+#[test]
+fn compile_with_prelude_context_parity_no_prelude_pragma() {
+    let enum_status = EnumDef {
+        name: "Status".to_string(),
+        variants: vec!["Active".to_string(), "Inactive".to_string()],
+    };
+    let enum_mode = EnumDef {
+        name: "Mode".to_string(),
+        variants: vec!["Fast".to_string(), "Slow".to_string()],
+    };
+
+    let pm1 = CompiledModuleBuilder::new(ModulePath::single("no_prelude_pm1"))
+        .enum_def(enum_status.clone())
+        .build();
+    let pm2 = CompiledModuleBuilder::new(ModulePath::single("no_prelude_pm2"))
+        .enum_def(enum_mode.clone())
+        .build();
+
+    let prelude: Vec<CompiledModule> = vec![pm1, pm2];
+
+    // Module with #no_prelude pragma — prelude enums must not affect output.
+    let source = "#no_prelude\nstructure def Isolated {\n    param value : Int = 0\n}\n";
+    let parsed = reify_syntax::parse(source, ModulePath::single("no_prelude_parity"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let expected = compile_with_prelude(&parsed, &prelude);
+    let ctx = PreludeContext::from_slice(&prelude);
+    let actual = compile_with_prelude_context(&parsed, &ctx);
+
+    assert_compiled_module_parity(&actual, &expected, "no-prelude-pragma");
+}
+
+/// End-to-end parity: compile_with_stdlib (cached PreludeContext path) must
+/// produce identical output to compile_with_prelude(parsed, load_stdlib())
+/// (old equivalent).  Exercises the full stdlib prelude shape — many modules,
+/// many enums, rich trait/function interactions — rather than a synthetic
+/// 2-module prelude.
+#[test]
+fn compile_with_stdlib_parity_with_compile_with_prelude_stdlib() {
+    let source = r#"
+structure def Beam {
+    param span : Length = 5.0m
+    param mass : Mass = 100.0kg
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("stdlib_parity_e2e"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let expected = compile_with_prelude(&parsed, stdlib_loader::load_stdlib());
+    let actual = compile_with_stdlib(&parsed);
+
+    assert_compiled_module_parity(&actual, &expected, "compile_with_stdlib-e2e");
 }

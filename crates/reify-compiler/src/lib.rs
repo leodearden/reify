@@ -155,6 +155,11 @@ pub fn merge_prelude_functions(
 /// user modules against the same prelude (e.g. `compile_with_stdlib`) pay
 /// the allocation cost only once.
 ///
+/// This is also the single phase-orchestration body shared with
+/// [`compile_with_prelude_refs`] (which builds an ad-hoc [`PreludeContext`]
+/// and delegates here). Keeping a single orchestrator guarantees the two
+/// paths stay in sync across future phase additions.
+///
 /// For the stdlib hot-path, prefer [`compile_with_stdlib`] which already
 /// delegates to a `&'static PreludeContext` after the refactor in step-9.
 ///
@@ -164,21 +169,6 @@ pub fn merge_prelude_functions(
 /// any prelude whose [`PreludeContext::from_slice`] was built from that
 /// same `prelude` slice.
 pub fn compile_with_prelude_context(
-    parsed: &reify_syntax::ParsedModule,
-    ctx: &PreludeContext,
-) -> CompiledModule {
-    compile_with_prelude_refs_ctx(parsed, ctx)
-}
-
-/// Inner implementation for [`compile_with_prelude_context`].
-///
-/// Mirrors [`compile_with_prelude_refs`] exactly, with a single difference:
-/// the enums phase calls [`compile_builder::enums_phase::build_resolution_enums_from_cache`]
-/// (which clones from `ctx.resolution_enums()`) instead of
-/// [`compile_builder::enums_phase::build_resolution_enums`] (which re-flatmaps
-/// the prelude slice). All other phases receive `ctx.modules()` in place of the
-/// `prelude: &[&CompiledModule]` parameter — same slice contents, same behavior.
-pub(crate) fn compile_with_prelude_refs_ctx(
     parsed: &reify_syntax::ParsedModule,
     ctx: &PreludeContext,
 ) -> CompiledModule {
@@ -196,12 +186,13 @@ pub(crate) fn compile_with_prelude_refs_ctx(
     compile_builder::units_phase::phase_units(&mut compile_ctx, prelude_refs, &decl_refs.unit_refs);
     compile_builder::aliases_phase::phase_aliases(&mut compile_ctx, &decl_refs.alias_refs);
 
-    // KEY DIFFERENCE: use the pre-built resolution_enums from the context
-    // instead of re-flattening the prelude modules on every call.
-    // When #no_prelude is active, prelude_refs is empty and the cache would be
-    // non-empty (it was built from the full prelude), so we must guard here.
-    if prelude_refs.is_empty() && !ctx.modules().is_empty() {
-        // #no_prelude: suppress prelude enum contribution, build from empty.
+    // Use the pre-built resolution_enums from the context instead of
+    // re-flattening the prelude modules on every call.
+    // `prelude_refs.is_empty()` covers two cases:
+    //   (a) #no_prelude pragma is active — suppress prelude enum contribution.
+    //   (b) caller passed an empty prelude — ctx.resolution_enums() is also
+    //       empty by construction, so &[] and ctx.resolution_enums() are equivalent.
+    if prelude_refs.is_empty() {
         compile_builder::enums_phase::build_resolution_enums_from_cache(&mut compile_ctx, &[]);
     } else {
         compile_builder::enums_phase::build_resolution_enums_from_cache(
@@ -258,81 +249,17 @@ pub(crate) fn compile_with_prelude_refs_ctx(
 /// compiled modules whose exported definitions (units, traits, enums,
 /// constraint defs) are visible during compilation.
 ///
+/// Builds an ad-hoc [`PreludeContext`] from `prelude` and delegates to
+/// [`compile_with_prelude_context`], so both paths share a single phase
+/// orchestrator. The one-shot context allocation is negligible for the
+/// non-stdlib path; the stdlib hot-path bypasses this function entirely via
+/// [`compile_with_stdlib`].
+///
 /// External callers should use [`compile_with_prelude`] instead.
 pub(crate) fn compile_with_prelude_refs(
     parsed: &reify_syntax::ParsedModule,
     prelude: &[&CompiledModule],
 ) -> CompiledModule {
-    // All durable mutable state owned by the phases lives on ctx. Phase-local
-    // ref collections (fn_refs, trait_refs, etc.) stay as locals because they
-    // borrow from `parsed`.
-    let mut ctx = compile_builder::ctx::CompilationCtx::new();
-
-    // Forward parse errors as diagnostics.
-    compile_builder::pre_pass::forward_parse_errors(&mut ctx, parsed);
-
-    // Validate module-level pragmas: warn on unknown names.
-    compile_builder::pre_pass::validate_module_pragmas(&mut ctx, parsed);
-
-    // Handle #no_prelude: suppress ALL prelude-dependent behavior by shadowing
-    // the prelude parameter with an empty slice. This affects unit seeding,
-    // trait/enum/function resolution, and constraint def imports.
-    let prelude: &[&CompiledModule] = compile_builder::pre_pass::effective_prelude(parsed, prelude);
-
-    // Consolidated pre-pass: iterate declarations once, collecting references
-    // for deferred compilation and seeding the entity-namespace tracker.
-    let decl_refs = compile_builder::pre_pass::collect_decl_refs(&mut ctx, parsed);
-
-    // Compile unit declarations in source order (so later units can reference earlier ones).
-    // Unit hashes are included in the module content hash. Seeds prelude units first.
-    compile_builder::units_phase::phase_units(&mut ctx, prelude, &decl_refs.unit_refs);
-
-    // Compile type alias declarations via DFS resolution with cycle detection.
-    compile_builder::aliases_phase::phase_aliases(&mut ctx, &decl_refs.alias_refs);
-
-    // Build resolution_enums: prelude enums + module-local enums.
-    compile_builder::enums_phase::build_resolution_enums(&mut ctx, prelude);
-
-    // Compile in dependency order after collecting all references:
-    // 1. Functions (phase-7): compile user fns, then build ctx.resolution_functions.
-    compile_builder::functions_phase::phase_functions(&mut ctx, prelude, &decl_refs.fn_refs);
-
-    // 2. Traits (phase-8): compile traits + populate trait_names + emit
-    //    deprecation warnings. Returns trait_names for downstream phases.
-    let trait_names =
-        compile_builder::traits_phase::phase_traits(&mut ctx, prelude, &decl_refs.trait_refs);
-
-    // 3. Fields (need all resolution_enums + all compiled functions)
-    compile_builder::fields_phase::phase_fields(&mut ctx, &decl_refs.field_refs);
-
-    // Compile all local constraint defs in a single pass. Also emits
-    // one-time shadow warnings for cross-prelude name collisions.
-    compile_builder::defs_phase::phase_constraint_defs(&mut ctx, parsed, prelude, &trait_names);
-
-    // Compile structures / occurrences and forward imports.
-    compile_builder::entities_phase::phase_entities(&mut ctx, parsed, &trait_names, prelude);
-
-    // Post-compilation pass: run deferred bound checks now that all structures
-    // are compiled and available in the template registry.
-    compile_builder::entities_phase::phase_pending_bound_checks(&mut ctx, prelude);
-
-    // Post-compilation pass: detect recursive sub-component cycles,
-    // validate termination conditions, and remix is_recursive into each
-    // recursive template's content_hash.
-    compile_builder::post_passes::phase_recursion_detection(&mut ctx);
-
-    // Check for duplicate function signatures.
-    compile_builder::post_passes::phase_dup_sig_check(&mut ctx);
-
-    // Post-compilation pass: check field composition type compatibility.
-    compile_builder::post_passes::phase_field_composition(&mut ctx);
-
-    // Purpose compilation pass (runs after templates are populated so
-    // reflective schema queries can resolve against TopologyTemplates).
-    let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut ctx, parsed);
-
-    // Build a content-sensitive hash by combining the path with all compiled content.
-    let content_hash = compile_builder::hash::compute_module_hash(&ctx, parsed, &compiled_purposes);
-
-    ctx.into_compiled_module(parsed, compiled_purposes, content_hash)
+    let ctx = PreludeContext::new(prelude);
+    compile_with_prelude_context(parsed, &ctx)
 }
