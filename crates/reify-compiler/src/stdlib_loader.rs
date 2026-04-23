@@ -8,10 +8,19 @@ use std::sync::OnceLock;
 use reify_types::{ModulePath, Severity};
 
 use crate::CompiledModule;
+use crate::PreludeContext;
 use crate::si_units;
 
 /// Global cache for compiled stdlib modules.
 static STDLIB_CACHE: OnceLock<Vec<CompiledModule>> = OnceLock::new();
+
+/// Global cache for the stdlib PreludeContext (pre-built enum + module refs).
+///
+/// Layered on top of [`STDLIB_CACHE`]: the first call to [`load_stdlib_context`]
+/// triggers [`load_stdlib`] (which fills `STDLIB_CACHE` if empty), then builds
+/// a [`PreludeContext`] from the cached slice and stores it here permanently.
+/// Subsequent calls are a single pointer load.
+static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new();
 
 /// Returns a reference to the compiled stdlib modules.
 ///
@@ -111,4 +120,20 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
         }
         modules
     })
+}
+
+/// Returns a reference to the cached stdlib [`PreludeContext`].
+///
+/// On the first call, this triggers [`load_stdlib`] (if not already cached),
+/// then constructs a [`PreludeContext`] from the resulting `&'static [CompiledModule]`
+/// via [`PreludeContext::from_slice`] and stores it in [`STDLIB_CONTEXT_CACHE`].
+///
+/// The context pre-computes `resolution_enums` once so that every subsequent
+/// [`compile_with_stdlib`][crate::compile_with_stdlib] call avoids re-flattening
+/// the enum definitions across all stdlib modules on every compilation.
+///
+/// Subsequent calls return the same `&'static PreludeContext<'static>` with
+/// zero overhead (a single atomic pointer load).
+pub fn load_stdlib_context() -> &'static PreludeContext<'static> {
+    STDLIB_CONTEXT_CACHE.get_or_init(|| PreludeContext::from_slice(load_stdlib()))
 }
