@@ -45828,6 +45828,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-23T18:37:51.643Z"
+      },
+      {
+        "id": "2157",
+        "title": "Strengthen eval_and_edit_param_paths_produce_same_inactive_auto_state test",
+        "description": "The invariant test at `crates/reify-eval/tests/guard_eval.rs:2420-2579` uses `MockConstraintSolver::new_solved` pre-seeded with the same answer for both engines (Path A and Path B), so it does not exercise whether the solver is actually re-invoked when the guard flips and `thickness` moves to the inactive branch in Path B. The test verifies value preservation across the two paths — which is the original regression — but will not catch a future bug where the solver fails to run in one path and a stale value is preserved.\n\nEither:\n - Extend `MockConstraintSolver` with an invocation counter and assert the expected re-invocation pattern in each path, OR\n - Add a clarifying comment to the test explaining that it deliberately does not cover solver re-invocation semantics (and pointing to where those are exercised).\n\nSource: post-merge review suggestion on task 2143.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45837,7 +45848,10 @@
       "completedCount": 1900,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T18:38:37.756Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T18:38:37.778Z"
     }
   }
 }
