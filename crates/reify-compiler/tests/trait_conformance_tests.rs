@@ -1013,3 +1013,40 @@ structure def S : Safe {
         "expected constraint from trait default"
     );
 }
+
+/// Suggestion #17 (incomplete_coverage): A parent trait's default satisfies a child
+/// trait's inherited requirement via the refinement chain — no error expected.
+///
+/// trait Parent { param x : Length = 10mm }
+/// trait Child : Parent {}
+/// structure def S : Child {}
+///
+/// The parent provides a default for `x`; `Child` inherits the requirement.
+/// `collect_all_requirements` walks the refinement chain depth-first, so the
+/// default from `Parent` is visible when checking `S : Child`.
+/// Assert: no Error-severity diagnostics.
+#[test]
+fn parent_default_satisfies_child_requirement_via_refinement_chain() {
+    let source = r#"
+trait Parent {
+    param x : Length = 10mm
+}
+
+trait Child : Parent {}
+
+structure def S : Child {}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "parent default should satisfy child requirement via refinement chain; \
+         unexpected errors: {:?}",
+        errors
+    );
+}
