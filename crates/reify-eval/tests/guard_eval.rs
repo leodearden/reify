@@ -2421,6 +2421,186 @@ fn edit_param_wave2_does_not_corrupt_inactive_members() {
     );
 }
 
+/// Post-wave2 cleanup must cover guarded groups that Phase 1 *skipped* via the
+/// per-group unchanged-guard short-circuit (task 2144).
+///
+/// ## Bug scenario
+///
+/// Two guarded groups share the same `S` template:
+///
+/// - **Group A**: guard `x > 5mm`; member `a = 1mm` (does not read auto).
+/// - **Group B**: guard `y > 5mm`; member `m = depth` (reads the auto param).
+///
+/// Auto param `depth: Length`, constraint `depth >= x` (dirty when x changes).
+///
+/// Initial state — x=10mm (guard_a=true), y=3mm (guard_b=false): `a=1mm`, `m=Undef`,
+/// `depth=10mm`.
+///
+/// `edit_param(x, 3mm)` trace (current **buggy** impl):
+///
+/// 1. Phase 1 fires (`x`'s guard_a cell is in dirty_cone because guard_a reads `x`).
+///    * Group A: guard flips true→false → `phase1_reelaborated = {guard_a}`; `a` deactivated.
+///    * Group B: guard unchanged false → **per-group short-circuit** (NOT in
+///      `phase1_reelaborated`).
+/// 2. Solver re-runs (`depth >= x` is dirty); resolves `depth = 3mm`.
+/// 3. Wave2 re-evaluates `m` (reverse-dep of `depth`) → writes `m = 3mm` (BUG).
+/// 4. Post-wave2 cleanup (buggy): iterates only Group A (`phase1_reelaborated`-gated) →
+///    Group B's `m` stays at 3mm.
+/// 5. Phase 3: Group A skipped via `phase1_reelaborated`; Group B skipped via old==new
+///    guard check.
+///
+/// Result: `m = 3mm` when it must be `Undef` (guard_b is false).
+///
+/// ## Fix
+///
+/// Broaden the post-wave2 cleanup to iterate **all** guarded groups (not just those in
+/// `phase1_reelaborated`). The cleanup is idempotent for groups wave2 did not touch.
+/// See task 2144 and `reapply_guard_deactivations_post_wave2` in `engine_edit.rs`.
+///
+/// ## Assertions
+///
+/// * `m == Undef` — primary assertion, **fails** on current code.
+/// * `a == Undef` — Group A correctly deactivated (regression lock).
+/// * `counter == 1` — Phase 1 processes Group A only; Phase 3 skips both groups.
+#[test]
+fn edit_param_wave2_does_not_corrupt_unchanged_guard_group() {
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    let depth_id = ValueCellId::new("S", "depth");
+    let guard_a_id = ValueCellId::new("S", "__guard_0");
+    let guard_b_id = ValueCellId::new("S", "__guard_1");
+    let a_id = ValueCellId::new("S", "a");
+    let m_id = ValueCellId::new("S", "m");
+
+    // Group A: guard x > 5mm; member a = 1mm (constant — does NOT read auto param).
+    let guard_a_expr = gt(value_ref("S", "x"), literal(mm(5.0)));
+    let a_decl = ValueCellDecl {
+        id: a_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(1.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Group B: guard y > 5mm; member m = depth (reads the auto param — wave2 target).
+    let guard_b_expr = gt(value_ref("S", "y"), literal(mm(5.0)));
+    let m_decl = ValueCellDecl {
+        id: m_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "depth")), // reads auto param depth
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        // x: default 10mm → guard_a=true initially; becomes 3mm after edit → guard_a=false.
+        .param("S", "x", Type::length(), Some(literal(mm(10.0))))
+        // y: default 3mm → guard_b=false (stays false across the edit).
+        .param("S", "y", Type::length(), Some(literal(mm(3.0))))
+        // depth: auto param resolved by solver.
+        .auto_param("S", "depth", Type::length())
+        // constraint reads depth and x → dirty when x changes → solver re-runs.
+        .constraint("S", 0, Some("depth_ge_x"), ge(value_ref("S", "depth"), value_ref("S", "x")))
+        // Group A: guard reads x → guard_a in dirty_cone(x) → Phase 1 fires.
+        .guarded_group(
+            guard_a_expr,
+            guard_a_id.clone(),
+            vec![a_decl],
+            vec![],
+            vec![],
+            vec![],
+        )
+        // Group B: guard reads y → guard_b NOT in dirty_cone(x) when x is edited.
+        // Phase 1 re-evaluates guard_b anyway (iterates all groups), sees unchanged
+        // value (y=3mm, guard_b stays false), and takes the per-group short-circuit
+        // (does NOT add guard_b to phase1_reelaborated).
+        .guarded_group(
+            guard_b_expr,
+            guard_b_id.clone(),
+            vec![m_decl],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Sequenced solver: first call → depth=10mm (initial eval, x=10mm);
+    //                   second call → depth=3mm (after edit_param(x, 3mm)).
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_id.clone(), mm(10.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_id.clone(), mm(3.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1, unique: true },
+        SolveResult::Solved { values: solved2, unique: true },
+    ]);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval: x=10mm (guard_a=true), y=3mm (guard_b=false).
+    // Expected: a=1mm (active branch), m=Undef (inactive branch), depth=10mm.
+    let initial = engine.eval(&module);
+    assert!(
+        matches!(initial.values.get(&a_id), Some(Value::Scalar { si_value, .. }) if (*si_value - 0.001).abs() < 1e-12),
+        "initial eval: a should be 1mm when guard_a=true, got {:?}",
+        initial.values.get(&a_id),
+    );
+    assert!(
+        matches!(initial.values.get(&m_id), Some(Value::Undef)),
+        "initial eval: m should be Undef when guard_b=false (y=3mm ≤ 5mm), got {:?}",
+        initial.values.get(&m_id),
+    );
+
+    // edit_param(x, 3mm): x changes 10mm→3mm.
+    // Phase 1: guard_a flips true→false (x=3mm ≤ 5mm); a deactivated.
+    //          guard_b unchanged false (y=3mm ≤ 5mm); per-group skip — NOT in phase1_reelaborated.
+    // Solver: constraint dirty (depth>=x reads x) → depth=3mm.
+    // Wave2: m reads depth → m=3mm written (BUG under current code).
+    // Post-wave2 cleanup (fix): must deactivate m even though guard_b not in phase1_reelaborated.
+    // Phase 3: Group A skipped (phase1_reelaborated); Group B skipped (guard unchanged).
+    let edited = engine
+        .edit_param(x_id, Value::length(0.003)) // 3mm in SI
+        .expect("edit_param must succeed");
+
+    // PRIMARY assertion: m must be Undef (guard_b=false, inactive branch).
+    // Under the buggy code, m = 3mm (wave2 value persists because the cleanup
+    // only iterates phase1_reelaborated groups, which does not include Group B).
+    assert!(
+        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        "m must be Undef after edit (guard_b=false; y=3mm ≤ 5mm). \
+         If m is concrete (e.g. 3mm), the post-wave2 cleanup missed Group B \
+         (Phase-1-skipped-but-dirty scenario, task 2144). Got: {:?}",
+        edited.values.get(&m_id),
+    );
+
+    // Regression lock: Group A's member a must also be Undef (guard_a flipped false).
+    assert!(
+        matches!(edited.values.get(&a_id), Some(Value::Undef)),
+        "a must be Undef after edit (guard_a flipped false; x=3mm ≤ 5mm). Got: {:?}",
+        edited.values.get(&a_id),
+    );
+
+    // Performance lock: Phase 1 re-elaborates Group A only (1 group).
+    // Phase 3 skips both groups (Group A via phase1_reelaborated dedup; Group B via old==new).
+    // Total = 1.
+    let counter = engine.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 1,
+        "expected exactly 1 non-skipped guard-phase group evaluation \
+         (Phase 1 processes Group A; Phase 3 skips both groups). Got: {}",
+        counter,
+    );
+}
+
 /// Invariant: two paths to the same final guard configuration produce identical
 /// Auto-cell snapshot state (task 2143).
 ///
