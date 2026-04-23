@@ -311,6 +311,20 @@ fn tensor0_different_n_scalar_quantity_convertible() {
     );
 }
 
+/// Regression-pin for the q1 == q2 guard in Rule 2c: Tensor<0,3,Scalar[m]> must NOT
+/// convert to Tensor<0,5,Scalar[angle]> (quantity mismatch).
+/// Without this case, a future refactor that dropped the equality guard would still pass
+/// the Real-only tests above (Real == Real is trivially true).
+#[test]
+fn tensor0_different_n_scalar_quantity_mismatch_rejected() {
+    let from = Type::tensor(0, 3, Type::length());
+    let to = Type::tensor(0, 5, Type::angle());
+    assert!(
+        !implicitly_converts_to(&from, &to),
+        "Tensor<0,3,Scalar[m]> must NOT convert to Tensor<0,5,Scalar[angle]> (quantity mismatch — Rule 2c requires q1 == q2)"
+    );
+}
+
 // ── Rules 2a/2b compound-type guard tests ─────────────────────────────────
 //
 // Rules 2a/2b use wildcard arms (`from_ty` / `to_ty`). Without a guard, any
