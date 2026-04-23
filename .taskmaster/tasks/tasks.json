@@ -40960,7 +40960,7 @@
         "subtasks": [],
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/geometry_modify.rs"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs"
@@ -46214,7 +46214,9 @@
       "completedCount": 1921,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T21:04:26.850Z",
+      "description": "Tasks for master context"
     }
   }
 }
