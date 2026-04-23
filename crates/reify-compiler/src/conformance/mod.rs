@@ -629,6 +629,225 @@ mod tests {
         );
     }
 
+    /// Phase-level guard test: the narrowed `pass2_skipped` guard in
+    /// `check_phase_build_available_defaults_map` preserves an annotated-Let advertisement
+    /// when a sibling unannotated Let for the same name populated `pass2_skipped`.
+    ///
+    /// ## Why this is not reachable via `run_conformance`
+    ///
+    /// The target scenario — two `Let` defaults (annotated + unannotated) for the same name
+    /// coexisting in `ctx.defaults` with `pass2_skipped` containing the name — is not
+    /// reachable through `run_conformance` / `check_trait_conformance` end-to-end.
+    /// `collect_all_requirements` in `trait_requirements.rs` deduplicates `Let` defaults by
+    /// name via `seen_let_hashes`, so only one of the two ever survives into `ctx.defaults`.
+    /// Whichever survives, the other pathway that populates `pass2_skipped` is never taken.
+    ///
+    /// This test is therefore *defensive*: it protects against future regressions where
+    /// deduplication relaxes, a new code path writes to `pass2_skipped` while annotated Let
+    /// defaults remain in `ctx.defaults`, or a parser extension introduces a new way to
+    /// generate the combination. It drives the affected phases directly with a hand-built
+    /// `MergeContext` that bypasses `collect_all_requirements`.
+    ///
+    /// ## Scenario (hand-built `MergeContext`)
+    ///
+    /// - **Annotated Let**: `let x : Length` (`cell_type: Some(Type::length())`) — Pass 1
+    ///   claims the scope slot for "x" with `Type::length()`.
+    /// - **Unannotated Let**: `let x = 5.5` (`cell_type: None`) — Pass 2 finds "x" already
+    ///   in scope, compiles the expression successfully, but records "x" in `pass2_skipped`
+    ///   (slot already claimed by Pass 1).
+    /// - **Requirement**: `let x : Length` (`RequirementKind::Let(Type::length())`) —
+    ///   hand-built because `RequirementKind::Let` is not parser-reachable today.
+    ///
+    /// ## Expected behavior (post-guard-narrowing)
+    ///
+    /// The narrowed guard (`if cell_type.is_none() && pass2_skipped.contains(name)`) fires
+    /// only for the unannotated Let (cell_type: None). The annotated Let (cell_type: Some(_))
+    /// passes through and is advertised as `("x", Let) -> Type::length()`.
+    /// `check_phase_check_members_against_requirements` finds the advertisement and the
+    /// requirement is satisfied — no diagnostics emitted.
+    ///
+    /// ## Failure behavior under the over-broad guard (current code before step 2)
+    ///
+    /// The over-broad guard (`if pass2_skipped.contains(name)`) fires on **both** Let
+    /// entries (annotated and unannotated) because `pass2_skipped` contains "x". Both are
+    /// dropped → `available_defaults` is empty → the `None` arm fires and emits a spurious
+    /// "missing required member 'x'" diagnostic. Assertion 1 (`Some(&Type::length())`) and
+    /// assertion 2 (no missing-member) both fail.
+    ///
+    /// ## Cross-references
+    ///
+    /// - Sibling test: `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`
+    ///   covers the `pass2_skipped`-triggered-by-Param scenario.
+    /// - Guard site: `check_phase_build_available_defaults_map` in `checker.rs`, the
+    ///   `DefaultKind::Let` arm, at the `pass2_skipped` exclusion block.
+    #[test]
+    fn option_b_guard_preserves_annotated_let_advertisement_when_sibling_unannotated_let_is_pass2_skipped() {
+        // --- Build LetDecl fixtures ---
+        //
+        // Annotated Let: `let x : Length = 1.0` — cell_type: Some(Type::length())
+        // Pass 1 claims "x" -> Type::length() in the scope (uses cell_type directly;
+        // the value expression is compiled later, in phase 6's inject_defaults).
+        let annotated_let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // cell_type carries the annotation; type_expr is the raw AST form
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+        // Unannotated Let: `let x = 5.5` — cell_type: None
+        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" already in scope
+        // (from the annotated Let above), and records "x" in pass2_skipped.
+        let unannotated_let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None,
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![
+            // Annotated Let — Pass 1 claims "x" -> Type::length()
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: Some(Type::length()),
+                    let_decl: annotated_let_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+            // Unannotated Let — Pass 2 finds "x" already claimed -> records in pass2_skipped
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: None,
+                    let_decl: unannotated_let_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+        ];
+        // RequirementKind::Let is not parser-reachable today; hand-built here.
+        ctx.requirements = vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Let(Type::length()),
+            span: SourceSpan::empty(0),
+        }];
+
+        // Minimal structure scaffolding (no members — requirement must be satisfied by default).
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        // --- Phase 3: pre-register default types ---
+        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+            check_phase_pre_register_default_types(
+                &ctx,
+                &structure_members,
+                "S",
+                &mut scope,
+                &[],
+                &[],
+                &mut diagnostics,
+            );
+
+        // Sanity: pass2_skipped must contain "x" for the guard path to be exercised.
+        // If this fails, the fixture is misconfigured and would not test the guard at all.
+        assert!(
+            pass2_skipped.contains("x"),
+            "Fixture sanity failed: expected 'x' in pass2_skipped after Pass 2 found its scope \
+             slot already claimed by the annotated Let; the guard path would not be exercised. \
+             Got pass2_skipped = {:?}",
+            pass2_skipped
+        );
+
+        // --- Phase 4: build available defaults map ---
+        let available_defaults = check_phase_build_available_defaults_map(
+            &ctx,
+            &inferred_let_exprs,
+            &pass2_skipped,
+            &pass2_compile_errors,
+        );
+
+        // --- Phase 5: check members against requirements ---
+        check_phase_check_members_against_requirements(
+            &ctx,
+            &entity_ref,
+            &structure_members,
+            &available_defaults,
+            &mut diagnostics,
+        );
+
+        // --- Assertion 1 (positive): annotated-Let advertisement preserved ---
+        // Under the over-broad guard this returns None (both Lets dropped);
+        // under the narrowed guard it returns Some(&Type::length()).
+        assert_eq!(
+            available_defaults.get(&("x".to_string(), AvailableDefaultKind::Let)),
+            Some(&Type::length()),
+            "narrowed guard must preserve the annotated-Let advertisement even when a sibling \
+             unannotated Let populated pass2_skipped for the same name; the over-broad guard \
+             would drop both Lets and return None here"
+        );
+
+        // --- Assertion 2 (negative): no spurious 'x' missing-member diagnostic ---
+        // Under the over-broad guard the None arm fires and emits "missing required member 'x'".
+        // Under the narrowed guard the annotated-Let advertisement satisfies the requirement.
+        let missing_x_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.message.contains("missing required member") && d.message.contains("'x'")
+            })
+            .collect();
+        assert!(
+            missing_x_diags.is_empty(),
+            "narrowed guard must not emit 'missing required member' for 'x': \
+             the annotated Let provides Type::length() which satisfies \
+             RequirementKind::Let(Length). Got: {:?}",
+            missing_x_diags
+        );
+
+        // --- Assertion 3 (negative): no type-mismatch cascade for 'x' ---
+        // Type::length() satisfies RequirementKind::Let(Length) via implicitly_converts_to,
+        // so no "available default has" cascade should fire.
+        let mismatch_x_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("available default") && d.message.contains("'x'"))
+            .collect();
+        assert!(
+            mismatch_x_diags.is_empty(),
+            "no type-mismatch cascade for 'x': Type::length() satisfies \
+             RequirementKind::Let(Length). Got: {:?}",
+            mismatch_x_diags
+        );
+    }
+
     /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) emits a
     /// user-facing `Diagnostic::error` with the message
     /// "enum `Direction` does not accept type arguments".
