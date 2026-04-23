@@ -1,7 +1,7 @@
 use super::*;
 
 /// Returns `true` if `ty` is a scalar-like leaf type eligible as the `Q`
-/// (quantity) side of Rules 2a/2b.
+/// (quantity) side of Rules 2a/2b/2c.
 ///
 /// The spec's "Q is a single value" framing covers the following leaf kinds:
 /// plain primitives (`Bool`, `Int`, `Real`, `String`), dimensioned scalars
@@ -13,6 +13,22 @@ use super::*;
 /// `Set`, `Map`, `Option`, `Complex`, `Field`, `Range`, `Function`, `Frame`,
 /// `Transform`, `Plane`, `Orientation`, `Axis`, `BoundingBox`) are NOT leaf
 /// types and return `false`.
+///
+/// **Spec reference:** `docs/reify-language-spec.md` §3.3.1 (lines 295–329).
+/// Specifically:
+/// - Lines 298–301: `Scalar<Q: Dimension>` is defined as an independent rank-0
+///   type without spatial dimensionality. Q must be a "Dimension" — a single
+///   dimensioned value, not a compound/aggregate carrier of shape.
+/// - Line 305: "**Tensor conversion:** `Scalar<Q>` converts implicitly to
+///   `Tensor<0, N, Q>` for any `N`, and vice versa." This is the basis of
+///   Rules 2a/2b; it only holds when Q is a leaf Dimension type.
+/// - Lines 317–320: restates the alias relationship and notes
+///   `Vector<N,Q> = Tensor<1,N,Q>`.
+///
+/// This allowlist (not a denylist) is intentional: future `Type` variants
+/// default to *rejected* rather than default-admitted, forcing each new
+/// variant to be explicitly evaluated against the spec's "Q is a Dimension /
+/// single value" criterion before being added here.
 ///
 /// `Type::Error` is excluded: the anti-cascade guard at the top of
 /// `implicitly_converts_to` short-circuits before any leaf check is reached,
