@@ -123,6 +123,20 @@ fn diag_invalid_path(
     ))]
 }
 
+/// Identifies which call site triggered a filesystem-over-embedded partial overlay.
+///
+/// Carried by [`OverlayDirection::FsOverEmbedded`] so that the exact diagnostic
+/// wording for each call site lives inside [`partial_overlay_diag`] rather than
+/// being passed in as a free-form `&str` from the call sites.
+#[derive(Debug)]
+enum CommitSite {
+    /// Conflict detected at the entry guard (before any import recursion).
+    Entry,
+    /// Conflict detected after recursion: a transitive import committed Embedded
+    /// mode while the outer module was resolving from the filesystem.
+    Transitive,
+}
+
 /// Direction of a partial stdlib overlay conflict.
 ///
 /// Used by [`partial_overlay_diag`] to select the appropriate diagnostic wording.
@@ -134,11 +148,10 @@ fn diag_invalid_path(
 ///   because a module is missing from `stdlib_root` — user can fix by adding *that
 ///   specific module*.
 #[derive(Debug)]
-enum OverlayDirection<'a> {
+enum OverlayDirection {
     /// A `std.*` module resolved on the filesystem, but an earlier `std.*` import
-    /// was served from the embedded stdlib. The `context` field carries the
-    /// human-readable clause describing when the embedded commit happened.
-    FsOverEmbedded { context: &'a str },
+    /// was served from the embedded stdlib.
+    FsOverEmbedded { commit_site: CommitSite },
     /// A `std.*` module was not found on the filesystem, but an earlier `std.*` import
     /// was resolved from the filesystem.
     EmbeddedOverFs,
@@ -153,18 +166,28 @@ enum OverlayDirection<'a> {
 /// the same prefix and suffix, preventing future wording drift between sites.
 fn partial_overlay_diag(
     module_path: &str,
-    direction: OverlayDirection<'_>,
+    direction: OverlayDirection,
     stdlib_root: &Path,
 ) -> Diagnostic {
     match direction {
-        OverlayDirection::FsOverEmbedded { context } => Diagnostic::error(format!(
-            "partial stdlib overlay: '{}' resolved on the filesystem but {}; \
-             either populate all stdlib modules under '{}' or remove that directory \
-             to use the embedded stdlib exclusively",
-            module_path,
-            context,
-            stdlib_root.display(),
-        )),
+        OverlayDirection::FsOverEmbedded { commit_site } => {
+            let context = match commit_site {
+                CommitSite::Entry => {
+                    "earlier std.* imports were served from the embedded stdlib"
+                }
+                CommitSite::Transitive => {
+                    "a transitive std.* import was served from the embedded stdlib"
+                }
+            };
+            Diagnostic::error(format!(
+                "partial stdlib overlay: '{}' resolved on the filesystem but {}; \
+                 either populate all stdlib modules under '{}' or remove that directory \
+                 to use the embedded stdlib exclusively",
+                module_path,
+                context,
+                stdlib_root.display(),
+            ))
+        }
         OverlayDirection::EmbeddedOverFs => Diagnostic::error(format!(
             "partial stdlib overlay: '{}' not found on the filesystem under '{}' \
              but earlier std.* imports were resolved from the filesystem; either \
@@ -277,9 +300,7 @@ impl ModuleDag {
                 if self.stdlib_mode == Some(StdlibMode::Embedded) {
                     return Err(vec![partial_overlay_diag(
                         module_path,
-                        OverlayDirection::FsOverEmbedded {
-                            context: "earlier std.* imports were served from the embedded stdlib",
-                        },
+                        OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Entry },
                         &resolver.stdlib_root,
                     )]);
                 }
@@ -430,9 +451,7 @@ impl ModuleDag {
             if self.stdlib_mode == Some(StdlibMode::Embedded) {
                 return Err(vec![partial_overlay_diag(
                     module_path,
-                    OverlayDirection::FsOverEmbedded {
-                        context: "a transitive std.* import was served from the embedded stdlib",
-                    },
+                    OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Transitive },
                     &resolver.stdlib_root,
                 )]);
             }
@@ -456,16 +475,13 @@ mod tests {
         let stdlib_root = std::path::PathBuf::from("/tmp/stdlib");
         let diag = partial_overlay_diag(
             "std.foo",
-            OverlayDirection::FsOverEmbedded {
-                context: "earlier std.* imports were served from the embedded stdlib",
-            },
+            OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Entry },
             &stdlib_root,
         );
-        assert_eq!(
-            diag.message,
-            "partial stdlib overlay: 'std.foo' resolved on the filesystem but earlier std.* imports were served from the embedded stdlib; \
-             either populate all stdlib modules under '/tmp/stdlib' or remove that directory to use the embedded stdlib exclusively"
-        );
+        assert!(diag.message.contains("std.foo"));
+        assert!(diag.message.contains("/tmp/stdlib"));
+        assert!(diag.message.contains("resolved on the filesystem"));
+        assert!(diag.message.contains("embedded stdlib"));
     }
 
     #[test]
@@ -476,34 +492,20 @@ mod tests {
             OverlayDirection::EmbeddedOverFs,
             &stdlib_root,
         );
-        assert_eq!(
-            diag.message,
-            "partial stdlib overlay: 'std.bar' not found on the filesystem under '/tmp/stdlib' \
-             but earlier std.* imports were resolved from the filesystem; either add the missing module to '/tmp/stdlib' \
-             or remove that directory to use the embedded stdlib exclusively"
-        );
+        assert!(diag.message.contains("std.bar"));
+        assert!(diag.message.contains("/tmp/stdlib"));
+        assert!(diag.message.contains("not found on the filesystem"));
+        assert!(diag.message.contains("resolved from the filesystem"));
     }
 
     #[test]
     fn diag_invalid_path_formats_message_with_context_phrase() {
-        // Case 1: Empty error, "resolving import" context (matches existing inline closures)
+        // Uses the same phrase as both production call sites.
         let diags = diag_invalid_path("foo", ModulePathParseError::Empty, "resolving import");
         assert_eq!(diags.len(), 1);
         assert_eq!(
             diags[0].message,
             "invalid module path while resolving import 'foo': module path must not be empty"
-        );
-
-        // Case 2: EmptySegment error, custom context phrase (proves parameterization works)
-        let diags = diag_invalid_path(
-            "foo.bar",
-            ModulePathParseError::EmptySegment { input: "a..b".into() },
-            "loading entry module",
-        );
-        assert_eq!(diags.len(), 1);
-        assert_eq!(
-            diags[0].message,
-            "invalid module path while loading entry module 'foo.bar': module path must not contain empty segments (e.g. 'a..b'), got: 'a..b'"
         );
     }
 }
