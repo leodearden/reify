@@ -7,6 +7,7 @@ mod entity;
 mod expr;
 mod functions;
 mod geometry;
+mod geometry_arg_check;
 mod geometry_boolean;
 mod geometry_curve;
 mod geometry_modify;
