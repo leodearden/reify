@@ -45673,11 +45673,11 @@
         "description": "Two review suggestions from task-395 review of type_compat.rs. (a) is_scalar_like_leaf allowlist lacks spec-clause citation — either add doc justification pointing to authoritative source, or flip to denylist of shape-carrying types so future Type variants default to permissive. (b) Rule 2c (Tensor<0,M,Q>→Tensor<0,N,Q>) uses `q1 == q2` without the leaf-Q guard used by Rules 2a/2b — leaves compound-Q rank-0 pairs accepted where 2a/2b would refuse. Either document why 2c doesn't need the guard (both sides already rank-0 tensors, not wildcards), or add the same is_scalar_like_leaf(q1) guard for consistency.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T18:08:21.774Z",
+        "updatedAt": "2026-04-23T18:44:34.563Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/type_compat.rs"
@@ -45685,7 +45685,10 @@
           "modules": [
             "crates/reify-compiler/src/type_compat.rs",
             "crates/reify-compiler/tests/implicit_conversion_tests.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "087e5eae1868d14fec85f1a55c4e0fc41eaeb27e"
+          }
         }
       },
       {
@@ -45856,9 +45859,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T18:43:41.077Z",
+      "lastModified": "2026-04-23T18:44:34.564Z",
       "taskCount": 2149,
-      "completedCount": 1902,
+      "completedCount": 1903,
       "tags": [
         "master"
       ]
