@@ -820,7 +820,7 @@ pub(crate) fn compile_geometry_call(
         }
         // --- Transforms ---
         "translate" | "rotate" | "scale" | "rotate_around" => {
-            compile_transform_op(name, compiled_args, geom_ref(0), diagnostics, sub_ops)
+            compile_transform_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
         }
         // --- Modify extensions ---
         // All five modifiers take a geometry target as their first argument (correctly
