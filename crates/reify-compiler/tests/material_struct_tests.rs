@@ -221,3 +221,113 @@ fn material_struct_call_is_valid_param_default() {
         ),
     }
 }
+
+// ─── step-9: end-to-end BoltFlange compiles with a Material(...) default ────
+
+/// Mirror `examples/m5_geometry_flange.ri` exactly, except replace the
+/// previously-defaultless `param material : Material` declaration with a
+/// concrete struct-call default. This is the user-visible payoff promised by
+/// task 1876: "`param material : Material = Material(...)` is meaningful" —
+/// end-to-end compilation must succeed against the full stdlib (so trait
+/// refinements like `Rigid : Physical : MaterialSpec` are exercised), the
+/// `material` member must resolve to `Type::StructureRef("Material")`, and the
+/// default expression must be recorded as a `Material(...)` call. This guards
+/// the entire pipeline (resolution + default typing + stdlib cascade) against
+/// regressions before step-10 updates the example file itself.
+#[test]
+fn boltflange_compiles_with_material_default() {
+    // Source intentionally mirrors the example layout one-for-one so that, if
+    // the example evolves, a diff against this string makes the divergence
+    // visible. The only change versus the on-disk example is line 22.
+    let source = r#"
+        structure def BoltFlange : Rigid {
+            param outer_radius : Length = 60mm
+            param height : Length = 12mm
+            param hole_count : Int = 8
+            param bolt_circle_radius : Length = 45mm
+            param hole_radius : Length = 4mm
+
+            // MaterialSpec trait requirements (density + name, inherited via Physical)
+            param density : Real = 7850
+            param name : String = "steel"
+
+            // Physical trait requirements
+            param volume : Real = 0.0001
+            param centroid_x : Real = 0.0
+            param centroid_y : Real = 0.0
+            param centroid_z : Real = 0.0
+
+            // Rigid trait requirements
+            param moment_of_inertia : Real = 0.000001
+
+            // Material reference (canonical struct default — task 1876 payoff)
+            param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+
+            constraint outer_radius > bolt_circle_radius
+            constraint hole_count > 0
+
+            let body = cylinder(outer_radius, height)
+            let hole = translate(cylinder(hole_radius, height), bolt_circle_radius, 0mm, 0mm)
+            let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, hole_count, 360deg)
+            param geometry : Solid = difference(body, holes)
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected BoltFlange (with Material(...) default) to compile cleanly, got errors: {:?}",
+        errors
+    );
+
+    let bolt_flange = module
+        .templates
+        .iter()
+        .find(|t| t.name == "BoltFlange")
+        .expect("BoltFlange template should be compiled");
+
+    let material_cell = bolt_flange
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "material")
+        .expect("BoltFlange.material should exist");
+
+    assert_eq!(
+        material_cell.cell_type,
+        Type::StructureRef("Material".to_string()),
+        "BoltFlange.material should resolve to Type::StructureRef(\"Material\"); got {:?}",
+        material_cell.cell_type
+    );
+
+    let default_expr = material_cell.default_expr.as_ref().expect(
+        "BoltFlange.material should carry the recorded `Material(...)` default — \
+         the canonical struct default is the user-visible payoff for task 1876",
+    );
+    match &default_expr.kind {
+        CompiledExprKind::FunctionCall { function, args } => {
+            assert_eq!(
+                function.name, "Material",
+                "BoltFlange.material default should be a `Material(...)` call, got {:?}",
+                function.name
+            );
+            assert_eq!(
+                args.len(),
+                3,
+                "BoltFlange.material default should carry 3 named args (name, density, \
+                 youngs_modulus); got {}: {:?}",
+                args.len(),
+                args
+            );
+        }
+        other => panic!(
+            "expected BoltFlange.material.default_expr to be a FunctionCall for `Material(...)`, \
+             got {:?}",
+            other
+        ),
+    }
+}
