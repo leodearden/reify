@@ -205,6 +205,27 @@ pub(crate) fn is_known_module_pragma(name: &str) -> bool {
     is_known_block_pragma(name) || is_module_only_pragma(name)
 }
 
+/// Classification of a pragma name with respect to its validity context.
+enum PragmaKind {
+    /// Valid on block-level declarations (`#precision`, `#solver`, `#kernel`).
+    KnownBlock,
+    /// Valid only at module level; misplaced when found on a block (`#no_prelude`, `#version`).
+    ModuleOnly,
+    /// Not a recognized pragma name.
+    Unknown,
+}
+
+/// Classify a pragma name for context-aware validation.
+fn classify_pragma(name: &str) -> PragmaKind {
+    if is_known_block_pragma(name) {
+        PragmaKind::KnownBlock
+    } else if is_module_only_pragma(name) {
+        PragmaKind::ModuleOnly
+    } else {
+        PragmaKind::Unknown
+    }
+}
+
 /// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown or
 /// misplaced pragma names.
 ///
@@ -218,24 +239,26 @@ pub(crate) fn validate_pragmas(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for pragma in pragmas {
-        if is_known_block_pragma(&pragma.name) {
-            // Valid here — no warning.
-        } else if is_module_only_pragma(&pragma.name) {
-            diagnostics.push(
-                Diagnostic::warning(format!(
-                    "pragma #{} is only valid at module level, not on {}",
-                    pragma.name, context
-                ))
-                .with_label(DiagnosticLabel::new(
-                    pragma.span,
-                    "module-only pragma on block",
-                )),
-            );
-        } else {
-            diagnostics.push(
-                Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
-                    .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
-            );
+        match classify_pragma(&pragma.name) {
+            PragmaKind::KnownBlock => {} // Valid here — no warning.
+            PragmaKind::ModuleOnly => {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "pragma #{} is only valid at module level, not on {}",
+                        pragma.name, context
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        pragma.span,
+                        "module-only pragma on block",
+                    )),
+                );
+            }
+            PragmaKind::Unknown => {
+                diagnostics.push(
+                    Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
+                        .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
+                );
+            }
         }
     }
 }
