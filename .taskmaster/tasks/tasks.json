@@ -45710,7 +45710,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:23:52.265Z"
+        "updatedAt": "2026-04-23T17:23:52.265Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/module_dag.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       }
     ],
     "metadata": {
