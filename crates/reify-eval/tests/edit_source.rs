@@ -2293,6 +2293,144 @@ fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
     );
 }
 
+// ── Phase 1-only perf locks: guard body fires, per-group skip suppresses all ───
+
+/// Phase 1 fires (guard cell content_hash changed) but every per-group skip
+/// applies (guard VALUE unchanged for all groups), so no group is
+/// re-elaborated. Phase 3 never iterates (no guard value changed). Overall
+/// `last_guard_phase_group_evals()` == 0.
+///
+/// Scenario: 10 groups `where uN { let xN = 1mm }` with all `uN: Bool = true`.
+/// Module B rewrites group 3's condition from `where u3` to `where u3 && true`.
+/// The guard cell `__guard_3`'s content_hash changes (expression text differs)
+/// → `has_dirty_guards` fires Phase 1 (structure_controlling contains __guard_3
+/// via reify-compiler/src/guards.rs:242). Guard VALUE stays `true` for every
+/// group (`u3 && true` == `u3` == true when u3=true). Phase 1's per-group skip
+/// fires for all 10 groups (old_val == new_val == true, no added, no role-flip).
+/// Counter == 0. Phase 3's `guard_changed` outer gate is false (no group's
+/// value changed) → Phase 3 never iterates.
+///
+/// Regression classes caught:
+/// (i)  Dropping `old_guard_val == Some(&guard_val)` from the Phase 1 per-group
+///      skip: counter rises to 1 (group 3 re-processed despite unchanged value;
+///      expression-text-only edits over-fire Phase 1).
+/// (ii) Dropping the `guard_changed` outer gate from Phase 3: counter rises to
+///      10 (all groups re-processed by Phase 3 on every guard-cell edit even
+///      with no value change).
+///
+/// Task 2138 — Phase-1-only perf lock (T1).
+#[test]
+fn edit_source_phase1_fires_but_skips_when_guard_expr_text_changes_value_unchanged() {
+    // Module A: 10 groups, each with a trivial `uN` guard expression.
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    param u2: Bool = true
+    param u3: Bool = true
+    param u4: Bool = true
+    param u5: Bool = true
+    param u6: Bool = true
+    param u7: Bool = true
+    param u8: Bool = true
+    param u9: Bool = true
+    where u0 { let x0 = 1mm }
+    where u1 { let x1 = 1mm }
+    where u2 { let x2 = 1mm }
+    where u3 { let x3 = 1mm }
+    where u4 { let x4 = 1mm }
+    where u5 { let x5 = 1mm }
+    where u6 { let x6 = 1mm }
+    where u7 { let x7 = 1mm }
+    where u8 { let x8 = 1mm }
+    where u9 { let x9 = 1mm }
+}"#;
+    // Module B: identical except group 3's guard is `u3 && true` instead of
+    // `u3`. Expression text differs → content_hash of __guard_3 changes →
+    // has_dirty_guards fires Phase 1. But `u3 && true` evaluates to the same
+    // Bool(true) as plain `u3` when u3=true → per-group skip applies for all
+    // 10 groups → no group is re-elaborated.
+    let module_b_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    param u2: Bool = true
+    param u3: Bool = true
+    param u4: Bool = true
+    param u5: Bool = true
+    param u6: Bool = true
+    param u7: Bool = true
+    param u8: Bool = true
+    param u9: Bool = true
+    where u0 { let x0 = 1mm }
+    where u1 { let x1 = 1mm }
+    where u2 { let x2 = 1mm }
+    where u3 && true { let x3 = 1mm }
+    where u4 { let x4 = 1mm }
+    where u5 { let x5 = 1mm }
+    where u6 { let x6 = 1mm }
+    where u7 { let x7 = 1mm }
+    where u8 { let x8 = 1mm }
+    where u9 { let x9 = 1mm }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchor: x3 must stay ≈1mm since the guard `u3 && true`
+    // evaluates to true when u3=true. Prevents a "both wrong" false pass on
+    // the counter assertion below.
+    let x3_id = ValueCellId::new("S", "x3");
+    assert!(
+        matches!(
+            incr.values.get(&x3_id),
+            Some(Value::Scalar { si_value, .. }) if (*si_value - 0.001).abs() < 1e-12
+        ),
+        "x3 must stay active (≈1mm) when guard `u3 && true` is true with u3=true; \
+         got {:?}",
+        incr.values.get(&x3_id)
+    );
+
+    // (c) Performance lock: counter == 0.
+    // has_dirty_guards fires Phase 1 (__guard_3's content_hash changed). But
+    // all 10 groups' guard VALUES are unchanged (true → true), so the
+    // per-group skip (`old_guard_val == Some(&guard_val)`) suppresses all 10.
+    // Phase 3's outer `guard_changed` gate is false → Phase 3 never iterates.
+    // Expected: 0 group iterations in total.
+    //
+    // Regression catches:
+    // == 1  → per-group skip regressed for expression-text-only changes
+    //          (old_guard_val == Some(&guard_val) arm dropped; group 3
+    //          re-processed despite unchanged value).
+    // == 10 → per-group skip completely absent (all groups re-processed).
+    // > 0 via Phase 3 → guard_changed outer gate regressed.
+    let counter = incremental.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 0,
+        "expected 0 non-skipped guard-phase group iterations \
+         (Phase 1 enters body via has_dirty_guards but per-group skip suppresses \
+          all 10 groups since guard values are unchanged; \
+          Phase 3 outer gate never fires since no guard value changed); \
+         got {} — \
+         if 1, per-group skip regressed for expression-text-only changes \
+           (old_guard_val == Some(&guard_val) arm dropped at engine_edit.rs:1640); \
+         if 10, per-group skip completely missing; \
+         if > 0 from Phase 3, guard_changed outer gate regressed",
+        counter
+    );
+}
+
 // ── Wave2 interaction: inactive members must stay Undef after cleanup ─────────
 
 /// Regression guard for the post-wave2 cleanup (task 2142):
