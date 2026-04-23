@@ -546,7 +546,7 @@ fn full_module_has_nine_traits_and_one_enum() {
 
     // Verify all expected trait names are present
     let expected_traits = [
-        "Material",
+        "MaterialSpec",
         "Elastic",
         "Strong",
         "Hard",
