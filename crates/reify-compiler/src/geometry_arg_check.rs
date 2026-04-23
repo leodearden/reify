@@ -1,5 +1,31 @@
 use super::*;
 
+/// Returns `true` when `got == expected`.
+///
+/// On mismatch, pushes a `Diagnostic::error` whose message is
+/// `"{name}() expects {expected} arguments, got {got}"`.
+/// When `span` is `Some(s)`, the diagnostic is decorated with a
+/// `"wrong number of arguments"` label at that span; when `None`, no label
+/// is attached (preserving the unlabeled behavior of transform/curve callers).
+pub(crate) fn check_arg_count_exact(
+    name: &str,
+    got: usize,
+    expected: usize,
+    span: Option<SourceSpan>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if got == expected {
+        return true;
+    }
+    let diag = Diagnostic::error(format!("{name}() expects {expected} arguments, got {got}"));
+    let diag = match span {
+        Some(s) => diag.with_label(DiagnosticLabel::new(s, "wrong number of arguments")),
+        None => diag,
+    };
+    diagnostics.push(diag);
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

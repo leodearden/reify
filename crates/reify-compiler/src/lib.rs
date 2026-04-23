@@ -40,6 +40,7 @@ pub(crate) use expr::*;
 #[allow(unused_imports)]
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
+pub(crate) use geometry_arg_check::*;
 pub(crate) use geometry_boolean::*;
 pub(crate) use geometry_curve::*;
 pub(crate) use geometry_modify::*;
