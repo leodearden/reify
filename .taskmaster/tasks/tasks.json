@@ -31982,20 +31982,22 @@
       {
         "id": "1505",
         "title": "Recursive detection: domain-tag hash, hoist constant, DRY compile_all, test comment",
-        "description": "Four improvements: (1) lib.rs:634: replace magic ContentHash::of(&[1u8]) with ContentHash::of_str(\"is_recursive\") for domain-tagging and hoist above loop as loop-invariant constant. (2) recursive_detection_tests.rs:571-577: refactor compile_all to call compile_module internally to reduce duplication. (3) recursive_detection_tests.rs:588-623: add comment noting is_recursive_mixed_into_content_hash assumes A's hash doesn't include B's resolved hash transitively.",
-        "details": "",
-        "testStrategy": "",
+        "description": "Eliminate magic-value fragility and format-string discriminator/payload collision risks across `crates/reify-compiler/src/compile_builder`, and clean up duplicate test infrastructure in `recursive_detection_tests.rs`.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "All items address ContentHash encoding correctness or test-infrastructure quality in the same module footprint:\n\n**hash.rs — pragma hash structural combines**\n- `hash.rs:111-120` (`format_pragma_value`): Strings like `\"str:foo\"` and `\"ident:foo\"` are fed into `ContentHash::of_str`. A `String` value whose bytes begin with `ident:` is only distinguishable from an `Ident` because the surrounding prefix differs — fragile if grammar ever allows colon-bearing idents. Replace with structurally separate combines:\n  ```rust\n  match v {\n      PragmaValue::String(s) => ContentHash::of_str(\"str\").combine(ContentHash::of_str(s)),\n      PragmaValue::Ident(s)  => ContentHash::of_str(\"ident\").combine(ContentHash::of_str(s)),\n      // ... other variants\n  }\n  ```\n- `hash.rs:94` (`hash_pragma`): Replace `format!(\"{name}|{count}\")` with `ContentHash::of_str(&p.name).combine(ContentHash::of_u64(p.args.len() as u64))`. Add a `combine_u64` helper if one does not already exist.\n- Also eliminates per-call `format!` allocations.\n- After these changes: verify all existing pragma tests still pass (absolute hash values will shift; update any snapshot or persistence test that pins exact hash bytes).\n\n**lib.rs:634 — recursive detection domain tag**\n- Replace magic `ContentHash::of(&[1u8])` with `ContentHash::of_str(\"is_recursive\")` for explicit domain-tagging.\n- Hoist the resulting constant above the enclosing loop as a loop-invariant binding.\n\n**recursive_detection_tests.rs — test infrastructure cleanup**\n- Lines 571-577: Refactor `compile_all` to call `compile_module` internally rather than duplicating its body.\n- Lines 588-623: Add a comment on `is_recursive_mixed_into_content_hash` noting that the test assumes A's content hash does not transitively include B's resolved hash.",
+        "testStrategy": "Memory hints: search \"ContentHash\" in reify-types; search \"content_hash\" and \"format_pragma_value\" and \"hash_pragma\" in reify-compiler/src/compile_builder.",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:29.467Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/tests/recursive_detection_tests.rs"
           ],
-          "files": []
+          "files": [],
+          "curator_action": "combine",
+          "curator_justification": "The candidate (structural pragma hash combines in hash.rs) and Task 1505 (domain-tag magic-byte replacement + loop-invariant hoist + DRY test infra) share the same unified concern: eliminating magic-value/fragile-embedding patterns from ContentHash encoding in `crates/reify-compiler/src/compile_builder`. An implementer loading compile_builder context once can address all items together. The union of files_to_modify stays within the existing lock keys (compile_builder + recursive_detection_tests.",
+          "combined_at": "2026-04-23T20:13:38.767938+00:00"
         }
       },
       {
@@ -45469,15 +45471,14 @@
       },
       {
         "id": "2139",
-        "title": "Extract guard_value_unchanged helper to dedupe old_guard_val lookup in engine_edit",
-        "description": "The same `old_guard_val` lookup is duplicated verbatim across three sites in crates/reify-eval/src/engine_edit.rs (around lines 516, 744, and 1492/1759), each pulling `self.eval_state.as_ref().and_then(|s| s.snapshot.values.get(&group.guard_cell)).map(|(v, _)| v)` with near-identical comment blocks. Phase 3 edit_param (~744) and Phase 3 edit_source (~1759) skip logic is identical; Phase 1 edit_param and Phase 1 edit_source differ only by the added/role-flip clause.\n\nFix: extract a small helper like `fn guard_value_unchanged(&self, guard_cell: &ValueCellId, new_val: &Value) -> bool` on Engine (or a free fn scoped by eval_state). Call it from all three sites. Phase 1 of edit_source can layer the `has_added_in_group || has_role_flipped_guard_member` clause at the call site. Consolidate the doc-comment in one place.\n\nLow priority — functional no-op but reduces drift risk.\n\nSource: post-merge review suggestion on task 2088 (merge commit 90804da34).",
-        "details": "",
-        "testStrategy": "",
+        "title": "Extract guard lookup and guard_changed helpers to dedupe duplicated closures in engine_edit",
+        "description": "Two related helper extractions in `crates/reify-eval/src/engine_edit.rs` to eliminate duplicated guard-related code patterns and prevent future divergence bugs.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "**1. `guard_value_unchanged` helper** (original task 2139)\n\nThe same `old_guard_val` lookup is duplicated verbatim across three sites in `crates/reify-eval/src/engine_edit.rs` (around lines 516, 744, and 1492/1759), each pulling:\n```rust\nself.eval_state.as_ref().and_then(|s| s.snapshot.values.get(&group.guard_cell)).map(|(v, _)| v)\n```\nwith near-identical comment blocks. Phase 3 edit_param (~744) and Phase 3 edit_source (~1759) skip logic is identical; Phase 1 edit_param and Phase 1 edit_source differ only by the added/role-flip clause. Extract a small helper (e.g. `fn guard_value_unchanged(...)`) to encapsulate this lookup and make future changes safe.\n\n**2. `phase3_guard_changed` helper** (new)\n\nThe `guard_changed` any-closure is duplicated verbatim between edit_param Phase 3 (lines 891-906) and edit_source Phase 3 (lines 1958-1973), including the task-2146 flip-then-revert clause:\n```rust\nphase1_reelaborated.get(...).is_some_and(|p1| Some(p1) != new_val)\n```\nDiverging these two predicates in the future is a real risk — the bug task 2146 fixed was exactly that kind of missed symmetry. Extract a helper, e.g.:\n```rust\nfn phase3_guard_changed(\n    groups: &[GuardedGroupIn],\n    ...\n) -> bool { ... }\n```\nso both Phase 3 sites share a single predicate definition.\n\nBoth helpers are pure deduplication; no behavioral changes expected.",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:33.679Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -45489,7 +45490,10 @@
               "guard value unchanged refactor helper extraction engine_edit.rs deduplication",
               "Phase 1 Phase 3 guard skip logic edit_param edit_source consolidation"
             ]
-          }
+          },
+          "curator_action": "combine",
+          "curator_justification": "Task 2139 is also a \"extract a small helper to dedupe duplicated code in engine_edit.rs\" refactor — it extracts `guard_value_unchanged` to dedupe the `old_guard_val` lookup pattern. The candidate extracts `phase3_guard_changed` to dedupe the guard_changed any-closure. Both are tiny (single file, helper extraction), share the same root cause (duplicated guard-related closures/lookups in engine_edit.rs), and will serialize on the same module lock. Combining satisfies all four hard rules: coherent ",
+          "combined_at": "2026-04-23T20:12:22.349378+00:00"
         }
       },
       {
@@ -46028,6 +46032,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-23T20:11:52.353Z"
+      },
+      {
+        "id": "2165",
+        "title": "Extract shared wave2 guard-flip fixture for edit_param/edit_source regression tests",
+        "description": "The two wave2 guard-flip regression tests (crates/reify-eval/tests/edit_source.rs:2229 and crates/reify-eval/tests/guard_eval.rs:2483 — edit_param variant) share ~90% of their fixture verbatim: identical guard_expr, m_decl/n_decl, constraint wiring, and sequenced solver values (depth 8mm → 3mm). Extract a helper (e.g. `fn wave2_flip_fixture()`) in a tests-local module or reify_test_support. Keep the two #[test] functions as thin wrappers that invoke edit_param vs. edit_source and assert cell states. Low priority / polish. Source: esc-2146-21 (reviewer_comprehensive).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -46037,7 +46052,10 @@
       "completedCount": 1915,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T20:12:22.369Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T20:14:24.425Z"
     }
   }
 }
