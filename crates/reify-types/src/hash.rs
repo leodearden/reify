@@ -78,4 +78,15 @@ mod tests {
         let b = ContentHash::of_str("param width:  Scalar = 80mm");
         assert_ne!(a, b);
     }
+
+    #[test]
+    fn of_u64_is_deterministic() {
+        assert_eq!(ContentHash::of_u64(42), ContentHash::of_u64(42));
+    }
+
+    #[test]
+    fn of_u64_differs_for_different_values() {
+        assert_ne!(ContentHash::of_u64(0), ContentHash::of_u64(1));
+        assert_ne!(ContentHash::of_u64(1), ContentHash::of_u64(u64::MAX));
+    }
 }
