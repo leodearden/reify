@@ -3317,3 +3317,85 @@ describe('App persistence wiring — debounced save (step-31)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step-33: Save views action tests
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — Save views action (step-33)', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, children };
+  }
+
+  /** Open a file via Ctrl+O and wait for persistence to be queried. */
+  async function openFile(path = '/test/bracket.ri') {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue(path);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path, content: '' });
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    await waitFor(() => expect(sidecarPersistence.loadSidecar).toHaveBeenCalledWith(path));
+  }
+
+  /** Open the ViewSelector dropdown by clicking the trigger button. */
+  async function openViewSelectorDropdown() {
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Default' }));
+  }
+
+  it('(a) Save views button appears in ViewSelector dropdown when a file is open', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await openFile();
+
+    await openViewSelectorDropdown();
+
+    // "Save views" menuitem should appear in the dropdown
+    await waitFor(() =>
+      expect(screen.getByRole('menuitem', { name: /save views/i })).toBeTruthy()
+    );
+  });
+
+  it('(b) clicking Save views calls saveSidecar(currentPath, composedState)', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await openFile();
+
+    await openViewSelectorDropdown();
+    fireEvent.click(screen.getByRole('menuitem', { name: /save views/i }));
+
+    await waitFor(() => {
+      expect(sidecarPersistence.saveSidecar).toHaveBeenCalledWith(
+        '/test/bracket.ri',
+        expect.objectContaining({ version: '1' }),
+      );
+    });
+  });
+
+  it('(c) on success, shows success toast containing sidecar filename', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    vi.mocked(sidecarPersistence.saveSidecar).mockResolvedValue(undefined);
+    await renderAndWaitForReady();
+    await openFile();
+
+    await openViewSelectorDropdown();
+    fireEvent.click(screen.getByRole('menuitem', { name: /save views/i }));
+
+    // Toast should mention the sidecar filename
+    await waitFor(() =>
+      expect(screen.getByText(/bracket\.ri\.views\.json/)).toBeTruthy()
+    );
+  });
+
+  it('(d) on saveSidecar rejection, shows error toast', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    vi.mocked(sidecarPersistence.saveSidecar).mockRejectedValue(new Error('disk full'));
+    await renderAndWaitForReady();
+    await openFile();
+
+    await openViewSelectorDropdown();
+    fireEvent.click(screen.getByRole('menuitem', { name: /save views/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/disk full|failed.*save/i)).toBeTruthy()
+    );
+  });
+});

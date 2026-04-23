@@ -63,7 +63,7 @@ import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
-import { loadSidecar } from './stores/sidecarPersistence';
+import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
 import { loadViewPersistence, createDebouncedSaver } from './stores/viewPersistence';
 import type { PersistentViewState } from './types';
 import styles from './App.module.css';
@@ -328,6 +328,34 @@ const App: Component = () => {
       const msg = errorMessage(err);
       console.error('Open file failed:', msg);
       showToast(`Open file failed: ${msg}`, 'error');
+    }
+  }
+
+  /**
+   * Save the current view state to the sidecar file (.ri.views.json).
+   * Called when the user clicks "Save views" in the ViewSelector dropdown.
+   * Shows a success or error toast based on the outcome.
+   */
+  async function handleSaveViews() {
+    const path = currentFilePath();
+    if (!path) return;
+
+    const viewportCameras: Record<string, CameraState> = {};
+    for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
+      if (vp.camera) viewportCameras[id] = vp.camera;
+    }
+    const composed: PersistentViewState = {
+      ...viewStateStore.serializePersistedState(),
+      viewportCameras,
+      timestamp: new Date().toISOString(),
+    };
+
+    try {
+      await saveSidecar(path, composed);
+      const filename = path.split('/').pop() ?? path;
+      showToast(`Views saved to ${filename}.views.json`, 'success');
+    } catch (err) {
+      showToast(`Failed to save views: ${errorMessage(err)}`, 'error');
     }
   }
 
@@ -869,6 +897,7 @@ const App: Component = () => {
                 onRangeSelect={selectionStore.rangeSelect}
                 onSelectAll={selectionStore.selectAll}
                 onOpenManage={() => setViewManageOpen(true)}
+                onSaveViews={handleSaveViews}
               />
               <PropertyEditor
                 values={engineStore.state.values}

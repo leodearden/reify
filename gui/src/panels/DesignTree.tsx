@@ -17,6 +17,8 @@ interface Props {
   onRangeSelect?: (paths: string[]) => void;
   onSelectAll?: (paths: string[]) => void;
   onOpenManage?: () => void;
+  /** Optional callback for "Save views" action; forwarded to ViewSelector. */
+  onSaveViews?: () => void;
 }
 
 interface MenuState {
@@ -222,7 +224,11 @@ const DesignTree: Component<Props> = (props) => {
       onKeyDown={handleKeyDown}
     >
       <Show when={props.onOpenManage !== undefined}>
-        <ViewSelector store={props.viewStateStore} onOpenManage={props.onOpenManage!} />
+        <ViewSelector
+          store={props.viewStateStore}
+          onOpenManage={props.onOpenManage!}
+          onSaveViews={props.onSaveViews}
+        />
       </Show>
       <For each={props.tree}>
         {(node) => renderNode(node)}
