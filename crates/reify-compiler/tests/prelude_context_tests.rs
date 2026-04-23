@@ -6,7 +6,7 @@
 //!   step-5: compile_with_prelude_context parity with compile_with_prelude
 //!   step-7: load_stdlib_context caching (pointer stability + enum parity)
 
-use reify_compiler::{CompiledModule, PreludeContext};
+use reify_compiler::{CompiledModule, PreludeContext, compile_with_prelude, compile_with_prelude_context};
 use reify_test_support::CompiledModuleBuilder;
 use reify_types::{EnumDef, ModulePath};
 
@@ -124,5 +124,115 @@ fn new_two_module_prelude_preserves_enum_order() {
         ctx.resolution_enums(),
         expected.as_slice(),
         "resolution_enums must be [EnumA, EnumB, EnumC] preserving source order"
+    );
+}
+
+// ─── step-5: compile_with_prelude_context parity ───────────────────────────
+
+/// Case (a): empty prelude — compile_with_prelude_context(&parsed, &ctx)
+/// must produce a CompiledModule identical (content_hash, diagnostics, enum_defs,
+/// templates, trait_defs, functions) to compile(&parsed).
+#[test]
+fn compile_with_prelude_context_parity_empty_prelude() {
+    let source = r#"
+structure def S {
+    param x : Scalar = 42
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("parity_empty"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let expected = compile_with_prelude(&parsed, &[]);
+    let ctx = PreludeContext::from_slice(&[]);
+    let actual = compile_with_prelude_context(&parsed, &ctx);
+
+    assert_eq!(
+        actual.content_hash, expected.content_hash,
+        "content_hash must match for empty-prelude compile"
+    );
+    assert_eq!(
+        actual.diagnostics, expected.diagnostics,
+        "diagnostics must match for empty-prelude compile"
+    );
+    assert_eq!(
+        actual.enum_defs, expected.enum_defs,
+        "enum_defs must match for empty-prelude compile"
+    );
+    assert_eq!(
+        actual.templates, expected.templates,
+        "templates must match for empty-prelude compile"
+    );
+    assert_eq!(
+        actual.trait_defs, expected.trait_defs,
+        "trait_defs must match for empty-prelude compile"
+    );
+    assert_eq!(
+        actual.functions, expected.functions,
+        "functions must match for empty-prelude compile"
+    );
+}
+
+/// Case (b): non-empty 2-module synthetic prelude with at least one enum.
+/// compile_with_prelude_context must produce a CompiledModule identical
+/// (content_hash, diagnostics, enum_defs, templates, trait_defs, functions)
+/// to compile_with_prelude for the same prelude.
+#[test]
+fn compile_with_prelude_context_parity_two_module_prelude_with_enum() {
+    let enum_status = EnumDef {
+        name: "Status".to_string(),
+        variants: vec!["Active".to_string(), "Inactive".to_string()],
+    };
+    let enum_mode = EnumDef {
+        name: "Mode".to_string(),
+        variants: vec!["Fast".to_string(), "Slow".to_string()],
+    };
+
+    // Build two synthetic prelude modules with enums.
+    let pm1 = CompiledModuleBuilder::new(ModulePath::single("synth_pm1"))
+        .enum_def(enum_status.clone())
+        .build();
+    let pm2 = CompiledModuleBuilder::new(ModulePath::single("synth_pm2"))
+        .enum_def(enum_mode.clone())
+        .build();
+
+    let prelude: Vec<CompiledModule> = vec![pm1, pm2];
+
+    // User module that just defines a plain structure (no enum ref needed for
+    // parity — we're testing the enum phase, not user-level enum resolution).
+    let source = r#"
+structure def Widget {
+    param count : Int = 1
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("parity_two_module"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let expected = compile_with_prelude(&parsed, &prelude);
+    let ctx = PreludeContext::from_slice(&prelude);
+    let actual = compile_with_prelude_context(&parsed, &ctx);
+
+    assert_eq!(
+        actual.content_hash, expected.content_hash,
+        "content_hash must match for two-module prelude compile"
+    );
+    assert_eq!(
+        actual.diagnostics, expected.diagnostics,
+        "diagnostics must match for two-module prelude compile"
+    );
+    assert_eq!(
+        actual.enum_defs, expected.enum_defs,
+        "enum_defs must match for two-module prelude compile"
+    );
+    assert_eq!(
+        actual.templates, expected.templates,
+        "templates must match for two-module prelude compile"
+    );
+    assert_eq!(
+        actual.trait_defs, expected.trait_defs,
+        "trait_defs must match for two-module prelude compile"
+    );
+    assert_eq!(
+        actual.functions, expected.functions,
+        "functions must match for two-module prelude compile"
     );
 }
