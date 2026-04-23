@@ -281,6 +281,7 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// diagnostic. Annotating *either* binding unblocks the case. A topological ordering pass
 /// would remove the limitation but is out of scope ("documenting as intentional simplification").
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 pub(super) fn check_phase_pre_register_default_types(
     ctx: &MergeContext,
     structure_members: &HashMap<String, Type>,
