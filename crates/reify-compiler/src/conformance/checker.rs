@@ -618,6 +618,13 @@ pub(super) fn check_phase_check_members_against_requirements(
         };
         match structure_members.get(&req.name) {
             Some(actual_type) => {
+                // Intentionally NOT suppressed by `available_defaults`: when a structure
+                // explicitly provides a member, that member is the authoritative value the
+                // compiler will use — any chain default for the same name is discarded.
+                // A type mismatch on an explicit member is therefore always an error,
+                // regardless of whether a well-typed default exists elsewhere in the chain.
+                // Widening this arm to also check `available_defaults` would silently accept
+                // structures whose explicit members carry the wrong type, which is incorrect.
                 if !implicitly_converts_to(actual_type, expected_type) {
                     diagnostics.push(
                         Diagnostic::error(format!(
