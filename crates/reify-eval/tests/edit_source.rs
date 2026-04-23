@@ -2431,6 +2431,109 @@ fn edit_source_phase1_fires_but_skips_when_guard_expr_text_changes_value_unchang
     );
 }
 
+// ── has_added_in_group forces non-skip: counter == 1 ────────────────────────
+
+/// `has_added_in_group` forces Phase 1 re-elaboration for the affected group
+/// even when the guard VALUE is unchanged. Phase 3 does not fire (no guard
+/// value change). Overall `last_guard_phase_group_evals()` == 1.
+///
+/// Scenario: Module A has a single group `where u { let a = 1mm }` with
+/// `u: Bool = true`. Module B adds a second member `let b = 2mm`. Cell `b` is
+/// in `added`. `has_added_guard_member` is true → `has_dirty_guards` fires.
+/// Guard VALUE unchanged (still true). For group 0: old_val == new_val == true,
+/// BUT `has_added_in_group` is true (b ∈ group.members ∩ added) → the skip
+/// clause at engine_edit.rs:1641 fails → group 0 is re-elaborated → counter
+/// increments to 1. Phase 3: `guard_changed` false (value unchanged) → Phase 3
+/// never iterates.
+///
+/// Regression catch: dropping `has_added_in_group` from the skip clause
+/// (engine_edit.rs:1641) would reduce counter to 0, meaning an added `let` on
+/// the inactive branch would silently retain a Determined value instead of
+/// being deactivated. The existing correctness test
+/// `edit_source_added_inactive_branch_member_matches_cold_eval` locks the
+/// VALUE, but this perf lock pins the clause that triggers re-elaboration.
+///
+/// Locks: `has_added_in_group` at engine_edit.rs:1624-1625 and its use in
+/// the skip condition at engine_edit.rs:1641.
+///
+/// Task 2138 — has_added_in_group forces non-skip perf lock (T2).
+#[test]
+fn edit_source_added_member_in_unchanged_guard_group_forces_non_skip() {
+    // Module A: single guarded group with one member.
+    let module_a_src = r#"structure S {
+    param u: Bool = true
+    where u {
+        let a = 1mm
+    }
+}"#;
+    // Module B: adds a second member `b` to the same group.
+    // Cell `b` is in `added`; `has_added_in_group` becomes true for group 0.
+    // Guard value (u=true) is unchanged.
+    let module_b_src = r#"structure S {
+    param u: Bool = true
+    where u {
+        let a = 1mm
+        let b = 2mm
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchor: `b` must evaluate to ≈2mm on the active branch
+    // (u=true → members branch active; b's default_expr = 2mm is evaluated).
+    // Prevents a "both wrong" false pass on the counter assertion.
+    let b_id = ValueCellId::new("S", "b");
+    assert!(
+        matches!(
+            incr.values.get(&b_id),
+            Some(Value::Scalar { si_value, .. }) if (*si_value - 0.002).abs() < 1e-12
+        ),
+        "added member `b` on the active branch must evaluate to ≈2mm; \
+         got {:?}",
+        incr.values.get(&b_id)
+    );
+
+    // (c) Performance lock: counter == 1.
+    // `has_added_in_group` is true (b ∈ group.members ∩ added) → the
+    // per-group skip at engine_edit.rs:1641 is suppressed even though the
+    // guard value is unchanged → group 0 is re-elaborated in Phase 1 →
+    // counter increments to 1. Phase 3's outer `guard_changed` gate is false
+    // (guard value did not change) → Phase 3 never iterates.
+    //
+    // Regression catches:
+    // == 0 → `has_added_in_group` dropped from skip clause (engine_edit.rs:1641);
+    //         added lets on inactive branches would silently retain Determined
+    //         values instead of being deactivated.
+    // > 1  → Phase 3 guard_changed gate fired spuriously despite unchanged value.
+    let counter = incremental.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 1,
+        "expected exactly 1 non-skipped guard-phase group iteration \
+         (Phase 1 re-elaborates group 0 because has_added_in_group=true, \
+          despite guard value being unchanged; Phase 3 does not fire); \
+         got {} — \
+         if 0, has_added_in_group clause was dropped from skip condition \
+           at engine_edit.rs:1641 (added member on inactive branch would \
+           silently retain a Determined value); \
+         if > 1, Phase 3 guard_changed gate regressed",
+        counter
+    );
+}
+
 // ── Wave2 interaction: inactive members must stay Undef after cleanup ─────────
 
 /// Regression guard for the post-wave2 cleanup (task 2142):
