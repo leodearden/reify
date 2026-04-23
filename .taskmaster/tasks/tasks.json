@@ -45743,6 +45743,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-23T17:28:10.200Z"
+      },
+      {
+        "id": "2154",
+        "title": "Fix guarded-group Param override regression: consult param_overrides in member/else_member eval loops",
+        "description": "**Latent regression introduced in task 2017 — verified in engine_eval.rs.**\n\nengine_eval.rs lines 454-472 and 494-512 evaluate `ValueCellKind::Param` cells inside `guarded_groups.members` / `else_members` by calling eval_expr on `cell.default_expr` directly, never consulting `self.param_overrides`. Top-level Param handling (lines 1068, 1152) does consult param_overrides via validate_param_override. Pre-task-2017, CLI's reapply_user_overrides used Engine::edit_param which looked up cells in snapshot.graph.value_cells (includes guarded-group cells), so overrides survived update_source. Post-2017 CLI dropped its shadow-vec and relies solely on eval() consulting param_overrides — for guarded-group Params this path no longer fires and the override is silently lost.\n\nFix: inside both `for group in &template.guarded_groups` loops, when a member/else_member cell is `ValueCellKind::Param`, consult `self.param_overrides.get(&cell.id)` via `validate_param_override` before falling back to default_expr, mirroring the top-level Param branch.\n\nAdd an integration test that sets a CLI override on a guarded-group Param and calls update_source to confirm the override is preserved. If set_parameter on guarded-group Params is intentionally unsupported, document that and turn the test into a negative assertion. Source: esc-2017-31 (S1).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45752,7 +45763,10 @@
       "completedCount": 1893,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T17:28:55.250Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T17:28:55.268Z"
     }
   }
 }
