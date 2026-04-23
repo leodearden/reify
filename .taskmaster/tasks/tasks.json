@@ -39653,11 +39653,11 @@
         "description": "Design and implement Material as a first-class type so that `param material : Material = ...` is meaningful. Today Material only exists as a trait in `crates/reify-compiler/stdlib/materials_mechanical.ri`. Options: (a) canonical Material struct with name/density/young_modulus fields; (b) make Material-the-trait usable as an existential type backed by the trait-typed-params work. This enables dimensionally/physically correct plumbing in examples like BoltFlange instead of the `String = \"steel\"` stand-in used in task 1751.",
         "details": "## Scope\nSpawned from task 1751 esc-1751-2.\n\n## Open questions\n- Do we want a literal syntax like `material::steel` or a stdlib registry?\n- How does it relate to the trait-typed-params work (see sibling follow-up)?\n- Dimension types for density (`Density = kg/m^3`) may be needed in concert.\n\n### memory_hints\n- search: \"Material trait stdlib\"\n- search: \"physical properties density volume\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:30.183Z",
+        "updatedAt": "2026-04-23T20:40:10.597Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/stdlib",
@@ -46167,7 +46167,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:40:07.540Z",
+      "lastModified": "2026-04-23T20:40:10.597Z",
       "taskCount": 2162,
       "completedCount": 1919,
       "tags": [
