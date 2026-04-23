@@ -98,6 +98,12 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
         // `Tensor<0,M,Q> → Tensor<0,N,Q>` must also hold. Without this rule a trait
         // requiring `Tensor<0,5,Q>` would reject a structure providing `Tensor<0,3,Q>`
         // despite them being semantically identical.
+        //
+        // Guard: `is_scalar_like_leaf(q1)` mirrors the leaf-Q guard on Rules 2a/2b.
+        // The transitivity argument only holds when Rules 2a/2b themselves fire (i.e.
+        // when Q is a scalar-like leaf). Compound-Q pairs (e.g. Vector, Point) are
+        // rejected consistently with Rules 2a/2b. Checking q1 alone is sufficient;
+        // `q1 == q2` implies q2 is the same leaf.
         (
             Type::Tensor {
                 rank: 0,
@@ -109,7 +115,7 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
                 quantity: q2,
                 ..
             },
-        ) => q1 == q2,
+        ) if is_scalar_like_leaf(q1) => q1 == q2,
 
         // Rule 2a: Q -> Tensor<0,_,Q>  (N is irrelevant for rank-0)
         //
