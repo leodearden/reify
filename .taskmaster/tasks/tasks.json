@@ -45861,6 +45861,19 @@
             "crates/reify-test-support/src/mocks.rs"
           ]
         }
+      },
+      {
+        "id": "2158",
+        "title": "conformance: harden pass2 compile-error detection + chained unannotated-let regression",
+        "description": "Two robustness follow-ups on task 1914's pass2_compile_errors implementation in `crates/reify-compiler/src/conformance/checker.rs` (~lines 396–411).\n\nMemory hints: search \"task 1914 pass2_compile_errors compile_expr diagnostics.len Severity\"; entities: AvailableDefaultKind, compile_expr, pass2_compile_errors.",
+        "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestions #2 (checker.rs:396-399) and #4 (checker.rs:405-411).\n\n**#2 — Make the compile-error detector severity-safe.**\n`check_phase_pre_register_default_types` currently uses `diagnostics.len() > diag_before` to detect a compile_expr failure. The doc comment acknowledges this relies on an unchecked assumption: \"compile_expr only emits Severity::Error diagnostics.\" If a future Severity::Warning/Info diagnostic is pushed by any compile_expr code path, a successfully-typed let expression will be silently excluded from `inferred_let_exprs` → the `debug_assert!` in `check_phase_build_available_defaults_map` fires in tests, or the `Type::Real` defensive fallback silently advertises a phantom type in release (the exact phantom-type regression task 1914 set out to prevent).\n\nFix options, in order of preference:\n  1. Filter by severity: `let err_count_before = diagnostics.iter().filter(|d| d.severity == Severity::Error).count();` (and same after). Compare those counts.\n  2. Change `compile_expr` to return `(CompiledExpr, bool /*errored*/)` or `Result<CompiledExpr, ...>`.\n  3. Cheap mitigation: `debug_assert!(diagnostics[diag_before..].iter().all(|d| d.severity == Severity::Error), ...)` so drift fails loudly rather than silently.\n\n**#4 — Regression test for chained unannotated lets with an unresolved forward reference.**\nPre-1914, Pass 2 registered the (potentially poisoned) inferred type in scope even on compile failure; now on failure the name is NOT `register_if_absent`'d. Downstream effect: any *other* unannotated let whose body references this name will emit a new \"unresolved\" diagnostic that did not exist before. Task 1914's regression test only covers a single unannotated let, so the chained-let behavior change is unpinned.\n\nAction:\n  - Add regression test to `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` covering e.g. `trait T { let a = b + 1mm; let c = a * 2mm }` with `b` undefined. Assert the diagnostic set does NOT include a *new* \"unresolved `a`\" cascade caused by Pass 2 failing to register.\n  - If the test fails, consider registering `Type::Error` (poison sentinel) in scope on compile failure — the `implicitly_converts_to(Error, _)` asymmetric wildcard already suppresses cascades (see `type_compat.rs:3–26` and `check_phase_resolve_structure_members` at checker.rs:77–92 for the established pattern).\n\nVerify: `cargo test -p reify-compiler`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --check`.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1914"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45872,7 +45885,8 @@
         "master"
       ],
       "created": "2026-04-23T18:46:50.839Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-23T18:46:57.953Z"
     }
   }
 }
