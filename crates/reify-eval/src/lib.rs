@@ -147,17 +147,30 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         Value::Axis { .. } => matches!(ty, Type::Axis),
         Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
         Value::Range { .. } => matches!(ty, Type::Range(_)),
-        // Note: `Type::Geometry`, `Type::StructureRef`, and `Type::TypeParam` have
-        // no corresponding `Value` variant, so any non-Undef value supplied to a
-        // cell of those types falls through this `match` and returns `false`,
-        // triggering `EngineError::TypeKindMismatch`. This default-reject behaviour
-        // is sound because value cells never carry those types post-compilation —
+        // Note: `Type::Geometry` and `Type::TypeParam` have no corresponding
+        // `Value` variant, so any non-Undef value supplied to a cell of those
+        // types falls through this `match` and returns `false`, triggering
+        // `EngineError::TypeKindMismatch`. This default-reject behaviour is
+        // sound because value cells never carry those types post-compilation —
         // an invariant enforced at runtime by the `#[cfg(debug_assertions)]`
         // `assert_value_cell_types_representable` check in
         // `crate::engine_eval::Engine::eval` (task 1867), and regression-locked
-        // in CI by `crates/reify-eval/tests/value_cell_type_invariants.rs`. If a
-        // future `Value::GeometryHandle` variant is added, add a matching arm here
-        // AND relax the runtime assertion so the compiler enforces completeness.
+        // in CI by `crates/reify-eval/tests/value_cell_type_invariants.rs`.
+        //
+        // `Type::StructureRef` is allowed on value cells (task 1876): user
+        // code may write `param material : Material = Material(...)` where
+        // `Material` is a canonical struct. The struct-call default evaluates
+        // to `Value::Undef` via `reify_stdlib::eval_builtin`'s fallthrough
+        // path (structure constructors are not builtins), and `Value::Undef`
+        // is accepted for any type by the arm above. No Value variant exists
+        // for structure instances yet — if one is added later, add a matching
+        // arm here. The `Type::StructureRef` _arm itself_ is intentionally
+        // omitted: the default-reject case is correct for any non-Undef
+        // value because we have no way to represent a structure instance.
+        //
+        // If a future `Value::GeometryHandle` variant is added, add a matching
+        // arm here AND relax the runtime assertion so the compiler enforces
+        // completeness.
     }
 }
 

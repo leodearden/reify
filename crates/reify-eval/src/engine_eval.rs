@@ -26,9 +26,16 @@ use crate::{
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
 /// evaluation graph has a `cell_type` that has a corresponding `Value`
-/// variant.  `Type::TypeParam`, `Type::StructureRef`, and `Type::Geometry`
-/// have no `Value` counterpart, so any non-Undef value against such a cell
-/// triggers `TypeKindMismatch` — see `value_type_kind_matches` in lib.rs.
+/// variant.  `Type::TypeParam` and `Type::Geometry` have no `Value`
+/// counterpart, so any non-Undef value against such a cell triggers
+/// `TypeKindMismatch` — see `value_type_kind_matches` in lib.rs.
+///
+/// `Type::StructureRef` is permitted (task 1876): user code may declare
+/// `param material : Material = Material(...)` where `Material` is a
+/// canonical struct. The struct-call default evaluates to `Value::Undef`
+/// (structure constructors are not builtins; `reify_stdlib::eval_builtin`
+/// returns Undef for unknown names), and Undef is accepted by the
+/// kind-match against any `Type` variant.
 ///
 /// Fully elided in release builds (cfg-gated, not debug_assert!-wrapped) to
 /// avoid the HashMap walk on the hot eval() path.  Tests run under
@@ -42,10 +49,7 @@ fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) 
     use reify_types::Type;
     for (id, node) in graph.value_cells.iter() {
         assert!(
-            !matches!(
-                &node.cell_type,
-                Type::TypeParam(_) | Type::StructureRef(_) | Type::Geometry
-            ),
+            !matches!(&node.cell_type, Type::TypeParam(_) | Type::Geometry),
             "value cell `{}` has unrepresentable cell_type {:?} post-compilation; \
              value_type_kind_matches treats these variants as having no Value counterpart — \
              see crates/reify-eval/tests/value_cell_type_invariants.rs",
@@ -1446,17 +1450,19 @@ mod invariant_tests {
 
     /// Verify that `assert_value_cell_types_representable` panics with the
     /// expected message for every unrepresentable `Type` variant.  Uses
-    /// `catch_unwind` to check all three variants in a single test run,
-    /// avoiding three nearly-identical `#[should_panic]` tests that would
-    /// pass even if the variant list diverged from the function under test.
+    /// `catch_unwind` to check all variants in a single test run, avoiding
+    /// nearly-identical `#[should_panic]` tests that would pass even if the
+    /// variant list diverged from the function under test.
+    ///
+    /// `Type::StructureRef` is intentionally absent from this list (task
+    /// 1876): it is permitted on value cells so that user params like
+    /// `material : Material = Material(...)` can be represented; the
+    /// default expression evaluates to `Value::Undef`, which passes the
+    /// kind-match check for any type.
     #[test]
     fn panics_on_unrepresentable_cell_types() {
         use std::panic;
-        for ty in [
-            Type::TypeParam("T".into()),
-            Type::StructureRef("Bolt".into()),
-            Type::Geometry,
-        ] {
+        for ty in [Type::TypeParam("T".into()), Type::Geometry] {
             let mut graph = EvaluationGraph::default();
             let (id, node) = bad_node(ty);
             graph.value_cells.insert(id, node);

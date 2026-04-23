@@ -16,7 +16,7 @@
 //!  10. constraint-def phase    — a `constraint def` declaration
 //!  11. entity phase            — structure + occurrence + import declarations
 //!  12. post-passes             — recursion detect, dup sig, field composition,
-//!     purpose compilation
+//!      purpose compilation
 //!  13. hash assembly           — implicit via non-empty content_hash equality
 //!
 //! This test MUST pass on base code (before the phase-extraction refactor) AND

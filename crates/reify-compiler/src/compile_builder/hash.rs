@@ -201,7 +201,7 @@ mod tests {
     ///
     /// > "Encoding the count explicitly guards against collisions when a pragma has
     /// > optional arguments that could be absent vs. present as an empty value."
-    ///   — hash_pragma docstring
+    /// > — hash_pragma docstring
     ///
     /// Span is set to `SourceSpan::new(0, 0)` because span is positional metadata
     /// explicitly excluded from the hash (per the docstring), so span choice is

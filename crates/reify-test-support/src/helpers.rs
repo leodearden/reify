@@ -774,9 +774,9 @@ mod tests {
 
     #[test]
     fn test_compile_source_with_stdlib() {
-        // Source referencing stdlib trait Material — should compile without errors
+        // Source referencing stdlib trait MaterialSpec — should compile without errors
         // only when stdlib is loaded.
-        let source = r#"structure Steel : Material {
+        let source = r#"structure Steel : MaterialSpec {
             param density: Real = 7850
             param name: String = "Steel"
         }"#;
@@ -930,8 +930,8 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_check_source_with_stdlib() {
-        // Source referencing stdlib trait Material with a constraint.
-        let source = r#"structure Steel : Material {
+        // Source referencing stdlib trait MaterialSpec with a constraint.
+        let source = r#"structure Steel : MaterialSpec {
             param density: Real = 7850
             param name: String = "Steel"
             constraint density > 0
@@ -1032,9 +1032,9 @@ mod tests {
 
     #[test]
     fn test_parse_and_compile_with_stdlib() {
-        // Use a simple source that requires stdlib (Material trait) without
+        // Use a simple source that requires stdlib (MaterialSpec trait) without
         // coupling to specific stdlib field values or shape details.
-        let source = r#"structure S : Material {
+        let source = r#"structure S : MaterialSpec {
             param density: Real = 1
             param name: String = "S"
         }"#;

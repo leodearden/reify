@@ -1,8 +1,14 @@
 //! Regression lock for the value-cell cell_type invariant relied upon by
 //! `value_type_kind_matches` (crates/reify-eval/src/lib.rs): post-compilation,
-//! no ValueCellDecl.cell_type carries Type::TypeParam, Type::StructureRef, or
-//! Type::Geometry — those three variants have no Value counterpart and would
-//! fall through the match to the default-reject path.
+//! no ValueCellDecl.cell_type carries Type::TypeParam or Type::Geometry —
+//! those variants have no Value counterpart and would fall through the match
+//! to the default-reject path.
+//!
+//! `Type::StructureRef` is intentionally NOT checked here (task 1876):
+//! user code may declare `param x : SomeStruct = SomeStruct(...)` which
+//! compiles to a ValueCellDecl with cell_type = StructureRef. The struct-call
+//! default evaluates to Value::Undef (structure constructors are not
+//! builtins), and Undef is accepted by the kind-match for any type.
 
 use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellDecl};
 use reify_types::{ModulePath, Severity, Type};

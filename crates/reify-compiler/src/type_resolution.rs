@@ -742,6 +742,7 @@ const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
 ///
 /// Builds a substitution map from param names to concrete types, then
 /// resolves the alias body with those substitutions applied.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_parameterized_alias(
     alias_entry: &TypeAliasEntry,
     type_args: &[reify_syntax::TypeExpr],
