@@ -12,6 +12,8 @@
 //! trait-object param type (preserving the task-1874 pathway).
 
 use reify_compiler::{EntityKind, stdlib_loader};
+use reify_test_support::compile_source_with_stdlib;
+use reify_types::{Severity, Type};
 
 // ─── step-3: canonical Material struct is present in the stdlib ─────────────
 
@@ -91,4 +93,50 @@ fn material_struct_present_in_stdlib() {
             cell.default_expr
         );
     }
+}
+
+// ─── step-5: `param material : Material` resolves to StructureRef ───────────
+
+/// `param material : Material` in a user structure must resolve to
+/// `Type::StructureRef("Material")`, NOT `Type::TraitObject("Material")`. After
+/// task 1876 the name `Material` is bound to the canonical struct (trait
+/// fallback now lives under `MaterialSpec`), so type resolution of the bare
+/// name `Material` must pick the struct. Compilation should succeed cleanly.
+#[test]
+fn param_material_resolves_to_struct_ref() {
+    let source = r#"
+        structure def Part { param material : Material }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors compiling `Part` with `param material : Material`, got: {:?}",
+        errors
+    );
+
+    let part = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Part")
+        .expect("Part template should be compiled");
+
+    let material_cell = part
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "material")
+        .expect("Part.material should exist");
+
+    assert_eq!(
+        material_cell.cell_type,
+        Type::StructureRef("Material".to_string()),
+        "Part.material should resolve to Type::StructureRef(\"Material\") now that Material \
+         is a canonical struct (not the old trait); got {:?}",
+        material_cell.cell_type
+    );
 }
