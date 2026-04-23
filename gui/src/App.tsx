@@ -1,4 +1,4 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For, untrack } from 'solid-js';
 import { DualViewport } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
@@ -58,13 +58,14 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, EntityTreeNode } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
 import { loadViewPersistence, createDebouncedSaver } from './stores/viewPersistence';
+import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
 import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
@@ -182,6 +183,65 @@ const App: Component = () => {
     setTreeGeneration((v) => v + 1);
   });
 
+  // Fuzzy-rebind notification: after each tree update, check for stale paths
+  // that have a single unambiguous suffix-match candidate and surface a
+  // non-blocking toast with [Yes][No][Ignore] actions.
+  // Per PRD §8.5: never auto-applies — user must confirm explicitly.
+  {
+    // Session-scoped set of ignored stale→candidate pairs.
+    // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [Ignore].
+    const ignoredPairs = new Set<string>();
+
+    createEffect(() => {
+      void treeGeneration(); // re-run after each tree update
+      const tree = untrack(() => entityTree());
+      const stalePaths = untrack(() => viewStateStore.getStalePaths());
+
+      for (const stalePath of stalePaths) {
+        const candidate = findFuzzyCandidate(stalePath, null, tree);
+        if (!candidate) continue;
+
+        const pairKey = `${stalePath}→${candidate.path}`;
+        if (ignoredPairs.has(pairKey)) continue;
+
+        // Snapshot the stale path's explicit visibility before the closure captures it.
+        const staleVisibility = untrack(() => viewStateStore.state.explicit[stalePath]);
+
+        const candidatePath = candidate.path;
+        showToast(
+          `"${stalePath}" may have been renamed to "${candidatePath}". Rebind?`,
+          'info',
+          [
+            {
+              label: 'Yes',
+              onClick: () => {
+                // Transfer the stale path's visibility to the new path.
+                if (staleVisibility) {
+                  viewStateStore.setVisibility(candidatePath, staleVisibility);
+                }
+                // Remove the stale explicit entry.
+                viewStateStore.resetToInherit(stalePath);
+              },
+            },
+            {
+              label: 'No',
+              onClick: () => {
+                // Dismiss without changes.
+              },
+            },
+            {
+              label: 'Ignore',
+              onClick: () => {
+                // Suppress this pair for the rest of the session.
+                ignoredPairs.add(pairKey);
+              },
+            },
+          ],
+        );
+      }
+    });
+  }
+
   // True when at least one design mesh is loaded. Memoized so DualViewport's
   // designViewportActive prop does not allocate a new array on every reactive pulse.
   const hasMeshes = createMemo(() => Object.keys(engineStore.state.meshes).length > 0);
@@ -248,9 +308,9 @@ const App: Component = () => {
   // Toast queue state
   const [toasts, setToasts] = createSignal<ToastMessage[]>([]);
 
-  function showToast(message: string, type: ToastMessage['type']) {
+  function showToast(message: string, type: ToastMessage['type'], actions?: ToastAction[]) {
     const id = String(++toastIdCounter);
-    setToasts((prev) => [...prev, { id, type, message }]);
+    setToasts((prev) => [...prev, { id, type, message, actions }]);
   }
 
   // Coalescer for serialization-error events — debounces and deduplicates bursts
@@ -949,6 +1009,7 @@ const App: Component = () => {
                   message={t.message}
                   type={t.type}
                   onDismiss={() => handleDismissToast(t.id)}
+                  actions={t.actions}
                 />
               )}
             </For>

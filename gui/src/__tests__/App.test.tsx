@@ -3458,9 +3458,9 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
 
     // A toast with [Yes][No][Ignore] buttons should appear
     await waitFor(() => screen.getByTestId('toast'));
-    expect(screen.getByRole('button', { name: /yes/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /no/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /ignore/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^yes$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^no$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^ignore$/i })).toBeTruthy();
     // Toast message should reference the candidate or use "rebind"
     expect(screen.getByTestId('toast').textContent).toMatch(
       /Assembly\.bolt_flange\.geometry|Assembly\.flange\.geometry|rebind|rename/i,
@@ -3485,8 +3485,8 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
       2,
     );
 
-    await waitFor(() => screen.getByRole('button', { name: /yes/i }));
-    fireEvent.click(screen.getByRole('button', { name: /yes/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^yes$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^yes$/i }));
 
     // Toast should be dismissed
     await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());
@@ -3513,8 +3513,8 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
       2,
     );
 
-    await waitFor(() => screen.getByRole('button', { name: /no/i }));
-    fireEvent.click(screen.getByRole('button', { name: /no/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^no$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^no$/i }));
 
     // Toast dismissed
     await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());
@@ -3540,8 +3540,8 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
       2,
     );
 
-    await waitFor(() => screen.getByRole('button', { name: /ignore/i }));
-    fireEvent.click(screen.getByRole('button', { name: /ignore/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^ignore$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^ignore$/i }));
 
     // Toast dismissed
     await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());

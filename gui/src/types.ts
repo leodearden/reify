@@ -141,11 +141,19 @@ export interface FileEntry {
   children?: FileEntry[];
 }
 
+/** A single action button rendered inside a toast notification. */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 /** A toast notification message. */
 export interface ToastMessage {
   id: string;
   type: 'success' | 'error' | 'info';
   message: string;
+  /** Optional action buttons (e.g. [Yes][No][Ignore] for the fuzzy-rebind prompt). */
+  actions?: ToastAction[];
 }
 
 /** Error emitted when the backend fails to serialize a mesh, value, or constraint. */
