@@ -655,7 +655,7 @@ pub(crate) fn compile_expr_guarded(
                     // Exactly one user fn matches — emit UserFunctionCall
                     // Deprecation check: warn if the called function is @deprecated.
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
-                        emit_deprecation_warning("function", name, &msg, expr.span, diagnostics);
+                        emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
                     let result_type = matched_fn.return_type.clone();
                     let content_hash = {
