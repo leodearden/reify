@@ -6,9 +6,63 @@
 //!   step-5: compile_with_prelude_context parity with compile_with_prelude
 //!   step-7: load_stdlib_context caching (pointer stability + enum parity)
 
-use reify_compiler::PreludeContext;
+use reify_compiler::{CompiledModule, PreludeContext};
 use reify_test_support::CompiledModuleBuilder;
 use reify_types::{EnumDef, ModulePath};
+
+// ─── step-3: PreludeContext::from_slice ergonomics ─────────────────────────
+
+/// PreludeContext::from_slice borrows the same CompiledModule addresses as the
+/// input slice AND produces the same resolution_enums() as the equivalent
+/// PreludeContext::new(&borrowed_refs).
+#[test]
+fn from_slice_borrows_same_addresses_and_matches_new() {
+    let enum_x = EnumDef {
+        name: "EnumX".to_string(),
+        variants: vec!["X1".to_string()],
+    };
+    let enum_y = EnumDef {
+        name: "EnumY".to_string(),
+        variants: vec!["Y1".to_string(), "Y2".to_string()],
+    };
+
+    let m1 = CompiledModuleBuilder::new(ModulePath::single("from_slice_m1"))
+        .enum_def(enum_x.clone())
+        .build();
+    let m2 = CompiledModuleBuilder::new(ModulePath::single("from_slice_m2"))
+        .enum_def(enum_y.clone())
+        .build();
+
+    let prelude: &[CompiledModule] = &[m1, m2];
+    let ctx_from_slice = PreludeContext::from_slice(prelude);
+
+    // modules() must expose references to the same allocations as the input slice.
+    assert_eq!(
+        ctx_from_slice.modules().len(),
+        prelude.len(),
+        "from_slice should borrow the same number of modules"
+    );
+    for (i, (ctx_ref, input_ref)) in ctx_from_slice
+        .modules()
+        .iter()
+        .zip(prelude.iter())
+        .enumerate()
+    {
+        assert!(
+            std::ptr::eq(*ctx_ref, input_ref),
+            "modules()[{i}] should point to the same allocation as prelude[{i}]"
+        );
+    }
+
+    // resolution_enums() from from_slice must match new(&refs).
+    let refs: Vec<&_> = prelude.iter().collect();
+    let ctx_from_new = PreludeContext::new(&refs);
+    assert_eq!(
+        ctx_from_slice.resolution_enums(),
+        ctx_from_new.resolution_enums(),
+        "from_slice resolution_enums must equal new(&refs) resolution_enums"
+    );
+}
 
 // ─── step-1: PreludeContext::new invariants ────────────────────────────────
 
