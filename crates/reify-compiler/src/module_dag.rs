@@ -499,13 +499,21 @@ mod tests {
     }
 
     #[test]
-    fn diag_invalid_path_formats_message_with_context_phrase() {
-        // Uses the same phrase as both production call sites.
-        let diags = diag_invalid_path("foo", ModulePathParseError::Empty, "resolving import");
+    fn diag_invalid_path_formats_message() {
+        use reify_types::Severity;
+        // Calls the 2-arg form; "resolving import" is now inlined into the format string.
+        let diags = diag_invalid_path("some.path", ModulePathParseError::Empty);
         assert_eq!(diags.len(), 1);
-        assert_eq!(
-            diags[0].message,
-            "invalid module path while resolving import 'foo': module path must not be empty"
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("some.path"),
+            "message must reference the path argument, got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains(&ModulePathParseError::Empty.to_string()),
+            "message must reference the error's Display text, got: {}",
+            diags[0].message
         );
     }
 }
