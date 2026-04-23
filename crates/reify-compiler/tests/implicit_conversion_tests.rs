@@ -325,6 +325,57 @@ fn tensor0_different_n_scalar_quantity_mismatch_rejected() {
     );
 }
 
+// ── Rule 2c compound-Q guard tests ────────────────────────────────────────
+//
+// Rule 2c's transitivity rationale ("if Q→Tensor<0,M,Q> and Q→Tensor<0,N,Q>
+// both hold, then Tensor<0,M,Q>→Tensor<0,N,Q> must also hold") only applies
+// when Rules 2a/2b themselves fire — i.e. when Q is a scalar-like leaf.
+// Compound Q types (Vector, Tensor, Matrix, Point) must be rejected by Rule 2c
+// for consistency with Rules 2a/2b. Covers review suggestions from task-395.
+
+/// Rule 2c must NOT fire when Q is a compound Vector type (different N).
+/// Tensor<0,3,Vector<3,Real>> -> Tensor<0,5,Vector<3,Real>> must be rejected:
+/// transitivity from Rules 2a/2b fails because 2a/2b reject compound Q,
+/// so Rule 2c inheriting their transitivity must also require leaf-Q.
+#[test]
+fn rule_2c_rejects_compound_q_vector_different_n() {
+    let q = Type::vec3(Type::Real);
+    let from = Type::tensor(0, 3, q.clone());
+    let to = Type::tensor(0, 5, q);
+    assert!(
+        !implicitly_converts_to(&from, &to),
+        "Tensor<0,3,Vector<3,Real>> -> Tensor<0,5,Vector<3,Real>> must be rejected (compound Q — Rule 2c requires leaf-Q)"
+    );
+}
+
+/// Rule 2c must NOT fire when Q is a compound Tensor<2> type (different N).
+/// Tensor<0,3,Tensor<2,3,Real>> -> Tensor<0,5,Tensor<2,3,Real>> must be rejected.
+/// Parallels `rule_2a_rejects_compound_from_tensor2`.
+#[test]
+fn rule_2c_rejects_compound_q_tensor_different_n() {
+    let q = Type::tensor(2, 3, Type::Real);
+    let from = Type::tensor(0, 3, q.clone());
+    let to = Type::tensor(0, 5, q);
+    assert!(
+        !implicitly_converts_to(&from, &to),
+        "Tensor<0,3,Tensor<2,3,Real>> -> Tensor<0,5,Tensor<2,3,Real>> must be rejected (compound Q — Rule 2c requires leaf-Q)"
+    );
+}
+
+/// Rule 2c must NOT fire when Q is a compound Point type (different N).
+/// Tensor<0,3,Point<3,Real>> -> Tensor<0,5,Point<3,Real>> must be rejected.
+/// Parallels `rule_2a_rejects_compound_from_point`.
+#[test]
+fn rule_2c_rejects_compound_q_point_different_n() {
+    let q = Type::point3(Type::Real);
+    let from = Type::tensor(0, 3, q.clone());
+    let to = Type::tensor(0, 5, q);
+    assert!(
+        !implicitly_converts_to(&from, &to),
+        "Tensor<0,3,Point<3,Real>> -> Tensor<0,5,Point<3,Real>> must be rejected (compound Q — Rule 2c requires leaf-Q)"
+    );
+}
+
 // ── Rules 2a/2b compound-type guard tests ─────────────────────────────────
 //
 // Rules 2a/2b use wildcard arms (`from_ty` / `to_ty`). Without a guard, any
