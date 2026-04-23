@@ -45887,6 +45887,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2160",
+        "title": "Tighten cascade-suppression regression test: add diagnostic-count assertion or span-based check",
+        "description": "Make `unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch` in `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` (~lines 748-831) less prose-dependent.\n\nMemory hints: search \"task 1914 cascade suppression regression test available default\"; entities: compile_source, errors_only.",
+        "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestion #6.\n\nCurrent test asserts by substring match on error message prose (`\"available default\"` + `\"Real\"`, and `\"type mismatch for trait member\"` + `\"'a'\"`). This silently passes if the diagnostic wording is refactored (e.g., \"advertised default\"). The test comment correctly notes it doesn't assert an exact diagnostic count, but pinning on specific English strings risks a future prose cleanup letting a real regression slip through.\n\nReify does not yet have stable diagnostic codes/IDs, so the cleanest option isn't available. Pick one of:\n  1. **Span-based (preferred):** assert that no diagnostic whose span points at the trait-member `a` declaration exists, and that at least one root-cause diagnostic names `b`. Span is stable across prose refactors.\n  2. **Count-based backstop:** additionally assert the total error count stays at a specific small number (e.g., `assert_eq!(errors.len(), N)` or `<= N`). Simpler, pins total but breaks on unrelated error additions.\n  3. **Combination:** keep current substring checks AND add either a span check or a tight count bound.\n\nAlso consider: if Reify introduces stable diagnostic codes in the future, revisit this test (and similar prose-assertion tests) to migrate to code-based assertions.\n\nVerify: `cargo test -p reify-compiler test_unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch`; full suite clean.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1914"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -45899,7 +45912,7 @@
       ],
       "created": "2026-04-23T18:46:50.839Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-23T18:47:44.750Z"
+      "updated": "2026-04-23T18:48:28.169Z"
     }
   }
 }
