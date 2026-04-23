@@ -46159,15 +46159,16 @@
         "description": "The intersection_all and union_all tests in crates/reify-compiler/tests/compile_api_tests.rs only assert the BooleanOp kind on the fold ops (ops[2] and ops[4]) without verifying the left/right GeomRef operands. The companion difference test at lines 1665-1668 explicitly destructures left/right as GeomRef::Step(0)/Step(1). Tighten both _all-variant tests to match: ops[2] should be Boolean{op, Step(0), Step(1)} and ops[4] should be Boolean{op, Step(2), Step(3)}. This makes the left-fold topology an assertion rather than implicit, catching any regression where the fold order is reversed or misindexed.\n\nScope: update both union_all (around lines 1627-1647) and intersection_all (around lines 1686-1688) tests to use match arms that destructure left/right operands, mirroring the pattern used in compile_boolean_op_difference_via_compile.\n\nmemory_hints:\n- search: \"boolean op compile test union intersection difference fold topology\"\n- entity: compile_boolean_op, BooleanOp, GeomRef",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-23T20:40:11.018Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T20:40:10.597Z",
+      "lastModified": "2026-04-23T20:40:11.018Z",
       "taskCount": 2162,
       "completedCount": 1919,
       "tags": [
