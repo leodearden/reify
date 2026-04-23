@@ -852,6 +852,10 @@ impl Engine {
         // depend on auto params — they will re-evaluate to the same value.
         // For auto-param-dependent guards and members that reference auto params,
         // this corrects what the earlier pass could not compute.
+        //
+        // Inactive-branch Auto-cell policy: skip (preserve solver value).
+        // Canonical rule documented on `engine_edit.rs`'s module-level `//!` doc
+        // and `deactivate_if_not_auto`.
         if self.solver.is_some() {
             for template in &module.templates {
                 for group in &template.guarded_groups {

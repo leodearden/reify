@@ -1,4 +1,27 @@
-// Split from lib.rs (task 2032) — edit methods.
+//! Edit methods for the Reify evaluation engine (split from lib.rs, task 2032).
+//!
+//! # Canonical Auto-cell lifecycle rule
+//!
+//! **Auto cell lifecycle is owned by the constraint solver, not by guard
+//! activation/deactivation.**
+//!
+//! Inactive-branch Auto cells retain their solver-resolved value across guard
+//! transitions in BOTH of the following code paths:
+//!
+//! * **`Engine::eval` — post-solver guard re-evaluation** (`engine_eval.rs`):
+//!   the inactive-branch `Value::Undef` write is gated with
+//!   `if !cell.kind.is_auto()`, so Auto cells on the inactive side keep the
+//!   value and determinacy that the solver wrote.
+//!
+//! * **`Engine::edit_param` — Phase 1 guard re-elaboration and post-wave2
+//!   cleanup** (this file): the helper [`deactivate_if_not_auto`] writes
+//!   `Undef / Undetermined` for non-Auto cells and skips Auto cells entirely.
+//!
+//! This was originally asymmetric (task 2143): the post-solver pass in
+//! `engine_eval.rs` used to overwrite inactive-branch Auto cells with
+//! `(Undef, Auto)`, destroying solver work and causing `eval(guard=T)` to
+//! diverge from `eval(guard=¬T) → edit_param(guard, T)` for the same final
+//! configuration.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -25,6 +48,9 @@ use crate::{
 /// `Auto` cell, whose lifecycle is owned by the constraint solver rather than
 /// guard activation/deactivation. Missing cells are treated as non-Auto
 /// (i.e. they get deactivated), preserving the prior `is_some_and` semantics.
+///
+/// See the [module-level doc](self) for the canonical Auto-cell lifecycle rule
+/// shared with `engine_eval.rs`'s post-solver guard re-evaluation pass.
 pub(crate) fn deactivate_if_not_auto(
     graph: &EvaluationGraph,
     id: &ValueCellId,
