@@ -42087,7 +42087,8 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/conformance.rs"
+            "crates/reify-compiler/src/conformance/checker.rs",
+            "crates/reify-compiler/src/conformance/mod.rs"
           ],
           "modules": [
             "crates/reify-compiler/src/conformance"
@@ -45996,7 +45997,9 @@
       "completedCount": 1911,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T19:34:06.487Z",
+      "description": "Tasks for master context"
     }
   }
 }
