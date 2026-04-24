@@ -174,7 +174,7 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     }
 
     // Compile
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
     // Convert compiler diagnostics
     for diag in &compiled.diagnostics {
