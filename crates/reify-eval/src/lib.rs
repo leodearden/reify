@@ -768,6 +768,37 @@ structure S {
         );
     }
 
+    // ── eval_ctx_with_meta helper ─────────────────────────────────────────────
+
+    /// Canonical construction test: `eval_ctx_with_meta` must produce an
+    /// `EvalContext` that resolves a `MetaAccess` expression to the correct
+    /// `Value::String`.
+    ///
+    /// Expected compile-failure before step-4 impl: `eval_ctx_with_meta` does
+    /// not exist — `error[E0425]: cannot find function 'eval_ctx_with_meta'`.
+    #[test]
+    fn eval_ctx_with_meta_resolves_meta_access() {
+        use reify_types::{CompiledExpr, Value, ValueMap};
+        use std::collections::HashMap;
+
+        let values = ValueMap::new();
+        let functions: &[reify_types::CompiledFunction] = &[];
+        let mut widget_meta = HashMap::new();
+        widget_meta.insert("description".to_string(), "A gadget".to_string());
+        let mut meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        meta_map.insert("Widget".to_string(), widget_meta);
+
+        let ctx = eval_ctx_with_meta(&values, functions, &meta_map);
+
+        let expr = CompiledExpr::meta_access("Widget".into(), "description".into());
+        let result = reify_expr::eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::String("A gadget".to_string()),
+            "eval_ctx_with_meta must produce an EvalContext that resolves MetaAccess correctly"
+        );
+    }
+
     // ── Arc-sharing invariant: Engine.meta_map ────────────────────────────────
 
     /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
