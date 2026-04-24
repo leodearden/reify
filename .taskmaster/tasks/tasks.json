@@ -46632,7 +46632,23 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:03:33.950Z"
+        "updatedAt": "2026-04-24T09:03:33.950Z",
+        "metadata": {
+          "memory_hints": {
+            "entity_refs": [
+              "Task 2010",
+              "Task 612",
+              "Task 1732",
+              "geometry_modify",
+              "Draft"
+            ],
+            "queries": [
+              "Draft geometry_modify single-geom-target fallback regression test",
+              "step_offset fix geometry_modify non-geometry target",
+              "geometry_arg_indices single-geom-target kinds"
+            ]
+          }
+        }
       },
       {
         "id": "2192",
@@ -46834,7 +46850,9 @@
       "completedCount": 1939,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T09:51:14.311Z",
+      "description": "Tasks for master context"
     }
   }
 }
