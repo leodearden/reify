@@ -47209,12 +47209,24 @@
             "commit": "07ebff04b398ca40a2dbb4704be152c58513187c"
           }
         }
+      },
+      {
+        "id": "2215",
+        "title": "reify-eval: complete eval_ctx_with_meta canonicalization in unfold.rs and geometry_ops.rs",
+        "description": "Task 397 introduced the `pub(crate) eval_ctx_with_meta` helper in crates/reify-eval/src/lib.rs and converted the engine_eval.rs and engine_edit.rs call sites, but 8 inlined `EvalContext::new(values, functions).with_meta(meta_map)` call sites remain in sibling modules of the same crate. Convert them and fix a small related doc-comment truncation.",
+        "details": "## Scope\n\n1. Convert the 8 remaining inlined call sites to `eval_ctx_with_meta(...)`:\n   - crates/reify-eval/src/unfold.rs: lines 88, 124, 316, 321, 549\n   - crates/reify-eval/src/geometry_ops.rs: lines 55, 124, 335\n   (concurrent.rs:467 uses a different values source — review case-by-case.)\n\n2. Fix the truncated doc comment on `eval_ctx_with_meta` in\n   crates/reify-eval/src/lib.rs:417-418. The final bullet currently ends\n   mid-sentence: \"...passed to `EvalContext::with_meta` so that `MetaAccess`\n   expressions resolve\" — finish the sentence.\n\n## Motivation\n\n`eval_ctx_with_meta` is documented as the \"Canonical construction point for\nan EvalContext with meta-map binding\" but 8 sibling call sites still use the\ninlined pattern, undermining the claim and allowing future drift if the\nhelper grows in scope.\n\n## Acceptance\n\n- `git grep \"EvalContext::new.*with_meta\" crates/reify-eval/src` returns only\n  the helper body itself (or explicitly-annotated exceptions).\n- cargo test -p reify-eval passes.\n- Doc comment terminates with a complete sentence and period.\n\n## Source\n\nFollow-up from task 397 review (esc-397-72 suggestions 1 and 3).",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T14:12:16.741Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T14:11:27.485Z",
-      "taskCount": 2203,
+      "lastModified": "2026-04-24T14:12:16.744Z",
+      "taskCount": 2204,
       "completedCount": 1962,
       "tags": [
         "master"
