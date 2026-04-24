@@ -3065,3 +3065,113 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
         counter,
     );
 }
+
+// ── Role-flip probe deferred behind short-circuit (task 2094) ───────────────
+
+/// `detect_role_flip` builds two O(N) `HashMap`s over `guarded_groups` on
+/// every call. On hot edits where a cheaper trigger (`sc_dirty` or
+/// `has_added_guard_member`) already fires `has_dirty_guards`, paying that
+/// cost is wasted work.
+///
+/// This test targets the scenario where:
+/// - `sc_dirty = true` (every guard param `uN` changed → every `__guard_N` in
+///   dirty_cone via `structure_controlling`).
+/// - For every group, `guard_value_unchanged = false` (Bool(true) → Bool(false))
+///   → the per-group skip check short-circuits before reaching the role-flip
+///   branch.
+///
+/// Expected after the deferred-probe refactor (task 2094 step-2):
+/// `last_role_flip_probes() == 0` — `sc_dirty` fires the outer trigger, and
+/// the per-group skip never needs to consult the role-flip result, so
+/// `detect_role_flip` is never called.
+///
+/// Correctness is pinned by task-2084's lock
+/// `edit_source_role_flipped_guard_member_matches_cold_eval` (:945) and its
+/// symmetric counterpart `_inactive_to_active_matches_cold_eval` (:1027),
+/// which remain unaffected by the timing change.
+///
+/// Task 2094 — deferred role-flip probe perf lock.
+#[test]
+fn edit_source_role_flip_probe_deferred_when_every_guard_value_changes() {
+    // Module A: 2 guarded groups, each guard param defaulting to `true`.
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    where u0 {
+        let x0 = 1mm
+    }
+    where u1 {
+        let x1 = 1mm
+    }
+}"#;
+    // Module B: identical structure, but guard params default to `false`.
+    // Every `uN` cell is in `changed_set` (default_expr differs) →
+    // every `__guard_N` is in dirty_cone (structure_controlling) →
+    // `sc_dirty = true`. Guard VALUES flip from Bool(true) to Bool(false),
+    // so `guard_value_unchanged = false` for every group → per-group skip
+    // short-circuits before the role-flip branch is consulted.
+    let module_b_src = r#"structure S {
+    param u0: Bool = false
+    param u1: Bool = false
+    where u0 {
+        let x0 = 1mm
+    }
+    where u1 {
+        let x1 = 1mm
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchor: x0 and x1 must be Undef in cold (guards now false).
+    // Prevents a "both wrong" false-pass on the counter assertion below.
+    let x0_id = ValueCellId::new("S", "x0");
+    let x1_id = ValueCellId::new("S", "x1");
+    assert!(
+        matches!(cold_result.values.get(&x0_id), Some(Value::Undef)),
+        "x0 must be Undef after guard u0 flips to false (inactive branch); \
+         got {:?}",
+        cold_result.values.get(&x0_id)
+    );
+    assert!(
+        matches!(cold_result.values.get(&x1_id), Some(Value::Undef)),
+        "x1 must be Undef after guard u1 flips to false (inactive branch); \
+         got {:?}",
+        cold_result.values.get(&x1_id)
+    );
+
+    // (c) Performance lock: detect_role_flip must NOT be called when sc_dirty
+    // fires the outer trigger and every group's guard VALUE changed.
+    //
+    // Regression catalogue:
+    // == 1 → eager call regressed: detect_role_flip invoked unconditionally
+    //         on every edit_source (the pre-refactor behaviour that task 2094
+    //         eliminates; probe is back behind sc_dirty short-circuit failure).
+    // >  1 → memoization broke: detect_role_flip called more than once per edit.
+    let probes = incremental.last_role_flip_probes();
+    assert_eq!(
+        probes,
+        0,
+        "expected 0 detect_role_flip probes (sc_dirty fires the outer trigger; \
+         all groups' guard VALUES changed so per-group skip short-circuits before \
+         the role-flip branch); \
+         got {} — \
+         if 1, eager call regressed (detect_role_flip invoked unconditionally); \
+         if >1, memoization broke",
+        probes
+    );
+}
