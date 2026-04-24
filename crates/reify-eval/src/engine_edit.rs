@@ -914,8 +914,13 @@ impl Engine {
             );
 
             if guard_changed {
+                // Field-level borrow splitting: pre-bind `graph` so the loop can
+                // iterate `&graph.guarded_groups` (shared) while `&mut new_snapshot.values`
+                // (a disjoint field) remains exclusively borrowed inside the body.
+                // This matches the Phase 1 pattern at lines 647-708; no .clone() needed.
+                let graph = &new_snapshot.graph;
                 // Re-evaluate each guarded group based on current guard values
-                for group in new_snapshot.graph.guarded_groups.clone() {
+                for group in &graph.guarded_groups {
                     // Site 3: guard cell must be present — eval() has completed and populated all
                     // guard cells into the values map. A missing guard cell here is a logic error.
                     let guard_val = values
@@ -942,8 +947,8 @@ impl Engine {
                     }
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
-                        &new_snapshot.graph,
-                        &group,
+                        graph,
+                        group,
                         &guard_val,
                         &mut values,
                         &mut new_snapshot.values,
@@ -1981,7 +1986,12 @@ impl Engine {
             );
 
             if guard_changed {
-                for group in new_snapshot.graph.guarded_groups.clone() {
+                // Field-level borrow splitting: pre-bind `graph` so the loop can
+                // iterate `&graph.guarded_groups` (shared) while `&mut new_snapshot.values`
+                // (a disjoint field) remains exclusively borrowed inside the body.
+                // This matches the Phase 1 pattern and the edit_param Phase 3 fix; no .clone() needed.
+                let graph = &new_snapshot.graph;
+                for group in &graph.guarded_groups {
                     // Phase 1 (the dirty-cone-triggered branch above) guarantees
                     // that every guard_cell in structure_controlling has a value
                     // in `values`. But Phase 3 is separately gated on
@@ -2020,7 +2030,7 @@ impl Engine {
 
                     for member_id in &group.members {
                         if guard_is_true {
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                            if let Some(node) = graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
                                 let val = reify_expr::eval_expr(
@@ -2035,7 +2045,7 @@ impl Engine {
                             }
                         } else {
                             deactivate_if_not_auto(
-                                &new_snapshot.graph,
+                                graph,
                                 member_id,
                                 &mut values,
                                 &mut new_snapshot.values,
@@ -2045,7 +2055,7 @@ impl Engine {
 
                     for member_id in &group.else_members {
                         if guard_is_false {
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                            if let Some(node) = graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
                                 let val = reify_expr::eval_expr(
@@ -2060,7 +2070,7 @@ impl Engine {
                             }
                         } else {
                             deactivate_if_not_auto(
-                                &new_snapshot.graph,
+                                graph,
                                 member_id,
                                 &mut values,
                                 &mut new_snapshot.values,
@@ -2070,12 +2080,11 @@ impl Engine {
                 }
 
                 let guard_state_hash = guard_state_fingerprint(
-                    &new_snapshot.graph.guarded_groups,
+                    &graph.guarded_groups,
                     &values,
                     GuardLookup::Strict,
                 );
-                new_snapshot.topology_fingerprint = new_snapshot
-                    .graph
+                new_snapshot.topology_fingerprint = graph
                     .topology_fingerprint()
                     .combine(guard_state_hash);
             }
