@@ -40796,16 +40796,19 @@
         "description": "Follow-up from task 765 review.\n\nProblem: The cross-prelude collision check at `crates/reify-compiler/src/lib.rs:278-292` fires per-unit using `unit_registry.lookup`. If a single (malformed) prelude module contained two `pub unit foo` declarations, the warning would read `declared in both 'mod_a' and 'mod_a'` — nonsense. In practice `compile()` rejects intra-module duplicates earlier with proper spans, but the diagnostic is still incorrect when it does fire.\n\nFix: Guard the warning emission with\n```\nif existing.source_module.as_deref() != Some(&module_display[..]) { ... }\n```\nso only genuine cross-module collisions emit this warning. Intra-module dups have been (or should have been) reported at module-compile time.\n\nAcceptance:\n- Add a regression test where a single prelude module declares the same pub unit name twice; assert no `declared in both 'X' and 'X'` warning is emitted from `compile_with_prelude`'s seeding loop.\n- Existing cross-module collision tests continue to pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:09:52.130Z",
+        "updatedAt": "2026-04-24T08:53:15.318Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/tests/unit_registry_tests.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "50cb24c7c342e6a99cb427a22755ce72a6036da8"
+          }
         }
       },
       {
@@ -46580,9 +46583,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T08:43:36.671Z",
+      "lastModified": "2026-04-24T08:53:15.318Z",
       "taskCount": 2179,
-      "completedCount": 1929,
+      "completedCount": 1930,
       "tags": [
         "master"
       ]
