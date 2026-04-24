@@ -278,5 +278,29 @@ structure def Outer {
         !errors.is_empty(),
         "expected error diagnostic: Inner does not implement A"
     );
+
+    // Strengthen: at least one error must specifically identify the missing trait
+    // conformance (mentions trait/implement/A), not just any compile error.
+    // Production code emits "sub-component 'inner' (type 'Inner') does not implement trait 'A'"
+    // via expr.rs::compile_instance_qualified_access_expr — verify that message shape.
+    let mentions_trait_conformance = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("trait") && msg.contains("implement")
+    });
+    assert!(
+        mentions_trait_conformance,
+        "expected at least one error mentioning 'trait' and 'implement' \
+         (identifying missing trait conformance), got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let mentions_trait_a = errors
+        .iter()
+        .any(|d| d.message.contains("'A'") || d.message.contains("\"A\""));
+    assert!(
+        mentions_trait_a,
+        "expected at least one error mentioning trait 'A' by name, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
