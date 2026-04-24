@@ -388,4 +388,17 @@ mod tests {
             other => panic!("expected Modify(Fillet), got {:?}", other),
         }
     }
+
+    #[test]
+    fn compile_modify_op_non_geometry_target_fallback_all_2arg_kinds() {
+        let cases: &[(ModifyKind, &str, &str)] = &[
+            (ModifyKind::Chamfer, "chamfer", "distance"),
+            (ModifyKind::Fillet, "fillet", "radius"),
+            (ModifyKind::Thicken, "thicken", "offset"),
+            (ModifyKind::Shell, "shell", "thickness"),
+        ];
+        for &(kind, fn_name, arg_name) in cases {
+            assert_non_geometry_target_fallback(kind, fn_name, arg_name);
+        }
+    }
 }
