@@ -46965,7 +46965,21 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T10:59:42.743Z"
+        "updatedAt": "2026-04-24T10:59:42.743Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/trait_requirements.rs",
+            "crates/reify-compiler/tests/collection_sub_tests.rs",
+            "crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs",
+            "crates/reify-compiler/tests/m9_error_cases.rs",
+            "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs",
+            "crates/reify-types/src/diagnostics.rs",
+            "crates/reify-types/src/lib.rs"
+          ]
+        }
       },
       {
         "id": "2206",
@@ -47004,7 +47018,9 @@
       "completedCount": 1947,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T11:06:44.208Z",
+      "description": "Tasks for master context"
     }
   }
 }
