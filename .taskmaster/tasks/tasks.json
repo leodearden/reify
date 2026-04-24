@@ -46480,11 +46480,16 @@
         "description": "Revert the Enum::iter()-based op-kind exhaustiveness tests at crates/reify-types/src/types.rs:776-888 back to the pre-diff `check(&[(Variant, \"str\"), ...])` tables. Drop the `strum` and `strum_macros` dev-dependencies and the `#[cfg_attr(test, derive(strum_macros::EnumIter))]` attributes on the op-kind enums. The existing Display impl already matches exhaustively (compiler-enforced), so the iter-based tests tautologically re-assert what the compiler checks while adding ~20 lines and two dev-deps. Source: esc-2078-22 (S1).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:09:58.340Z"
+        "updatedAt": "2026-04-24T08:14:26.166Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "7e5841c46182cd63c513339b53cb7eec2e94e5f4"
+          }
+        }
       },
       {
         "id": "2186",
@@ -46530,9 +46535,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:53:35.697Z",
+      "lastModified": "2026-04-24T08:14:26.166Z",
       "taskCount": 2177,
-      "completedCount": 1924,
+      "completedCount": 1925,
       "tags": [
         "master"
       ]
