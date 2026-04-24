@@ -269,6 +269,23 @@ fn detect_role_flip(old_groups: &[GuardedGroupInfo], new_groups: &[GuardedGroupI
     build_role_map(old_groups) != build_role_map(new_groups)
 }
 
+/// Returns `true` when the guard cell's value in the pre-edit snapshot equals
+/// `new_val`, meaning the guard has not changed and member re-elaboration can
+/// be skipped.
+///
+/// Accepts the snapshot `values` map directly (rather than the full
+/// `EvaluationState`) to keep callers and unit tests dependency-free.
+fn guard_value_unchanged(
+    snapshot_values: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+    guard_cell: &ValueCellId,
+    new_val: &Value,
+) -> bool {
+    snapshot_values
+        .and_then(|vs| vs.get(guard_cell))
+        .map(|(v, _)| v)
+        == Some(new_val)
+}
+
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
 /// collections.
 ///
@@ -644,11 +661,6 @@ impl Engine {
                     // and its members don't need re-elaboration. edit_param has no
                     // structural-add or role-flip trigger, so the skip condition is
                     // purely "guard value unchanged".
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
                     // Always write the guard cell value before the skip check.
                     // Phase 1 re-evaluates guards with a determinacy context that
                     // the main eval loop lacks; DeterminacyPredicate guards (e.g.
@@ -663,7 +675,11 @@ impl Engine {
                     new_snapshot
                         .values
                         .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
-                    if old_guard_val == Some(&guard_val) {
+                    if guard_value_unchanged(
+                        self.eval_state.as_ref().map(|s| &s.snapshot.values),
+                        &group.guard_cell,
+                        &guard_val,
+                    ) {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
@@ -910,12 +926,11 @@ impl Engine {
                     // Per-group skip: if this group's guard value is unchanged vs.
                     // the pre-edit snapshot, its activation state has not flipped
                     // and its members don't need re-elaboration.
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
-                    if old_guard_val == Some(&guard_val) {
+                    if guard_value_unchanged(
+                        self.eval_state.as_ref().map(|s| &s.snapshot.values),
+                        &group.guard_cell,
+                        &guard_val,
+                    ) {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
@@ -1626,11 +1641,6 @@ impl Engine {
                     // suppresses all per-group skips because we can't identify
                     // which groups were affected without a second full walk), then
                     // skip the member re-elaboration for this group.
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
                     let has_added_in_group = group.members.iter().any(|m| added.contains(m))
                         || group.else_members.iter().any(|m| added.contains(m));
                     // Always write the guard cell value before the skip check.
@@ -1647,8 +1657,11 @@ impl Engine {
                     new_snapshot
                         .values
                         .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
-                    if old_guard_val == Some(&guard_val)
-                        && !has_added_in_group
+                    if guard_value_unchanged(
+                        self.eval_state.as_ref().map(|s| &s.snapshot.values),
+                        &group.guard_cell,
+                        &guard_val,
+                    ) && !has_added_in_group
                         && !has_role_flipped_guard_member
                     {
                         continue;
@@ -1945,12 +1958,11 @@ impl Engine {
                     // flipped and its members don't need re-elaboration.
                     // Phase 3 has no added-member or role-flip exception
                     // (those are Phase 1 concerns only).
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
-                    if old_guard_val == Some(&guard_val) {
+                    if guard_value_unchanged(
+                        self.eval_state.as_ref().map(|s| &s.snapshot.values),
+                        &group.guard_cell,
+                        &guard_val,
+                    ) {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
