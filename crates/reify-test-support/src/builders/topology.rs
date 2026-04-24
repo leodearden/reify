@@ -199,6 +199,9 @@ impl TopologyTemplateBuilder {
             id: RealizationNodeId::new(entity, index),
             name: None,
             operations,
+            // Sentinel (0, 0): builder-constructed RealizationDecls have no originating
+            // source span.  Callers that exercise span-aware diagnostics must construct
+            // the RealizationDecl directly rather than via this builder.
             span: SourceSpan::new(0, 0),
         });
         self
@@ -217,6 +220,9 @@ impl TopologyTemplateBuilder {
             id: RealizationNodeId::new(entity, index),
             name: Some(name.into()),
             operations,
+            // Sentinel (0, 0): builder-constructed RealizationDecls have no originating
+            // source span.  Callers that exercise span-aware diagnostics must construct
+            // the RealizationDecl directly rather than via this builder.
             span: SourceSpan::new(0, 0),
         });
         self
