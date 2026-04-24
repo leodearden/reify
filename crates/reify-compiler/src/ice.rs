@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn emit_ice_unresolved_pushes_one_error_diagnostic() {
         let mut diags: Vec<Diagnostic> = vec![];
-        emit_ice_unresolved("name", "foo", SourceSpan::empty(0), &mut diags);
+        emit_ice_unresolved(UnresolvedKind::Name, "foo", SourceSpan::empty(0), &mut diags);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
     }
@@ -70,13 +70,13 @@ mod tests {
     #[test]
     fn emit_ice_unresolved_formats_message_with_context_and_name() {
         let mut diags: Vec<Diagnostic> = vec![];
-        emit_ice_unresolved("name", "foo", SourceSpan::empty(0), &mut diags);
+        emit_ice_unresolved(UnresolvedKind::Name, "foo", SourceSpan::empty(0), &mut diags);
         let msg = &diags[0].message;
         assert!(msg.contains("unresolved name"), "expected 'unresolved name' in {msg:?}");
         assert!(msg.contains("'foo'"), "expected name 'foo' in {msg:?}");
 
         let mut diags2: Vec<Diagnostic> = vec![];
-        emit_ice_unresolved("guarded member", "bar", SourceSpan::empty(0), &mut diags2);
+        emit_ice_unresolved(UnresolvedKind::GuardedMember, "bar", SourceSpan::empty(0), &mut diags2);
         let msg2 = &diags2[0].message;
         assert!(msg2.contains("unresolved guarded member"), "expected 'unresolved guarded member' in {msg2:?}");
         assert!(msg2.contains("'bar'"), "expected name 'bar' in {msg2:?}");
@@ -86,7 +86,7 @@ mod tests {
     fn emit_ice_unresolved_attaches_ice_label_with_span() {
         let expected_span = SourceSpan::new(10, 20);
         let mut diags: Vec<Diagnostic> = vec![];
-        emit_ice_unresolved("name", "foo", expected_span, &mut diags);
+        emit_ice_unresolved(UnresolvedKind::Name, "foo", expected_span, &mut diags);
         assert_eq!(diags[0].labels.len(), 1);
         assert_eq!(diags[0].labels[0].span, expected_span);
         let label_msg = &diags[0].labels[0].message;
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn emit_ice_unresolved_returns_type_real() {
         let mut diags: Vec<Diagnostic> = vec![];
-        let ty = emit_ice_unresolved("name", "x", SourceSpan::empty(0), &mut diags);
+        let ty = emit_ice_unresolved(UnresolvedKind::Name, "x", SourceSpan::empty(0), &mut diags);
         assert_eq!(ty, Type::Real);
     }
 
