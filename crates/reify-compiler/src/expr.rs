@@ -2216,18 +2216,37 @@ mod tests {
         make_poison_literal(&mut vec![], Diagnostic::warning("not an error"));
     }
 
-    /// `make_poison_type` fires the `debug_assert!` when called with no
-    /// `Severity::Error` diagnostic pushed at or after `pre_push_len`.
+    /// `make_poison_type` pushes the supplied `Diagnostic` into the vec and
+    /// returns `Type::Error`.
     ///
-    /// Mirrors `make_poison_literal_panics_with_no_errors_in_queue` for the
-    /// parallel `make_poison_type` helper so both helpers have explicit panic-
-    /// contract coverage.  A regression that weakens one of the two assertions
-    /// (e.g. replacing `> pre_push_len` with `>= pre_push_len`) would be caught
-    /// by whichever test covers that helper.
+    /// Mirrors `make_poison_literal_pushes_error_diagnostic_and_returns_poison_literal`
+    /// for the parallel `make_poison_type` helper so both helpers have explicit
+    /// positive-behavior coverage.
+    #[test]
+    fn make_poison_type_pushes_error_diagnostic_and_returns_type_error() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = make_poison_type(
+            &mut diagnostics,
+            Diagnostic::error("ICE: no bounds")
+                .with_label(DiagnosticLabel::new(SourceSpan::prelude(), "here")),
+        );
+        // Diagnostic was pushed internally.
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert_eq!(diagnostics[0].message, "ICE: no bounds");
+        // Returned type is the poison sentinel.
+        assert_eq!(result, Type::Error);
+    }
+
+    /// `make_poison_type` fires the `debug_assert!` when given a diagnostic
+    /// whose severity is not `Severity::Error`.
+    ///
+    /// Mirrors `make_poison_literal_panics_with_non_error_severity_diagnostic`
+    /// for the Type helper so both helpers have explicit panic-contract coverage.
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "dropped adjacent push")]
-    fn make_poison_type_panics_with_no_errors_in_queue() {
-        let _ = make_poison_type(&[], 0);
+    #[should_panic(expected = "severity")]
+    fn make_poison_type_panics_with_non_error_severity_diagnostic() {
+        let _ = make_poison_type(&mut vec![], Diagnostic::info("wrong severity"));
     }
 }
