@@ -1164,3 +1164,56 @@ structure def S : A + B {
             .collect::<Vec<_>>()
     );
 }
+
+/// [#21 conflict] Two traits A and B both declare a sub-component named `hole` but
+/// with *different* structure types: A requires `sub hole = Hole`, B requires
+/// `sub hole = Rectangle`. The dedup-by-name path in `collect_all_requirements`
+/// must detect the mismatch and emit a "conflicting trait sub requirements" diagnostic
+/// rather than silently dropping one of them.
+///
+/// This covers the regression gap identified in the amendment review: without
+/// `seen_sub_names` tracking (structure_name, trait_name), a structure satisfying A's
+/// `sub hole = Hole` would silently pass B's `sub hole = Rectangle` requirement.
+#[test]
+fn conflicting_sub_requirement_emits_conflict_error() {
+    let source = r#"
+structure def Hole {}
+structure def Rectangle {}
+
+trait A {
+    sub hole = Hole()
+}
+
+trait B {
+    sub hole = Rectangle()
+}
+
+structure def S : A + B {
+    sub hole = Hole()
+}
+"#;
+
+    let module = compile_source(source);
+
+    let conflict_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("conflicting trait sub requirements")
+                && d.message.contains("'hole'")
+        })
+        .collect();
+
+    assert!(
+        !conflict_errors.is_empty(),
+        "expected at least one 'conflicting trait sub requirements' error for 'hole' \
+         (different structure types in A vs B), got no matching errors. \
+         All diagnostics: {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}

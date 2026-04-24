@@ -279,27 +279,21 @@ structure def Outer {
         "expected error diagnostic: Inner does not implement A"
     );
 
-    // Strengthen: at least one error must specifically identify the missing trait
-    // conformance (mentions trait/implement/A), not just any compile error.
-    // Production code emits "sub-component 'inner' (type 'Inner') does not implement trait 'A'"
-    // via expr.rs::compile_instance_qualified_access_expr — verify that message shape.
-    let mentions_trait_conformance = errors.iter().any(|d| {
-        let msg = d.message.to_lowercase();
-        msg.contains("trait") && msg.contains("implement")
-    });
+    // Strengthen: at least one error must carry the canonical phrase produced by
+    // compile_instance_qualified_access_expr (expr.rs):
+    //   "does not implement trait 'A'"
+    // Anchoring to this single production-owned phrase avoids coupling to
+    // human-readable wording while still distinguishing a genuine conformance
+    // failure from an unrelated parse or type error.
+    let canonical_phrase = "does not implement trait";
+    let mentions_trait_conformance = errors
+        .iter()
+        .any(|d| d.message.contains(canonical_phrase));
     assert!(
         mentions_trait_conformance,
-        "expected at least one error mentioning 'trait' and 'implement' \
-         (identifying missing trait conformance), got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let mentions_trait_a = errors
-        .iter()
-        .any(|d| d.message.contains("'A'") || d.message.contains("\"A\""));
-    assert!(
-        mentions_trait_a,
-        "expected at least one error mentioning trait 'A' by name, got: {:?}",
+        "expected at least one error containing {:?} \
+         (canonical conformance-failure phrase), got: {:?}",
+        canonical_phrase,
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }

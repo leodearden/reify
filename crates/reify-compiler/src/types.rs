@@ -65,8 +65,9 @@ pub struct TraitDefault {
 
 /// The kind of default a trait provides.
 ///
-/// Variants are matched exhaustively across the crate; add a new variant only
-/// after updating every match site.
+/// Marked `#[non_exhaustive]` so that adding a new variant in the future does not
+/// break source compatibility in external crates (they must use a wildcard arm).
+/// Within this crate, all match sites must still be updated when a variant is added.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum DefaultKind {

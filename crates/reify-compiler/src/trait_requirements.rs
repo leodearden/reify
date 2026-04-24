@@ -49,10 +49,15 @@ pub(crate) struct MergeContext {
     seen_let_hashes: HashMap<String, (ContentHash, String)>,
     /// Let binding names that already have a conflict diagnostic (emit at most 1 per name).
     seen_let_conflict_names: HashSet<String>,
-    /// Sub requirement names already collected — prevents duplicate `MissingSub` errors when
-    /// two or more traits require the same sub-component name (e.g. `sub hole = Hole()`).
-    /// Follows the same pattern as `seen_names` for Param/Let requirements.
-    seen_sub_names: HashSet<String>,
+    /// Sub requirement names already collected — maps name → (structure_name, originating trait).
+    ///
+    /// When the same sub-component name appears in two traits with the same `structure_name`,
+    /// the second occurrence is silently dropped (dedup, identical to `seen_names` for Param/Let).
+    /// When the same name appears with a *different* `structure_name` (e.g. `sub hole = Hole`
+    /// vs `sub hole = Rectangle`), a "conflicting trait sub requirements" diagnostic is emitted
+    /// — analogous to the Param/Let conflict block — and the second requirement is still dropped
+    /// so the checker sees exactly one entry for that sub-name.
+    seen_sub_names: HashMap<String, (String, String)>,
 }
 
 impl MergeContext {
@@ -142,14 +147,43 @@ pub(crate) fn collect_all_requirements(
                 );
                 ctx.requirements.push(req.clone());
             }
-            RequirementKind::Sub(_) => {
-                // Dedup Sub requirements by name: two traits requiring `sub hole = Hole()`
-                // should produce at most one `MissingSub` error (not one per trait).
-                // Same pattern as `seen_names` for Param/Let — insert returns false when
-                // the name was already present, meaning we skip the duplicate.
-                if !ctx.seen_sub_names.insert(req.name.clone()) {
-                    continue; // Already collected a Sub requirement for this name
+            RequirementKind::Sub(structure_name) => {
+                // Dedup Sub requirements by name, following the `seen_names` pattern for
+                // Param/Let: if the same sub-component name was already collected:
+                //   - Same structure_name → identical requirement, silently skip.
+                //   - Different structure_name → conflicting requirements, emit a diagnostic
+                //     (e.g. `sub hole = Hole` vs `sub hole = Rectangle`) then skip so the
+                //     checker sees at most one entry per sub-name.
+                if let Some((existing_structure, existing_trait)) =
+                    ctx.seen_sub_names.get(&req.name)
+                {
+                    if existing_structure != structure_name {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "conflicting trait sub requirements for '{}': \
+                                 trait '{}' requires sub '{}', \
+                                 trait '{}' requires sub '{}'",
+                                req.name,
+                                existing_trait,
+                                existing_structure,
+                                trait_name,
+                                structure_name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                format!(
+                                    "conflict between '{}' and '{}'",
+                                    existing_trait, trait_name
+                                ),
+                            )),
+                        );
+                    }
+                    continue; // Deduplicated (same or conflicting structure_name)
                 }
+                ctx.seen_sub_names.insert(
+                    req.name.clone(),
+                    (structure_name.clone(), trait_name.to_string()),
+                );
                 ctx.requirements.push(req.clone());
             }
         }
