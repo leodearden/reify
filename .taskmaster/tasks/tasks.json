@@ -47138,11 +47138,16 @@
         "description": "Two test-quality improvements to the wildcard-subject coverage in `crates/reify-compiler/tests/purpose_compile_tests.rs` from task-2200's reviewer pass.",
         "details": "**Source:** esc-2200-41 S1 + S3 (reviewer_comprehensive on task 2200)\n\n**Two small, related fixes in `crates/reify-compiler/tests/purpose_compile_tests.rs`:**\n\n1. **(S1) Drop unused `structure Bracket` from the `Structure`-wildcard test** at ~line 890 (`compile_purpose_wildcard_structure_subject_bogus_member_still_silent`). The current source declares `structure Bracket { param width : Length = 80mm }` but the purpose body never references Bracket — pure noise. Either delete the declaration (the purpose stands alone and still compiles) OR exercise Bracket meaningfully (e.g., a second purpose `subject : Bracket` accessing `subject.bogus` to assert the concrete-subject error fires). Pick whichever earns the file's keep — leaning toward delete for minimum blast radius.\n\n2. **(S3) Add an `Occurrence` wildcard characterization test** mirroring the `Structure` case. The existing in-source comments at `crates/reify-compiler/src/expr.rs:1170-1182` explicitly call out `Occurrence` as another unregistered wildcard kind that should fall through silently via the registry-miss guard — but no test pins that path. If the wildcard logic is ever tightened (e.g., someone registers an `Occurrence` template), the regression slips through unobserved.\n\nTest name suggestion: `compile_purpose_wildcard_occurrence_subject_bogus_member_still_silent`. Assert the same \"no diagnostic containing 'has no member'\" invariant.\n\n**Acceptance:**\n- Bracket noise removed (or earned by a second assertion).\n- New `Occurrence` test compiles and passes against current behavior.\n- No change to `expr.rs` validation logic — these are purely test-side.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T11:49:26.813Z"
+        "updatedAt": "2026-04-24T12:19:50.365Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "50217c60f7ac8dc2a3acffe340b8d981be1e1956"
+          }
+        }
       },
       {
         "id": "2213",
@@ -47177,9 +47182,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T12:16:50.129Z",
+      "lastModified": "2026-04-24T12:19:50.365Z",
       "taskCount": 2203,
-      "completedCount": 1958,
+      "completedCount": 1959,
       "tags": [
         "master"
       ]
