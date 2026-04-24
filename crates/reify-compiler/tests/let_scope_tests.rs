@@ -1884,8 +1884,8 @@ fn realization_span_populated_from_param_decl_default_span() {
     );
     let slice = &source[realization.span.start as usize..realization.span.end as usize];
     assert!(
-        slice.contains("g"),
-        "span slice should contain \"g\", got: {:?}",
+        slice.contains("param g"),
+        "span slice should contain \"param g\", got: {:?}",
         slice
     );
     assert!(
@@ -1940,8 +1940,8 @@ fn realization_span_populated_from_guarded_param_decl_span() {
     );
     let slice = &source[realization.span.start as usize..realization.span.end as usize];
     assert!(
-        slice.contains("g"),
-        "span slice should contain \"g\", got: {:?}",
+        slice.contains("param g"),
+        "span slice should contain \"param g\", got: {:?}",
         slice
     );
     assert!(
