@@ -13,7 +13,7 @@ pub(crate) enum UnresolvedKind {
 impl UnresolvedKind {
     /// Returns the grammatical phrase that fits
     /// `"unresolved {phrase} '{name}' in pass 2"`.
-    pub(crate) fn as_phrase(&self) -> &'static str {
+    pub(crate) fn as_phrase(self) -> &'static str {
         match self {
             Self::Name => "name",
             Self::GuardedMember => "guarded member",
@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_ice_unresolved_formats_message_with_context_and_name() {
+    fn emit_ice_unresolved_formats_message_with_kind_and_name() {
         let mut diags: Vec<Diagnostic> = vec![];
         emit_ice_unresolved(UnresolvedKind::Name, "foo", SourceSpan::empty(0), &mut diags);
         let msg = &diags[0].message;
