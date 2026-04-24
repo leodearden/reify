@@ -3484,7 +3484,7 @@ fn edit_source_panics_on_unrepresentable_cell_type() {
     use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
     use reify_types::{ModulePath, Type};
 
-    // Satisfy the NotInitialized precondition with a valid initial eval.
+    // edit_source requires an Initialized engine — seed one first with a valid eval.
     let mut engine = fresh_engine();
     let good = bracket_compiled_module();
     engine.eval(&good);
@@ -3513,6 +3513,8 @@ fn edit_source_panics_on_unrepresentable_cell_type() {
         .map(|s| s.as_str())
         .or_else(|| err.downcast_ref::<&str>().copied())
         .unwrap_or("<non-string panic>");
+    // The literal mirrors `crate::engine_eval::ASSERT_MSG_PREFIX` (pub(crate) — not
+    // importable from an integration-test binary, so the substring is spelled out here).
     assert!(
         msg.contains("unrepresentable cell_type"),
         "panic message did not contain expected substring \"unrepresentable cell_type\": {msg}",

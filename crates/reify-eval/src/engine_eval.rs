@@ -24,6 +24,13 @@ use crate::{
     eval_ctx_with_meta, guard_state_fingerprint,
 };
 
+/// Sentinel substring included in every panic raised by
+/// [`assert_value_cell_types_representable`].  Used by the unit test
+/// (`invariant_tests::panics_on_unrepresentable_cell_types`) to assert the
+/// correct panic path fired without relying on an exact message match.
+#[cfg(debug_assertions)]
+pub(crate) const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
+
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
 /// evaluation graph has a `cell_type` that has a corresponding `Value`
 /// variant.  `Type::TypeParam` and `Type::Geometry` have no `Value`
@@ -42,18 +49,20 @@ use crate::{
 /// cfg(debug_assertions) by default so the four unit tests in
 /// `invariant_tests` below see this function normally.
 ///
-/// Enforcement points: this call (runtime) and
-/// `crates/reify-eval/tests/value_cell_type_invariants.rs` (CI regression lock).
+/// Enforcement points: `engine_eval.rs` (eval cold-start), `engine_edit.rs:1207-1208`
+/// (edit-time recompile), and `crates/reify-eval/tests/value_cell_type_invariants.rs`
+/// (CI regression lock).
 #[cfg(debug_assertions)]
 pub(crate) fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) {
     use reify_types::Type;
     for (id, node) in graph.value_cells.iter() {
         assert!(
             !matches!(&node.cell_type, Type::TypeParam(_) | Type::Geometry),
-            "value cell `{}` has unrepresentable cell_type {:?} post-compilation; \
+            "value cell `{}` has {} {:?} post-compilation; \
              value_type_kind_matches treats these variants as having no Value counterpart — \
              see crates/reify-eval/tests/value_cell_type_invariants.rs",
             id,
+            ASSERT_MSG_PREFIX,
             node.cell_type,
         );
     }
@@ -1519,8 +1528,9 @@ mod invariant_tests {
                 .or_else(|| err.downcast_ref::<&str>().copied())
                 .unwrap_or("<non-string panic>");
             assert!(
-                msg.contains("unrepresentable cell_type"),
-                "panic message did not contain expected substring: {msg}",
+                msg.contains(super::ASSERT_MSG_PREFIX),
+                "panic message did not contain expected substring {:?}: {msg}",
+                super::ASSERT_MSG_PREFIX,
             );
         }
     }
