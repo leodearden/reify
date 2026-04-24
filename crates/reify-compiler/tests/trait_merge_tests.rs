@@ -1009,6 +1009,108 @@ structure def S : TraitA + TraitB {
     );
 }
 
+/// Integration test for the Pass 1 ↔ Pass 2 symmetry bug (task 1952).
+///
+/// # Problem
+///
+/// The two-pass pre-register split (task 1907) guards against duplicate cell injection
+/// when an **unannotated** Let loses its `register_if_absent` race to a Param: that case
+/// records the name in `pass2_skipped` and the injection loop skips the Let cell.
+///
+/// The **symmetric case** — a Param claiming the scope slot first, followed by an
+/// **annotated Let** (`DefaultKind::Let { cell_type: Some(_), .. }`) in the same Pass 1
+/// loop — is NOT currently guarded. Both defaults go through Pass 1; the annotated Let's
+/// `register_if_absent` returns `Occupied`, but the name is NOT added to any skip-set.
+/// The injection loop then injects BOTH a Param cell AND an annotated-Let cell for the
+/// same name — two `(entity, "x")` cells.
+///
+/// The `pass1_skipped: HashSet<String>` fix (task 1952 Option A) plugs this gap: the
+/// Pass 1 loop records the annotated-Let loser in `pass1_skipped`, and the injection
+/// loop skips annotated-Let cell emission for names in `pass1_skipped`. This test fails
+/// today at the cell-count assertion (2 cells produced, 1 expected) and passes after the
+/// fix.
+///
+/// # Fixture
+///
+/// ```text
+/// trait TraitA { param x : Length = 10mm; constraint x - 1mm > 0mm }
+/// trait TraitB { let x : Length = 80mm }   ← annotated Let (not unannotated)
+/// structure def S : TraitA + TraitB {}
+/// ```
+///
+/// Expected outcome: zero `Severity::Error` diagnostics, ≥1 constraint injected (from
+/// TraitA), exactly 1 `x` value cell with `kind == ValueCellKind::Param` and
+/// `cell_type == Type::Scalar { dimension: LENGTH }`.
+#[test]
+fn cross_kind_pre_registration_preserves_first_type_annotated_let() {
+    let source = r#"
+trait TraitA {
+    param x : Length = 10mm
+    constraint x - 1mm > 0mm
+}
+
+trait TraitB {
+    let x : Length = 80mm
+}
+
+structure def S : TraitA + TraitB {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: the constraint `x - 1mm > 0mm` should compile cleanly \
+         because x is registered as Length (not overwritten by the annotated Let default). \
+         Got errors: {:?}",
+        errors
+    );
+
+    // At least 1 constraint injected (from TraitA).
+    assert!(
+        !template.constraints.is_empty(),
+        "expected at least 1 constraint injected from TraitA, got {}",
+        template.constraints.len()
+    );
+
+    // Exactly 1 'x' value cell: the Param from TraitA.  TraitB's annotated `let x : Length = 80mm`
+    // is suppressed by `pass1_skipped` (task 1952): Pass 1 finds the scope slot already
+    // occupied by TraitA's Param and records `x` in `pass1_skipped`, so the injection loop
+    // skips annotated-Let cell emission for `x`.
+    //
+    // WITHOUT the fix (pass1_skipped not yet implemented): the injection loop emits BOTH a
+    // Param cell (TraitA) and an annotated-Let cell (TraitB), producing 2 cells.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected 1 'x' value cell (Param from TraitA only; annotated Let from TraitB \
+         suppressed by pass1_skipped), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single `x` cell must be Param (from TraitA)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the `x` Param cell must carry type Length"
+    );
+}
+
 /// Constraint default coexists with a param default for the same member name.
 ///
 /// Trait A provides `param x : Real = 1.0`.
