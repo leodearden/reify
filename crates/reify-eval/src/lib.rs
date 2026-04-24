@@ -405,6 +405,25 @@ fn guard_state_fingerprint(
 //   engine_build.rs     — build, build_snapshot, tessellate_*, execute_realization_ops
 //   concurrent.rs       — prepare_concurrent_edit, apply_concurrent_edit, …
 
+/// Canonical construction point for an [`reify_expr::EvalContext`] with meta-map binding.
+///
+/// Both `&mut self` methods (which previously had to inline the construction to avoid
+/// conflicting borrows) and free-function helpers (e.g. `evaluate_let_bindings`,
+/// `compile_geometry_op`) call this function to produce a consistently-wired context.
+///
+/// # Arguments
+/// * `values`    — current cell values for the evaluation pass
+/// * `functions` — compiled user functions available in scope
+/// * `meta_map`  — entity-name → (key → string-value) meta block entries;
+///                 passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
+pub(crate) fn eval_ctx_with_meta<'a>(
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    meta_map: &'a HashMap<String, HashMap<String, String>>,
+) -> reify_expr::EvalContext<'a> {
+    reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
