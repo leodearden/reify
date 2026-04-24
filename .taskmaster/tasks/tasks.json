@@ -46942,12 +46942,24 @@
             "crates/reify-compiler/src/types.rs"
           ]
         }
+      },
+      {
+        "id": "2204",
+        "title": "Revisit #[non_exhaustive] on DefaultKind — dead wildcards weaken exhaustiveness",
+        "description": "Task 387 marked `DefaultKind` (crates/reify-compiler/src/types.rs:68-73) as `#[non_exhaustive]` and added `_ => unreachable!(...)` arms in reify-test-support and integration tests (silent_defaults_tests.rs:164, trait_def.rs:97 and :225). Reviewer flagged this as speculative generality: `DefaultKind` lives inside reify-compiler with no documented external consumer, and the wildcard arms silently route future variants into runtime panics instead of triggering compile-time exhaustiveness errors. Evaluate: is there a specific downstream crate that requires API-evolution tolerance? If not, remove `#[non_exhaustive]` and the three wildcard arms to restore exhaustive-match safety. If kept, document the external consumer in the doc comment and convert the `unreachable!()` arms to `unimplemented!(\"new DefaultKind variant not yet wired through test helpers\")` with a maintainer reminder comment.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T10:58:38.686Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T10:50:41.578Z",
-      "taskCount": 2192,
+      "lastModified": "2026-04-24T10:58:38.686Z",
+      "taskCount": 2193,
       "completedCount": 1947,
       "tags": [
         "master"
