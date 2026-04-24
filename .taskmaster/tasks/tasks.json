@@ -45985,14 +45985,14 @@
       {
         "id": "2159",
         "title": "conformance cleanup: dedupe kind-keyed cache test, single-bind composite key lookup, re-evaluate resolve_let_advertised_type helper",
-        "description": "Three small code/test cleanups on task 1914's kind-keyed cache and advertised-type helper in `crates/reify-compiler/src/conformance/{checker.rs,mod.rs}`.\n\nMemory hints: search \"task 1914 resolve_let_advertised_type inferred_let_exprs composite key\"; entities: resolve_let_advertised_type, AvailableDefaultKind.",
-        "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestions #1 (mod.rs:1345-1401), #3 (checker.rs:506-518), #5 (checker.rs:32-39).\n\n**#1 — Remove the duplicate cache-shape compile-tripwire test.**\n`check_phase_pre_register_default_types_cache_is_kind_keyed` (mod.rs ~line 1345) is a near-exact duplicate of `check_phase_pre_register_default_types_pass2_success_caches_unannotated_let` (immediately above). Both build identical AST (`let y = 2.5`), call the same pass, and assert `contains_key(&(\"y\".to_string(), AvailableDefaultKind::Let))` + same `result_type`. The composite-key compile-tripwire already exists in the predecessor test.\n\nAction: delete `check_phase_pre_register_default_types_cache_is_kind_keyed`. If a cross-kind-collision test is desired instead (a `Param`-named `x` AND a `Let`-named `x` coexist in `inferred_let_exprs` without collision), write *that* — it exercises the invariant that the composite key uniquely protects. Otherwise, simple deletion is fine.\n\n**#3 — Single-bind the composite-key lookup in `check_phase_build_available_defaults_map`.**\nAt checker.rs ~lines 506-518, the unannotated-let arm allocates the `(String, AvailableDefaultKind)` tuple twice per default:\n  - once inside `debug_assert!(... contains_key(&(name.to_string(), AvailableDefaultKind::Let)))`\n  - once for `inferred_let_exprs.get(&(name.to_string(), AvailableDefaultKind::Let))`\n\nEach allocates a String clone of `name`. Bind once:\n```\nlet key = (name.to_string(), AvailableDefaultKind::Let);\nlet entry = inferred_let_exprs.get(&key);\ndebug_assert!(cell_type.is_some() || entry.is_some(), \"...\");\nlet resolved = resolve_let_advertised_type(cell_type, entry);\n```\nSingle allocation, single lookup.\n\n**#5 — Re-evaluate `resolve_let_advertised_type` helper.**\nNow that suggestion #1 (pass2_compile_errors) has landed on task 1914, the helper's `Type::Real` fallback arm is defensive-only at both call sites:\n  - site 1 (available_defaults builder): the `debug_assert!` guards the fallback, so in release it's unreachable under the invariant\n  - site 2 (injection loop): always passes `Some(&compiled_expr)`, so the fallback is structurally unreachable\n\nOptions:\n  A. **Inline the helper at both sites.** Site 2 reverts to `cell_type.clone().unwrap_or_else(|| compiled_expr.result_type.clone())`. Site 1 becomes the single-bind form from #3 directly. Delete the three unit tests (their behavior is exercised end-to-end by conformance tests).\n  B. **Keep the helper but drop the \"falls back to Real when neither annotation nor inferred\" unit test** — its own doc says \"this arm should not be reached in practice.\"\n\nChoose based on whether centralizing the rule adds clarity (two call sites, one formula) or is a micro-abstraction. Both are defensible; lead's call. Note the helper doc comment is longer than the body — if kept, tighten the comment.\n\n**Coordination:** #3 depends on the single-bind rewrite from #5 option A (or the helper-preserving path from #5 option B). Sequence: pick #5 direction first, then apply #3.\n\nVerify: `cargo test -p reify-compiler`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --check`.",
-        "testStrategy": "",
+        "description": "Four small code/test cleanups on task 1914's kind-keyed cache and advertised-type helper, plus one assertion-idiom fix, all in `crates/reify-compiler/src/conformance/{checker.rs,mod.rs}`.\n\nMemory hints: search \"task 1914 resolve_let_advertised_type inferred_let_exprs composite key\"; entities: resolve_let_advertised_type, AvailableDefaultKind.",
         "status": "pending",
         "dependencies": [
           "1914"
         ],
-        "priority": "low",
+        "priority": "medium",
+        "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestions #1 (mod.rs:1345-1401), #3 (checker.rs:506-518), #5 (checker.rs:32-39); plus esc-1896-120 (S1) assertion-idiom fix.\n\n**#1 — Remove the duplicate cache-shape compile-tripwire test.**\n`check_phase_pre_register_default_types_cache_is_kind_keyed` (mod.rs ~line 1345) is a near-exact duplicate of `check_phase_pre_register_default_types_pass2_success_caches_unannotated_let` (immediately above). Both build identical AST (`let y = 2.5`), call the same pass, and assert `contains_key(&(\"y\".to_string(), AvailableDefaultKind::Let))` + same `result_type`. The composite-key compile-tripwire already exists in the predecessor test.\n\nAction: delete `check_phase_pre_register_default_types_cache_is_kind_keyed`. If a cross-kind-collision test is desired instead (a `Param`-named `x` AND a `Let`-named `x` coexist in `inferred_let_exprs` without collision), write *that* — it exercises the invariant that the composite key uniquely protects. Otherwise, simple deletion is fine.\n\n**#3 — Single-bind the composite-key lookup in `check_phase_build_available_defaults_map`.**\nAt checker.rs ~lines 506-518, the unannotated-let arm allocates the `(String, AvailableDefaultKind)` tuple twice per default:\n  - once inside `debug_assert!(... contains_key(&(name.to_string(), AvailableDefaultKind::Let)))`\n  - once for `inferred_let_exprs.get(&(name.to_string(), AvailableDefaultKind::Let))`\n\nEach allocates a String clone of `name`. Bind once:\n```rust\nlet key = (name.to_string(), AvailableDefaultKind::Let);\ndebug_assert!(inferred_let_exprs.contains_key(&key), ...);\nif let Some(expr) = inferred_let_exprs.get(&key) { ... }\n```\n\n**#5 — Re-evaluate the `resolve_let_advertised_type` helper.**\nAt checker.rs ~lines 32-39, assess whether the `resolve_let_advertised_type` helper is pulling its weight (callers, complexity vs. inline readability) and either keep it with a clarifying doc comment or inline it.\n\n**#4 — Replace `filter().count()==0` with `!any()` in assertion.**\nIn `inferred_let_expr_incompatible_with_let_requirement` at conformance.rs ~lines 1595-1600, assertion 2 uses the awkward form:\n```rust\nassert!(diagnostics.iter().filter(|d| predicate).count() == 0, ...)\n```\nReplace with the idiomatic:\n```rust\nassert!(!diagnostics.iter().any(|d| predicate), ...)\n```\nThis produces a clearer panic message and matches the rest of the project's assertion style. No behavior change.",
+        "testStrategy": "",
         "subtasks": [],
         "metadata": {
           "files": [
@@ -46001,7 +46001,10 @@
           ],
           "modules": [
             "crates/reify-compiler/src/conformance"
-          ]
+          ],
+          "curator_action": "combine",
+          "curator_justification": "The candidate is a tiny single-file cosmetic fix (< 300 chars of real detail, 1 file) inside `crates/reify-compiler/src/conformance.rs`. Task 2159 is already an explicit \"conformance cleanup\" bundle of small code/test tidying items scoped entirely to `crates/reify-compiler/src/conformance` — the same module-lock key. Combining adds one more bullet (#4) without crossing a new module boundary, keeps the concern count at 4 (≤ 5), and loses zero parallelism since the scheduler serializes them on the",
+          "combined_at": "2026-04-24T07:12:05.908427+00:00"
         }
       },
       {
@@ -46244,15 +46247,24 @@
         "description": "Reword the \"Stable wire format\" warning on ContentHash::of_u64 in crates/reify-types/src/hash.rs:20-28 to reflect that ContentHash is currently in-memory only.",
         "details": "The docstring on ContentHash::of_u64 claims the little-endian encoding is part of an on-disk incremental-compile cache contract, but no persisted ContentHash format exists today (the hash is in-memory only). The pragma-hash refactor in task 1505 also changed the byte layout for pragma hashes, which would already break any such cache if it existed. The warning is good forward-looking advice but misrepresents the current state.\n\nSuggested rewording:\n\"If a persistent incremental-compile cache is introduced, this encoding becomes part of its wire format — any change to byte order or width must accompany a cache-format version bump.\"\n\nApply the same softening to any other ContentHash helpers (of, of_str, combine, combine_all) carrying similar claims.\n\nMemory hints: search \"ContentHash wire format\".\n\nSpawned from task 1505 steward review triage.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:11:46.520Z",
+        "updatedAt": "2026-04-24T07:12:23.874Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src/hash.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Soften ContentHash::of_u64 docstring to reflect no current persistent cache"
+            ]
+          },
+          "done_provenance": {
+            "commit": "0eafb46da8ba1166e235d0587634b4b4fea3dc0f"
+          }
         }
       },
       {
@@ -46440,9 +46452,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:11:46.520Z",
+      "lastModified": "2026-04-24T07:12:23.874Z",
       "taskCount": 2175,
-      "completedCount": 1921,
+      "completedCount": 1922,
       "tags": [
         "master"
       ]
