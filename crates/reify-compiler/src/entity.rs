@@ -1070,19 +1070,7 @@ pub(crate) fn compile_entity(
                             let cell_type = scope
                                 .resolve(&composite_name)
                                 .map(|(_, ty)| ty.clone())
-                                .unwrap_or_else(|| {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!(
-                                            "internal compiler error: unresolved name '{}' in pass 2",
-                                            composite_name
-                                        ))
-                                        .with_label(DiagnosticLabel::new(
-                                            param.span,
-                                            "ICE: name should have been registered in pass 1",
-                                        )),
-                                    );
-                                    Type::Real
-                                });
+                                .unwrap_or_else(|| emit_ice_unresolved("name", &composite_name, param.span, diagnostics));
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
