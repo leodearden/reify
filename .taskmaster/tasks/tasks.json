@@ -46567,7 +46567,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T08:38:29.260Z"
+        "updatedAt": "2026-04-24T08:38:29.260Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/geometry_ops.rs"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -46577,7 +46582,9 @@
       "completedCount": 1928,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T08:42:53.607Z",
+      "description": "Tasks for master context"
     }
   }
 }
