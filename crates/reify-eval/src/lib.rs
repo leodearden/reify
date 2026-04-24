@@ -764,4 +764,56 @@ structure S {
             count1, count2
         );
     }
+
+    // ── Arc-sharing invariant: Engine.meta_map ────────────────────────────────
+
+    /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
+    /// `ConcurrentEditSetup.meta_map` must share the *same* Arc as
+    /// `Engine.meta_map` (i.e. `Arc::ptr_eq` returns true, and `strong_count >= 2`).
+    ///
+    /// Expected compile-failure before step-2 impl: `Engine.meta_map` is
+    /// `HashMap<String, HashMap<String, String>>`, not `Arc<...>`, so
+    /// `Arc::ptr_eq(&engine.meta_map, ...)` is a type error.
+    #[test]
+    fn meta_map_arc_shared_with_concurrent_setup() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{literal, CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_types::{ModulePath, Type, Value, ValueCellId};
+        use std::sync::Arc;
+
+        let meta_entries = {
+            let mut m = std::collections::HashMap::new();
+            m.insert("color".to_string(), "blue".to_string());
+            m
+        };
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("Widget")
+                    .meta(meta_entries)
+                    .param("Widget", "width", Type::Real, Some(literal(Value::Real(1.0))))
+                    .build(),
+            )
+            .build();
+
+        let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine.eval(&module);
+
+        let cell = ValueCellId::new("Widget", "width");
+        let setup = engine
+            .prepare_concurrent_edit(cell, Value::Real(2.0))
+            .expect("prepare_concurrent_edit must succeed after eval");
+
+        // Before step-2 this does not compile:
+        //   error[E0308]: expected `&Arc<_>`, found `&HashMap<_, _>`
+        assert!(
+            Arc::ptr_eq(&engine.meta_map, &setup.meta_map),
+            "Engine.meta_map and ConcurrentEditSetup.meta_map must share the same Arc (not deep clone)"
+        );
+        assert!(
+            Arc::strong_count(&engine.meta_map) >= 2,
+            "strong_count must be >= 2 (engine + setup both hold a ref); got {}",
+            Arc::strong_count(&engine.meta_map)
+        );
+    }
 }
