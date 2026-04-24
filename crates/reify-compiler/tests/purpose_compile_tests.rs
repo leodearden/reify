@@ -914,8 +914,9 @@ purpose check(subject : Structure) {
 ///
 /// Sibling to `compile_purpose_wildcard_structure_subject_bogus_member_still_silent`.
 /// The `Occurrence` entity kind is not registered in the template registry,
-/// so the registry-miss guard at expr.rs:1188-1189 applies — the compiler
-/// skips member validation entirely (documented at expr.rs:1170-1182).
+/// so the registry-miss guard in `compile_expr_guarded` applies — the compiler
+/// skips member validation entirely (see wildcard-path comments in
+/// `compile_expr_guarded`).
 ///
 /// No `structure Occurrence` or `occurrence def Occurrence` is declared here
 /// because registering a template named "Occurrence" would defeat the test by
@@ -942,8 +943,25 @@ purpose check(subject : Occurrence) {
         no_member_errors.is_empty(),
         "expected no 'has no member' diagnostics for wildcard Occurrence subject, \
          but got: {:#?}\n(Unregistered wildcard kinds fall through silently via \
-         the registry-miss guard — see expr.rs:1188-1189.)",
+         the registry-miss guard in `compile_expr_guarded`.)",
         no_member_errors
+    );
+
+    // Confirm no error-severity diagnostics — ensures compilation reached the
+    // member-access path and did not bail out early (e.g., if a future change
+    // makes unregistered entity kinds a hard error before member access is
+    // evaluated, this assertion catches the regression rather than silently
+    // passing because `no_member_errors` would still be empty).
+    let error_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "expected zero Error diagnostics for wildcard Occurrence subject \
+         (registry-miss path should be fully silent), but got: {:#?}",
+        error_diags
     );
 }
 
