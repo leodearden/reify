@@ -10782,7 +10782,7 @@
         "description": "The first-pass scope registration in compile_entity (reify-compiler/src/lib.rs ~line 2612-2646) uses is_geometry_let to pre-register let bindings with type hints before expression compilation. The ordering of the functions slice matters for forward references. This invariant is not documented. Add doc comments explaining the two-pass compilation strategy, the forward-reference capability, and shadowing behavior when names collide.\\n\\nMemory hints: search \"is_geometry_let forward reference\", entities: is_geometry_let, compile_entity",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10793,9 +10793,12 @@
           ],
           "modules": [
             "crates/reify-compiler/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "06a8c57be69939a003f4d72949fdf871278ed63a"
+          }
         },
-        "updatedAt": "2026-04-24T07:31:49.355Z"
+        "updatedAt": "2026-04-24T08:36:15.633Z"
       },
       {
         "id": "489",
@@ -46540,9 +46543,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T08:24:36.823Z",
+      "lastModified": "2026-04-24T08:36:15.633Z",
       "taskCount": 2177,
-      "completedCount": 1926,
+      "completedCount": 1927,
       "tags": [
         "master"
       ]
