@@ -79,7 +79,7 @@ pub fn compute_diagnostics_with_state(
     }
 
     // Compile
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
     for diag in &compiled.diagnostics {
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
