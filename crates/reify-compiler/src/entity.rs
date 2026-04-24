@@ -224,6 +224,55 @@ pub(crate) fn substitute_expr(
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
+///
+/// # Two-pass compilation
+///
+/// The member list is walked twice:
+///
+/// **Pass 1** (pre-pass, the `known_geometry_lets` loop): registers every
+/// param, let, port, sub-component, and guarded-group name into
+/// `CompilationScope` with a best-effort type, and simultaneously builds the
+/// `known_geometry_lets: HashSet<&str>` accumulator. No expression is compiled
+/// in this pass — only name-to-type bindings are established.
+///
+/// **Pass 2** (main member loop, after the pre-pass): compiles expressions
+/// with the scope already fully populated. Because every name is registered
+/// before any expression is compiled, expressions may reference a param or let
+/// declared *later* in the member list — true forward references within the
+/// entity body. This is behaviourally pinned by
+/// `let_type_disambiguation_tests::unannotated_let_resolves_forward_reference_to_annotated_let`
+/// and `unannotated_let_resolves_forward_reference_to_annotated_param`.
+///
+/// # Ordering caveat: `known_geometry_lets`
+///
+/// Unlike scope name resolution (order-free by design), the
+/// `known_geometry_lets` accumulator is built **incrementally** during pass 1.
+/// When a let's value expression is an `Ident`, `is_geometry_let` can only
+/// classify it as a geometry let if the aliased name is already in the set at
+/// the moment that member is visited. An alias that appears before its referent
+/// in member order is therefore **not** classified as a geometry let, even
+/// though the referent will be inserted shortly after. This conservative
+/// behaviour is intentional and is pinned by
+/// `let_scope_tests::cyclic_ident_alias_does_not_crash`, whose inline comment
+/// notes "the forward-pass incremental set never adds either to
+/// known_geometry_lets". Forward alias chains that are ordered correctly
+/// (referent before alias) do propagate transitively.
+///
+/// Guarded groups follow the same two-pass + incremental-classification pattern
+/// via `register_guarded_names` and `compile_guarded_members` (guards.rs).
+///
+/// # Shadowing
+///
+/// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
+/// later same-named registration overwrites the earlier entry. `known_geometry_lets`
+/// being a `HashSet` follows the same idempotent-add convention (a name that is
+/// already geometry stays geometry; duplicate registration is harmless).
+///
+/// The separate shadow rule for the `functions: &[CompiledFunction]` parameter
+/// — user functions first, prelude appended without duplicates — is applied
+/// upstream by `merge_prelude_functions` (`lib.rs`). `is_geometry_let` queries
+/// `functions` via `.iter().any(…)` and is therefore order-independent with
+/// respect to that slice.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_entity(
     structure: &EntityDefRef<'_>,
@@ -297,13 +346,21 @@ pub(crate) fn compile_entity(
             .insert(field_name.clone(), (field_id, field_type, None));
     }
 
-    // First pass: register all param and let names into the scope so they can
-    // reference each other (forward references within the structure).
-    // We need types for the scope, so we resolve types in this pass as well.
-    // `known_geometry_lets` tracks names that are geometry lets (either direct
-    // geometry function calls or ident aliases to other geometry lets). Built
-    // incrementally as we encounter each Let declaration so that ident aliases
-    // are recognised transitively (e.g. `let b = a` after `let a = cylinder(...)`)
+    // First pass: register all param and let names (and ports, subs, guarded
+    // groups) into the scope so pass 2 expressions can reference any name in the
+    // entity body, regardless of declaration order (true forward references).
+    // Types are resolved here as well so the scope entries are usable in pass 2.
+    //
+    // `known_geometry_lets` tracks which let names resolve to geometry (either a
+    // direct geometry function call or an Ident alias to an already-known geometry
+    // let). It is built incrementally — each Let is classified using only the
+    // names already in the set at that point in the walk. An Ident alias that
+    // appears *before* its referent is therefore not classified as geometry, even
+    // though the referent will be inserted on the next visit. This ordering
+    // constraint is the dual of the forward-reference freedom enjoyed by pass 2:
+    // scope name resolution is order-free (whole-pass pre-registration), while
+    // geometry-let classification is order-sensitive (incremental accumulation).
+    // Pinned by `let_scope_tests::cyclic_ident_alias_does_not_crash`.
     let mut known_geometry_lets: HashSet<&str> = HashSet::new();
     for member in structure.members {
         match member {
