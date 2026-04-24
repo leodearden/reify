@@ -118,14 +118,24 @@ fn make_poison_literal(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic
 /// Return a `Type::Error` poison sentinel for ICE-path producer sites that
 /// assign a `Type` to a local variable rather than returning a `CompiledExpr`.
 ///
-/// Mirrors [`make_poison_literal`] for the three ICE-path fallbacks
-/// (range-no-bounds, match-no-arms, unresolved-sub-member-type) so that all
-/// producer sites route through a helper with the same `pre_push_len`-based
-/// `debug_assert!` invariant.  Routing these sites through a helper also makes
-/// `grep "make_poison_"` find every producer site uniformly.  Both helpers
-/// delegate the shared assertion to [`debug_assert_error_pushed_since`].
-fn make_poison_type(diagnostics: &[Diagnostic], pre_push_len: usize) -> Type {
-    debug_assert_error_pushed_since(diagnostics, pre_push_len);
+/// Mirrors [`make_poison_literal`] for the Type-level ICE-path fallbacks
+/// (range-no-bounds, match-no-arms, unresolved-sub-member-type, non-collection
+/// iteration, non-collection index) so that all producer sites route through a
+/// helper and `grep "make_poison_"` finds every producer site uniformly.
+///
+/// Applies the same by-construction invariant as [`make_poison_literal`]: the
+/// caller passes the `Diagnostic` directly; this helper pushes it and returns
+/// `Type::Error`.  `debug_assert!` checks severity; `#[track_caller]` ensures
+/// a failing assert blames the producer site.
+#[track_caller]
+fn make_poison_type(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -> Type {
+    debug_assert!(
+        diagnostic.severity == Severity::Error,
+        "make_poison_type requires a Severity::Error diagnostic; \
+         got severity={:?} — did you pass a Warning or Info by mistake?",
+        diagnostic.severity,
+    );
+    diagnostics.push(diagnostic);
     Type::Error
 }
 
@@ -600,16 +610,15 @@ pub(crate) fn compile_expr_guarded(
                 .or_else(|| compiled_upper.as_ref().map(|e| &e.result_type))
                 .cloned()
                 .unwrap_or_else(|| {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
+                    // from cascading into downstream type-mismatch errors.
+                    make_poison_type(
+                        diagnostics,
                         Diagnostic::error(
                             "internal compiler error: range has no bounds; cannot infer element type",
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "ICE: no lower or upper bound")),
-                    );
-                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
-                    // from cascading into downstream type-mismatch errors.
-                    make_poison_type(diagnostics, n)
+                    )
                 });
             let result_type = Type::range(element_type);
             CompiledExpr::range_constructor(
@@ -1231,8 +1240,8 @@ pub(crate) fn compile_expr_guarded(
                             "COLLECTION_AGGREGATION_MEMBERS restricts member to \
                              count/sum/keys/values; extend the inner match when you extend the const"
                         );
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        make_poison_type(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "internal: unknown aggregation member '{}'; \
                                  expected one of count/sum/keys/values",
@@ -1242,8 +1251,7 @@ pub(crate) fn compile_expr_guarded(
                                 expr.span,
                                 "unknown aggregation member",
                             )),
-                        );
-                        make_poison_type(diagnostics, n)
+                        )
                     }
                 };
                 CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
@@ -1407,15 +1415,14 @@ pub(crate) fn compile_expr_guarded(
                     // Anti-cascade policy: Type::Error propagates downstream via existing
                     // is_error() guards so no cascade of type-mismatch errors follows.
                     _ => {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        make_poison_type(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "cannot index into non-collection type '{}': expected List<_> or Map<_,_>",
                                 compiled_obj.result_type
                             ))
                             .with_label(DiagnosticLabel::new(expr.span, "not indexable")),
-                        );
-                        make_poison_type(diagnostics, n)
+                        )
                     }
                 }
             };
@@ -1487,16 +1494,15 @@ pub(crate) fn compile_expr_guarded(
                 .first()
                 .map(|a| a.body.result_type.clone())
                 .unwrap_or_else(|| {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
+                    // from cascading into downstream type-mismatch errors.
+                    make_poison_type(
+                        diagnostics,
                         Diagnostic::error(
                             "internal compiler error: match expression has no arms; cannot infer result type",
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "ICE: match with no arms")),
-                    );
-                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
-                    // from cascading into downstream type-mismatch errors.
-                    make_poison_type(diagnostics, n)
+                    )
                 });
 
             // Exhaustiveness check: if discriminant is a known enum type,
@@ -1628,24 +1634,26 @@ pub(crate) fn compile_expr_guarded(
                         match resolve_type_name(name) {
                             Some(t) => t,
                             None => {
-                                let n = diagnostics.len();
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "unresolved type in lambda param '{}': {}",
-                                    param.name, name
-                                )));
                                 // Anti-cascade (task-1921): Type::Error propagates through body
                                 // via consumer guards in infer_binop_type / implicitly_converts_to.
-                                make_poison_type(diagnostics, n)
+                                make_poison_type(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "unresolved type in lambda param '{}': {}",
+                                        param.name, name
+                                    )),
+                                )
                             }
                         }
                     } else {
-                        let n = diagnostics.len();
-                        diagnostics.push(Diagnostic::error(format!(
-                            "unresolved type in lambda param '{}': {}",
-                            param.name, type_expr
-                        )));
                         // Anti-cascade (task-1921): same rationale as Named arm above.
-                        make_poison_type(diagnostics, n)
+                        make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "unresolved type in lambda param '{}': {}",
+                                param.name, type_expr
+                            )),
+                        )
                     }
                 } else {
                     Type::Real // default untyped params to Real
@@ -1734,15 +1742,14 @@ pub(crate) fn compile_expr_guarded(
                     // carries Type::Error; existing is_error() guards in the predicate suppress
                     // cascade (anti-cascade policy).
                     _ => {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        make_poison_type(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "cannot iterate over non-collection type '{}' in forall/exists: expected List<_> or Set<_>",
                                 compiled_collection.result_type
                             ))
                             .with_label(DiagnosticLabel::new(expr.span, "not iterable")),
-                        );
-                        make_poison_type(diagnostics, n)
+                        )
                     }
                 }
             };
@@ -2113,8 +2120,10 @@ pub(crate) fn compile_expr_guarded(
                 .and_then(|m| m.get(&member))
                 .cloned()
                 .unwrap_or_else(|| {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
+                    // from cascading into downstream type-mismatch errors.
+                    make_poison_type(
+                        diagnostics,
                         Diagnostic::error(format!(
                             "internal compiler error: unresolved sub-member type for '{}.{}'",
                             sub_name, member
@@ -2123,10 +2132,7 @@ pub(crate) fn compile_expr_guarded(
                             expr.span,
                             "ICE: sub-member type not registered",
                         )),
-                    );
-                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
-                    // from cascading into downstream type-mismatch errors.
-                    make_poison_type(diagnostics, n)
+                    )
                 });
             CompiledExpr::value_ref(id, ty)
         }
