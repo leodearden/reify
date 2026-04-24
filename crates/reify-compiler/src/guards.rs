@@ -348,19 +348,7 @@ pub(crate) fn compile_guarded_members(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or_else(|| {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "internal compiler error: unresolved guarded member '{}' in pass 2",
-                                param.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                param.span,
-                                "ICE: name should have been registered in pass 1",
-                            )),
-                        );
-                        Type::Real
-                    });
+                    .unwrap_or_else(|| emit_ice_unresolved("guarded member", &param.name, param.span, diagnostics));
 
                 // Solid-typed params with a geometry-call default are lowered as
                 // realizations (not scalar cells) — mirrors entity.rs main loop (step-6).
