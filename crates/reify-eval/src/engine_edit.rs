@@ -2148,6 +2148,22 @@ impl Engine {
                         // Step (9)'s `diff_value_cells.removed` path (those cells are
                         // absent from `new_snapshot.graph.value_cells` and therefore
                         // classified as `removed` by `diff_value_cells`).
+                        // Why Phase 4 still needs this despite Step (9): Step (9)
+                        // catches index-count reductions (old index absent from new
+                        // graph) and entirely-removed subs via `diff_value_cells`.
+                        // This Fix 1 path catches same-index re-incarnation: when
+                        // count shrinks from n to m, the surviving indices 0..m have
+                        // an identical content_hash in both old and new snapshots
+                        // (same scoped_id string + same default_expr from unchanged
+                        // child template), so `diff_value_cells` classifies them as
+                        // UNCHANGED and Step (9) does NOT invalidate them.  Phase 4's
+                        // remove loop tears them down and its create loop re-inserts
+                        // them without calling cache.record_evaluation; without this
+                        // explicit invalidation the stale cache entry at V_A would
+                        // survive and a later edit_source that re-expands the sub
+                        // would short-circuit via `basis_version` and return wrong
+                        // cached values (pinned by the grow→shrink→regrow regression
+                        // test).
                         self.cache.invalidate(&NodeId::Value(scoped_id));
                     }
                 }

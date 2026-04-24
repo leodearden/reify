@@ -1381,6 +1381,51 @@ structure S { param n : Int = 4 }
             );
         }
     }
+
+    // Re-incarnation check: re-add sub bolts with a DIFFERENT diameter (12 mm) and
+    // assert the snapshot reflects 12 mm, not a revived stale 10 mm from V_A.
+    // Phase 4's create loop evaluates `default_expr` directly (not via cache), so
+    // `snapshot.values` holds fresh values after re-add.  If the Step-9 invalidation
+    // above had NOT cleared the cache, a future edit_source that sees these bolt cells
+    // as UNCHANGED (same content_hash in both old and new snapshots) would
+    // short-circuit via `basis_version` and serve the stale 10 mm entry from V_A.
+    let module_c_prime_src = r#"
+structure Bolt { param diameter : Scalar = 12mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    let module_c_prime = parse_and_compile(module_c_prime_src);
+    engine
+        .edit_source(&module_c_prime)
+        .expect("edit_source to C' (re-add sub bolts at 12 mm) must succeed");
+
+    let snapshot_c = engine.snapshot().expect("snapshot after edit_source to C'");
+    for i in 0..4_usize {
+        let bolt_id = ValueCellId::new(format!("S.bolts[{}]", i), "diameter");
+        let (val, _) = snapshot_c
+            .values
+            .get(&bolt_id)
+            .unwrap_or_else(|| panic!("S.bolts[{}].diameter must be in snapshot after re-add", i));
+        match val {
+            Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.012).abs() < 1e-12,
+                    "S.bolts[{}].diameter must be 12 mm (0.012 m SI) after re-incarnation; \
+                     got {} m — possible stale 10 mm value from V_A",
+                    i,
+                    si_value
+                );
+            }
+            other => panic!(
+                "S.bolts[{}].diameter expected Scalar(12 mm) after re-incarnation, got {:?}",
+                i,
+                other
+            ),
+        }
+    }
 }
 
 // ── Coverage gap 2: Step-11 functions table refresh ───────────────────────────
