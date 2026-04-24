@@ -48,7 +48,7 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+    let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
         check_phase_pre_register_default_types(
             &ctx,
             &structure_all_members,
@@ -800,7 +800,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         // --- Phase 3: pre-register default types ---
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_all_members,
@@ -1478,7 +1478,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1553,7 +1553,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1650,7 +1650,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1867,7 +1867,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,

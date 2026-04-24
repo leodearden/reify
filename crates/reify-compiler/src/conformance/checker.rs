@@ -322,6 +322,29 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// compile against a scope that did not yet contain `b`. Both passes run BEFORE
 /// `available_defaults` is built so Pass 2's inference results feed requirement-matching.
 ///
+/// ## Skip-set symmetry (task 1952 amendment)
+///
+/// Both passes produce a `HashSet<String>` recording same-name losers so the injection loop
+/// (phase 6) and advertisement builder (phase 4) can suppress duplicate cells and phantom
+/// entries:
+///
+/// | Set              | Populated by | Loser kind              | Cell_type gate         |
+/// |------------------|--------------|-------------------------|------------------------|
+/// | `pass1_skipped`  | Pass 1 loop  | annotated Let (`Some`)  | `cell_type.is_some()`  |
+/// | `pass2_skipped`  | Pass 2 loop  | unannotated Let (`None`)| `cell_type.is_none()`  |
+///
+/// The `cell_type`-gated guards in both consumers (advertisement + injection) are mutually
+/// exclusive: `cell_type.is_some() && pass1_skipped` vs `cell_type.is_none() && pass2_skipped`.
+///
+/// ## Known remaining asymmetry
+///
+/// The reverse direction — a `Param` losing to an annotated Let that appears *earlier* in
+/// `ctx.defaults` — is NOT fixed by this task. Fixing it would require a composite
+/// `HashSet<(String, AvailableDefaultKind)>` or a kind-tracking `HashMap<String,
+/// AvailableDefaultKind>`, which diverges from the task's specified `HashSet<String>` shape
+/// and the "mark annotated-Let conflicts" scope. Tracked in the `pass1_skipped` declaration
+/// comment above.
+///
 /// # DESIGN LIMITATION
 ///
 /// Pass 2 still walks `ctx.defaults` in source order. Two *unannotated* lets that
@@ -343,9 +366,26 @@ pub(super) fn check_phase_pre_register_default_types(
     HashMap<(String, AvailableDefaultKind), CompiledExpr>,
     HashSet<String>,
     HashSet<String>,
+    HashSet<String>,
 ) {
     let mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
         HashMap::new();
+    // Annotated-Let defaults whose scope slot was already claimed by an earlier Pass 1
+    // default (typically a Param registered before this annotated Let in ctx.defaults
+    // order).  Pass 1 records names here so the injection loop does not emit a
+    // duplicate annotated-Let cell alongside the first-seen default's cell.
+    //
+    // Symmetric with `pass2_skipped` (task 1952):
+    //   `pass1_skipped`  — annotated-Let loser in Pass 1; a valid Param/first-annotated-Let
+    //                      cell WILL be injected for this name.
+    //   `pass2_skipped`  — unannotated-Let loser in Pass 2; a valid Param/annotated-Let
+    //                      cell WILL be injected for this name.
+    //
+    // NOTE: Param losers (annotated Let appears before Param in ctx.defaults) are NOT
+    // tracked by pass1_skipped. Fixing the reverse direction requires a composite key
+    // or kind-tracking map, which is out of scope for this task (documented as a known
+    // remaining asymmetry in the TWO-PASS DESIGN RATIONALE below).
+    let mut pass1_skipped: HashSet<String> = HashSet::new();
     // Unannotated-let defaults whose scope slot was already claimed by an annotated
     // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
     // insert so the injection loop does not emit a duplicate Let cell alongside the
@@ -408,6 +448,17 @@ pub(super) fn check_phase_pre_register_default_types(
             // the hot Vacant insertion path.
             if let Some(ignored_ty) = scope.register_if_absent(name, ty) {
                 log_conflict(name, ignored_ty);
+                // SYMMETRIC FIX (task 1952): when the loser in Pass 1 is an annotated
+                // Let, record the name in pass1_skipped so the injection loop skips
+                // annotated-Let cell emission for this name, preventing a duplicate
+                // (entity, member) cell alongside the winning default's cell.
+                // This mirrors the pass2_skipped population at Pass 2 (below), which
+                // records unannotated-Let losers.  Only annotated-Let losers are tracked
+                // here (not Param losers) — see the `pass1_skipped` declaration above for
+                // the documented scope limitation regarding the reverse direction.
+                if matches!(&default.kind, DefaultKind::Let { cell_type: Some(_), .. }) {
+                    pass1_skipped.insert(name.to_string());
+                }
             }
         }
     }
@@ -510,7 +561,7 @@ pub(super) fn check_phase_pre_register_default_types(
         }
     }
 
-    (inferred_let_exprs, pass2_skipped, pass2_compile_errors)
+    (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors)
 }
 
 /// Phase 4 of trait conformance checking: build the `available_defaults` advertisement map.
