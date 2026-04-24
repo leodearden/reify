@@ -46792,11 +46792,20 @@
         "description": "Task 2181's regular-member-access branch at `crates/reify-compiler/src/expr.rs:1197-1198` emits `ValueCellId::new(&id.entity, member)` with zero validation that `member` exists on the bound subject's structure. At eval time unknown members resolve to `Undef` with no diagnostic — so `subject.mispelled` compiles clean and silently produces Undef, strictly worse than the previous \"member access not yet supported\" error. The compiler can't validate today because `subject : Structure` is a generic wildcard and `template_registry` isn't available in `compile_purpose`. Thread `template_registry` into the purpose compilation scope so concrete (non-wildcard) subject types can have their members validated at compile time.",
         "details": "**Hook point:** `crates/reify-compiler/src/expr.rs:1181-1200` (regular-member branch + FIXME comment at 1189-1196 notes `entity_kind == \"Structure\"` is a generic wildcard).\n\n**Approach:**\n1. Thread `template_registry` (or a reference/handle) through `compile_purpose` into `CompilationScope` so the member-access branch can look up the subject's StructureRef template and its declared fields/params.\n2. When subject type is a concrete `StructureRef(name)` and `name` exists in the registry, validate that `member` is a declared field/param on that template; emit a clear \"no member `X` on structure `Y`\" diagnostic otherwise.\n3. When subject is the generic `Structure` wildcard (today's m5_purpose.ri case), preserve current behavior but document the limitation.\n\n**Tests to add:**\n- `subject.bogus_member` in a purpose body compiles quietly today (characterization of the gap) — pins current behavior so the regression becomes visible once the validation lands.\n- Once template_registry is threaded: concrete-subject purposes flag misspelled member names as errors.\n\n**Also:** note this limitation in the deferred-work block at the top of `crates/reify-eval/tests/purpose_activation.rs` so it isn't forgotten.\n\n**Source:** esc-2181-18 S2 (reviewer_comprehensive on task 2181)",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:34:01.695Z"
+        "updatedAt": "2026-04-24T09:42:49.347Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/scope.rs",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/tests/purpose_compile_tests.rs",
+            "crates/reify-eval/tests/purpose_activation.rs"
+          ]
+        }
       },
       {
         "id": "2201",
@@ -46820,14 +46829,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:37:56.432Z",
+      "lastModified": "2026-04-24T09:42:49.350Z",
       "taskCount": 2190,
       "completedCount": 1939,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T09:41:22.368Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
