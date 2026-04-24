@@ -1174,26 +1174,25 @@ pub(crate) fn compile_expr_guarded(
                         Type::StructureRef(name) => name.clone(),
                         _ => unreachable!("outer guard ensures StructureRef"),
                     };
-                    if struct_name != "Structure" {
-                        if let Some(registry) = scope.template_registry
-                            && let Some(template) = registry.get(struct_name.as_str())
-                            && !template
-                                .value_cells
-                                .iter()
-                                .any(|vc| vc.id.member == *member)
-                        {
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "structure '{}' has no member '{}'",
-                                    struct_name, member
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unknown member",
-                                )),
-                            );
-                        }
+                    if struct_name != "Structure"
+                        && let Some(registry) = scope.template_registry
+                        && let Some(template) = registry.get(struct_name.as_str())
+                        && !template
+                            .value_cells
+                            .iter()
+                            .any(|vc| vc.id.member == *member)
+                    {
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "structure '{}' has no member '{}'",
+                                struct_name, member
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unknown member",
+                            )),
+                        );
                     }
                     let member_id = ValueCellId::new(&id.entity, member);
                     return CompiledExpr::value_ref(member_id, Type::Real);
