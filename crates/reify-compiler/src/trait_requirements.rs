@@ -806,6 +806,30 @@ mod tests {
         }
     }
 
+    /// Cache-hit with equal value: returns `Break(())` silently; the map is unchanged and
+    /// no diagnostic is emitted. The conflict closure must not be invoked (guarded by
+    /// `unreachable!`).
+    #[test]
+    fn try_dedup_or_conflict_dedups_silently_on_equal_value() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        map.insert("x".to_string(), (7_i32, "TraitA".to_string()));
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &7_i32, // same value as already present
+            "TraitB",
+            SourceSpan::empty(0),
+            |_, _, _, _, _| -> String { unreachable!("no closure on equal-value dedup") },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        // Map must not be overwritten (still TraitA, not TraitB)
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert!(diags.is_empty(), "Expected no diagnostics on dedup, got: {:?}", diags);
+    }
+
     /// Cache-miss path of `try_dedup_or_conflict`: calling with a name not in the map
     /// inserts `(value, trait_name)` and returns `Continue(())`. The conflict closure is
     /// never invoked.
