@@ -1158,45 +1158,44 @@ pub(crate) fn compile_expr_guarded(
             // Anti-cascade: this branch is placed AFTER the compile_obj call so
             // the existing `is_error()` poison short-circuit below still fires
             // for already-poisoned subjects.
-            if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind {
-                if matches!(&compiled_obj.result_type, Type::StructureRef(_))
-                    && id.entity == scope.entity_name
-                    && !scope.is_entity_scope
-                {
-                    if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
-                        // Reflective aggregation (e.g., `subject.params`):
-                        //   - Compile-time: emit an empty list so forall evaluates
-                        //     vacuously true.  Runtime expansion against the bound
-                        //     entity's actual params is deferred (follow-up task).
-                        //   - FIXME(task-2181 review-4): Type::Real element type is
-                        //     a compile-time placeholder.  Any follow-up task that
-                        //     populates the list at runtime MUST update this type in
-                        //     lockstep, or `forall p in subject.params: determined(p)`
-                        //     will typecheck `p` against the wrong type — silently,
-                        //     because the list is empty today.  Candidate refinement:
-                        //     Type::ParamRef once that variant is introduced.
-                        //   - Empty list satisfies the Quantifier arm's
-                        //     `List(elem) | Set(elem)` type check at forall compile.
-                        return CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
-                    } else {
-                        // Regular member access (e.g., `subject.mass`):
-                        //   - Emit a ValueRef whose entity stamp equals the purpose
-                        //     name (= scope.entity_name).  At activation time,
-                        //     `activate_purpose` calls `remap_entity(purpose_name,
-                        //     entity_ref)` which rewrites this ref to
-                        //     `ValueCellId(entity_ref, member)` — exactly the bound
-                        //     entity's member cell.
-                        //   - Type::Real is a compile-time fallback because
-                        //     entity_kind == "Structure" is a generic wildcard with no
-                        //     matching template in template_registry.  For concrete
-                        //     subject types a future task can thread template_registry
-                        //     into the scope to resolve the actual member type.
-                        //     Limitation: dimension-mismatch cases like
-                        //     `subject.width > 0mm` could misclassify; no such case
-                        //     exists in m5_purpose.ri or the S5 test fixture.
-                        let member_id = ValueCellId::new(&id.entity, member);
-                        return CompiledExpr::value_ref(member_id, Type::Real);
-                    }
+            if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind
+                && matches!(&compiled_obj.result_type, Type::StructureRef(_))
+                && id.entity == scope.entity_name
+                && !scope.is_entity_scope
+            {
+                if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                    // Reflective aggregation (e.g., `subject.params`):
+                    //   - Compile-time: emit an empty list so forall evaluates
+                    //     vacuously true.  Runtime expansion against the bound
+                    //     entity's actual params is deferred (follow-up task).
+                    //   - FIXME(task-2181 review-4): Type::Real element type is
+                    //     a compile-time placeholder.  Any follow-up task that
+                    //     populates the list at runtime MUST update this type in
+                    //     lockstep, or `forall p in subject.params: determined(p)`
+                    //     will typecheck `p` against the wrong type — silently,
+                    //     because the list is empty today.  Candidate refinement:
+                    //     Type::ParamRef once that variant is introduced.
+                    //   - Empty list satisfies the Quantifier arm's
+                    //     `List(elem) | Set(elem)` type check at forall compile.
+                    return CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+                } else {
+                    // Regular member access (e.g., `subject.mass`):
+                    //   - Emit a ValueRef whose entity stamp equals the purpose
+                    //     name (= scope.entity_name).  At activation time,
+                    //     `activate_purpose` calls `remap_entity(purpose_name,
+                    //     entity_ref)` which rewrites this ref to
+                    //     `ValueCellId(entity_ref, member)` — exactly the bound
+                    //     entity's member cell.
+                    //   - Type::Real is a compile-time fallback because
+                    //     entity_kind == "Structure" is a generic wildcard with no
+                    //     matching template in template_registry.  For concrete
+                    //     subject types a future task can thread template_registry
+                    //     into the scope to resolve the actual member type.
+                    //     Limitation: dimension-mismatch cases like
+                    //     `subject.width > 0mm` could misclassify; no such case
+                    //     exists in m5_purpose.ri or the S5 test fixture.
+                    let member_id = ValueCellId::new(&id.entity, member);
+                    return CompiledExpr::value_ref(member_id, Type::Real);
                 }
             }
             // ── End purpose-subject member access ──────────────────────────────
