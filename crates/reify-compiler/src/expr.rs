@@ -1159,14 +1159,24 @@ pub(crate) fn compile_expr_guarded(
                     //   - Concrete-subject validation (task-2200): when the subject
                     //     type is a named structure (not the generic "Structure"
                     //     wildcard) and template_registry is available, verify that
-                    //     `member` is declared in the template's value_cells.  If
-                    //     not, emit "has no member" and return a Type::Error poison
-                    //     so downstream checks (e.g., `subject.bogus > 0`) do not
-                    //     cascade.
-                    //   - Wildcard path: when entity_kind == "Structure" or
-                    //     registry lookup fails (no template by that name), fall
-                    //     through silently — the generic form binds at activation
-                    //     time and has no static template to validate against.
+                    //     `member` is declared in the template (value_cells, ports,
+                    //     or sub_components).  If not found in any, emit
+                    //     "has no member" and return a Type::Error poison so
+                    //     downstream checks (e.g., `subject.bogus > 0`) do not
+                    //     cascade.  Port/sub members fall through to the existing
+                    //     CompiledExpr::value_ref emit — their type resolution is a
+                    //     separate follow-up task.
+                    //   - Wildcard path: when entity_kind == "Structure" or registry
+                    //     lookup fails (no template by that name), fall through
+                    //     silently — the generic form binds at activation time and
+                    //     has no static template to validate against.
+                    //   - Belt-and-braces: `struct_name != "Structure"` makes the
+                    //     wildcard-skip intent explicit even though a registry miss
+                    //     (no template named "Structure") would also fall through.
+                    //     Both guards are intentional: the name guard protects
+                    //     against a hypothetical future stdlib "Structure" template;
+                    //     the registry-miss guard covers other unregistered wildcard
+                    //     kinds (e.g., "Occurrence").
                     //   - Type::Real is a compile-time fallback; member-type
                     //     resolution (e.g., Length vs. Mass) is a separate
                     //     follow-up task and is NOT addressed here.
@@ -1177,22 +1187,31 @@ pub(crate) fn compile_expr_guarded(
                     if struct_name != "Structure"
                         && let Some(registry) = scope.template_registry
                         && let Some(template) = registry.get(struct_name.as_str())
-                        && !template
-                            .value_cells
-                            .iter()
-                            .any(|vc| vc.id.member == *member)
                     {
-                        return make_poison_literal(
-                            diagnostics,
-                            Diagnostic::error(format!(
-                                "structure '{}' has no member '{}'",
-                                struct_name, member
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "unknown member",
-                            )),
-                        );
+                        // Accept members from value_cells, ports, or sub_components.
+                        // Port/sub members are valid member kinds even if their type
+                        // resolution is not yet implemented — only truly undeclared
+                        // names get a "has no member" diagnostic.
+                        let member_known =
+                            template.value_cells.iter().any(|vc| vc.id.member == *member)
+                                || template.ports.iter().any(|p| p.name == *member)
+                                || template
+                                    .sub_components
+                                    .iter()
+                                    .any(|sc| sc.name == *member);
+                        if !member_known {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "structure '{}' has no member '{}'",
+                                    struct_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unknown member",
+                                )),
+                            );
+                        }
                     }
                     let member_id = ValueCellId::new(&id.entity, member);
                     return CompiledExpr::value_ref(member_id, Type::Real);

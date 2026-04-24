@@ -789,6 +789,22 @@ purpose check(subject : Widget) {
         "expected the 'has no member' diagnostic to mention 'Widget', but got: {:#?}",
         no_member_errors
     );
+
+    // Anti-cascade: `make_poison_literal` returns Type::Error, which suppresses
+    // cascading type-mismatch diagnostics from the `> 0` comparison.  Pin this
+    // contract by asserting the total Error count stays small.
+    let all_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        all_errors.len() <= 2,
+        "anti-cascade: expected ≤ 2 Error diagnostics (1 'has no member' + at most 1 other), \
+         got {}: {:#?}",
+        all_errors.len(),
+        all_errors
+    );
 }
 
 /// GREEN test: accessing an existing member on a concrete (non-wildcard) subject type
@@ -893,6 +909,45 @@ purpose check(subject : Structure) {
         no_member_errors.is_empty(),
         "expected no 'has no member' diagnostics for wildcard Structure subject, \
          but got: {:#?}\n(Wildcard subjects have no static template to validate against.)",
+        no_member_errors
+    );
+}
+
+/// Characterization test: a sub-component name on a concrete subject must NOT
+/// trigger a "has no member" diagnostic — sub_components are valid member
+/// kinds even though their type resolution is not yet implemented.
+///
+/// Pins the robustness guarantee added in the task-2200 amendment: the
+/// validation checks value_cells, ports, AND sub_components, so port/sub
+/// member access is not false-positively rejected.
+#[test]
+fn compile_purpose_concrete_subject_sub_component_no_false_positive() {
+    let source = r#"
+structure Motor {
+    param power : Mass = 100kg
+}
+
+structure Drone {
+    sub motor = Motor()
+}
+
+purpose check(subject : Drone) {
+    constraint subject.motor > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // "motor" is a sub-component of Drone — must NOT produce "has no member".
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for sub-component 'motor', \
+         got: {:#?}\n(sub_components are valid member kinds; \
+         type resolution for them is a separate follow-up task.)",
         no_member_errors
     );
 }
