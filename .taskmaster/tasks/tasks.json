@@ -29521,11 +29521,11 @@
         "description": "The ICE diagnostic pattern (format ICE message + DiagnosticLabel + push + fallback to Type::Real) is repeated nearly identically across four sites:\n- entity.rs:534-546 (structure param pass 2 resolution)\n- entity.rs:877-889 (port param pass 2 resolution)\n- guards.rs:269-281 (guarded member pass 2 resolution)\n\nAll share the same structure: \"internal compiler error: unresolved name '...' in pass 2\" with label \"ICE: name should have been registered in pass 1\".\n\nExtract a helper like `fn emit_ice_unresolved(diagnostics: &mut Vec<Diagnostic>, name: &str, span: Span, context: &str) -> Type` that pushes the ICE diagnostic and returns `Type::Real`. This reduces ~12 lines per site to 1 and centralizes the ICE format.\n\nmemory_hints: search(\"ICE diagnostic pattern entity guards unresolved pass 2\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:17:46.422Z",
+        "updatedAt": "2026-04-24T10:50:41.578Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -46946,7 +46946,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T10:50:37.645Z",
+      "lastModified": "2026-04-24T10:50:41.578Z",
       "taskCount": 2192,
       "completedCount": 1947,
       "tags": [
