@@ -2850,7 +2850,7 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("extrude")
+            diagnostics[0].message.contains("for extrude")
                 && !diagnostics[0].message.contains("extrude_symmetric"),
             "diagnostic message should identify the Extrude variant (not ExtrudeSymmetric), got: {}",
             diagnostics[0].message
@@ -2911,7 +2911,7 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("linear")
+            diagnostics[0].message.contains("for linear")
                 && !diagnostics[0].message.contains("linear_2d"),
             "diagnostic message should identify the Linear variant (not Linear2D), got: {}",
             diagnostics[0].message
