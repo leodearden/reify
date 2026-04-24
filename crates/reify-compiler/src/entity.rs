@@ -13,8 +13,6 @@ pub(crate) struct EntityDefRef<'a> {
     pub(crate) annotations: &'a [reify_syntax::Annotation],
     pub(crate) pragmas: &'a [reify_syntax::Pragma],
     pub(crate) span: SourceSpan,
-    #[allow(dead_code)]
-    pub(crate) content_hash: ContentHash,
 }
 
 impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
@@ -28,7 +26,6 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
             annotations: &s.annotations,
             pragmas: &s.pragmas,
             span: s.span,
-            content_hash: s.content_hash,
         }
     }
 }
@@ -44,7 +41,6 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             annotations: &o.annotations,
             pragmas: &o.pragmas,
             span: o.span,
-            content_hash: o.content_hash,
         }
     }
 }
