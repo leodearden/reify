@@ -5,24 +5,8 @@
 //! to generic function call resolution.
 
 use reify_compiler::{CompiledGuardedGroup, TopologyTemplate, ValueCellDecl};
+use reify_test_support::compile_first_template;
 use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
-
-/// Helper: compile source, return the first topology template and diagnostics.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<reify_types::Diagnostic>) {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let template = compiled
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected at least 1 template");
-    (template, compiled.diagnostics)
-}
 
 /// Helper: compile source and extract the value cell named `cell_name`'s default_expr.
 /// Panics if there are errors or the cell is missing.
