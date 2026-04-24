@@ -736,3 +736,57 @@ fn m5_purpose_example_compiles_under_stdlib_with_zero_errors() {
         module.compiled_purposes.iter().map(|p| &p.name).collect::<Vec<_>>()
     );
 }
+
+// ── Task-2200: concrete-subject member validation ────────────────────────────
+
+/// RED test: accessing a non-existent member on a concrete (non-wildcard) subject type
+/// must produce an Error diagnostic containing "has no member" and the member name.
+///
+/// Source: `Widget` structure with a `mass` param; purpose accesses `subject.bogus`
+/// (a member that does not exist on Widget). Today this compiles silently and
+/// produces a ValueRef to a non-existent cell. After implementation it must
+/// emit a `Severity::Error` diagnostic.
+///
+/// RED: fails before step-4 impl because the current code emits no diagnostic
+/// for member access on concrete subjects and silently returns a ValueRef.
+#[test]
+fn compile_purpose_concrete_subject_unknown_member_errors() {
+    let source = r#"
+structure Widget {
+    param mass : Mass = 5kg
+}
+
+purpose check(subject : Widget) {
+    constraint subject.bogus > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // Must have at least one Error diagnostic mentioning "has no member" and "bogus".
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("has no member")
+                && d.message.contains("bogus")
+        })
+        .collect();
+
+    assert!(
+        !no_member_errors.is_empty(),
+        "expected a Severity::Error diagnostic containing 'has no member' and 'bogus', \
+         but none was emitted.\nAll diagnostics: {:#?}",
+        module.diagnostics
+    );
+
+    // Also verify the diagnostic mentions the structure name "Widget".
+    let mentions_widget = no_member_errors
+        .iter()
+        .any(|d| d.message.contains("Widget"));
+    assert!(
+        mentions_widget,
+        "expected the 'has no member' diagnostic to mention 'Widget', but got: {:#?}",
+        no_member_errors
+    );
+}
