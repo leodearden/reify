@@ -46778,7 +46778,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:33:12.486Z"
+        "updatedAt": "2026-04-24T09:33:12.486Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-eval/tests/purpose_activation.rs"
+          ]
+        }
       },
       {
         "id": "2200",
