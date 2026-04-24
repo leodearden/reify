@@ -6,6 +6,8 @@
 //! `CompiledModule` whose `content_hash` differs from the current one and
 //! re-evaluates only the dependency cones touched by the structural diff.
 
+mod common;
+
 use std::collections::HashSet;
 
 use reify_constraints::SimpleConstraintChecker;
@@ -18,6 +20,8 @@ use reify_types::{
     ConstraintNodeId, RealizationNodeId, Satisfaction, SnapshotProvenance, Value, ValueCellId,
     ValueMap,
 };
+
+use common::ten_bool_guarded_groups;
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -2196,57 +2200,15 @@ fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
 /// Task 2142 — cross-phase dedup via `phase1_reelaborated` set.
 #[test]
 fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
-    let module_a_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where u3 { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
+    let module_a_src = ten_bool_guarded_groups("u3");
     // Module B: identical except group 3's guard expression is negated.
     // With u3=true, `!u3` evaluates to false → x3 deactivates to Undef.
     // The guard cell for group 3 has a different expression text (content_hash
     // changes), so `has_dirty_guards` fires Phase 1; the guard value also
     // changes (true → false), so `guard_changed` fires Phase 3.
-    let module_b_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where !u3 { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
-    let module_a = parse_and_compile(module_a_src);
-    let module_b = parse_and_compile(module_b_src);
+    let module_b_src = ten_bool_guarded_groups("!u3");
+    let module_a = parse_and_compile(&module_a_src);
+    let module_b = parse_and_compile(&module_b_src);
 
     // Incremental: eval(A) then edit_source(B).
     let mut incremental = fresh_engine();
@@ -2323,57 +2285,15 @@ fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
 #[test]
 fn edit_source_phase1_fires_but_skips_when_guard_expr_text_changes_value_unchanged() {
     // Module A: 10 groups, each with a trivial `uN` guard expression.
-    let module_a_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where u3 { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
+    let module_a_src = ten_bool_guarded_groups("u3");
     // Module B: identical except group 3's guard is `u3 && true` instead of
     // `u3`. Expression text differs → content_hash of __guard_3 changes →
     // has_dirty_guards fires Phase 1. But `u3 && true` evaluates to the same
     // Bool(true) as plain `u3` when u3=true → per-group skip applies for all
     // 10 groups → no group is re-elaborated.
-    let module_b_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where u3 && true { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
-    let module_a = parse_and_compile(module_a_src);
-    let module_b = parse_and_compile(module_b_src);
+    let module_b_src = ten_bool_guarded_groups("u3 && true");
+    let module_a = parse_and_compile(&module_a_src);
+    let module_b = parse_and_compile(&module_b_src);
 
     // Incremental: eval(A) then edit_source(B).
     let mut incremental = fresh_engine();
