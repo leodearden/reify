@@ -287,8 +287,14 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// call. When the count grows (i.e., at least one new Error-severity diagnostic was pushed),
 /// the expression itself failed to compile (e.g. unresolved forward reference, unknown unit).
 /// In that case the name is recorded in `pass2_compile_errors` and **excluded from
-/// `inferred_let_exprs`** (the scope slot is also not claimed via `register_if_absent`, so
-/// no poisoned type propagates into scope).
+/// `inferred_let_exprs`**.  The scope slot is additionally **poisoned with `Type::Error`** via
+/// `register_if_absent(name, Type::Error)` so that sibling unannotated-let expressions
+/// referencing this name resolve to the anti-cascade sentinel rather than emitting a fresh
+/// "unresolved name" cascade.  `implicitly_converts_to(Error, _) -> true` (type_compat.rs:52-75)
+/// and `infer_binop_type`'s leading Error guard (type_compat.rs:371-376) propagate the poison
+/// silently — the same pattern used at `check_phase_resolve_structure_members` (checker.rs:77-92,
+/// 135-150).  `register_if_absent` preserves any prior Pass-1 registration so `Type::Error` can
+/// never overwrite a real type.
 ///
 /// The `pass2_compile_errors` set is threaded through `check_phase_build_available_defaults_map`
 /// (where names in the set are excluded from the advertisement — no phantom `(name, Let) →
@@ -461,12 +467,27 @@ pub(super) fn check_phase_pre_register_default_types(
             let had_compile_error = err_count_after > err_count_before;
 
             if had_compile_error {
-                // compile_expr itself emitted a diagnostic — the expression is
-                // broken.  Do NOT insert into inferred_let_exprs (prevents a
-                // poisoned entry advertising a phantom type in available_defaults)
-                // and do NOT claim the scope slot (prevents the poison type from
-                // propagating into scope and causing cascade type errors elsewhere).
+                // compile_expr itself emitted at least one Severity::Error diagnostic —
+                // the expression is broken.  Do NOT insert into inferred_let_exprs
+                // (prevents a poisoned entry advertising a phantom type in
+                // available_defaults).
                 pass2_compile_errors.insert(name.to_string());
+                // Poison the scope slot with Type::Error so sibling unannotated-let
+                // expressions (or trait constraints) that reference this name resolve to
+                // the anti-cascade sentinel rather than emitting a fresh "unresolved name"
+                // cascade.  `implicitly_converts_to(Error, _) -> true` (type_compat.rs:52-75)
+                // and `infer_binop_type`'s Type::Error leading guard (type_compat.rs:371-376)
+                // then propagate the poison silently through downstream compilation —
+                // the same pattern used at `check_phase_resolve_structure_members`
+                // (checker.rs:77-92, 135-150) for unresolved structure-member annotations.
+                //
+                // `register_if_absent` preserves any prior registration: a Pass 1 annotated
+                // Param/Let that already claimed the slot keeps its real type (Type::Error
+                // can never displace a real type, only fill a vacant slot).  The returned
+                // `Option<Type>` (Some on collision) is intentionally discarded — unlike the
+                // success arm, we don't log a conflict because Type::Error carries no
+                // user-facing information.
+                let _ = scope.register_if_absent(name, Type::Error);
             } else {
                 let inferred_ty = compiled_expr.result_type.clone();
                 if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {
