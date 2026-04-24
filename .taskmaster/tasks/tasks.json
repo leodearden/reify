@@ -46509,11 +46509,16 @@
         "description": "Three related cleanups from review of task 2115.\n\n(1) Strip TDD-step narration doc-comments in crates/reify-compiler/tests/let_scope_tests.rs:1813-1821, 1859-1866, 1945-1948 — the fix landed in the same commit so the comments are now false (\"asserts tests fail when in fact they pass\"), and the embedded line-number references (e.g. \"line 1370\") will rot. Rewrite to describe the behavior under test (e.g. \"pins that a geometry-let realization's span is carried over from LetDecl.span rather than being defaulted to (0,0)\").\n\n(2) Tighten the `slice.contains(\"g\")` assertions at let_scope_tests.rs:1836-1840, 1893-1897, 1951-1955 — single-letter \"g\" appears in many unrelated tokens ('structure', 'cylinder', 'length'), so a span that accidentally includes other source still passes. Use `contains(\"param g\")` or assert the slice equals a known expected subrange of the source.\n\n(3) In crates/reify-test-support/src/builders/topology.rs:202 and 220, two RealizationDecl builder methods still construct `span: SourceSpan::new(0, 0)`. If downstream diagnostic-label tests ever rely on a meaningful span, they will silently label at byte 0. Either add a `span: Option<SourceSpan>` / `with_span()` helper, or add an intent-of-sentinel comment (matches project's silent-defaults anti-pattern flagged in Apr 3 review).\n\nSource: esc-2115-21 (S1+S2+S3).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:13:55.140Z"
+        "updatedAt": "2026-04-24T08:24:36.793Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "14188b4ec16f0a83d4107e5de5d3f25b49635cdb"
+          }
+        }
       },
       {
         "id": "2188",
@@ -46535,9 +46540,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T08:14:26.166Z",
+      "lastModified": "2026-04-24T08:24:36.823Z",
       "taskCount": 2177,
-      "completedCount": 1925,
+      "completedCount": 1926,
       "tags": [
         "master"
       ]
