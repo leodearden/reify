@@ -570,15 +570,23 @@ structure def S : Left + Right {
     );
 }
 
-/// Kind-aware dedup: TraitA provides `param x : Real = 1`, TraitB provides
+/// Cross-kind collision: TraitA provides `param x : Real = 1`, TraitB provides
 /// `let x : Real = 42`. Structure implements both with no override.
-/// The Let default must NOT be silently discarded by the Param default's
-/// name-only dedup in `seen_defaults`.
 ///
-/// Expected: 2 value cells for 'x' (one Param from TraitA, one Let from TraitB).
-/// Before the fix, `seen_defaults["x"]` is populated by TraitA's Param (type Real),
-/// and TraitB's Let also has sentinel type Real — so the name-only dedup treats them
-/// as duplicates and discards the Let, producing only 1 cell.
+/// When `param x` from TraitA and annotated `let x : Real` from TraitB both appear in
+/// Pass 1 of `check_phase_pre_register_default_types`, TraitA's Param wins the
+/// `register_if_absent` scope slot. TraitB's annotated Let loses and is recorded in
+/// `pass1_skipped` (task 1952 Option A fix). The injection loop then skips the annotated-Let
+/// cell to prevent duplicate `(entity, "x")` cells with different kinds.
+///
+/// Expected: exactly 1 value cell for 'x' (the Param from TraitA). The annotated Let from
+/// TraitB is suppressed by `pass1_skipped` — the same mechanism that suppresses unannotated
+/// Let losers via `pass2_skipped`.
+///
+/// This test was previously asserting 2 cells (before task 1952 fixed the Pass 1 symmetry
+/// bug). Having two `(entity, member)` cells for the same name with different kinds
+/// (`Param` and `Let`) is semantically invalid and was the pre-fix behavior that task 1952
+/// eliminates.
 #[test]
 fn let_default_not_discarded_by_param_default_same_name() {
     let source = r#"
@@ -613,26 +621,16 @@ structure def S : ProvidesParamX + ProvidesLetX {
         .collect();
     assert_eq!(
         x_cells.len(),
-        2,
-        "expected 2 'x' value cells (one Param, one Let) but got {}; \
-         the Let default was silently discarded by the name-only seen_defaults dedup",
+        1,
+        "expected 1 'x' value cell (Param from ProvidesParamX; annotated-Let from \
+         ProvidesLetX suppressed by pass1_skipped, task 1952), got {}",
         x_cells.len()
     );
 
-    let param_cells: Vec<_> = x_cells
-        .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Param)
-        .collect();
-    assert_eq!(param_cells.len(), 1, "expected exactly 1 Param 'x' cell");
-
-    let let_cells: Vec<_> = x_cells
-        .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Let)
-        .collect();
     assert_eq!(
-        let_cells.len(),
-        1,
-        "expected exactly 1 Let 'x' cell (let_default_not_discarded)"
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single 'x' cell must be Param (from ProvidesParamX)"
     );
 }
 
@@ -675,6 +673,12 @@ structure def T : NeedsX + AlsoNeedsX {
 /// Guards against the `available_defaults` lookup regressing to name-only keying: if the
 /// key were just the name, the HashMap might store only the last-written kind (collision),
 /// causing the Param lookup to fail or return a Let type.
+///
+/// After task 1952's Pass 1 symmetry fix: the annotated Let from ProvidesLetDefault loses
+/// the Pass 1 `register_if_absent` scope race to the Param from ProvidesParamDefault and is
+/// recorded in `pass1_skipped`. The injection loop skips the annotated-Let cell. Only the
+/// Param cell is injected (1 cell, not 2). The Param requirement from NeedsParam is still
+/// satisfied by the `available_defaults` advertisement of ProvidesParamDefault's Param.
 #[test]
 fn param_requirement_still_satisfied_with_let_default_present() {
     let source = r#"
@@ -707,7 +711,8 @@ structure def S : NeedsParam + ProvidesParamDefault + ProvidesLetDefault {
         errors
     );
 
-    // Both the Param default and the Let default should be materialized.
+    // After task 1952: the annotated-Let loser is suppressed by pass1_skipped.
+    // Only the Param cell is materialized (no duplicate (entity, "x") cells).
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -715,10 +720,15 @@ structure def S : NeedsParam + ProvidesParamDefault + ProvidesLetDefault {
         .collect();
     assert_eq!(
         x_cells.len(),
-        2,
-        "expected 2 'x' cells (one Param from ProvidesParamDefault, one Let from \
-         ProvidesLetDefault), got {}",
+        1,
+        "expected 1 'x' cell (Param from ProvidesParamDefault; annotated-Let from \
+         ProvidesLetDefault suppressed by pass1_skipped per task 1952), got {}",
         x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single 'x' cell must be Param (requirement satisfaction)"
     );
 }
 

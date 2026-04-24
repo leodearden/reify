@@ -82,6 +82,7 @@ pub(crate) fn check_trait_conformance(
         &structure_all_members,
         &structure_constraint_labels,
         inferred_let_exprs,
+        &pass1_skipped,
         &pass2_skipped,
         &pass2_compile_errors,
         scope,
@@ -2691,12 +2692,14 @@ mod tests {
         let mut constraint_index: u32 = 0;
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
+        let pass1_skipped: HashSet<String> = HashSet::new();
         check_phase_inject_defaults(
             &ctx,
             &entity_ref,
             &structure_members,
             &structure_constraint_labels,
             inferred_let_exprs,
+            &pass1_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
             &mut scope,

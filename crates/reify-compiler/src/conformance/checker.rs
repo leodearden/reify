@@ -860,6 +860,14 @@ pub(super) fn check_phase_check_members_against_requirements(
 /// expression is compiled freshly. For **unannotated** lets the compiled expression is taken
 /// from `inferred_let_exprs` (populated by phase 3's Pass 2), consuming the entry via `.remove()`.
 ///
+/// ### Annotated-Let pass1_skipped short-circuit
+///
+/// When `cell_type.is_some() && pass1_skipped.contains(name)`, the annotated-Let default lost
+/// the Pass 1 `register_if_absent` race to an earlier same-name default (typically a `Param`).
+/// The winner's injection arm will emit the cell; this arm must not emit a duplicate. Silent
+/// `continue` before `compile_expr` is called — no cell is pushed, no diagnostic is emitted.
+/// This is the symmetric mirror of the `pass2_skipped` guard for unannotated Lets (task 1952).
+///
 /// ### Cache miss handling — three cases
 ///
 /// - **(a) Deliberate skip** (`pass2_skipped.contains(name)`): Pass 2 found an annotated `Param`
@@ -905,6 +913,7 @@ pub(super) fn check_phase_inject_defaults(
     structure_members: &HashMap<String, Type>,
     structure_constraint_labels: &HashSet<String>,
     mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr>,
+    pass1_skipped: &HashSet<String>,
     pass2_skipped: &HashSet<String>,
     pass2_compile_errors: &HashSet<String>,
     scope: &mut CompilationScope,
@@ -962,6 +971,19 @@ pub(super) fn check_phase_inject_defaults(
                         entity: structure.name.to_string(),
                         member: name.to_string(),
                     };
+
+                    // SYMMETRIC FIX (task 1952): annotated-Let losers in Pass 1 are recorded
+                    // in `pass1_skipped` (the mirror of `pass2_skipped` for unannotated-Let
+                    // losers in Pass 2).  When `cell_type.is_some() && pass1_skipped.contains(name)`
+                    // the annotated Let lost the `register_if_absent` race to an earlier
+                    // same-name default (typically a Param registered first in ctx.defaults
+                    // order).  The winner's injection arm will emit the definitive cell;
+                    // skip emission here to prevent duplicate `(entity, member)` cells.
+                    // This mirrors the `pass2_skipped` guard in the `None` arm below
+                    // (checker.rs:999-1008 in task 1907's injection guard).
+                    if cell_type.is_some() && pass1_skipped.contains(name) {
+                        continue;
+                    }
 
                     // Reuse the compiled_expr cached by the pre-register/inference
                     // pass (task 1834 step-9) to avoid a second compilation of the
