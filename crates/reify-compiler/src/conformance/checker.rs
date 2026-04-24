@@ -281,20 +281,30 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// redesign if a future pass adds `Param`-inference.
 /// TODO(future-kinds): revert to `HashMap<String, CompiledExpr>` if no second kind is added.
 ///
-/// # PASS 2 COMPILE-ERROR SUPPRESSION (`pass2_compile_errors`, task 1914 suggestion #1)
+/// # PASS 2 COMPILE-ERROR SUPPRESSION (`pass2_compile_errors`, task 1914 / task 2158)
 ///
-/// Pass 2 snapshots `diagnostics.len()` before each `compile_expr` call. When the length
-/// grows (i.e., a diagnostic was pushed), the expression itself failed to compile (e.g.
-/// unresolved forward reference, unknown unit). In that case the name is recorded in
-/// `pass2_compile_errors` and **excluded from `inferred_let_exprs`** (the scope slot is
-/// also not claimed via `register_if_absent`, so no poisoned type propagates into scope).
+/// Pass 2 snapshots the count of **`Severity::Error`** diagnostics before each `compile_expr`
+/// call. When the count grows (i.e., at least one new Error-severity diagnostic was pushed),
+/// the expression itself failed to compile (e.g. unresolved forward reference, unknown unit).
+/// In that case the name is recorded in `pass2_compile_errors` and **excluded from
+/// `inferred_let_exprs`** (the scope slot is also not claimed via `register_if_absent`, so
+/// no poisoned type propagates into scope).
 ///
 /// The `pass2_compile_errors` set is threaded through `check_phase_build_available_defaults_map`
 /// (where names in the set are excluded from the advertisement — no phantom `(name, Let) →
 /// poison_type` entry) and `check_phase_inject_defaults` (where names in the set silently
 /// `continue` in the Let-injection cache-miss branch, parallel to `pass2_skipped`).
 ///
-/// Using `diagnostics.len()` rather than `matches!(result_type, Type::Error)` is more robust:
+/// Filtering by `Severity::Error` (rather than total diagnostic count) is required because
+/// `compile_expr` legitimately emits `Severity::Warning` and `Severity::Info` on valid paths
+/// (e.g. `Diagnostic::warning` for empty list/set/map literals at `expr.rs:1211/1241/1281`
+/// and zero-arg return-type inference at `expr.rs:800`; `Diagnostic::info` at
+/// `expr.rs:1056/1924`). A len-based snapshot would incorrectly classify those non-error
+/// emissions as compile failures, silently dropping successfully-typed expressions such as
+/// `let x = []` from the inferred cache. The Error-count filter is safe under future drift:
+/// any new warning/info path in `compile_expr` or its callees is silently tolerated.
+///
+/// Using error-count rather than `matches!(result_type, Type::Error)` remains more robust:
 /// some error-recovery paths in `expr.rs` (e.g. unknown-unit at expr.rs:278–290) return
 /// `Type::Scalar{DIMENSIONLESS}` instead of `Type::Error`, and would escape a type-based check.
 ///
@@ -408,13 +418,24 @@ pub(super) fn check_phase_pre_register_default_types(
     // `available_defaults` (so requirement-matching uses the inferred type
     // instead of the old `Type::Real` fallback).
     //
-    // Error suppression (task 1914 suggestion #1): snapshot `diagnostics.len()`
-    // before each compile_expr call.  If the length grew, the expression failed
-    // to compile (root-cause diagnostic already emitted).  In that case the name
-    // is recorded in `pass2_compile_errors` and excluded from both
-    // `inferred_let_exprs` and `register_if_absent` — no poisoned entry enters
-    // the cache or the scope, preventing phantom "available default has Real/Error"
-    // cascade diagnostics downstream.
+    // Error suppression (task 1914 suggestion #1, hardened by task 2158):
+    // snapshot the count of *Severity::Error* diagnostics before each
+    // compile_expr call.  If the count grew, the expression failed to compile
+    // (root-cause diagnostic already emitted).  In that case the name is
+    // recorded in `pass2_compile_errors` and excluded from both
+    // `inferred_let_exprs` and `register_if_absent` — no poisoned entry
+    // enters the cache or the scope, preventing phantom "available default
+    // has Real/Error" cascade diagnostics downstream.
+    //
+    // Severity::Error filtering (rather than total len) is required because
+    // compile_expr legitimately emits Severity::Warning and Severity::Info
+    // diagnostics on valid paths (e.g. Diagnostic::warning for empty list/set/
+    // map literals at expr.rs:1211/1241/1281 and zero-arg return-type
+    // inference at expr.rs:800; Diagnostic::info at expr.rs:1056/1924).
+    // Counting those as compile failures would incorrectly suppress
+    // successfully-typed expressions such as `let x = []`.  The filter is
+    // safe under future drift: any new warning/info path in compile_expr or
+    // its callees is silently tolerated.
     for default in &ctx.defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
@@ -423,17 +444,21 @@ pub(super) fn check_phase_pre_register_default_types(
                 let_decl,
             } = &default.kind
         {
-            // Snapshot before compilation so we can detect if compile_expr pushed
-            // any new diagnostic (including partial error-recovery cases that return
-            // a non-Error type such as Type::Scalar{DIMENSIONLESS}).
-            // ASSUMPTION: compile_expr only emits Severity::Error diagnostics (no
-            // warnings or info).  If that ever changes, a non-error diagnostic would
-            // incorrectly suppress a successfully-typed expression.  Verified: no
-            // Severity::Warning usages in expr.rs as of task 1914.
-            let diag_before = diagnostics.len();
+            // Snapshot the count of Severity::Error diagnostics before compilation
+            // so we can detect if compile_expr pushed a new error (including
+            // partial error-recovery cases that return a non-Error type such as
+            // Type::Scalar{DIMENSIONLESS}).  Warning/Info additions are tolerated.
+            let err_count_before = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .count();
             let compiled_expr =
                 compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
-            let had_compile_error = diagnostics.len() > diag_before;
+            let err_count_after = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .count();
+            let had_compile_error = err_count_after > err_count_before;
 
             if had_compile_error {
                 // compile_expr itself emitted a diagnostic — the expression is
