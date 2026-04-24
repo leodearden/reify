@@ -2849,14 +2849,10 @@ mod tests {
             "diagnostic message should mention 'distance', got: {}",
             diagnostics[0].message
         );
-        let expected_kind = format!(" for {}", reify_compiler::SweepKind::Extrude);
-        let spurious_prefix = format!(" for {}_", reify_compiler::SweepKind::Extrude);
         assert!(
-            diagnostics[0].message.contains(&expected_kind)
-                && !diagnostics[0].message.contains(&spurious_prefix),
-            "diagnostic message should contain {:?} without a suffix variant (not {:?}), got: {}",
-            expected_kind,
-            spurious_prefix,
+            diagnostics[0].message.contains("extrude")
+                && !diagnostics[0].message.contains("extrude_symmetric"),
+            "diagnostic message should identify the Extrude variant (not ExtrudeSymmetric), got: {}",
             diagnostics[0].message
         );
     }
