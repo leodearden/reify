@@ -41097,11 +41097,11 @@
         "description": "Two cleanups to the task-1918 error-wildcard tightening artifact:\n\n1. In `crates/reify-compiler/src/type_compat.rs` (~line 117), the doc comment for `type_compatible` references \"the internal call on line 139 (implicitly_converts_to(param_ty, arg_ty))\". After the debug_assert, short-circuit, identity check, and Int→Real widening branch, the actual call is now at line 142 — line-number references rot quickly. Replace with a symbolic reference such as \"the internal call to `implicitly_converts_to(param_ty, arg_ty)` at the end of this function\".\n\n2. In `crates/reify-compiler/tests/implicit_conversion_tests.rs`, the producer-side (arg-side) `type_compatible_error_wildcard_mirror_*` coverage was narrowed to just `real` and `list` during the 1918 rewrite. The prior commit pinned nine variants (real, int, bool, string, scalar, list, option, vector, matrix, error_error). Restore the full variant set (matching the established `type_compatible_error_wildcard_mirror_*` naming convention) so the legitimate producer-side anti-cascade path — which the tightened contract explicitly preserves — is pinned against the same variant set as before.\n\nReview followup from task 1918 (suggestions S1 & S3 of esc-1918-13).",
         "details": "<info added on 2026-04-17T13:43:05.345Z>\nDEFERRED (steward, esc-1945-30): Premises do not hold on main — task 1918 is not yet merged.\n\nVerification on worktree base ffe0fabce (merge-base with main):\n- crates/reify-compiler/src/type_compat.rs is 328 lines with the pre-1918 short doc comment at L84–89 (no debug_assert, no \"line 139\" reference, no resolve_type_with_aliases). Part 1 has nothing to fix.\n- crates/reify-compiler/tests/implicit_conversion_tests.rs contains 10 param-side variants + 2 mirror tests (real, list). The 2-mirror state is the original task-1912 pinning, NOT a 1918 narrowing. \"Restoring\" to 9 variants here would either silently duplicate task 1918's work or collide on merge.\n\nAction on resume: rebase task/1945 on main AFTER task 1918 merges, then both premises become true — part 1 becomes a symbolic-reference swap on the expanded doc comment, and part 2 legitimately expands the narrowed mirror set to {real, int, bool, string, scalar, list, option, vector, matrix, error_error}.\n\nIf 1918 is abandoned or significantly re-scoped, this task description must be rewritten to target main's actual state before un-deferring.\n</info added on 2026-04-17T13:43:05.345Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:53:30.208Z",
+        "updatedAt": "2026-04-24T09:22:23.502Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -41116,7 +41116,10 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "c2d2d927ade097c13fa0c2612e9d38932f90a427"
+          }
         }
       },
       {
@@ -46738,14 +46741,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:20:16.320Z",
+      "lastModified": "2026-04-24T09:22:23.502Z",
       "taskCount": 2187,
-      "completedCount": 1936,
+      "completedCount": 1937,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T09:21:58.125Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
