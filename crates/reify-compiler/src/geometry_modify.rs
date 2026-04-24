@@ -316,13 +316,26 @@ mod tests {
         }
     }
 
-    /// Assert that `fn_name(target, arg_name)` with a scalar `target` param falls back
-    /// to `GeomRef::Step(0)` (the step_offset when there are no prior sub-ops).
-    fn assert_non_geometry_target_fallback(kind: ModifyKind, fn_name: &str, arg_name: &str) {
+    /// Assert that `fn_name(target, tail_arg_names[0], tail_arg_names[1], ...)` with a scalar
+    /// `target` param falls back to `GeomRef::Step(0)` (the step_offset when there are no
+    /// prior sub-ops). Each name in `tail_arg_names` becomes a `param <name>: Scalar` in the
+    /// generated source; the call is `fn_name(target, name0, name1, ...)`.
+    fn assert_non_geometry_target_fallback(
+        kind: ModifyKind,
+        fn_name: &str,
+        tail_arg_names: &[&str],
+    ) {
+        let param_decls: String = tail_arg_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("    param {name}: Scalar = {}mm\n", i + 2))
+            .collect();
+        let tail_call = tail_arg_names.join(", ");
         let source = format!(
-            "structure S {{\n    param target: Scalar = 5mm\n    param {a}: Scalar = 2mm\n    let result = {f}(target, {a})\n}}",
+            "structure S {{\n    param target: Scalar = 5mm\n{decls}    let result = {f}(target, {tail})\n}}",
             f = fn_name,
-            a = arg_name
+            decls = param_decls,
+            tail = tail_call,
         );
         let parsed = reify_syntax::parse(
             &source,
