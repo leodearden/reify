@@ -406,6 +406,39 @@ mod tests {
         }
     }
 
+    // --- task-2176 step-3: stateless diagnostics resolve stdlib types ---
+
+    #[test]
+    fn compute_diagnostics_resolves_stdlib_material_and_rigid() {
+        // Source that references two stdlib symbols: the Rigid trait and the
+        // Material struct.  With the empty-prelude compile() this produces
+        // "unresolved type: Material" / "unresolved type in conformance check:
+        // Material" / "unresolved trait: 'Rigid'" ERRORs.
+        let source = r#"structure S : Rigid {
+    param density: Real = 7850
+    param name: String = "steel"
+    param volume: Real = 1.0
+    param centroid_x: Real = 0.0
+    param centroid_y: Real = 0.0
+    param centroid_z: Real = 0.0
+    param moment_of_inertia: Real = 1.0
+    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 2e11)
+}"#;
+        let diags = compute_diagnostics(source, &test_uri());
+        let unresolved_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && (d.message.contains("unresolved type: Material")
+                        || d.message.contains("unresolved trait"))
+            })
+            .collect();
+        assert!(
+            unresolved_errors.is_empty(),
+            "stdlib types Material and trait Rigid should resolve; got errors: {unresolved_errors:?}"
+        );
+    }
+
     // --- constraint violation diagnostic range tests (step-31) ---
 
     #[test]
