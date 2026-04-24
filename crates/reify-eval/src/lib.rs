@@ -234,6 +234,16 @@ pub struct Engine {
     /// The field itself is always present (module-private, no `pub`) so that
     /// the writer sites in `engine_edit.rs` need no cfg-gating.
     last_guard_phase_group_evals: usize,
+    /// Count of `detect_role_flip` invocations on the hot path during the most
+    /// recent `edit_source` call. Reset to 0 at the start of each `edit_source`
+    /// call. Incremented every time `detect_role_flip` is called (currently at
+    /// most once per `edit_source` after the deferred-probe refactor).
+    ///
+    /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// via `Engine::last_role_flip_probes()` in `engine_admin.rs`.
+    /// The field itself is always present (module-private, no `pub`) so that
+    /// the writer sites in `engine_edit.rs` need no cfg-gating.
+    last_role_flip_probes: usize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.

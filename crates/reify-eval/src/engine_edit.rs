@@ -1558,6 +1558,10 @@ impl Engine {
         // is incremented for each group that is NOT skipped in Phase 1 or Phase 3;
         // it is exposed via last_guard_phase_group_evals() for test assertions.
         self.last_guard_phase_group_evals = 0;
+        // Reset the role-flip probe counter (task 2094). Counts detect_role_flip
+        // invocations on the hot path; exposed via last_role_flip_probes() for
+        // the deferred-probe perf-lock test.
+        self.last_role_flip_probes = 0;
 
         // Cross-phase dedup set (task 2142): records guard_cell IDs for every
         // group that Phase 1 actually re-elaborated in this edit_source call.
@@ -1619,7 +1623,11 @@ impl Engine {
             let eval_state = self.eval_state.as_ref().unwrap();
             let old_groups = &eval_state.snapshot.graph.guarded_groups;
             let new_groups = &graph.guarded_groups;
-            let has_role_flipped_guard_member = detect_role_flip(old_groups, new_groups);
+            let has_role_flipped_guard_member = {
+                let result = detect_role_flip(old_groups, new_groups);
+                self.last_role_flip_probes += 1;
+                result
+            };
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             }) || has_added_guard_member
