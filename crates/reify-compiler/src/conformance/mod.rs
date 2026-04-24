@@ -1758,6 +1758,128 @@ mod tests {
         );
     }
 
+    /// Phase-contract test: Pass 2 treats a warning-only `compile_expr` result as success,
+    /// not as a compile error (task 2158 step-1, severity-safe detection).
+    ///
+    /// ## Scenario
+    ///
+    /// `let x = []` — an empty list literal — causes `compile_expr` to push a
+    /// `Severity::Warning` diagnostic ("cannot infer element type of empty list literal,
+    /// defaulting to Real") but emits **no** `Severity::Error`.  The expression compiles
+    /// successfully to `Type::List(Box::new(Type::Real))`.
+    ///
+    /// ## What this test locks in
+    ///
+    /// The len-based snapshot (`diagnostics.len() > diag_before`) used before task 2158
+    /// counted the warning as a compile failure, wrongly inserting `x` into
+    /// `pass2_compile_errors` and skipping both the `inferred_let_exprs` insert and the
+    /// scope registration.  After the severity-filter fix, only `Severity::Error` additions
+    /// are counted — the warning is tolerated and the expression is cached normally.
+    ///
+    /// Assertions:
+    ///   (a) Exactly 1 diagnostic, with `severity == Severity::Warning`.
+    ///   (b) `pass2_compile_errors` is empty — the warning must NOT be classified as failure.
+    ///   (c) `("x", Let)` is present in `inferred_let_exprs`.
+    ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::Real))`.
+    ///   (e) The scope slot for "x" is occupied after Pass 2 (a second `register_if_absent`
+    ///       call returns `Some(..)` indicating a conflict).
+    #[test]
+    fn check_phase_pre_register_default_types_treats_warning_only_compile_as_success() {
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // unannotated — must go through Pass 2 inference
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::ListLiteral(vec![]), // empty list → Warning, not Error
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Let {
+                cell_type: None,
+                let_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+            check_phase_pre_register_default_types(
+                &ctx,
+                &structure_members,
+                "S",
+                &mut scope,
+                &[],
+                &[],
+                &mut diagnostics,
+            );
+
+        // (a) Exactly one Warning diagnostic emitted by compile_expr for the empty list.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected exactly 1 diagnostic (the empty-list-literal warning); got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            Severity::Warning,
+            "Expected the diagnostic to be a Warning, not an Error; got: {:?}",
+            diagnostics[0]
+        );
+
+        // (b) The warning must NOT be classified as a compile failure.
+        assert!(
+            pass2_compile_errors.is_empty(),
+            "Expected pass2_compile_errors to be empty — a Warning-only compile_expr result \
+             must be treated as success; got: {:?}",
+            pass2_compile_errors
+        );
+
+        // pass2_skipped should also be empty (no scope-slot collision).
+        assert!(
+            pass2_skipped.is_empty(),
+            "Expected pass2_skipped to be empty; got: {:?}",
+            pass2_skipped
+        );
+
+        // (c) The compiled expression must be cached in inferred_let_exprs.
+        assert!(
+            inferred_let_exprs.contains_key(&("x".to_string(), AvailableDefaultKind::Let)),
+            "Expected composite key ('x', Let) in inferred_let_exprs — Pass 2 must cache \
+             the compiled expression even when compile_expr emitted a Warning; \
+             got keys: {:?}",
+            inferred_let_exprs.keys().collect::<Vec<_>>()
+        );
+
+        // (d) The cached expression has the expected inferred type for an empty list literal.
+        assert_eq!(
+            inferred_let_exprs[&("x".to_string(), AvailableDefaultKind::Let)].result_type,
+            Type::List(Box::new(Type::Real)),
+            "Expected Type::List(Real) for an empty list literal (defaulting to Real element type)"
+        );
+
+        // (e) Scope slot for "x" is occupied: a second register_if_absent returns Some(..),
+        //     indicating the slot was claimed by Pass 2.
+        let conflict = scope.register_if_absent("x", Type::Int);
+        assert!(
+            conflict.is_some(),
+            "Expected 'x' to be registered in scope by Pass 2 (register_if_absent should find \
+             the slot occupied); got None, meaning Pass 2 failed to register the inferred type"
+        );
+    }
+
     /// Phase-contract test for `check_phase_build_available_defaults_map`.
     ///
     /// Verifies that the helper builds a composite-keyed HashMap from ctx.defaults,
