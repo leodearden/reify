@@ -47128,15 +47128,16 @@
         "description": "In `crates/reify-compiler/src/expr.rs:1187`, the wildcard guard `struct_name != \"Structure\"` is a bare string literal. Extract it to a named constant so the wildcard convention is greppable in one shot.",
         "details": "**Source:** esc-2200-41 S2 (reviewer_comprehensive on task 2200)\n\n**Hook point:** `crates/reify-compiler/src/expr.rs:1183-1218` (purpose-subject regular-member-access branch).\n\n**Problem:** The guard `struct_name != \"Structure\"` is a magic-string comparison. The inline comment correctly notes this is belt-and-braces against the registry miss, but a stdlib (or user) structure literally named `Structure` would silently bypass validation — a fragile invariant that depends on the entire system never registering that name.\n\n**Approach:**\n1. Introduce a constant `WILDCARD_STRUCTURE_KIND: &str = \"Structure\"` colocated with the entity_kind wildcard logic (likely in `expr.rs` near the purpose-subject branch, or somewhere shared if other wildcard kinds exist — `Occurrence` is mentioned in the comments as another wildcard kind, so the constant module may eventually grow).\n2. Replace the literal at line 1187 with the constant.\n3. (Optional / stretch) If a more semantic predicate exists or can be cheaply introduced (e.g., `entity_kind.is_wildcard()` on whatever type carries kind names), prefer that — but only if it's a small change. Otherwise the named constant is sufficient.\n\n**Acceptance:**\n- No remaining bare `\"Structure\"` string compare in the purpose-subject branch.\n- Existing tests in `purpose_compile_tests.rs` still pass (the wildcard characterization test in particular).\n- A grep for `WILDCARD_STRUCTURE_KIND` (or whatever name) finds the rule in one location.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-24T11:50:31.094Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T11:50:29.492Z",
+      "lastModified": "2026-04-24T11:50:31.094Z",
       "taskCount": 2202,
       "completedCount": 1954,
       "tags": [
