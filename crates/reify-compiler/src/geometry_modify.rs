@@ -503,16 +503,17 @@ mod tests {
     #[test]
     fn compile_modify_op_non_geometry_target_fallback_step_offset_nonzero_all_single_geom_target_kinds(
     ) {
-        // Regression-lock for all 4 single-geometry-target modify kinds — proves each
+        // Regression-lock for all 5 single-geometry-target modify kinds — proves each
         // uses step_offset from context rather than a hardcoded 0 (task-612/task-1732).
-        let cases: &[(ModifyKind, &str, &str)] = &[
-            (ModifyKind::Chamfer, "chamfer", "distance"),
-            (ModifyKind::Fillet, "fillet", "radius"),
-            (ModifyKind::Thicken, "thicken", "offset"),
-            (ModifyKind::Shell, "shell", "thickness"),
+        let cases: &[(ModifyKind, &str, &[&str])] = &[
+            (ModifyKind::Chamfer, "chamfer", &["distance"]),
+            (ModifyKind::Fillet, "fillet", &["radius"]),
+            (ModifyKind::Thicken, "thicken", &["offset"]),
+            (ModifyKind::Shell, "shell", &["thickness"]),
+            (ModifyKind::Draft, "draft", &["angle", "plane"]),
         ];
-        for &(kind, fn_name, arg_name) in cases {
-            assert_non_geometry_target_fallback_step_offset_nonzero(kind, fn_name, arg_name);
+        for &(kind, fn_name, tail) in cases {
+            assert_non_geometry_target_fallback_step_offset_nonzero(kind, fn_name, tail);
         }
     }
 }
