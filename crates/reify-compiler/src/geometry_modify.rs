@@ -396,23 +396,31 @@ mod tests {
         }
     }
 
-    /// Regression-lock helper: verify that `fn_name(target, arg_name)` with a scalar `target`
-    /// param nested inside `union(sphere(1mm), fn_name(target, arg_name))` falls back to
-    /// `GeomRef::Step(1)` (the step_offset after the sphere occupies step 0), NOT a
+    /// Regression-lock helper: verify that `fn_name(target, tail_arg_names[0], ...)` with a
+    /// scalar `target` param nested inside `union(sphere(1mm), fn_name(target, ...))` falls back
+    /// to `GeomRef::Step(1)` (the step_offset after the sphere occupies step 0), NOT a
     /// hardcoded `Step(0)` as was the pre-fix bug (task-612/task-1732).
     ///
+    /// Each name in `tail_arg_names` becomes a `param <name>: Scalar` in the generated source.
     /// The sphere compiles at step_offset=0 and emits 1 op; the modify call then compiles
     /// at step_offset=1.  Expected ops: [Primitive(Sphere), Modify(<kind>, target=Step(1)),
     /// Boolean(Union, left=Step(0), right=Step(1))].
     fn assert_non_geometry_target_fallback_step_offset_nonzero(
         kind: ModifyKind,
         fn_name: &str,
-        arg_name: &str,
+        tail_arg_names: &[&str],
     ) {
+        let param_decls: String = tail_arg_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("    param {name}: Scalar = {}mm\n", i + 2))
+            .collect();
+        let tail_call = tail_arg_names.join(", ");
         let source = format!(
-            "structure S {{\n    param target: Scalar = 5mm\n    param {a}: Scalar = 2mm\n    let result = union(sphere(1mm), {f}(target, {a}))\n}}",
+            "structure S {{\n    param target: Scalar = 5mm\n{decls}    let result = union(sphere(1mm), {f}(target, {tail}))\n}}",
             f = fn_name,
-            a = arg_name
+            decls = param_decls,
+            tail = tail_call,
         );
         let parsed = reify_syntax::parse(
             &source,
