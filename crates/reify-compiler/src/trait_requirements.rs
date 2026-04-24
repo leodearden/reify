@@ -443,6 +443,108 @@ mod tests {
         );
     }
 
+    /// Verify that `collect_all_requirements` deduplicates `RequirementKind::Sub`
+    /// requirements in a diamond refinement pattern via `seen_sub_names` + `visited`.
+    ///
+    /// Diamond:
+    ///   Base (has sub "hole = Hole")
+    ///    / \
+    /// Mid1 Mid2
+    ///    \ /
+    ///    Top
+    ///
+    /// Both Mid1→Base and Mid2→Base reach Base. The first traversal inserts "Base"
+    /// into `ctx.visited` and records `("hole", ("Hole", "Base"))` in `seen_sub_names`,
+    /// pushing the `hole` Sub requirement exactly once. The second traversal hits the
+    /// `if !ctx.visited.insert("Base") { return; }` short-circuit before the requirement
+    /// loop runs. Result: exactly one `hole` requirement, zero diagnostics.
+    #[test]
+    fn collect_all_requirements_dedups_diamond_refinement_sub() {
+        let base = CompiledTrait {
+            name: "Base".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "hole".to_string(),
+                kind: RequirementKind::Sub("Hole".to_string()),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let mid1 = CompiledTrait {
+            name: "Mid1".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec!["Base".to_string()],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let mid2 = CompiledTrait {
+            name: "Mid2".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec!["Base".to_string()],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+        let top = CompiledTrait {
+            name: "Top".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec!["Mid1".to_string(), "Mid2".to_string()],
+            required_members: vec![],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("Base".to_string(), &base);
+        trait_registry.insert("Mid1".to_string(), &mid1);
+        trait_registry.insert("Mid2".to_string(), &mid2);
+        trait_registry.insert("Top".to_string(), &top);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Top",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        let hole_count = ctx
+            .requirements
+            .iter()
+            .filter(|r| r.name == "hole")
+            .count();
+        assert_eq!(
+            hole_count,
+            1,
+            "Expected exactly one 'hole' sub-requirement (dedup via visited), got {}",
+            hole_count
+        );
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
+    }
+
     // ---- helpers for the additional branch tests below ----
 
     /// Minimal `LetDecl` fixture; only `content_hash` varies between callers.
