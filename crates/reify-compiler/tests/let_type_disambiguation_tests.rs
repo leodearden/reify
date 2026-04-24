@@ -765,10 +765,13 @@ structure S : MutualLets {
 /// `inferred_let_exprs` entry was advertised as a valid default) and no
 /// "type mismatch for trait member 'a'" phantom from the same root cause.
 ///
-/// Note: this test does NOT assert an exact diagnostic count because unrelated
-/// upstream compiler phases (e.g. trait compilation in `traits.rs`) may also emit
-/// their own root-cause "unresolved name" diagnostic for the same identifier; only
-/// the absence of SECONDARY cascade diagnostics is pinned here.
+/// The error count is pinned at `<= 1` as a prose-independent backstop (check (d)):
+/// any new cascade diagnostic, regardless of wording, would push the count above 1
+/// and fail that check.  Empirically, today's compiler emits exactly one error for
+/// this input: `"unresolved name: b"` with label span `[26..27]`.  If a legitimate
+/// upstream phase ever begins emitting a second root-cause diagnostic for the same
+/// identifier, the bound may need to be relaxed — but any such relaxation must be
+/// audited to confirm the extra diagnostic is not a cascade.
 ///
 /// ## Pre-fix behaviour (task 1914 step-2 fixes this)
 ///
@@ -858,6 +861,18 @@ structure S : HasA {
          this is a cascade from the failed compile_expr for the unannotated let \
          expression. Diagnostics: {:?}",
         trait_member_mismatch
+    );
+
+    // (d) Count backstop: cascade suppression means exactly the root-cause
+    // "unresolved `b`" diagnostic — nothing else. A count above 1 indicates
+    // either a new cascade surface (regardless of wording) or an unrelated
+    // regression. Prose-independent.
+    assert!(
+        errors.len() <= 1,
+        "expected at most one root-cause diagnostic after cascade suppression, \
+         got {}: {:?}",
+        errors.len(),
+        errors,
     );
 }
 
