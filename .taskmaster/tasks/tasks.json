@@ -46014,7 +46014,7 @@
         "description": "Two robustness follow-ups on task 1914's pass2_compile_errors implementation in `crates/reify-compiler/src/conformance/checker.rs` (~lines 396–411).\n\nMemory hints: search \"task 1914 pass2_compile_errors compile_expr diagnostics.len Severity\"; entities: AvailableDefaultKind, compile_expr, pass2_compile_errors.",
         "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestions #2 (checker.rs:396-399) and #4 (checker.rs:405-411).\n\n**#2 — Make the compile-error detector severity-safe.**\n`check_phase_pre_register_default_types` currently uses `diagnostics.len() > diag_before` to detect a compile_expr failure. The doc comment acknowledges this relies on an unchecked assumption: \"compile_expr only emits Severity::Error diagnostics.\" If a future Severity::Warning/Info diagnostic is pushed by any compile_expr code path, a successfully-typed let expression will be silently excluded from `inferred_let_exprs` → the `debug_assert!` in `check_phase_build_available_defaults_map` fires in tests, or the `Type::Real` defensive fallback silently advertises a phantom type in release (the exact phantom-type regression task 1914 set out to prevent).\n\nFix options, in order of preference:\n  1. Filter by severity: `let err_count_before = diagnostics.iter().filter(|d| d.severity == Severity::Error).count();` (and same after). Compare those counts.\n  2. Change `compile_expr` to return `(CompiledExpr, bool /*errored*/)` or `Result<CompiledExpr, ...>`.\n  3. Cheap mitigation: `debug_assert!(diagnostics[diag_before..].iter().all(|d| d.severity == Severity::Error), ...)` so drift fails loudly rather than silently.\n\n**#4 — Regression test for chained unannotated lets with an unresolved forward reference.**\nPre-1914, Pass 2 registered the (potentially poisoned) inferred type in scope even on compile failure; now on failure the name is NOT `register_if_absent`'d. Downstream effect: any *other* unannotated let whose body references this name will emit a new \"unresolved\" diagnostic that did not exist before. Task 1914's regression test only covers a single unannotated let, so the chained-let behavior change is unpinned.\n\nAction:\n  - Add regression test to `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` covering e.g. `trait T { let a = b + 1mm; let c = a * 2mm }` with `b` undefined. Assert the diagnostic set does NOT include a *new* \"unresolved `a`\" cascade caused by Pass 2 failing to register.\n  - If the test fails, consider registering `Type::Error` (poison sentinel) in scope on compile failure — the `implicitly_converts_to(Error, _)` asymmetric wildcard already suppresses cascades (see `type_compat.rs:3–26` and `check_phase_resolve_structure_members` at checker.rs:77–92 for the established pattern).\n\nVerify: `cargo test -p reify-compiler`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --check`.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1914"
         ],
@@ -46028,9 +46028,12 @@
           "modules": [
             "crates/reify-compiler/src/conformance",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "ba2595204aa5870d6b475ab92541d17f8d512f10"
+          }
         },
-        "updatedAt": "2026-04-24T07:16:43.311Z"
+        "updatedAt": "2026-04-24T09:20:11.312Z"
       },
       {
         "id": "2159",
@@ -46700,19 +46703,29 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "2198",
+        "title": "conformance: tighten Pass 2 review tests + docstring cascade-suppression order caveat",
+        "description": "Three small follow-ups from task 2158 review (reviewer_comprehensive, all \"suggestion\" severity, test/doc polish only — no behavior change).",
+        "details": "Origin: esc-2158-16 triage — reviewer_comprehensive suggestions #1–#3 on task 2158.\n\n(a) checker.rs:445-509 — add one sentence to the `# PASS 2 COMPILE-ERROR SUPPRESSION` block (checker.rs:284-300) and the Pass 2 inline comment (~line 427) noting cascade suppression is order-dependent on ctx.defaults traversal: given `let c = a  let a = b` (b undefined), Pass 2 compiles c first → emits an \"unresolved a\" cascade → then poisons c, only *then* fails and poisons a. Reverse-ordered chains still cascade; existing DESIGN LIMITATION block (checker.rs:325-331) covers the mutual-forward case but not the reverse-order same-direction chain.\n\n(b) mod.rs:1873-1880 — replace the mutating `scope.register_if_absent(\"x\", Type::Int)` probe in `warning_only_compile_does_not_trigger_pass2_compile_error` with non-mutating `scope.resolve(\"x\")`; assert is_some() and the returned Type equals Type::List(Box::new(Type::Real)).\n\n(c) mod.rs:1820-1826 — soften `assert_eq!(diagnostics.len(), 1)` to `assert!(!diagnostics.is_empty())` + `assert!(diagnostics.iter().all(|d| d.severity != Severity::Error))`. The contract is \"no Error-severity diagnostic ⇒ cached\", not the exact diagnostic count.\n\nVerify: cargo test -p reify-compiler; cargo clippy --workspace -- -D warnings; cargo fmt --check.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2158"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:14:05.684Z",
-      "taskCount": 2185,
-      "completedCount": 1935,
+      "lastModified": "2026-04-24T09:20:11.312Z",
+      "taskCount": 2187,
+      "completedCount": 1936,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T09:18:27.560Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-24T09:18:27.583Z"
+      ]
     }
   }
 }
