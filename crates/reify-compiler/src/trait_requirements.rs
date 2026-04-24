@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use super::*;
 
 /// Maximum allowed depth for trait refinement chains to prevent stack overflow
@@ -295,6 +297,50 @@ pub(crate) fn collect_all_requirements(
             ctx.defaults.push(default.clone());
         }
     }
+}
+
+/// Deduplicates or reports a conflict for a single requirement/sub-requirement entry.
+///
+/// Looks up `name` in `seen`.
+/// - **Cache miss**: inserts `(value.clone(), trait_name.to_string())` and returns `Continue(())`.
+///   The caller should push the requirement.
+/// - **Cache hit, equal value**: returns `Break(())` silently (deduplicated).
+/// - **Cache hit, mismatched value**: builds the conflict message via `conflict_msg_builder`,
+///   emits a `Diagnostic::error` with a uniform label `"conflict between '…' and '…'"`,
+///   and returns `Break(())`. The caller should skip (do not push).
+///
+/// The caller pattern is:
+/// ```rust,ignore
+/// if try_dedup_or_conflict(&mut seen, name, value, trait_name, span, msg_fn, diags).is_break() {
+///     continue;
+/// }
+/// ctx.requirements.push(req.clone());
+/// ```
+fn try_dedup_or_conflict<V, F>(
+    seen: &mut HashMap<String, (V, String)>,
+    name: &str,
+    value: &V,
+    trait_name: &str,
+    span: SourceSpan,
+    conflict_msg_builder: F,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ControlFlow<()>
+where
+    V: PartialEq + Clone,
+    F: FnOnce(&str, &V, &str, &V, &str) -> String,
+{
+    if let Some((existing_value, existing_trait)) = seen.get(name) {
+        if existing_value != value {
+            let msg = conflict_msg_builder(name, existing_value, existing_trait, value, trait_name);
+            let label = format!("conflict between '{}' and '{}'", existing_trait, trait_name);
+            diagnostics.push(
+                Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, label)),
+            );
+        }
+        return ControlFlow::Break(());
+    }
+    seen.insert(name.to_string(), (value.clone(), trait_name.to_string()));
+    ControlFlow::Continue(())
 }
 
 #[cfg(test)]
