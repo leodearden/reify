@@ -40967,7 +40967,7 @@
         "id": "1940",
         "title": "Add non-zero step_offset companion test for chamfer non-geometry target fallback",
         "description": "Consolidate and extend non-geometry-target fallback test coverage in crates/reify-compiler/src/geometry_modify.rs: (1) extract a parameterized helper that runs the fallback assertion across all 2arg modify kinds (chamfer, fillet, thicken, shell), eliminating the near-identical compile_modify_op_chamfer_non_geometry_target_fallback (~line 341) and compile_modify_op_fillet_preserves_step0 (~line 387) copies; (2) add a companion test placing chamfer(scalar_param, dist) in a context where step_offset > 0 and asserting the target resolves to GeomRef::Step(step_offset), not Step(0).",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "Two improvements to fallback test coverage in geometry_modify.rs, both scoped to crates/reify-compiler/src:\n\n1. **Parameterize existing fallback tests** (geometry_modify.rs ~lines 341, 387): `compile_modify_op_chamfer_non_geometry_target_fallback` and `compile_modify_op_fillet_preserves_step0` are near-identical — differing only in op name/kind. Extract a helper (e.g. `assert_non_geometry_target_fallback(kind: ModifyKind, ...)`) that runs the fallback assertion for a given 2arg modify kind. Drive it with a table covering chamfer, fillet, thicken, and shell so coverage is uniform and scaffold is not hand-duplicated.\n\n2. **Add step_offset > 0 companion test** (geometry_modify.rs / lib.rs): The existing chamfer test compiles at top level with step_offset=0, so asserting `GeomRef::Step(0)` is indistinguishable from the old bug-preserving behavior. Add a companion test that places `chamfer(scalar_param, dist)` in a context where step_offset > 0 (e.g. nested inside a boolean op / let chain after prior ops in the same realization) and asserts the target is `GeomRef::Step(step_offset)`, not `Step(0)`.",
@@ -40984,7 +40984,7 @@
           "curator_justification": "Task 1940 (pending, combine_eligible=true) targets the same functions in geometry_modify.rs — the chamfer/fillet non-geometry-target fallback tests (~lines 341 and 387). Both tasks are tiny, share a root cause (sparse fallback test coverage in geometry_modify.rs), and serialize on the same module lock. Together they form one coherent \"harden fallback test coverage\" concern: parameterize the existing chamfer+fillet tests to cover all 2arg modify kinds AND add the step_offset>0 companion variant. ",
           "combined_at": "2026-04-23T19:16:13.072578+00:00"
         },
-        "updatedAt": "2026-04-24T07:09:44.416Z"
+        "updatedAt": "2026-04-24T07:23:14.383Z"
       },
       {
         "id": "1941",
@@ -46524,14 +46524,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:22:08.764Z",
+      "lastModified": "2026-04-24T07:23:14.383Z",
       "taskCount": 2177,
       "completedCount": 1924,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T07:23:09.874Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
