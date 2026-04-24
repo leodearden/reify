@@ -46627,12 +46627,24 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-24T09:03:34.518Z"
+      },
+      {
+        "id": "2193",
+        "title": "eval_param_overrides: tighten tautological snapshot assertion on S4 tests",
+        "description": "In `crates/reify-eval/tests/eval_param_overrides.rs` (around lines 493-513 and the dimension sibling around 546+), assertion (d) verifies that `engine.snapshot().unwrap().values.get(&p_id) == Some(&(Value::Undef, DeterminacyState::Undetermined))` for a rejected-override-no-default param. The test itself notes that `Snapshot::from_compiled_module` pre-seeds every cell to (Undef, Undetermined), so this assertion passes even without the explicit `snapshot.values.insert` in engine_eval.rs — it does NOT lock the defence-in-depth explicit-write behaviour it claims to cover.\n\nTwo options:\n(a) Drop assertion (d) in both tests — the `values.get(&p_id) == Some(&Undef)` assertion already encodes the user-visible contract.\n(b) Restructure the test so the snapshot holds a Determined value for `p` just before Phase B's eval — e.g. evaluate a compatible override-accepting module first so the snapshot holds the override as Determined, then eval the incompatible module. This would make the overwrite observable and genuinely lock the defence-in-depth path.\n\nPriority: polish. No user-visible behavior change either way; this is test-quality hygiene.\n\nSource: esc-2179-15 S1 (reviewer_comprehensive).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T09:11:41.581Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:03:50.132Z",
-      "taskCount": 2181,
+      "lastModified": "2026-04-24T09:11:41.581Z",
+      "taskCount": 2182,
       "completedCount": 1935,
       "tags": [
         "master"
