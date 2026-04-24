@@ -18427,7 +18427,7 @@
         "description": "Bundle of low-severity cleanup items from 2026-04-03 review:\n\n1. reify-mcp/src/jsonrpc.rs:232 — serde_json::to_string(&response).unwrap_or_default() should be .expect(\"JsonRpcResponse serialization\") since structural failure is a bug (F7)\n2. Stale \"stub\" comments on fully-implemented files (F8):\n   - crates/reify-runtime/src/lib.rs:1 — \"Stub — M1 implementation pending\"\n   - crates/reify-mcp/src/tools/write.rs:1 — \"Write tool stubs (5 tools)\"\n   - crates/reify-eval/src/deps.rs:5 — \"minimal stub for task 12\"\n3. Dead-code fields stored but never read (F9):\n   - EntityDefRef::content_hash (crates/reify-compiler/src/lib.rs:4108)\n   - ConcurrentEvalAdapter::version (crates/reify-runtime/src/concurrent_eval.rs:69)\n   Either document why retained or remove.\n4. Redundant #[allow(unused_imports)] on crates/reify-expr/tests/component_helper_tests.rs:6 (F10)\n\nPartially overlaps with task #383 (sweep/loft dead code, pending).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -18462,7 +18462,7 @@
           },
           "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
         },
-        "updatedAt": "2026-04-22T11:55:28.835Z"
+        "updatedAt": "2026-04-24T09:53:48.733Z"
       },
       {
         "id": "830",
@@ -46871,14 +46871,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:42:49.350Z",
+      "lastModified": "2026-04-24T09:53:48.733Z",
       "taskCount": 2190,
       "completedCount": 1939,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T09:51:14.311Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
