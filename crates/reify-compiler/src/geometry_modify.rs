@@ -382,64 +382,123 @@ mod tests {
         }
     }
 
-    #[test]
-    fn compile_modify_op_chamfer_non_geometry_target_fallback_step_offset_nonzero() {
-        // Nest chamfer inside union(sphere(1mm), chamfer(target, dist)) to force
-        // step_offset > 0 when the chamfer is compiled.  The sphere compiles at
-        // step_offset=0 and emits 1 op; the chamfer then compiles at step_offset=1.
-        // Expected ops: [Primitive(Sphere), Modify(Chamfer, target=Step(1)), Boolean(Union)]
-        let source = "structure S {\n    param target: Scalar = 5mm\n    param dist: Scalar = 2mm\n    let result = union(sphere(1mm), chamfer(target, dist))\n}";
+    /// Regression-lock helper: verify that `fn_name(target, arg_name)` with a scalar `target`
+    /// param nested inside `union(sphere(1mm), fn_name(target, arg_name))` falls back to
+    /// `GeomRef::Step(1)` (the step_offset after the sphere occupies step 0), NOT a
+    /// hardcoded `Step(0)` as was the pre-fix bug (task-612/task-1732).
+    ///
+    /// The sphere compiles at step_offset=0 and emits 1 op; the modify call then compiles
+    /// at step_offset=1.  Expected ops: [Primitive(Sphere), Modify(<kind>, target=Step(1)),
+    /// Boolean(Union, left=Step(0), right=Step(1))].
+    fn assert_non_geometry_target_fallback_step_offset_nonzero(
+        kind: ModifyKind,
+        fn_name: &str,
+        arg_name: &str,
+    ) {
+        let source = format!(
+            "structure S {{\n    param target: Scalar = 5mm\n    param {a}: Scalar = 2mm\n    let result = union(sphere(1mm), {f}(target, {a}))\n}}",
+            f = fn_name,
+            a = arg_name
+        );
         let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_chamfer_step_offset_nonzero"),
+            &source,
+            reify_types::ModulePath::single(&format!("test_{}_step_offset_nonzero", fn_name)),
         );
         assert!(
             parsed.errors.is_empty(),
-            "parse errors: {:?}",
+            "{}(): parse errors: {:?}",
+            fn_name,
             parsed.errors
         );
         let compiled = crate::compile(&parsed);
         assert!(
             compiled.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
+            "{}(): unexpected diagnostics: {:?}",
+            fn_name,
             compiled.diagnostics
         );
         let ops = &compiled.templates[0].realizations[0].operations;
         assert_eq!(
             ops.len(),
             3,
-            "expected 3 ops [Primitive(Sphere), Modify(Chamfer), Boolean(Union)], got {}",
+            "{}(): expected 3 ops [Primitive(Sphere), Modify({:?}), Boolean(Union)], got {}",
+            fn_name,
+            kind,
             ops.len()
         );
-        // ops[1] must be the chamfer with target=Step(1), NOT Step(0).
-        // Step(1) proves the fallback uses step_offset (== 1 here), not a hardcoded 0
-        // (the pre-fix behaviour from task-612/task-1732).
+        // ops[1] must be the modify op with target=Step(1), NOT Step(0).
+        // Step(1) proves the fallback uses step_offset (== 1 here), not a hardcoded 0.
         match &ops[1] {
             CompiledGeometryOp::Modify {
                 kind: op_kind,
                 target: op_target,
                 ..
             } => {
-                assert_eq!(*op_kind, ModifyKind::Chamfer, "expected Chamfer at ops[1]");
+                assert_eq!(
+                    *op_kind,
+                    kind,
+                    "{}(): expected {:?} at ops[1], got {:?}",
+                    fn_name,
+                    kind,
+                    op_kind
+                );
                 assert_eq!(
                     *op_target,
                     GeomRef::Step(1),
-                    "chamfer non-geometry target should fall back to GeomRef::Step(step_offset=1), \
+                    "{}(): non-geometry target should fall back to GeomRef::Step(step_offset=1), \
                      not Step(0); Step(0) would indicate the pre-fix hardcoded-zero bug \
-                     (task-612/task-1732) has regressed"
+                     (task-612/task-1732) has regressed",
+                    fn_name
                 );
             }
-            other => panic!("expected Modify(Chamfer) at ops[1], got {:?}", other),
+            other => panic!(
+                "{}(): expected Modify({:?}) at ops[1], got {:?}",
+                fn_name, kind, other
+            ),
         }
         // Sanity-check ops[2]: union with left=Step(0) right=Step(1), confirming
-        // the step_offset assignment that the chamfer naturally fell back to.
+        // the step_offset assignment that the modify call naturally fell back to.
         match &ops[2] {
             CompiledGeometryOp::Boolean { op, left, right } => {
-                assert_eq!(*op, BooleanOp::Union, "expected Union at ops[2]");
-                assert_eq!(*left, GeomRef::Step(0), "union left should be Step(0)");
-                assert_eq!(*right, GeomRef::Step(1), "union right should be Step(1)");
+                assert_eq!(
+                    *op,
+                    BooleanOp::Union,
+                    "{}(): expected Union at ops[2]",
+                    fn_name
+                );
+                assert_eq!(
+                    *left,
+                    GeomRef::Step(0),
+                    "{}(): union left should be Step(0)",
+                    fn_name
+                );
+                assert_eq!(
+                    *right,
+                    GeomRef::Step(1),
+                    "{}(): union right should be Step(1)",
+                    fn_name
+                );
             }
-            other => panic!("expected Boolean(Union) at ops[2], got {:?}", other),
+            other => panic!(
+                "{}(): expected Boolean(Union) at ops[2], got {:?}",
+                fn_name, other
+            ),
+        }
+    }
+
+    #[test]
+    fn compile_modify_op_non_geometry_target_fallback_step_offset_nonzero_all_single_geom_target_kinds(
+    ) {
+        // Regression-lock for all 4 single-geometry-target modify kinds — proves each
+        // uses step_offset from context rather than a hardcoded 0 (task-612/task-1732).
+        let cases: &[(ModifyKind, &str, &str)] = &[
+            (ModifyKind::Chamfer, "chamfer", "distance"),
+            (ModifyKind::Fillet, "fillet", "radius"),
+            (ModifyKind::Thicken, "thicken", "offset"),
+            (ModifyKind::Shell, "shell", "thickness"),
+        ];
+        for &(kind, fn_name, arg_name) in cases {
+            assert_non_geometry_target_fallback_step_offset_nonzero(kind, fn_name, arg_name);
         }
     }
 }
