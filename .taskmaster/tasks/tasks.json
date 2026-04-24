@@ -46382,7 +46382,7 @@
         "description": "Two related hot-path hardenings in engine_eval.rs Param handling. (1) Performance: inner loop does `contains_key(&cell.id)` followed by `get(&cell.id)`; collapse to a single `get()` match. (2) Robustness: when override validation fails AND cell has no `default_expr`, the cell is currently skipped entirely — no entry in `values` or `snapshot.values`, so downstream readers see a missing key instead of Undef. Insert Value::Undef with DeterminacyState::Undetermined and add a regression test (a struct with a no-default Param whose override is rejected, plus a downstream Let reading it) to confirm no unwrap panic. Source: esc-2017-31 (S3+S4).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -46395,7 +46395,8 @@
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-24T07:53:20.667Z"
       },
       {
         "id": "2181",
@@ -46443,11 +46444,11 @@
         "description": "Three small cleanups in crates/reify-eval/src/engine_edit.rs around collection_sub diff handling. (1) Remove the Fix 2 sweep block at lines 1952-2006 and its dedicated \"code coverage only\" test (edit_source_phase4_invalidates_cache_for_entirely_removed_collection_sub), since Step (9)'s `diff_value_cells.removed` invalidation at 1262-1264 already handles entirely-removed subs; keep Fix 1 at 2053-2057 and the grow→shrink→regrow test. (2) In new_sub_keys at 1964-1969, build a HashSet<(&str, &str)> over borrows instead of cloning parent_entity/sub_name twice (build-time and lookup-time). (3) Tighten the invalidation-loop comment at 2045-2059 so it does not overstate guarantees — the loop iterates 0..old_count using NEW col_sub.child_value_cells; either clarify why this is safe given Step (9) cleans old-shape separately, or iterate the OLD sub's child_value_cells. Source: esc-2086-28.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:19:10.801Z",
+        "updatedAt": "2026-04-24T07:53:21.486Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -46529,7 +46530,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:53:18.057Z",
+      "lastModified": "2026-04-24T07:53:21.486Z",
       "taskCount": 2177,
       "completedCount": 1924,
       "tags": [
