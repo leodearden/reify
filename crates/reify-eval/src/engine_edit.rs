@@ -25,6 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledFunction, CompiledModule};
@@ -1440,12 +1441,14 @@ impl Engine {
         self.functions
             .extend(self.prelude_functions.iter().cloned());
         self.compiled_purposes = module.compiled_purposes.clone();
-        self.meta_map = module
-            .templates
-            .iter()
-            .filter(|t| !t.meta.is_empty())
-            .map(|t| (t.name.clone(), t.meta.clone()))
-            .collect();
+        self.meta_map = Arc::new(
+            module
+                .templates
+                .iter()
+                .filter(|t| !t.meta.is_empty())
+                .map(|t| (t.name.clone(), t.meta.clone()))
+                .collect(),
+        );
         self.objectives.clear();
         for template in &module.templates {
             if let Some(obj) = &template.objective {

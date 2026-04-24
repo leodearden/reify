@@ -19,6 +19,7 @@ mod unfold;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_types::{
@@ -263,7 +264,9 @@ pub struct Engine {
     /// Maps template name → meta key/value pairs from the template's meta block.
     /// Populated during eval() so that edit_param() and other incremental paths
     /// can resolve MetaAccess expressions without re-reading the module.
-    meta_map: HashMap<String, HashMap<String, String>>,
+    /// Stored as Arc so hot-path clones (e.g. before evaluate_let_bindings calls)
+    /// are O(1) reference-count increments rather than deep HashMap copies.
+    meta_map: Arc<HashMap<String, HashMap<String, String>>>,
     /// Template-native optimization objectives from the last eval() call.
     /// Maps template name → optimization objective declared in the template.
     /// Populated during eval() so that edit_param() can look up the objective

@@ -10,6 +10,7 @@ use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Why an attempted param_override was rejected for a target value cell.
 /// Callers translate this into their own error channel:
@@ -122,7 +123,7 @@ impl Engine {
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),
             objectives: HashMap::new(),
-            meta_map: HashMap::new(),
+            meta_map: Arc::new(HashMap::new()),
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
             optimization_registry: HashMap::new(),

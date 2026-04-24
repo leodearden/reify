@@ -200,12 +200,14 @@ impl Engine {
         self.active_objective_map.clear();
         // Build meta_map: template name → meta key/value pairs.
         // Only includes templates with non-empty meta blocks.
-        self.meta_map = module
-            .templates
-            .iter()
-            .filter(|t| !t.meta.is_empty())
-            .map(|t| (t.name.clone(), t.meta.clone()))
-            .collect();
+        self.meta_map = Arc::new(
+            module
+                .templates
+                .iter()
+                .filter(|t| !t.meta.is_empty())
+                .map(|t| (t.name.clone(), t.meta.clone()))
+                .collect(),
+        );
         // Use the merged function table (user functions prepended before prelude functions) so
         // that EvalContext has the full dispatch set — both user-defined overloads AND
         // non-shadowed prelude functions. This matches the SHADOWING INVARIANT: first-match-wins
@@ -528,7 +530,7 @@ impl Engine {
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
             {
-                let meta_map = self.meta_map.clone();
+                let meta_map = Arc::clone(&self.meta_map);
                 self.evaluate_let_bindings(
                     template,
                     &mut values,
@@ -779,7 +781,7 @@ impl Engine {
             // - regular subs create {parent}.{sub}.{member} cells via elaborate_child_instance
             // Both become available only after elaboration, so re-evaluate if any subs exist.
             if !template.sub_components.is_empty() {
-                let meta_map = self.meta_map.clone();
+                let meta_map = Arc::clone(&self.meta_map);
                 self.evaluate_let_bindings(
                     template,
                     &mut values,
@@ -933,7 +935,7 @@ impl Engine {
                         };
 
                         // Re-run let binding evaluation in topological order
-                        let meta_map = self.meta_map.clone();
+                        let meta_map = Arc::clone(&self.meta_map);
                         self.evaluate_let_bindings(
                             template,
                             &mut values,
@@ -1062,12 +1064,14 @@ impl Engine {
         // Build meta_map from module templates (same logic as eval()).
         // This ensures MetaAccess expressions resolve correctly even when
         // eval_cached is called without a prior eval().
-        self.meta_map = module
-            .templates
-            .iter()
-            .filter(|t| !t.meta.is_empty())
-            .map(|t| (t.name.clone(), t.meta.clone()))
-            .collect();
+        self.meta_map = Arc::new(
+            module
+                .templates
+                .iter()
+                .filter(|t| !t.meta.is_empty())
+                .map(|t| (t.name.clone(), t.meta.clone()))
+                .collect(),
+        );
 
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
