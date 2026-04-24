@@ -1678,6 +1678,139 @@ mod tests {
         );
     }
 
+    /// Phase-contract test: Pass 1 of `check_phase_pre_register_default_types` records
+    /// an annotated-Let loser in `pass1_skipped` (task 1952 step-2).
+    ///
+    /// ## Scenario (Pass 1 ↔ Pass 2 symmetry)
+    ///
+    /// Pass 2 has a symmetric guard: when an unannotated Let loses `register_if_absent` to a
+    /// Pass 1 annotated type, the name is recorded in `pass2_skipped` so the injection loop
+    /// skips Let-cell emission. This test pins the **annotated-Let mirror**: when a Pass 1
+    /// annotated-Let default loses `register_if_absent` to an earlier-in-ctx-defaults Param,
+    /// the name must be recorded in the NEW `pass1_skipped` set (not in `pass2_skipped`).
+    ///
+    /// ## Fixture
+    ///
+    /// `ctx.defaults = [Param "x":Length, annotated Let "x":Length]`
+    ///
+    /// Pass 1 processes both: the Param claims the scope slot first, then the annotated Let's
+    /// `register_if_absent` returns `Occupied`. The name "x" must be recorded in `pass1_skipped`.
+    ///
+    /// ## Assertions
+    ///
+    /// - `pass1_skipped.contains("x")`: the annotated-Let loser is recorded.
+    /// - `pass2_skipped.is_empty()`: no unannotated Let reached Pass 2 (nothing to skip there).
+    /// - `inferred_let_exprs.is_empty()`: no expression compiled (annotated Lets skip Pass 2).
+    /// - `pass2_compile_errors.is_empty()`: no compile errors (no Pass 2 expressions attempted).
+    /// - `diagnostics.is_empty()`: `register_if_absent` conflict is a debug-log only event.
+    ///
+    /// **COMPILE-TRIPWIRE**: this test fails to compile until step-3 changes
+    /// `check_phase_pre_register_default_types` to return a 4-tuple
+    /// `(inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors)`.
+    #[test]
+    fn check_phase_pre_register_default_types_records_collision_in_pass1_skipped() {
+        let param_decl = reify_syntax::ParamDecl {
+            name: "x".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+        // Annotated Let: cell_type = Some(Type::length()) encodes the resolved type directly.
+        // Pass 1 processes this because cell_type is Some(_); Pass 2 is bypassed.
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![
+            // Pass 1 claims the scope slot for "x" with Type::length()
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Param {
+                    cell_type: Type::length(),
+                    default_decl: param_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+            // Pass 1 also processes this annotated Let — finds "x" already claimed → pass1_skipped
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: Some(Type::length()), // annotated → goes through Pass 1, not Pass 2
+                    let_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+        ];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        // COMPILE-TRIPWIRE: destructure as 4-tuple — fails to compile until step-3 changes the
+        // return type from (HashMap, HashSet, HashSet) to (HashMap, HashSet, HashSet, HashSet).
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+            check_phase_pre_register_default_types(
+                &ctx,
+                &structure_members,
+                "S",
+                &mut scope,
+                &[],
+                &[],
+                &mut diagnostics,
+            );
+
+        // The annotated-Let loser must be recorded in pass1_skipped.
+        assert!(
+            pass1_skipped.contains("x"),
+            "Expected 'x' in pass1_skipped after Pass 1 found the annotated Let's scope slot \
+             already claimed by the Param; got pass1_skipped = {:?}",
+            pass1_skipped
+        );
+        // No unannotated Let reached Pass 2, so pass2_skipped must be empty.
+        assert!(
+            pass2_skipped.is_empty(),
+            "Expected pass2_skipped to be empty — no unannotated Let was processed; \
+             got: {:?}",
+            pass2_skipped
+        );
+        // No expression was compiled (annotated Lets skip Pass 2).
+        assert!(
+            inferred_let_exprs.is_empty(),
+            "Expected inferred_let_exprs to be empty — annotated Lets do not go through \
+             Pass 2 inference; got: {:?}",
+            inferred_let_exprs.keys().collect::<Vec<_>>()
+        );
+        // No compile-error names (no Pass 2 compilation was attempted).
+        assert!(
+            pass2_compile_errors.is_empty(),
+            "Expected pass2_compile_errors to be empty; got: {:?}",
+            pass2_compile_errors
+        );
+        // register_if_absent conflicts are debug-log only — no diagnostic emitted.
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics — register_if_absent conflict is logged at debug \
+             level only; got: {:?}",
+            diagnostics
+        );
+    }
+
     /// Phase-contract test: Pass 2 treats a warning-only `compile_expr` result as success,
     /// not as a compile error (task 2158 step-1, severity-safe detection).
     ///
