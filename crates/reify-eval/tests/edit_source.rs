@@ -1300,26 +1300,23 @@ structure S {
     }
 }
 
-// ── Task 2086 amendment: Fix 2 direct coverage (entirely-removed sub) ─────────
-
-/// Regression test for Fix 2: `edit_source(B)` where Module B *entirely removes*
-/// the `sub bolts : List<Bolt>` declaration must invalidate cache entries for
-/// `S.bolts[i].diameter` that were established by `eval(A)`.
+/// Regression test (Step 9 path): `edit_source(B)` where Module B *entirely removes*
+/// the `sub bolts` declaration must not leave stale cache entries for
+/// `S.bolts[i].diameter` established by `eval(A)`.
 ///
-/// This exercises the entirely-removed-collection_sub sweep at the top of Phase 4.
-/// Phase 4's main loop iterates only NEW `collection_subs`, so a sub absent from
-/// `new_snapshot.graph.collection_subs` is never visited by the main loop.  Fix 2's
-/// sweep catches it by diffing `eval_state.snapshot.graph.collection_subs` against
-/// `new_snapshot.graph.collection_subs` and collecting scoped-cell IDs to invalidate.
+/// Mechanism: Step (9) of `edit_source` diffs `old_snapshot.graph.value_cells`
+/// against `new_snapshot.graph.value_cells` by content_hash.  Scoped cells
+/// present in the old graph but absent from the new graph (because the whole sub
+/// was removed) appear in `diff_value_cells.removed`, and Step (9) calls
+/// `self.cache.invalidate` for each.  Phase 4's main loop iterates only NEW
+/// `collection_subs` and never visits removed subs, so Step (9) is the sole
+/// responsible path here.
 ///
-/// Note: Step (9)'s `diff_value_cells.removed` also invalidates these cells in the
-/// normal flow, so this test validates the *behavior* (no stale entries) rather than
-/// isolating Fix 2 as the sole mechanism.  The value is code coverage: it exercises
-/// the `!new_sub_keys.contains(...)` branch, the `old_count` lookup against
-/// `old_snapshot_values`, and the IDs-collection/invalidation loop.
+/// This test pins that behavior independent of any Fix-2 sweep so future changes
+/// to Phase 4 cannot silently regress the entirely-removed-sub case.
 #[test]
-fn edit_source_phase4_invalidates_cache_for_entirely_removed_collection_sub() {
-    // Module A: S has a 4-instance bolt sub with cache entries at V_A.
+fn edit_source_step9_invalidates_cache_for_entirely_removed_collection_sub() {
+    // Module A: S has a 4-instance bolt sub; eval populates cache at V_A.
     let module_a_src = r#"
 structure Bolt { param diameter : Scalar = 10mm }
 structure S {
@@ -1328,9 +1325,7 @@ structure S {
     constraint bolts.count == n
 }
 "#;
-    // Module B: `sub bolts` is entirely removed.  `new_snapshot.graph.collection_subs`
-    // will have no entry for bolts, so Phase 4's main loop skips it entirely.
-    // Fix 2's sweep must collect and invalidate the 4 scoped cache entries.
+    // Module B: `sub bolts` is entirely removed; no scoped cells in new graph.
     let module_b_src = r#"
 structure Bolt { param diameter : Scalar = 10mm }
 structure S { param n : Int = 4 }
@@ -1342,8 +1337,9 @@ structure S { param n : Int = 4 }
     let mut engine = fresh_engine();
     engine.eval(&module_a);
 
-    // Pre-edit: confirm all 4 bolt cache entries are present at V_A so the
-    // post-edit assertion is meaningful (not trivially satisfied by an empty cache).
+    // Pre-edit: all 4 bolt cache entries must be present at V_A so the
+    // post-edit assertion is meaningful (not trivially satisfied by an empty
+    // cache).
     let v_a = engine.snapshot().expect("snapshot after eval(A)").version;
     for i in 0..4_usize {
         let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
@@ -1363,8 +1359,10 @@ structure S { param n : Int = 4 }
         .edit_source(&module_b)
         .expect("edit_source to B (remove sub bolts entirely) must succeed");
 
-    // Post-edit: no stale V_A entries may survive — either None (invalidated and
-    // not repopulated) or Some(fresh) at the new version.
+    // Post-edit: Step (9) must have invalidated all old scoped-cell cache
+    // entries via diff_value_cells.removed.  Each entry must be absent or
+    // fresh at the new snapshot version — a Some(entry) at V_A is a stale
+    // artifact that would cause correctness failures if the sub is re-added.
     let current_version = engine
         .snapshot()
         .expect("snapshot after edit_source")
@@ -1375,12 +1373,57 @@ structure S { param n : Int = 4 }
             assert_eq!(
                 entry.basis_version,
                 current_version,
-                "S.bolts[{}].diameter cache entry must be absent or fresh after sub removal; \
+                "S.bolts[{}].diameter must be absent or fresh after sub removal via Step 9; \
                  got stale basis_version {:?}, expected {:?}",
                 i,
                 entry.basis_version,
                 current_version
             );
+        }
+    }
+
+    // Re-incarnation check: re-add sub bolts with a DIFFERENT diameter (12 mm) and
+    // assert the snapshot reflects 12 mm, not a revived stale 10 mm from V_A.
+    // Phase 4's create loop evaluates `default_expr` directly (not via cache), so
+    // `snapshot.values` holds fresh values after re-add.  If the Step-9 invalidation
+    // above had NOT cleared the cache, a future edit_source that sees these bolt cells
+    // as UNCHANGED (same content_hash in both old and new snapshots) would
+    // short-circuit via `basis_version` and serve the stale 10 mm entry from V_A.
+    let module_c_prime_src = r#"
+structure Bolt { param diameter : Scalar = 12mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    let module_c_prime = parse_and_compile(module_c_prime_src);
+    engine
+        .edit_source(&module_c_prime)
+        .expect("edit_source to C' (re-add sub bolts at 12 mm) must succeed");
+
+    let snapshot_c = engine.snapshot().expect("snapshot after edit_source to C'");
+    for i in 0..4_usize {
+        let bolt_id = ValueCellId::new(format!("S.bolts[{}]", i), "diameter");
+        let (val, _) = snapshot_c
+            .values
+            .get(&bolt_id)
+            .unwrap_or_else(|| panic!("S.bolts[{}].diameter must be in snapshot after re-add", i));
+        match val {
+            Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.012).abs() < 1e-12,
+                    "S.bolts[{}].diameter must be 12 mm (0.012 m SI) after re-incarnation; \
+                     got {} m — possible stale 10 mm value from V_A",
+                    i,
+                    si_value
+                );
+            }
+            other => panic!(
+                "S.bolts[{}].diameter expected Scalar(12 mm) after re-incarnation, got {:?}",
+                i,
+                other
+            ),
         }
     }
 }
