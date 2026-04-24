@@ -1801,11 +1801,8 @@ fn extrude_non_geometry_target_uses_fallback() {
 // ── RealizationDecl.name tests ────────────────────────────────────────────────
 
 /// Verifies that each geometry-let binding in a structure compiles to a
-/// `RealizationDecl` whose `name` field is `Some(let_binding_name)`.
-///
-/// This test fails to compile until step-6 adds `pub name: Option<String>`
-/// to `RealizationDecl` and populates it from the let-binding name in
-/// entity.rs.
+/// `RealizationDecl` whose `name` field is `Some(let_binding_name)`, so
+/// callers can build a name→handle map for `GeomRef::Sub` resolution.
 #[test]
 fn realization_decl_name_matches_let_binding_name() {
     // SRC_DIFFERENCE_LET_BOUND has:
@@ -1846,10 +1843,8 @@ fn realization_decl_name_matches_let_binding_name() {
 
 /// Verifies that a Solid-typed param realization's `span` field is populated
 /// from the originating `ParamDecl.span` — i.e., it carries meaningful byte
-/// offsets that point back into the source text.
-///
-/// This test fails after step-2 because line 1370 in `entity.rs` still has
-/// `span: SourceSpan::new(0, 0)` on the `MemberDecl::Param` arm (step-3 TDD pin).
+/// offsets that point back into the source text rather than defaulting to
+/// `(0, 0)`.
 #[test]
 fn realization_span_populated_from_param_decl_default_span() {
     // Source is crafted so "param g: Solid" starts well past byte-offset 0.
@@ -1902,11 +1897,9 @@ fn realization_span_populated_from_param_decl_default_span() {
 
 /// Verifies that a Solid-typed param inside a guarded group (`where <cond> {
 /// param g: Solid = cylinder(...) }`) produces a `RealizationDecl` whose `span`
-/// is populated from the originating `ParamDecl.span` — exercising the
-/// `emit_guarded_geometry_realizations` code path (entity.rs ~line 1886).
-///
-/// Without the fix, this path had `span: SourceSpan::new(0, 0)`, so
-/// `span.start` would be 0 even though `param g` is deep inside the source.
+/// is populated from the originating `ParamDecl.span`, exercising the
+/// `emit_guarded_geometry_realizations` code path.  The span must point into
+/// the guarded declaration rather than defaulting to `(0, 0)`.
 #[test]
 fn realization_span_populated_from_guarded_param_decl_span() {
     // Source is crafted so `param g` starts well past byte-offset 0.
@@ -1960,10 +1953,7 @@ fn realization_span_populated_from_guarded_param_decl_span() {
 
 /// Verifies that a geometry-let realization's `span` field is populated from
 /// the originating `LetDecl.span` — i.e., it carries meaningful byte offsets
-/// that point back into the source text.
-///
-/// This test fails against current `entity.rs` which hardcodes
-/// `span: SourceSpan::new(0, 0)` on the let arm (step-1 TDD pin).
+/// that point back into the source text rather than defaulting to `(0, 0)`.
 #[test]
 fn realization_span_populated_from_let_decl_span() {
     // Source is crafted so "let body = cylinder(r, h)" starts well past
