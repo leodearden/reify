@@ -3306,22 +3306,7 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
         let y0 = 3mm
     }
 }"#;
-    let module_a = parse_and_compile(module_a_src);
-    let module_b = parse_and_compile(module_b_src);
-
-    // Incremental: eval(A) then edit_source(B).
-    let mut incremental = fresh_engine();
-    incremental.eval(&module_a);
-    let incr = incremental
-        .edit_source(&module_b)
-        .expect("edit_source must succeed");
-
-    // Cold baseline: fresh eval(B).
-    let mut cold = fresh_engine();
-    let cold_result = cold.eval(&module_b);
-
-    // (a) Cross-check: incremental and cold must agree on all cells.
-    assert_values_match(&incr.values, &cold_result.values);
+    let (cold_result, probes) = run_probe_scenario(module_a_src, module_b_src);
 
     // (b) Positive anchor: `moving` must be Undef in cold (relocated to
     // else-branch, which is inactive when u0=true). Prevents a "both wrong"
@@ -3343,7 +3328,6 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
     //         short-circuited when they should not have).
     // >= 2 → memoization broke: the per-group None arm called detect_role_flip
     //         again for a group that should have read role_flip_memo.
-    let probes = incremental.last_role_flip_probes();
     assert_eq!(
         probes,
         1,
