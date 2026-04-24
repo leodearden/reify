@@ -13,6 +13,7 @@ mod geometry_curve;
 mod geometry_modify;
 mod geometry_transform;
 mod guards;
+mod ice;
 pub mod module_dag;
 pub mod prelude_context;
 mod scc;
@@ -46,6 +47,7 @@ pub(crate) use geometry_curve::*;
 pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
+pub(crate) use ice::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
 pub(crate) use termination::*;
