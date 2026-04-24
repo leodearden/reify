@@ -124,29 +124,25 @@ pub(crate) fn collect_all_requirements(
     for req in &compiled_trait.required_members {
         match &req.kind {
             RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
-                if let Some((existing_type, existing_trait)) = ctx.seen_names.get(&req.name) {
-                    if existing_type != expected_type {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "conflicting trait requirements for '{}': \
-                                 trait '{}' requires {}, trait '{}' requires {}",
-                                req.name, existing_trait, existing_type, trait_name, expected_type
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                span,
-                                format!(
-                                    "conflict between '{}' and '{}'",
-                                    existing_trait, trait_name
-                                ),
-                            )),
-                        );
-                    }
-                    continue; // Deduplicated
+                if try_dedup_or_conflict(
+                    &mut ctx.seen_names,
+                    &req.name,
+                    expected_type,
+                    trait_name,
+                    span,
+                    |name, existing, existing_trait, new, new_trait| {
+                        format!(
+                            "conflicting trait requirements for '{}': \
+                             trait '{}' requires {}, trait '{}' requires {}",
+                            name, existing_trait, existing, new_trait, new
+                        )
+                    },
+                    diagnostics,
+                )
+                .is_break()
+                {
+                    continue;
                 }
-                ctx.seen_names.insert(
-                    req.name.clone(),
-                    (expected_type.clone(), trait_name.to_string()),
-                );
                 ctx.requirements.push(req.clone());
             }
             RequirementKind::Sub(structure_name) => {
