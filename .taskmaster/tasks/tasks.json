@@ -46867,12 +46867,24 @@
             "crates/reify-compiler/tests/purpose_compile_tests.rs"
           ]
         }
+      },
+      {
+        "id": "2202",
+        "title": "eval_param_overrides: add targeted test locking defence-in-depth snapshot.values.insert on S4 rejected-override-no-default path",
+        "description": "Follow-up from task 2193 review. After dropping the tautological (d) assertions from the two S4 tests (`eval_inserts_undef_for_no_default_param_with_rejected_override` and `eval_inserts_undef_for_no_default_param_with_dimension_rejected_override` in `crates/reify-eval/tests/eval_param_overrides.rs`), the explicit `snapshot.values.insert(cell.id, (Value::Undef, DeterminacyState::Undetermined))` at `crates/reify-eval/src/engine_eval.rs:476-479` — documented there as defence-in-depth against future `Snapshot::from_compiled_module` pre-seed changes — is now wholly unverified. If someone deletes it, the test suite still passes because the pre-seed leaves the cell at `(Undef, Undetermined)` already.\n\nTwo acceptable outcomes:\n(a) Add one targeted test that pre-populates the snapshot with a `Determined` value for `p` via a successful eval of a compatible module first, then evaluates the incompatible module, and asserts `engine.snapshot().unwrap().values.get(&p_id) == Some(&(Value::Undef, DeterminacyState::Undetermined))` — i.e. the snapshot entry was rewritten (not just left at the pre-seed default). This exactly corresponds to option (b) in the 2193 task description and would genuinely lock the defence-in-depth path.\n(b) Make an explicit decision that the defence-in-depth insert is belt-and-suspenders and not worth a dedicated test, then remove the now-dead comment (lines 469-474) that implies it is load-bearing, so future readers don't mistake it for guarded behaviour.\n\nEither is acceptable; the reviewer flagged this as \"worth an explicit decision rather than silently dropping the coverage\". No user-visible behaviour change either way.\n\nSource: esc-2193-24 review_comprehensive.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T10:01:53.782Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:53:48.733Z",
-      "taskCount": 2190,
+      "lastModified": "2026-04-24T10:01:53.782Z",
+      "taskCount": 2191,
       "completedCount": 1939,
       "tags": [
         "master"
