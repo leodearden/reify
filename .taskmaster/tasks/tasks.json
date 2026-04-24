@@ -47263,7 +47263,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T14:14:21.861Z"
+        "updatedAt": "2026-04-24T14:14:21.861Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs"
+          ]
+        }
       }
     ],
     "metadata": {
