@@ -997,8 +997,9 @@ pub(super) fn check_phase_inject_defaults(
                     // same-name default (typically a Param registered first in ctx.defaults
                     // order).  The winner's injection arm will emit the definitive cell;
                     // skip emission here to prevent duplicate `(entity, member)` cells.
-                    // This mirrors the `pass2_skipped` guard in the `None` arm below
-                    // (checker.rs:999-1008 in task 1907's injection guard).
+                    // This mirrors the `pass2_skipped` / None-cache-miss guard in the
+                    // `None` arm of the `DefaultKind::Let` dispatch below in this same
+                    // function.
                     if cell_type.is_some() && pass1_skipped.contains(name) {
                         continue;
                     }
