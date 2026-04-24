@@ -743,8 +743,9 @@ fn error_wildcard_implicit_to_error_debug_panics_scalar() {
 // Two representative arg types (primitive Real + compound List<Int>) are
 // sufficient because the guard is a single `!param_ty.is_error()` check that is
 // type-agnostic — it fires for every possible `arg_ty` value identically.  The
-// arg-side producer tests below cover the full representative type range, so any
-// type-specific regression in the short-circuit would surface there first.
+// arg-side producer tests below apply the same rationale in reverse: a single
+// table-driven test covers all representative `param_ty` variants because the
+// `arg_ty.is_error()` guard is likewise type-agnostic w.r.t. `param_ty`.
 
 /// Param-side contract (debug): `type_compatible(Error, Real)` panics.
 /// The debug_assert fires because `param_ty=Type::Error` is never legitimate.
@@ -766,91 +767,31 @@ fn type_compatible_param_error_debug_panics_list() {
 
 // ── Arg-side error-wildcard tests (producer path, task-1912) ─────────────────
 //
-// These pin the legitimate anti-cascade path where `arg_ty` is the poison
-// sentinel — the produced expression already emitted a diagnostic.
+// One table-driven test covers all representative `param_ty` variants because
+// the guard `arg_ty.is_error()` is type-agnostic w.r.t. `param_ty` — it
+// returns true for every possible `param_ty` value identically.  A single
+// function keeps the variant list in one place and eliminates per-variant
+// maintenance drag.
 
-/// Mirror: `type_compatible(Real, Error) == true` — guard checks BOTH params.
+/// Mirror: `type_compatible(_, Error) == true` for all representative `param_ty` variants.
+/// Pins the anti-cascade producer path where `arg_ty` is the poison sentinel (task-1912).
 #[test]
-fn type_compatible_error_wildcard_mirror_real() {
-    assert!(
-        type_compatible(&Type::Real, &Type::Error),
-        "type_compatible(Real, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
-}
-
-/// Mirror: `type_compatible(List<Int>, Error) == true` — guard checks BOTH params.
-#[test]
-fn type_compatible_error_wildcard_mirror_list() {
-    let param = Type::List(Box::new(Type::Int));
-    assert!(
-        type_compatible(&param, &Type::Error),
-        "type_compatible(List<Int>, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
-}
-
-/// Mirror: `type_compatible(Int, Error) == true` — guard checks BOTH params.
-#[test]
-fn type_compatible_error_wildcard_mirror_int() {
-    assert!(
-        type_compatible(&Type::Int, &Type::Error),
-        "type_compatible(Int, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
-}
-
-/// Mirror: `type_compatible(Bool, Error) == true` — guard checks BOTH params.
-#[test]
-fn type_compatible_error_wildcard_mirror_bool() {
-    assert!(
-        type_compatible(&Type::Bool, &Type::Error),
-        "type_compatible(Bool, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
-}
-
-/// Mirror: `type_compatible(String, Error) == true` — guard checks BOTH params.
-#[test]
-fn type_compatible_error_wildcard_mirror_string() {
-    assert!(
-        type_compatible(&Type::String, &Type::Error),
-        "type_compatible(String, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
-}
-
-/// Mirror: `type_compatible(Scalar[m], Error) == true` — guard checks BOTH params.
-#[test]
-fn type_compatible_error_wildcard_mirror_scalar() {
-    let param = Type::length();
-    assert!(
-        type_compatible(&param, &Type::Error),
-        "type_compatible(Scalar[m], Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
-}
-
-/// Mirror: `type_compatible(Option<Real>, Error) == true` — guard checks BOTH params.
-#[test]
-fn type_compatible_error_wildcard_mirror_option() {
-    let param = Type::Option(Box::new(Type::Real));
-    assert!(
-        type_compatible(&param, &Type::Error),
-        "type_compatible(Option<Real>, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
-}
-
-/// Mirror: `type_compatible(Vector<3,Real>, Error) == true` — guard checks BOTH params.
-#[test]
-fn type_compatible_error_wildcard_mirror_vector() {
-    let param = Type::vec3(Type::Real);
-    assert!(
-        type_compatible(&param, &Type::Error),
-        "type_compatible(Vector<3,Real>, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
-}
-
-/// Mirror: `type_compatible(Matrix<3,3,Real>, Error) == true` — guard checks BOTH params.
-#[test]
-fn type_compatible_error_wildcard_mirror_matrix() {
-    let param = Type::matrix(3, 3, Type::Real);
-    assert!(
-        type_compatible(&param, &Type::Error),
-        "type_compatible(Matrix<3,3,Real>, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
-    );
+fn type_compatible_error_wildcard_mirror_all_variants() {
+    let cases: Vec<(&str, Type)> = vec![
+        ("Real",             Type::Real),
+        ("Int",              Type::Int),
+        ("Bool",             Type::Bool),
+        ("String",           Type::String),
+        ("Scalar[m]",        Type::length()),
+        ("List<Int>",        Type::List(Box::new(Type::Int))),
+        ("Option<Real>",     Type::Option(Box::new(Type::Real))),
+        ("Vector<3,Real>",   Type::vec3(Type::Real)),
+        ("Matrix<3,3,Real>", Type::matrix(3, 3, Type::Real)),
+    ];
+    for (label, param_ty) in &cases {
+        assert!(
+            type_compatible(param_ty, &Type::Error),
+            "type_compatible({label}, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
+        );
+    }
 }
