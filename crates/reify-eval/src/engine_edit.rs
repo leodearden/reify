@@ -41,7 +41,8 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
-    CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
+    CheckResult, Engine, EngineError, EvalResult, GuardLookup, eval_ctx_with_meta,
+    guard_state_fingerprint,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -69,7 +70,7 @@ pub(crate) fn deactivate_if_not_auto(
 ///
 /// - **Active branch** (`is_true` for `members`, `is_false` for `else_members`):
 ///   each cell's `default_expr` is evaluated with
-///   `EvalContext::new(values, functions).with_meta(meta_map)` and written into
+///   `eval_ctx_with_meta(values, functions, meta_map)` and written into
 ///   both `values` and `snapshot_values` with `DeterminacyState::Determined`.
 ///   Cells without a `default_expr` (or absent from the graph) are left
 ///   unchanged.
@@ -100,7 +101,7 @@ fn reelaborate_guarded_group(
                 {
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                        &eval_ctx_with_meta(values, functions, meta_map),
                     );
                     values.insert(mid.clone(), val.clone());
                     snapshot_values.insert(mid.clone(), (val, DeterminacyState::Determined));
@@ -571,7 +572,7 @@ impl Engine {
 
                 let val = reify_expr::eval_expr(
                     expr,
-                    &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map),
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                 );
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
@@ -658,9 +659,8 @@ impl Engine {
                         if let Some(ref expr) = node.default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_determinacy(&new_snapshot.values)
-                                    .with_meta(&self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_determinacy(&new_snapshot.values),
                             )
                         } else {
                             Value::Undef
@@ -868,8 +868,7 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &functions)
-                                .with_meta(&self.meta_map),
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                         );
                         values.insert(vcid.clone(), val.clone());
                         new_snapshot
@@ -1058,8 +1057,7 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_meta(&self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                             )
                         } else {
                             Value::Undef
@@ -1506,7 +1504,7 @@ impl Engine {
 
                 let val = reify_expr::eval_expr(
                     expr,
-                    &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map),
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                 );
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
@@ -1670,9 +1668,8 @@ impl Engine {
                         if let Some(ref expr) = node.default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_determinacy(&new_snapshot.values)
-                                    .with_meta(&self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_determinacy(&new_snapshot.values),
                             )
                         } else {
                             Value::Undef
@@ -1746,8 +1743,7 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
@@ -1766,8 +1762,7 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
@@ -1938,8 +1933,7 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &functions)
-                                .with_meta(&self.meta_map),
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                         );
                         values.insert(vcid.clone(), val.clone());
                         new_snapshot
@@ -2038,8 +2032,7 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot
@@ -2063,8 +2056,7 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot
@@ -2235,8 +2227,7 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_meta(&self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                             )
                         } else {
                             Value::Undef
