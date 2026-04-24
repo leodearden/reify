@@ -46073,7 +46073,7 @@
         "description": "Make `unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch` in `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` (~lines 748-831) less prose-dependent.\n\nMemory hints: search \"task 1914 cascade suppression regression test available default\"; entities: compile_source, errors_only.",
         "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestion #6.\n\nCurrent test asserts by substring match on error message prose (`\"available default\"` + `\"Real\"`, and `\"type mismatch for trait member\"` + `\"'a'\"`). This silently passes if the diagnostic wording is refactored (e.g., \"advertised default\"). The test comment correctly notes it doesn't assert an exact diagnostic count, but pinning on specific English strings risks a future prose cleanup letting a real regression slip through.\n\nReify does not yet have stable diagnostic codes/IDs, so the cleanest option isn't available. Pick one of:\n  1. **Span-based (preferred):** assert that no diagnostic whose span points at the trait-member `a` declaration exists, and that at least one root-cause diagnostic names `b`. Span is stable across prose refactors.\n  2. **Count-based backstop:** additionally assert the total error count stays at a specific small number (e.g., `assert_eq!(errors.len(), N)` or `<= N`). Simpler, pins total but breaks on unrelated error additions.\n  3. **Combination:** keep current substring checks AND add either a span check or a tight count bound.\n\nAlso consider: if Reify introduces stable diagnostic codes in the future, revisit this test (and similar prose-assertion tests) to migrate to code-based assertions.\n\nVerify: `cargo test -p reify-compiler test_unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch`; full suite clean.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1914"
         ],
@@ -46085,9 +46085,12 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "5c207aab4497adeff1e56a02d0445090ac7d5033"
+          }
         },
-        "updatedAt": "2026-04-24T09:20:14.859Z"
+        "updatedAt": "2026-04-24T10:21:03.652Z"
       },
       {
         "id": "2161",
@@ -46931,14 +46934,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T10:13:37.294Z",
+      "lastModified": "2026-04-24T10:21:03.652Z",
       "taskCount": 2192,
-      "completedCount": 1942,
+      "completedCount": 1943,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T10:20:41.309Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
