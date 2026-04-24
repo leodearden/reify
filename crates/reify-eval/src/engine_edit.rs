@@ -2275,7 +2275,7 @@ mod tests {
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{deactivate_if_not_auto, guard_value_unchanged, reelaborate_guarded_group};
+    use super::{deactivate_if_not_auto, guard_value_unchanged, phase3_guard_changed, reelaborate_guarded_group};
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -3035,5 +3035,96 @@ mod tests {
         let guard_cell = ValueCellId::new("E", "guard");
 
         assert!(!guard_value_unchanged(None, &guard_cell, &Value::Bool(true)));
+    }
+
+    // ── phase3_guard_changed ──────────────────────────────────────────────
+
+    /// (a) Empty groups slice → no guard to diff → returns false.
+    #[test]
+    fn phase3_guard_changed_returns_false_for_empty_groups() {
+        let values = ValueMap::default();
+        let snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        assert!(!phase3_guard_changed(&[], &values, Some(&snapshot)));
+    }
+
+    /// (b) One group, values and snapshot both contain guard_cell = Bool(true)
+    /// → unchanged → returns false.
+    #[test]
+    fn phase3_guard_changed_returns_false_when_guard_unchanged() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true));
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+
+        assert!(!phase3_guard_changed(&[group], &values, Some(&snapshot)));
+    }
+
+    /// (c) One group, values has Bool(true) and snapshot has Bool(false)
+    /// → changed → returns true.
+    #[test]
+    fn phase3_guard_changed_returns_true_when_guard_value_differs() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true));
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(false), DeterminacyState::Determined));
+
+        assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
+    }
+
+    /// (d) One group, values has Bool(true) and snapshot_values = None
+    /// → Some(&Bool(true)) != None → returns true.
+    #[test]
+    fn phase3_guard_changed_returns_true_when_snapshot_is_none() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true));
+
+        assert!(phase3_guard_changed(&[group], &values, None));
+    }
+
+    /// (e) One group, values does NOT contain guard_cell but snapshot does
+    /// → None != Some(&Bool(true)) → returns true.
+    #[test]
+    fn phase3_guard_changed_returns_true_when_new_val_absent_but_old_present() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let values = ValueMap::default(); // guard_cell not present in new values
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+
+        assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
     }
 }
