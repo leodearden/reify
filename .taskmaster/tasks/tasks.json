@@ -46631,11 +46631,11 @@
         "description": "The table-driven fallback tests in crates/reify-compiler/src/geometry_modify.rs (`compile_modify_op_non_geometry_target_fallback_all_single_geom_target_kinds` and `..._step_offset_nonzero_all_single_geom_target_kinds`) cover Chamfer/Fillet/Thicken/Shell but omit Draft, which is also registered in geometry_arg_indices() with a single geometry target (index 0). Draft is the one remaining single-geom-target modify kind and would regress the same way as the others if the step_offset fix (task-612/task-1732) were reverted.\n\nEither (a) add a parallel case for Draft (e.g. `draft(target, 5deg, plane_xy())`) so the regression-lock covers all 5 single-geom-target modifies — may require parser support for plane literals / a different template shape, or (b) add a short comment at the top of the tables explaining Draft is intentionally excluded and why.\n\nContingent on / coordinate with Task 2010 which fixes Draft's eval-layer `plane_id` placeholder bug — that task will naturally require the same test-template work.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:03:34.518Z",
+        "updatedAt": "2026-04-24T09:30:54.026Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry_modify.rs"
@@ -46762,7 +46762,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:25:22.739Z",
+      "lastModified": "2026-04-24T09:30:54.027Z",
       "taskCount": 2187,
       "completedCount": 1937,
       "tags": [
