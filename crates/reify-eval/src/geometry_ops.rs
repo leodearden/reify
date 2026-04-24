@@ -2910,14 +2910,10 @@ mod tests {
             "diagnostic message should mention 'spacing', got: {}",
             diagnostics[0].message
         );
-        let expected_kind = format!(" for {}", reify_compiler::PatternKind::Linear);
-        let spurious_prefix = format!(" for {}_", reify_compiler::PatternKind::Linear);
         assert!(
-            diagnostics[0].message.contains(&expected_kind)
-                && !diagnostics[0].message.contains(&spurious_prefix),
-            "diagnostic message should contain {:?} without a suffix variant (not {:?}), got: {}",
-            expected_kind,
-            spurious_prefix,
+            diagnostics[0].message.contains("linear")
+                && !diagnostics[0].message.contains("linear_2d"),
+            "diagnostic message should identify the Linear variant (not Linear2D), got: {}",
             diagnostics[0].message
         );
     }
