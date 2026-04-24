@@ -45720,11 +45720,11 @@
         "description": "At crates/reify-eval/src/engine_edit.rs:728 the post-wave2 cleanup does `new_snapshot.graph.guarded_groups.clone()` to iterate and compare guard_cell against a HashSet. The iteration doesn't mutate the graph, so the clone is only needed because `new_snapshot` is borrowed immutably downstream through `&new_snapshot.graph`. In a structure with many guarded groups this is a wasted allocation per edit_param.\n\nSuggested fix: Re-scope the borrow so the iterator can borrow `&new_snapshot.graph.guarded_groups` directly, or iterate `phase1_reelaborated` itself and look up each group by guard_cell. The latter is also O(|phase1_reelaborated|) rather than O(|guarded_groups|).\n\nSource: post-merge review suggestion on task 2140.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T11:55:34.082Z",
+        "updatedAt": "2026-04-24T12:27:21.429Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -47182,7 +47182,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T12:19:50.365Z",
+      "lastModified": "2026-04-24T12:27:21.429Z",
       "taskCount": 2203,
       "completedCount": 1959,
       "tags": [
