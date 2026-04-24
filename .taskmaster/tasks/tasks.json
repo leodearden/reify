@@ -46500,11 +46500,16 @@
         "description": "In crates/reify-eval/src/geometry_ops.rs:2852-2861 and 2917-2926, the strengthened assertion `msg.contains(\" for extrude\") && !msg.contains(\" for extrude_\")` hard-codes the ` for {kind}` diagnostic template with its leading space. If the diagnostic string is ever reformatted to put the kind at the start, inside quotes, or on a new line, both checks silently fail without exercising the intended ambiguity. Replace with the simpler variant-pair-specific form: `assert!(msg.contains(\"extrude\") && !msg.contains(\"extrude_symmetric\"), ...)` and `assert!(msg.contains(\"linear\") && !msg.contains(\"linear_2d\"), ...)`. This states the intent (\"the right variant, not its sibling\") without coupling to the surrounding template. Source: esc-2078-22 (S2).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:09:59.060Z"
+        "updatedAt": "2026-04-24T08:38:46.241Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "885000724a199ee60daf9aa76636d2d140928b9f"
+          }
+        }
       },
       {
         "id": "2187",
@@ -46567,9 +46572,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T08:38:29.260Z",
+      "lastModified": "2026-04-24T08:38:46.241Z",
       "taskCount": 2179,
-      "completedCount": 1927,
+      "completedCount": 1928,
       "tags": [
         "master"
       ]
