@@ -2137,10 +2137,17 @@ impl Engine {
                         new_snapshot.graph.value_cells.remove(&scoped_id);
                         new_snapshot.values.remove(&scoped_id);
                         values.remove(&scoped_id);
-                        // Task 2086: invalidate cache so a subsequent edit that
-                        // re-adds a scoped cell at the same index evaluates freshly
-                        // instead of returning a stale CachedResult from a prior
-                        // incarnation.
+                        // Task 2086 Fix 1: invalidate cache so a subsequent edit
+                        // that re-adds a scoped cell at the same (parent, sub,
+                        // index, member) key evaluates freshly instead of returning
+                        // a stale CachedResult from a prior incarnation.
+                        // Scope: this loop iterates `0..old_count` using the NEW
+                        // `col_sub.child_value_cells` (the surviving shape), so it
+                        // only covers members present in the new shape.  Scoped cells
+                        // for members absent from the new shape are invalidated by
+                        // Step (9)'s `diff_value_cells.removed` path (those cells are
+                        // absent from `new_snapshot.graph.value_cells` and therefore
+                        // classified as `removed` by `diff_value_cells`).
                         self.cache.invalidate(&NodeId::Value(scoped_id));
                     }
                 }
