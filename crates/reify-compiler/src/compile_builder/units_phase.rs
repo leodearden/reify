@@ -40,21 +40,21 @@ pub(crate) fn phase_units(
                 // Guard: only warn for genuine cross-module pairs. Intra-module
                 // duplicates (same source_module as current) are rejected earlier
                 // by compile() and must not produce "declared in both 'X' and 'X'".
-                if let Some(existing) = ctx.unit_registry.lookup(&cu.name) {
-                    if existing.source_module.as_deref() != Some(&module_display[..]) {
-                        let first_module: &str =
-                            existing.source_module.as_deref().unwrap_or("<unknown>");
-                        ctx.diagnostics.push(
-                            Diagnostic::warning(format!(
-                                "prelude unit '{}' declared in both '{}' and '{}'; last-wins",
-                                cu.name, first_module, module_display
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                SourceSpan::prelude(),
-                                "cross-prelude collision",
-                            )),
-                        );
-                    }
+                if let Some(existing) = ctx.unit_registry.lookup(&cu.name)
+                    && existing.source_module.as_deref() != Some(&module_display[..])
+                {
+                    let first_module: &str =
+                        existing.source_module.as_deref().unwrap_or("<unknown>");
+                    ctx.diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "prelude unit '{}' declared in both '{}' and '{}'; last-wins",
+                            cu.name, first_module, module_display
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            SourceSpan::prelude(),
+                            "cross-prelude collision",
+                        )),
+                    );
                 }
                 ctx.unit_registry.seed_prelude_unit(UnitEntry {
                     name: cu.name.clone(),
