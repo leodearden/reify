@@ -46640,18 +46640,39 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-24T09:11:41.581Z"
+      },
+      {
+        "id": "2194",
+        "title": "engine_eval: unify Param-cell skip paths or document EvalResult.values partial-map invariant",
+        "description": "Task 2179 introduced an intentional asymmetry in the Param-cell loop in `crates/reify-eval/src/engine_eval.rs`:\n\n- **Rejected-override-no-default** (lines ~460-499): writes `(Undef, Undetermined)` into both `values` and `snapshot.values` so external callers never see a missing key.\n- **No-override-no-default** (lines ~394-416): still silently `continue`s, leaving `values` without an entry for that cell. This preserves pre-task-2017 behaviour for untouched no-default Param cells.\n\nThis partial-map contract is a `.get().unwrap()` footgun — exactly what S4 was introduced to eliminate on the other arm. The in-code comment (engine_eval.rs:400-413) already flags this as a follow-up.\n\nResolve by picking ONE of:\n(a) Make both skip paths insert `(Undef, Undetermined)` uniformly. Risk: cross-cutting behaviour change; audit downstream call sites and existing tests that may rely on absent-key semantics.\n(b) Document the partial-map invariant on the `EvalResult.values` type (doc comment describing exactly when a key may be absent) AND audit existing `EvalResult.values.get(&id).unwrap()` callers to confirm none of them rely on the absent-key behaviour for no-default untouched Param cells.\n\nPrefer (a) for long-term hygiene if the audit surfaces no blocker; otherwise (b).\n\nSource: esc-2179-15 S2 (reviewer_comprehensive).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T09:12:31.454Z"
+      },
+      {
+        "id": "2195",
+        "title": "engine_eval: unify cache recording on rejected-override-no-default Param path",
+        "description": "On the S4 rejected-override-no-default path in `crates/reify-eval/src/engine_eval.rs` (lines ~480-489), cache recording via `self.cache.record_evaluation(...)` is deliberately omitted. Every OTHER branch in the Param-cell loop records to the cache, so on re-eval at the same VersionId before any invalidation event the journal shows a `Started`/`Completed` pair with no accompanying cache entry for this node — tooling that joins journal events against cache state will find the mismatch surprising.\n\nThe omission is defensible for task 2179 (preserves pre-refactor behaviour; avoids `try_fast_path` in `eval_cached` serving a stale Undef across versions and masking the underlying source-level problem). But it leaves an inconsistency worth resolving.\n\nResolve by picking ONE of:\n(a) Uniformly record an Undef cache entry with proper invalidation on override-change. Needs an invalidation key that is triggered when the rejected override is replaced / removed, so the cache doesn't serve stale Undef on re-eval after the source edit.\n(b) Model the rejected-override skip with a dedicated `EvalOutcome::SkippedInvalidOverride` variant so the journal/cache divergence becomes explicit and downstream consumers can reason about it.\n\nPreferred: (b) if the enum extension is cheap and downstream consumers are small in number; (a) if cache semantics for this path can be made sound.\n\nSource: esc-2179-15 S3 (reviewer_comprehensive).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:11:41.581Z",
-      "taskCount": 2182,
+      "lastModified": "2026-04-24T09:12:31.454Z",
+      "taskCount": 2184,
       "completedCount": 1935,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T09:12:05.200Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
