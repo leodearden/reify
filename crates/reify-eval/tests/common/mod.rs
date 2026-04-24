@@ -3,6 +3,8 @@
 //! Include in a test binary with `mod common;` at the top of the file.
 //! Helpers are `pub` so they are visible after `use common::{...}`.
 
+use std::fmt::Write as _;
+
 /// Build the canonical 10-group guarded-group fixture source string.
 ///
 /// Produces a `structure S` with:
@@ -10,9 +12,9 @@
 /// - 10 guarded groups: `where uN { let xN = 1mm }` for N ≠ 3;
 ///   group 3 uses `group3_guard_expr` as its guard expression.
 ///
-/// The returned `String` is byte-exact with the raw-string literals that were
-/// previously inlined in `edit_source.rs` and `guard_eval.rs`; passing `"u3"`
-/// reproduces the canonical fixture used by most callers.
+/// The fixture uses 4-space indentation and LF line endings; the final `}` has
+/// no trailing newline. Passing `"u3"` reproduces the canonical fixture used by
+/// most callers.
 ///
 /// # Usage
 ///
@@ -27,16 +29,13 @@
 pub fn ten_bool_guarded_groups(group3_guard_expr: &str) -> String {
     let mut s = String::from("structure S {\n");
     for n in 0..10u32 {
-        s.push_str(&format!("    param u{}: Bool = true\n", n));
+        writeln!(s, "    param u{}: Bool = true", n).unwrap();
     }
     for n in 0..10u32 {
         if n == 3 {
-            s.push_str(&format!(
-                "    where {} {{ let x{} = 1mm }}\n",
-                group3_guard_expr, n
-            ));
+            writeln!(s, "    where {} {{ let x{} = 1mm }}", group3_guard_expr, n).unwrap();
         } else {
-            s.push_str(&format!("    where u{} {{ let x{} = 1mm }}\n", n, n));
+            writeln!(s, "    where u{} {{ let x{} = 1mm }}", n, n).unwrap();
         }
     }
     s.push('}');
