@@ -46304,7 +46304,7 @@
         "description": "Swap the empty-prelude `reify_compiler::compile(&parsed)` call sites to `reify_compiler::compile_with_stdlib(&parsed)` in the LSP and CLI so editor diagnostics and `reify check` / `reify test` resolve stdlib types (Material, Rigid, Physical, MaterialSpec, Elastic, Strong, …) consistently with the GUI. The GUI was fixed on main at commit a0cef6273 / merge 11f60f057 (2026-04-24); LSP + CLI were deliberately left out of that PR to keep scope tight.",
         "details": "**Call sites** (verified on main at 11f60f057):\n\n- `crates/reify-lsp/src/diagnostics.rs:82` — editor diagnostics\n- `crates/reify-lsp/src/diagnostics.rs:177` — editor diagnostics\n- `crates/reify-lsp/src/diagnostics.rs:326` — unit test (`check_snapshot` of fresh engine using `reify_test_support::bracket_source()`); keep as-is since bracket doesn't need stdlib and the test asserts fresh-engine behavior\n- `crates/reify-lsp/src/analysis.rs:64` — semantic analysis\n- `crates/reify-cli/src/main.rs:64` — `parse_and_compile()` helper used by `check`, `test`, `build` subcommands\n\n**Why GUI fix is not enough**: users now see \"unresolved type: Material\" squigglies in the editor (LSP) and exit-1 from `reify check examples/m5_geometry_flange.ri` (CLI), while the GUI loads the same file cleanly. Inconsistent UX between tools.\n\n**Safety**: `stdlib_loader::load_stdlib_context()` is cached via `OnceLock` (pay the cost once per process, not per compile). The stdlib is embedded via `include_str!` so there is no file-system cost. `compile_with_stdlib_parity_with_compile_with_prelude_stdlib` in `crates/reify-compiler/tests/prelude_context_tests.rs` already locks parity between the two entry points.\n\n**Likely test churn**:\n- Some LSP/CLI tests may currently assert negative diagnostics (\"unresolved type: Foo\" for names that live in stdlib). Audit and adjust where the prior negative was a side-effect of missing prelude, not an intentional assertion of compiler behavior.\n- `reify check examples/m5_geometry_flange.ri` should start passing after the swap (currently exits 1 with unresolved Material/Rigid).\n- Confirm no stdlib-leak into user diagnostics: the prelude's own trait definitions should not show up in \"duplicate definition\" / resolution ambiguity errors on user code.\n\n**Acceptance**:\n- `reify check examples/m5_geometry_flange.ri` exits 0 (currently errors on `Material` / `Rigid`)\n- Editor LSP shows no \"unresolved type\" diagnostics for plain stdlib names in an .ri file that uses only stdlib traits\n- All existing reify-lsp and reify-cli tests pass (modulo intentional updates to negative assertions that were masking the missing prelude)\n\n**Memory hints**:\n- Precedent: GUI change in commit `a0cef6273`, engine.rs:117 and :215.\n- Parity test: `crates/reify-compiler/tests/prelude_context_tests.rs::compile_with_stdlib_parity_with_compile_with_prelude_stdlib`\n- Task 1876 context (stdlib Material struct landing): merge commit `a3f92e8d2`, feat commit `e09fd346b`.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -46317,9 +46317,12 @@
           "modules": [
             "crates/reify-lsp/src",
             "crates/reify-cli/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "e15f5efed7ba4638a3ff53c914d0e1364e95527c"
+          }
         },
-        "updatedAt": "2026-04-24T07:09:47.838Z"
+        "updatedAt": "2026-04-24T08:53:32.128Z"
       },
       {
         "id": "2177",
@@ -46583,9 +46586,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T08:53:18.431Z",
+      "lastModified": "2026-04-24T08:53:32.130Z",
       "taskCount": 2179,
-      "completedCount": 1930,
+      "completedCount": 1931,
       "tags": [
         "master"
       ]
