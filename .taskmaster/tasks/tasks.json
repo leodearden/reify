@@ -47014,12 +47014,24 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-24T10:59:44.183Z"
+      },
+      {
+        "id": "2208",
+        "title": "conformance: track Param losers (pass1_param_skipped) to fix reverse-direction cell-duplication",
+        "description": "Task 1952 restored symmetry for the (Param winner, annotated-Let loser) direction by adding `pass1_skipped` to suppress duplicate annotated-Let cell injection. The reverse direction — annotated-Let winner, Param loser in Pass 1 — is still unfixed: the loser Param's cell is still injected, producing duplicate `(entity, member)` cells and an asymmetric advertisement map (Let winner advertises correctly, loser Param also injects a cell without a skip guard).\n\nAn `#[ignore]`d regression test already exists at `crates/reify-compiler/tests/trait_merge_tests.rs:1150` (`annotated_let_wins_param_loses_known_asymmetry`) that pins the desired 1-cell outcome and will start passing once this is fixed.",
+        "details": "Scope:\n1. Add `pass1_param_skipped: HashSet<String>` mirroring `pass1_skipped` in `crates/reify-compiler/src/conformance/checker.rs` Pass 1 loop. When a Param loses `register_if_absent` (Occupied path at ~line 459), record its name.\n2. Add a skip guard at the top of the `DefaultKind::Param` injection arm in `check_phase_inject_defaults`: if `pass1_param_skipped.contains(name)` → `continue`. Mirror the shape of the existing `pass1_skipped` guard in the `DefaultKind::Let` annotated-cell arm (around checker.rs:1002).\n3. Thread `pass1_param_skipped` through the existing Pass 1 `check_phase_build_available_defaults_map` / injection callsites (follow the pattern used for `pass1_skipped` in commit 5c35f3871).\n4. Remove `#[ignore]` attribute on `annotated_let_wins_param_loses_known_asymmetry` at `tests/trait_merge_tests.rs:1147-1149`. The test already asserts the correct 1-cell outcome.\n5. Update the TWO-PASS DESIGN RATIONALE comment block in conformance/checker.rs to describe the complete symmetry (both directions now suppress loser cell injection); remove the \"scope limitation\" language from the `pass1_skipped` declaration comment.\n6. Before merging, verify no user-visible diagnostic regression:\n   - Confirm no phantom `RequirementKind::Param` advertisement is emitted for the skipped Param (search `available_defaults` / advertisement-map population for Param).\n   - Run `cargo test -p reify-compiler` — green.\n   - Run `cargo clippy --workspace -- -D warnings` — clean.\n   - Run `cargo fmt --check` — clean.\n\nOrigin: reviewer_comprehensive on task 1952 (esc-1952-39, suggestions 2 & 3). The ignored test is the TODO anchor; update its `#[ignore]` reason NOW to reference this task id so the follow-up is discoverable via grep, OR remove it as part of landing this fix.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T11:20:47.133Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T11:07:13.373Z",
-      "taskCount": 2196,
+      "lastModified": "2026-04-24T11:20:47.140Z",
+      "taskCount": 2197,
       "completedCount": 1948,
       "tags": [
         "master"
