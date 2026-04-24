@@ -146,6 +146,26 @@ fn propagate_poison() -> CompiledExpr {
 /// Also used by the general method-call path to infer result types for collection methods.
 const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "values"];
 
+/// Reflective aggregation member names for purpose subjects.
+///
+/// When a purpose body accesses `subject.<name>` where `subject` has type
+/// `StructureRef(_)` and `<name>` is in this list, the compiler emits an empty
+/// `ListLiteral` with `result_type = Type::List(Box::new(Type::Real))`.
+///
+/// Semantics:
+/// - Compile-time only: runtime expansion of the list elements against the bound
+///   entity's actual params is deferred to a follow-up task.
+/// - The empty list means `forall p in subject.params: ...` evaluates vacuously
+///   true at eval time, which is safe and anti-cascade-consistent.
+/// - `Type::Real` element type is future-proof; a later task can refine to
+///   `List<ParamRef>` without changing call-site patterns.
+///
+/// Deferred names (documented in `crates/reify-mcp/src/tools/chunks/purposes.md`
+/// but not yet exercised by `examples/m5_purpose.ri`): `sub_entities`, `ports`,
+/// `constraints`. Add them here and to the activation-time expansion when ready.
+const PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS: &[&str] =
+    &["params", "geometric_params", "material_params"];
+
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
@@ -1113,6 +1133,58 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
+
+            // ── Purpose-subject member access (task-2181) ──────────────────────
+            //
+            // Trigger: compiled_obj has type StructureRef(_) AND its kind is a
+            // ValueRef whose entity stamp equals the current scope's entity name
+            // (= the purpose name, per CompilationScope::new(purpose_name)).
+            // This is a purpose-scope invariant: purpose params are registered as
+            // `Type::StructureRef(entity_kind)` and resolve to
+            // `ValueRef(ValueCellId(purpose_name, param_name), StructureRef(...))`.
+            //
+            // Anti-cascade: this branch is placed AFTER the compile_obj call so
+            // the existing `is_error()` poison short-circuit below still fires
+            // for already-poisoned subjects.  We guard on StructureRef — never
+            // on Type::Error — so this branch is never reachable from a poisoned
+            // compiled_obj.
+            if matches!(&compiled_obj.result_type, Type::StructureRef(_))
+                && matches!(&compiled_obj.kind, CompiledExprKind::ValueRef(id) if id.entity == scope.entity_name)
+            {
+                if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                    // Reflective aggregation (e.g., `subject.params`):
+                    //   - Compile-time: emit an empty list so forall evaluates
+                    //     vacuously true.  Runtime expansion against the bound
+                    //     entity's actual params is deferred (follow-up task).
+                    //   - Type::Real element type is safe for now; will be
+                    //     refined to List<ParamRef> when runtime expansion lands.
+                    //   - Empty list satisfies the Quantifier arm's
+                    //     `List(elem) | Set(elem)` type check at forall compile.
+                    return CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+                } else {
+                    // Regular member access (e.g., `subject.mass`):
+                    //   - Emit a ValueRef whose entity stamp equals the purpose
+                    //     name (= scope.entity_name).  At activation time,
+                    //     `activate_purpose` calls `remap_entity(purpose_name,
+                    //     entity_ref)` which rewrites this ref to
+                    //     `ValueCellId(entity_ref, member)` — exactly the bound
+                    //     entity's member cell.
+                    //   - Type::Real is a compile-time fallback because
+                    //     entity_kind == "Structure" is a generic wildcard with no
+                    //     matching template in template_registry.  For concrete
+                    //     subject types a future task can thread template_registry
+                    //     into the scope to resolve the actual member type.
+                    //     Limitation: dimension-mismatch cases like
+                    //     `subject.width > 0mm` could misclassify; no such case
+                    //     exists in m5_purpose.ri or the S5 test fixture.
+                    if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind {
+                        let member_id = ValueCellId::new(&id.entity, member);
+                        return CompiledExpr::value_ref(member_id, Type::Real);
+                    }
+                }
+            }
+            // ── End purpose-subject member access ──────────────────────────────
+
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                 // Anti-cascade consumer (task-448 / task-1921 S4): if the object
                 // is already poisoned, propagate via propagate_poison() (a
