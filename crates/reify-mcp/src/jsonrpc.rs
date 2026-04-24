@@ -229,6 +229,6 @@ impl<'a> McpDispatcher<'a> {
                 data: None,
             }),
         };
-        serde_json::to_string(&response).unwrap_or_default()
+        serde_json::to_string(&response).expect("JsonRpcResponse serialization")
     }
 }
