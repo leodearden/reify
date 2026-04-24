@@ -46235,11 +46235,11 @@
         "description": "Reword the \"Stable wire format\" warning on `ContentHash::of_u64` in `crates/reify-types/src/hash.rs:20-28` to reflect that ContentHash is currently in-memory only.",
         "details": "The current docstring on `ContentHash::of_u64` claims the little-endian encoding is \"part of the on-disk incremental-compile cache contract.\" Grepping the repo shows no persisted ContentHash format today — the hash is in-memory only. The existing warning is forward-looking advice but slightly misrepresents the current state and may give a false sense that such a contract is already being honored.\n\nSuggested rewording:\n> If a persistent incremental-compile cache is introduced, this encoding becomes part of its wire format — any change to byte order or width must accompany a cache-format version bump.\n\nApply the same softening to any other ContentHash encoding helpers (`of`, `of_str`, `combine`, `combine_all`) if they carry similar claims.\n\nMemory hints: search \"ContentHash wire format\" to find any other docstrings referencing an on-disk cache that does not yet exist.\n\nSpawned from: task 1505 steward review triage of reviewer_comprehensive suggestion.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:52:02.529Z"
+        "updatedAt": "2026-04-24T07:13:58.129Z"
       },
       {
         "id": "2175",
@@ -46464,7 +46464,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:13:56.677Z",
+      "lastModified": "2026-04-24T07:13:58.129Z",
       "taskCount": 2176,
       "completedCount": 1922,
       "tags": [
