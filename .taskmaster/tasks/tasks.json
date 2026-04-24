@@ -46639,7 +46639,18 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry_modify.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entity_refs": [
+              "Task 2010",
+              "Task 612",
+              "Task 1732"
+            ],
+            "queries": [
+              "Draft geometry_modify single-geom-target fallback regression test",
+              "step_offset fix geometry_modify non-geometry target"
+            ]
+          }
         }
       },
       {
