@@ -45984,7 +45984,7 @@
       },
       {
         "id": "2159",
-        "title": "conformance cleanup: dedupe kind-keyed cache test, single-bind composite key lookup, re-evaluate resolve_let_advertised_type helper",
+        "title": "conformance cleanup: dedupe kind-keyed cache test, single-bind composite key lookup, re-evaluate resolve_let_advertised_type helper, replace filter().count()==0 with !any()",
         "description": "Four small code/test cleanups on task 1914's kind-keyed cache and advertised-type helper, plus one assertion-idiom fix, all in `crates/reify-compiler/src/conformance/{checker.rs,mod.rs}`.\n\nMemory hints: search \"task 1914 resolve_let_advertised_type inferred_let_exprs composite key\"; entities: resolve_let_advertised_type, AvailableDefaultKind.",
         "status": "pending",
         "dependencies": [
@@ -46004,7 +46004,7 @@
           ],
           "curator_action": "combine",
           "curator_justification": "The candidate is a tiny single-file cosmetic fix (< 300 chars of real detail, 1 file) inside `crates/reify-compiler/src/conformance.rs`. Task 2159 is already an explicit \"conformance cleanup\" bundle of small code/test tidying items scoped entirely to `crates/reify-compiler/src/conformance` — the same module-lock key. Combining adds one more bullet (#4) without crossing a new module boundary, keeps the concern count at 4 (≤ 5), and loses zero parallelism since the scheduler serializes them on the",
-          "combined_at": "2026-04-24T07:12:05.908427+00:00"
+          "combined_at": "2026-04-24T07:12:24.002138+00:00"
         }
       },
       {
@@ -46173,11 +46173,11 @@
         "description": "In crates/reify-eval/tests/edit_source.rs around 2464-2466/2558-2563, test `edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip` (T3) asserts that the role-flip probe is the SOLE signal driving `has_dirty_guards`. That premise depends on `ValueCellNode::content_hash` NOT incorporating the member/else_member role; if content_hash is ever extended to hash that role, `changed` would include x and y on its own and the role-flip probe would no longer be the sole signal — the test would keep passing but for the wrong reason. Author flagged this in the doc comment but added no runtime guard. Add either (a) a test hook to snapshot the `diff_value_cells` output between the two modules and assert `changed.is_empty() && added.is_empty() && removed.is_empty()` for x and y, or (b) a `debug_assert!` near the counter assertion that pins the premise so a regression produces a targeted error rather than silent test-drift. Source: post-merge review on task 2138.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:25:33.761Z",
+        "updatedAt": "2026-04-24T07:13:53.866Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -46448,12 +46448,23 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-24T07:09:59.060Z"
+      },
+      {
+        "id": "2187",
+        "title": "let_scope_tests: strip stale TDD narration, tighten contains('g') asserts, fix RealizationDecl span=0,0 sentinel",
+        "description": "Three related cleanups from review of task 2115.\n\n(1) Strip TDD-step narration doc-comments in crates/reify-compiler/tests/let_scope_tests.rs:1813-1821, 1859-1866, 1945-1948 — the fix landed in the same commit so the comments are now false (\"asserts tests fail when in fact they pass\"), and the embedded line-number references (e.g. \"line 1370\") will rot. Rewrite to describe the behavior under test (e.g. \"pins that a geometry-let realization's span is carried over from LetDecl.span rather than being defaulted to (0,0)\").\n\n(2) Tighten the `slice.contains(\"g\")` assertions at let_scope_tests.rs:1836-1840, 1893-1897, 1951-1955 — single-letter \"g\" appears in many unrelated tokens ('structure', 'cylinder', 'length'), so a span that accidentally includes other source still passes. Use `contains(\"param g\")` or assert the slice equals a known expected subrange of the source.\n\n(3) In crates/reify-test-support/src/builders/topology.rs:202 and 220, two RealizationDecl builder methods still construct `span: SourceSpan::new(0, 0)`. If downstream diagnostic-label tests ever rely on a meaningful span, they will silently label at byte 0. Either add a `span: Option<SourceSpan>` / `with_span()` helper, or add an intent-of-sentinel comment (matches project's silent-defaults anti-pattern flagged in Apr 3 review).\n\nSource: esc-2115-21 (S1+S2+S3).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:12:23.874Z",
-      "taskCount": 2175,
+      "lastModified": "2026-04-24T07:13:53.876Z",
+      "taskCount": 2176,
       "completedCount": 1922,
       "tags": [
         "master"
