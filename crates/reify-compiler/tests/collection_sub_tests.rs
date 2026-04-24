@@ -1,23 +1,11 @@
 //! Collection sub-structure tests (task 64).
 
-use reify_test_support::parse_and_compile;
+use reify_test_support::{compile_source, parse_and_compile};
 use reify_types::{CompiledExprKind, Severity};
-
-/// Helper: parse + compile source, return compiled output without asserting zero errors.
-/// Use this for negative tests that expect compiler diagnostics.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_coll"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 /// Helper: compile source and assert no error-severity diagnostics.
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let compiled = compile_module(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -774,7 +762,7 @@ fn mixed_sub_types_wrong_trait_diagnostic() {
             let d2 = parts.(UnrelatedTrait::weight)
         }
     "#;
-    let compiled = compile_module(source);
+    let compiled = compile_source(source);
 
     let errors: Vec<_> = compiled
         .diagnostics
