@@ -363,54 +363,18 @@ mod tests {
     /// Base is processed exactly once, so "b" appears exactly once in `ctx.requirements`.
     #[test]
     fn collect_all_requirements_dedups_diamond_refinement() {
-        let base = CompiledTrait {
-            name: "Base".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
+        let base = make_compiled_trait(
+            "Base",
+            vec![],
+            vec![TraitRequirement {
                 name: "b".to_string(),
                 kind: RequirementKind::Param(Type::Real),
                 span: SourceSpan::empty(0),
             }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-        let mid1 = CompiledTrait {
-            name: "Mid1".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Base".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-        let mid2 = CompiledTrait {
-            name: "Mid2".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Base".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-        let top = CompiledTrait {
-            name: "Top".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Mid1".to_string(), "Mid2".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
+        );
+        let mid1 = make_compiled_trait("Mid1", vec!["Base".to_string()], vec![]);
+        let mid2 = make_compiled_trait("Mid2", vec!["Base".to_string()], vec![]);
+        let top = make_compiled_trait("Top", vec!["Mid1".to_string(), "Mid2".to_string()], vec![]);
 
         let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
         trait_registry.insert("Base".to_string(), &base);
@@ -444,81 +408,47 @@ mod tests {
     }
 
     /// Verify that `collect_all_requirements` deduplicates `RequirementKind::Sub`
-    /// requirements in a diamond refinement pattern via `seen_sub_names` + `visited`.
+    /// requirements via `seen_sub_names` when two sibling parent traits both declare
+    /// the same sub-component name and structure.
     ///
-    /// Diamond:
-    ///   Base (has sub "hole = Hole")
-    ///    / \
-    /// Mid1 Mid2
-    ///    \ /
-    ///    Top
+    /// Topology:
+    ///   ParentA (has sub "hole = Hole")
+    ///   ParentB (has sub "hole = Hole")
+    ///       \   /
+    ///       Child
     ///
-    /// Both Mid1→Base and Mid2→Base reach Base. The first traversal inserts "Base"
-    /// into `ctx.visited` and records `("hole", ("Hole", "Base"))` in `seen_sub_names`,
-    /// pushing the `hole` Sub requirement exactly once. The second traversal hits the
-    /// `if !ctx.visited.insert("Base") { return; }` short-circuit before the requirement
-    /// loop runs. Result: exactly one `hole` requirement, zero diagnostics.
+    /// Unlike a diamond, both ParentA and ParentB are distinct nodes, so `visited` does
+    /// not short-circuit either. Both run through the Sub match arm. `seen_sub_names`
+    /// records ("hole", ("Hole", "ParentA")) on the first visit; the second visit
+    /// (ParentB) finds "hole" already present with the same structure name and continues
+    /// (deduplicated). Result: exactly one `hole` requirement, zero diagnostics.
+    ///
+    /// This is the canonical test for `seen_sub_names` dedup: the `visited` short-circuit
+    /// does not fire (ParentA ≠ ParentB), so `seen_sub_names` alone prevents the duplicate.
     #[test]
-    fn collect_all_requirements_dedups_diamond_refinement_sub() {
-        let base = CompiledTrait {
-            name: "Base".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
-                name: "hole".to_string(),
-                kind: RequirementKind::Sub("Hole".to_string()),
-                span: SourceSpan::empty(0),
-            }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
+    fn collect_all_requirements_dedups_sibling_sub_requirements() {
+        let sub_hole = TraitRequirement {
+            name: "hole".to_string(),
+            kind: RequirementKind::Sub("Hole".to_string()),
+            span: SourceSpan::empty(0),
         };
-        let mid1 = CompiledTrait {
-            name: "Mid1".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Base".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-        let mid2 = CompiledTrait {
-            name: "Mid2".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Base".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-        let top = CompiledTrait {
-            name: "Top".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Mid1".to_string(), "Mid2".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
+        let parent_a = make_compiled_trait("ParentA", vec![], vec![sub_hole.clone()]);
+        let parent_b = make_compiled_trait("ParentB", vec![], vec![sub_hole]);
+        let child = make_compiled_trait(
+            "Child",
+            vec!["ParentA".to_string(), "ParentB".to_string()],
+            vec![],
+        );
 
         let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        trait_registry.insert("Base".to_string(), &base);
-        trait_registry.insert("Mid1".to_string(), &mid1);
-        trait_registry.insert("Mid2".to_string(), &mid2);
-        trait_registry.insert("Top".to_string(), &top);
+        trait_registry.insert("ParentA".to_string(), &parent_a);
+        trait_registry.insert("ParentB".to_string(), &parent_b);
+        trait_registry.insert("Child".to_string(), &child);
 
         let mut ctx = MergeContext::new();
         let mut diags: Vec<Diagnostic> = vec![];
         collect_all_requirements(
-            "Top",
+            "Child",
             &trait_registry,
             &mut ctx,
             &HashMap::new(),
@@ -535,7 +465,7 @@ mod tests {
         assert_eq!(
             hole_count,
             1,
-            "Expected exactly one 'hole' sub-requirement (dedup via visited), got {}",
+            "Expected exactly one 'hole' sub-requirement (dedup via seen_sub_names), got {}",
             hole_count
         );
         assert!(
@@ -545,7 +475,106 @@ mod tests {
         );
     }
 
+    /// Verify that two sibling parent traits declaring the same sub-component name with
+    /// *different* structure names emit exactly one conflict diagnostic.
+    ///
+    /// Topology:
+    ///   ParentA (has sub "hole = Hole")
+    ///   ParentB (has sub "hole = Rectangle")   ← different structure
+    ///       \   /
+    ///       Child
+    ///
+    /// The first visit records ("hole", ("Hole", "ParentA")) in `seen_sub_names`.
+    /// The second visit finds "hole" with structure "Rectangle" ≠ "Hole" and pushes a
+    /// conflict diagnostic, then continues. The first-seen requirement is kept so the
+    /// checker sees at most one entry per sub-name. Result: one conflict diagnostic, one
+    /// `hole` requirement in `ctx.requirements`.
+    #[test]
+    fn collect_all_requirements_sub_conflict_emits_diagnostic() {
+        let parent_a = make_compiled_trait(
+            "ParentA",
+            vec![],
+            vec![TraitRequirement {
+                name: "hole".to_string(),
+                kind: RequirementKind::Sub("Hole".to_string()),
+                span: SourceSpan::empty(0),
+            }],
+        );
+        let parent_b = make_compiled_trait(
+            "ParentB",
+            vec![],
+            vec![TraitRequirement {
+                name: "hole".to_string(),
+                kind: RequirementKind::Sub("Rectangle".to_string()),
+                span: SourceSpan::empty(0),
+            }],
+        );
+        let child = make_compiled_trait(
+            "Child",
+            vec!["ParentA".to_string(), "ParentB".to_string()],
+            vec![],
+        );
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("ParentA".to_string(), &parent_a);
+        trait_registry.insert("ParentB".to_string(), &parent_b);
+        trait_registry.insert("Child".to_string(), &child);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Child",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected exactly one sub-conflict diagnostic, got: {:?}",
+            diags
+        );
+        // The first-seen 'hole' requirement (Hole, from ParentA) is kept; the conflicting
+        // one (Rectangle, from ParentB) is dropped after the diagnostic fires.
+        let hole_count = ctx
+            .requirements
+            .iter()
+            .filter(|r| r.name == "hole")
+            .count();
+        assert_eq!(
+            hole_count,
+            1,
+            "Expected one 'hole' requirement kept (first-seen wins), got {}",
+            hole_count
+        );
+    }
+
     // ---- helpers for the additional branch tests below ----
+
+    /// Minimal `CompiledTrait` fixture with no defaults, type params, annotations, or
+    /// pragmas. Use this to keep test scaffolding lean; only the structurally relevant
+    /// fields (`name`, `refinements`, `required_members`) need to vary per test.
+    fn make_compiled_trait(
+        name: &str,
+        refinements: Vec<String>,
+        required_members: Vec<TraitRequirement>,
+    ) -> CompiledTrait {
+        CompiledTrait {
+            name: name.to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements,
+            required_members,
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
 
     /// Minimal `LetDecl` fixture; only `content_hash` varies between callers.
     fn make_let_decl(name: &str, hash_val: u128) -> reify_syntax::LetDecl {
