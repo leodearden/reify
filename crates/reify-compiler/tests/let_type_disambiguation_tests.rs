@@ -798,6 +798,35 @@ structure S : HasA {
         errors
     );
 
+    // (a2) Span-based root-cause assertion (prose-independent).
+    // The span is the semantic anchor: it pins the exact source location of the
+    // unresolved identifier `b` regardless of any future rewording of the
+    // diagnostic message (e.g. "cannot resolve", "name lookup failed").
+    // `"b +"` is the unique disambiguating substring — the only `b` in the source
+    // that is immediately followed by ` +` — giving us the byte offset of the
+    // identifier reference in `let a = b + 1mm`.
+    {
+        let b_offset = source
+            .find("b +")
+            .expect("test source must contain 'b +'") as u32;
+        let has_span_on_b = errors.iter().any(|d| {
+            d.labels.iter().any(|label| {
+                label.span.start == b_offset
+                    && label.span.end == b_offset + 1
+                    && &source[label.span.start as usize..label.span.end as usize] == "b"
+            })
+        });
+        assert!(
+            has_span_on_b,
+            "expected at least one error diagnostic with a label whose span \
+             covers exactly the `b` identifier at byte offset {}..{}; \
+             got errors: {:?}",
+            b_offset,
+            b_offset + 1,
+            errors
+        );
+    }
+
     // (b) No cascade "available default has Real" diagnostic.
     // A phantom `("a", Let) -> Type::Real` advertisement would cause
     // check_phase_check_members_against_requirements to emit this substring
