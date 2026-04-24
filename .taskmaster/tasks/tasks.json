@@ -46460,12 +46460,24 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-24T07:13:55.140Z"
+      },
+      {
+        "id": "2188",
+        "title": "compile_builder/ctx.rs: relax exact-string label asserts to substring checks + drop 'wire format' comment",
+        "description": "In crates/reify-compiler/src/compile_builder/ctx.rs:266-279, the new assertions exact-match label prose (\"structure defined here\" and \"first defined as structure here\"), justified by a comment claiming the strings are a \"wire format ... consumed by IDE tooling.\" There is no evidence of a machine consumer parsing this prose — LSP consumers read severity/message/spans, not label text. Drop the two `assert_eq!` checks on `diag.labels[*].message` exact strings (or relax them to substring checks that verify the `{kind}` token interpolates, e.g. `assert!(diag.labels[0].message.contains(\"structure\"))`). Keep the span-ordering and label-count assertions — those are the real contract. Remove the overstated \"wire format\" justification comment. Source: esc-2089-9.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T07:14:57.793Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:13:58.129Z",
-      "taskCount": 2176,
+      "lastModified": "2026-04-24T07:14:57.794Z",
+      "taskCount": 2177,
       "completedCount": 1922,
       "tags": [
         "master"
