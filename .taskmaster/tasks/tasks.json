@@ -46656,7 +46656,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:12:31.454Z"
+        "updatedAt": "2026-04-24T09:12:31.454Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/eval_param_overrides.rs"
+          ]
+        }
       },
       {
         "id": "2195",
@@ -46681,6 +46687,19 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-24T09:13:37.924Z"
+      },
+      {
+        "id": "2197",
+        "title": "conformance: tighten Pass 2 review tests + docstring cascade-suppression order caveat",
+        "description": "Three small follow-ups from task 2158 review (reviewer_comprehensive, all \"suggestion\" severity, test/doc polish only — no behavior change).",
+        "details": "Origin: esc-2158-16 triage — reviewer_comprehensive suggestions #1–#3 on task 2158.\n\n**(a) checker.rs:445-509 — docstring clarification (robustness/limitation).**\nThe Pass-2 docstring block (checker.rs:415-444) and the `# PASS 2 COMPILE-ERROR SUPPRESSION` section (checker.rs:284-300) describe the `Type::Error` scope-poison fix as preventing \"unresolved name\" cascades generally, but the protection is *order-dependent* on `ctx.defaults` traversal order. Given `let c = a  let a = b` (with `b` undefined): Pass 2 compiles `c` first, finds `a` absent, emits an \"unresolved a\" cascade and records/poisons `c` — only *then* does `a = b` fail and poison `a`. The cascade for `c` has already fired. The existing `# DESIGN LIMITATION` block (checker.rs:325-331) covers the mutual-forward-reference case but not the *reverse-order same-direction* chain.\n\nFix: add one sentence to both doc blocks (the `# PASS 2 COMPILE-ERROR SUPPRESSION` section and the Pass 2 inline comment at ~line 427) noting that cascade suppression is effective only when the failing dependency is defined *before* its dependents in trait-default order; reverse-ordered chains still cascade. No topological pre-pass is warranted unless such cases become a real concern.\n\n**(b) mod.rs:1873-1880 — use non-mutating scope probe in the warning-only test.**\nThe `warning_only_compile_does_not_trigger_pass2_compile_error` test probes scope membership by *calling* `scope.register_if_absent(\"x\", Type::Int)` and expecting `Some(..)`. `CompilationScope::resolve(&self, name) -> Option<(&ValueCellId, &Type)>` (scope.rs:118) is a non-mutating read and would both (1) avoid the mutating call and (2) let the test also assert the *type* actually registered equals `Type::List(Box::new(Type::Real))` — strengthening the contract.\n\nFix: replace the mutating probe with `scope.resolve(\"x\")`; assert `is_some()` and that the returned `Type` equals `Type::List(Box::new(Type::Real))`.\n\n**(c) mod.rs:1820-1826 — soften `diagnostics.len() == 1` to severity-based contract.**\nThe warning-only test pins `assert_eq!(diagnostics.len(), 1)`. The actual contract under test is \"no Error-severity diagnostic ⇒ expression is cached\", not the exact diagnostic count. Any future compile_expr refactor that adds a second Info/note diagnostic on the empty-list-literal path (e.g. a span annotation) will break this test without any real regression.\n\nFix: soften to `assert!(!diagnostics.is_empty())` plus `assert!(diagnostics.iter().all(|d| d.severity != Severity::Error))`. Keep the existing `pass2_compile_errors` / `pass2_skipped` / `inferred_let_exprs` / `Type::List(Real)` assertions.\n\n**Verify:**\n- `cargo test -p reify-compiler` (both the unit test in `conformance/mod.rs` and integration tests pass)\n- `cargo clippy --workspace -- -D warnings`\n- `cargo fmt --check`",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2158"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -46690,7 +46709,10 @@
       "completedCount": 1935,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T09:18:27.560Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-24T09:18:27.583Z"
     }
   }
 }
