@@ -3218,22 +3218,7 @@ fn edit_source_role_flip_probe_skipped_when_guard_member_added() {
         let x1 = 2mm
     }
 }"#;
-    let module_a = parse_and_compile(module_a_src);
-    let module_b = parse_and_compile(module_b_src);
-
-    // Incremental: eval(A) then edit_source(B).
-    let mut incremental = fresh_engine();
-    incremental.eval(&module_a);
-    let incr = incremental
-        .edit_source(&module_b)
-        .expect("edit_source must succeed");
-
-    // Cold baseline: fresh eval(B).
-    let mut cold = fresh_engine();
-    let cold_result = cold.eval(&module_b);
-
-    // (a) Cross-check: incremental and cold must agree on all cells.
-    assert_values_match(&incr.values, &cold_result.values);
+    let (cold_result, probes) = run_probe_scenario(module_a_src, module_b_src);
 
     // (b) Positive anchor: x1 must be a determined Scalar in cold (u0=true
     // activates the where-branch). Prevents a "both wrong" false-pass.
@@ -3254,7 +3239,6 @@ fn edit_source_role_flip_probe_skipped_when_guard_member_added() {
     //         rather than before it; detect_role_flip invoked when only the
     //         added-member trigger fires.
     // >  1 → memoization broke.
-    let probes = incremental.last_role_flip_probes();
     assert_eq!(
         probes,
         0,
