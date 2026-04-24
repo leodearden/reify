@@ -46205,6 +46205,75 @@
             "crates/reify-types/src/hash.rs"
           ]
         }
+      },
+      {
+        "id": "2176",
+        "title": "LSP + CLI: load stdlib prelude via compile_with_stdlib",
+        "description": "Swap the empty-prelude `reify_compiler::compile(&parsed)` call sites to `reify_compiler::compile_with_stdlib(&parsed)` in the LSP and CLI so editor diagnostics and `reify check` / `reify test` resolve stdlib types (Material, Rigid, Physical, MaterialSpec, Elastic, Strong, …) consistently with the GUI. The GUI was fixed on main at commit a0cef6273 / merge 11f60f057 (2026-04-24); LSP + CLI were deliberately left out of that PR to keep scope tight.",
+        "details": "**Call sites** (verified on main at 11f60f057):\n\n- `crates/reify-lsp/src/diagnostics.rs:82` — editor diagnostics\n- `crates/reify-lsp/src/diagnostics.rs:177` — editor diagnostics\n- `crates/reify-lsp/src/diagnostics.rs:326` — unit test (`check_snapshot` of fresh engine using `reify_test_support::bracket_source()`); keep as-is since bracket doesn't need stdlib and the test asserts fresh-engine behavior\n- `crates/reify-lsp/src/analysis.rs:64` — semantic analysis\n- `crates/reify-cli/src/main.rs:64` — `parse_and_compile()` helper used by `check`, `test`, `build` subcommands\n\n**Why GUI fix is not enough**: users now see \"unresolved type: Material\" squigglies in the editor (LSP) and exit-1 from `reify check examples/m5_geometry_flange.ri` (CLI), while the GUI loads the same file cleanly. Inconsistent UX between tools.\n\n**Safety**: `stdlib_loader::load_stdlib_context()` is cached via `OnceLock` (pay the cost once per process, not per compile). The stdlib is embedded via `include_str!` so there is no file-system cost. `compile_with_stdlib_parity_with_compile_with_prelude_stdlib` in `crates/reify-compiler/tests/prelude_context_tests.rs` already locks parity between the two entry points.\n\n**Likely test churn**:\n- Some LSP/CLI tests may currently assert negative diagnostics (\"unresolved type: Foo\" for names that live in stdlib). Audit and adjust where the prior negative was a side-effect of missing prelude, not an intentional assertion of compiler behavior.\n- `reify check examples/m5_geometry_flange.ri` should start passing after the swap (currently exits 1 with unresolved Material/Rigid).\n- Confirm no stdlib-leak into user diagnostics: the prelude's own trait definitions should not show up in \"duplicate definition\" / resolution ambiguity errors on user code.\n\n**Acceptance**:\n- `reify check examples/m5_geometry_flange.ri` exits 0 (currently errors on `Material` / `Rigid`)\n- Editor LSP shows no \"unresolved type\" diagnostics for plain stdlib names in an .ri file that uses only stdlib traits\n- All existing reify-lsp and reify-cli tests pass (modulo intentional updates to negative assertions that were masking the missing prelude)\n\n**Memory hints**:\n- Precedent: GUI change in commit `a0cef6273`, engine.rs:117 and :215.\n- Parity test: `crates/reify-compiler/tests/prelude_context_tests.rs::compile_with_stdlib_parity_with_compile_with_prelude_stdlib`\n- Task 1876 context (stdlib Material struct landing): merge commit `a3f92e8d2`, feat commit `e09fd346b`.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2177",
+        "title": "Bulk examples smoke test: every examples/*.ri parses + compiles",
+        "description": "Add a CI-friendly integration test that walks `examples/*.ri` and runs each through parse + `compile_with_stdlib`, asserting no Error-severity diagnostics. Motivation: a class of regressions where a whole example file silently stops compiling is only caught today by per-file test wrappers (m5_integration.rs, m8_stdlib_integration.rs, m11_full_integration.rs, …), and only for examples that have such a wrapper. Files without a wrapper (e.g. `m5_geometry_flange.ri`, which hit \"unresolved type: Material\" until fixed in commit a0cef6273 / merge 11f60f057 on 2026-04-24) drift silently. Of 42 files in `examples/`, roughly half have no dedicated compile-regression safety net.",
+        "details": "**Scope**: a single bulk integration test, not per-file. Suggested home: `crates/reify-eval/tests/examples_smoke.rs` — the common helper there already has `parse_and_compile_with_stdlib`.\n\n**Shape**:\n- `read_dir(examples/)`, filter `.ri`\n- For each: parse → assert `parsed.errors.is_empty()` → `compile_with_stdlib` → assert no `Severity::Error` diagnostics\n- Accumulate all failures and panic once at the end so a single run lists every broken file, not just the first\n\n**Design decisions during implementation**:\n- **Skip set**: `error_messages.ri` almost certainly contains intentionally ill-typed code. Use either a hardcoded list or a `// @smoke-skip` pragma. Every entry should have a one-line reason in a comment.\n- **Compile-only smoke**: default skips eval — OCCT-heavy files (io_export.ri, large_assembly.ri, m5_geometry_flange.ri) are slow. A separate `examples_eval_smoke` marked `#[ignore]` can opt into eval when run locally.\n- **Assertion granularity**: just \"no Error diagnostics\" for the smoke. Per-file semantic checks stay in the existing dedicated wrappers.\n\n**Motivating incident**: 2026-04-24, user opened `m5_geometry_flange.ri` via the GUI and got \"unresolved type: Material\". Root cause was the GUI calling empty-prelude `compile()` instead of `compile_with_stdlib()` (fixed in a0cef6273). Even after the GUI fix, `reify check examples/m5_geometry_flange.ri` still errors pending #2176 (LSP/CLI follow-up). A bulk smoke would have caught the original divergence at first CI run.\n\n**Acceptance**:\n- Passes on current main (evaluator-driven form works now regardless of #2176)\n- Uses `read_dir` discovery, not a hardcoded list — new examples auto-covered\n- Failure output lists every broken file + diagnostic messages (not first-fail abort)\n- Skip set (if any) short, documented, each skip linked to a reason\n\n**Dependencies**: soft — companion to #2176 (LSP/CLI stdlib prelude). Both tasks reduce the same risk from different angles; either can land first.\n\n**Memory hints**:\n- Precedent fix (GUI): commit `a0cef6273`, engine.rs:117 and :215, merge `11f60f057`\n- Parity test: `crates/reify-compiler/tests/prelude_context_tests.rs::compile_with_stdlib_parity_with_compile_with_prelude_stdlib`\n- `parse_and_compile_with_stdlib` helper in `crates/reify-eval/tests/common/mod.rs`",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2176",
+          "2181"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2178",
+        "title": "Route Engine::edit_param through validate_param_override to de-dup type-kind guard chain",
+        "description": "engine_edit.rs:327-355 inlines the same type-kind + Scalar-dimension guard chain that `validate_param_override` in engine_admin.rs now encapsulates. Diff on task 2017 explicitly documents this as a follow-up. Adapt `ParamOverrideRejection` → `EngineError` in edit_param and call the shared validator so the two enforcement sites cannot drift (future guards like Tensor shape or List element-type would otherwise need to be added twice). Source: esc-2017-31 (S2).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2179",
+        "title": "engine_eval: collapse param_overrides double-lookup and insert Undef on rejected-override-with-no-default",
+        "description": "Two related hot-path hardenings in engine_eval.rs Param handling. (1) Performance: inner loop does `contains_key(&cell.id)` followed by `get(&cell.id)`; collapse to a single `get()` match. (2) Robustness: when override validation fails AND cell has no `default_expr`, the cell is currently skipped entirely — no entry in `values` or `snapshot.values`, so downstream readers see a missing key instead of Undef. Insert Value::Undef with DeterminacyState::Undetermined and add a regression test (a struct with a no-default Param whose override is rejected, plus a downstream Let reading it) to confirm no unwrap panic. Source: esc-2017-31 (S3+S4).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2180",
+        "title": "engine_eval: collapse param_overrides double-lookup and insert Undef on rejected-override-with-no-default",
+        "description": "Two related hot-path hardenings in engine_eval.rs Param handling. (1) Performance: inner loop does `contains_key(&cell.id)` followed by `get(&cell.id)`; collapse to a single `get()` match. (2) Robustness: when override validation fails AND cell has no `default_expr`, the cell is currently skipped entirely — no entry in `values` or `snapshot.values`, so downstream readers see a missing key instead of Undef. Insert Value::Undef with DeterminacyState::Undetermined and add a regression test (a struct with a no-default Param whose override is rejected, plus a downstream Let reading it) to confirm no unwrap panic. Source: esc-2017-31 (S3+S4).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2181",
+        "title": "Compiler: member access in purpose bodies (subject reflection + regular fields)",
+        "description": "Wire `MemberAccess` in purpose-body compilation so that `subject.params`, `subject.geometric_params`, `subject.mass`, `subject.<param>` compile cleanly instead of emitting \"member access not yet supported\". Blocks `examples/m5_purpose.ri` from compiling and is the sole remaining bulk-smoke failure under `compile_with_stdlib` (verified 2026-04-24: 41/42 examples clean with stdlib, only m5_purpose.ri fails, with five `member access not yet supported: .params / .mass / .geometric_params` errors).",
+        "details": "**Failing surface** (from `examples/m5_purpose.ri`):\n\n```\npurpose manufacturing_ready(subject : Structure) {\n    constraint forall p in subject.params: determined(p)       // .params fails\n}\npurpose lightweight(subject : Structure) {\n    constraint subject.mass > 0                                 // .mass fails\n    minimize subject.mass                                       // .mass fails\n}\npub purpose dimensionally_valid(part : Structure) {\n    constraint forall p in part.geometric_params: constrained(p)  // .geometric_params fails\n    constraint forall p in part.params: determined(p)             // .params fails\n}\n```\n\n**Two distinct member kinds** share the hook point but have different semantics:\n\n1. **Reflective aggregations**: `.params`, `.geometric_params` — introspect the bound subject's parameter set. Return a list/iterable of param references suitable for `forall p in … : determined(p) / constrained(p)`. Likely needs a synthetic \"ParamRef\" type and integration with the existing `determined()` / `constrained()` predicates.\n2. **Regular trait/field member**: `.mass` — real field on `Physical` trait (declared in stdlib). Already works on concrete entity instances outside purpose bodies; the gap is specifically in purpose-body compilation where the subject is a param of type `Structure` rather than a concrete entity.\n\n**Compiler hook point**: `crates/reify-compiler/src/expr.rs:1181` emits the catch-all \"member access not yet supported\" diagnostic when the else-branch above falls through. The current structure already handles aggregation members on list-shaped operands (the `if` arm just above); extend the not-yet-supported arm to cover Structure-typed purpose subjects.\n\n**Existing NOTE documenting the gap**: `crates/reify-eval/tests/purpose_activation.rs:684-689` — reviewer suggestion S5 was deferred waiting on this exact fix. Adding a purpose body that references `subject.<param>` and asserts `expr.remap_entity` behavior is a good acceptance test.\n\n**Acceptance**:\n- `examples/m5_purpose.ri` compiles with zero Error-severity diagnostics under `compile_with_stdlib`\n- Reflective `.params` and `.geometric_params` yield iterables usable by `forall … : determined / constrained`\n- Regular `.mass` on `Structure`-typed purpose subject resolves to the `Physical` trait's `mass` field\n- Purpose-activation test in `crates/reify-eval/tests/purpose_activation.rs` adds the deferred `subject.<param>` case promised by suggestion S5 (unblocks the `expr.remap_entity` integration test)\n- No regression in `crates/reify-compiler/tests/type_error_propagation_tests.rs` / `expr_error_sentinel_tests.rs` (they exercise the same sentinel path)\n\n**Memory hints**:\n- Diagnostic producer: `crates/reify-compiler/src/expr.rs:1181` (the poison-literal path used by the error-sentinel tests)\n- Prior S5 deferral: `crates/reify-eval/tests/purpose_activation.rs:684-689`\n- Purpose-body subject remapping: `expr.remap_entity` (referenced in S5 NOTE)\n- Physical trait (source of `.mass`): stdlib (`Material`, `Physical`, `MaterialSpec`, …), landed in task 1876, merge `a3f92e8d2`, feat `e09fd346b`",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -46214,7 +46283,10 @@
       "completedCount": 1921,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T06:51:16.228Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-24T07:06:00.616Z"
     }
   }
 }
