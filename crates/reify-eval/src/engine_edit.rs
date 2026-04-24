@@ -36,12 +36,12 @@ use reify_types::{
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
+use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
 };
-use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
 /// `values` map and the snapshot's `values` map — UNLESS the member is an

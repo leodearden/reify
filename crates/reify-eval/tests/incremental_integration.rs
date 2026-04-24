@@ -830,8 +830,8 @@ fn edit_param_dimension_mismatch_returns_error() {
 
 /// Pins all three fields of `EngineError::DimensionMismatch` for
 /// `edit_param Assembly.height` (Type::Scalar[LENGTH]) supplied kg(5.0) (Value::Scalar[MASS]).
-/// This is a characterisation-lock: it passes against the current inline guard chain and must
-/// continue to pass once the refactor routes through `validate_param_override` in task 2178.
+/// Pre-existing sibling `edit_param_dimension_mismatch_returns_error` checks the variant kind
+/// only; this test pins the fields to catch swap bugs during the task-2178 refactor.
 /// A buggy mapping that swaps `expected` ↔ `got` or drops `cell` would fail here.
 #[test]
 fn edit_param_dimension_mismatch_pins_cell_and_dimensions() {
