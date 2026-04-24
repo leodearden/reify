@@ -46446,7 +46446,7 @@
         "description": "Wire `MemberAccess` in purpose-body compilation so that `subject.params`, `subject.geometric_params`, `subject.mass`, `subject.<param>` compile cleanly instead of emitting \"member access not yet supported\". Blocks `examples/m5_purpose.ri` from compiling and is the sole remaining bulk-smoke failure under `compile_with_stdlib` (verified 2026-04-24: 41/42 examples clean with stdlib, only m5_purpose.ri fails, with five `member access not yet supported: .params / .mass / .geometric_params` errors).",
         "details": "**Failing surface** (from `examples/m5_purpose.ri`):\n\n```\npurpose manufacturing_ready(subject : Structure) {\n    constraint forall p in subject.params: determined(p)       // .params fails\n}\npurpose lightweight(subject : Structure) {\n    constraint subject.mass > 0                                 // .mass fails\n    minimize subject.mass                                       // .mass fails\n}\npub purpose dimensionally_valid(part : Structure) {\n    constraint forall p in part.geometric_params: constrained(p)  // .geometric_params fails\n    constraint forall p in part.params: determined(p)             // .params fails\n}\n```\n\n**Two distinct member kinds** share the hook point but have different semantics:\n\n1. **Reflective aggregations**: `.params`, `.geometric_params` — introspect the bound subject's parameter set. Return a list/iterable of param references suitable for `forall p in … : determined(p) / constrained(p)`. Likely needs a synthetic \"ParamRef\" type and integration with the existing `determined()` / `constrained()` predicates.\n2. **Regular trait/field member**: `.mass` — real field on `Physical` trait (declared in stdlib). Already works on concrete entity instances outside purpose bodies; the gap is specifically in purpose-body compilation where the subject is a param of type `Structure` rather than a concrete entity.\n\n**Compiler hook point**: `crates/reify-compiler/src/expr.rs:1181` emits the catch-all \"member access not yet supported\" diagnostic when the else-branch above falls through. The current structure already handles aggregation members on list-shaped operands (the `if` arm just above); extend the not-yet-supported arm to cover Structure-typed purpose subjects.\n\n**Existing NOTE documenting the gap**: `crates/reify-eval/tests/purpose_activation.rs:684-689` — reviewer suggestion S5 was deferred waiting on this exact fix. Adding a purpose body that references `subject.<param>` and asserts `expr.remap_entity` behavior is a good acceptance test.\n\n**Acceptance**:\n- `examples/m5_purpose.ri` compiles with zero Error-severity diagnostics under `compile_with_stdlib`\n- Reflective `.params` and `.geometric_params` yield iterables usable by `forall … : determined / constrained`\n- Regular `.mass` on `Structure`-typed purpose subject resolves to the `Physical` trait's `mass` field\n- Purpose-activation test in `crates/reify-eval/tests/purpose_activation.rs` adds the deferred `subject.<param>` case promised by suggestion S5 (unblocks the `expr.remap_entity` integration test)\n- No regression in `crates/reify-compiler/tests/type_error_propagation_tests.rs` / `expr_error_sentinel_tests.rs` (they exercise the same sentinel path)\n\n**Memory hints**:\n- Diagnostic producer: `crates/reify-compiler/src/expr.rs:1181` (the poison-literal path used by the error-sentinel tests)\n- Prior S5 deferral: `crates/reify-eval/tests/purpose_activation.rs:684-689`\n- Purpose-body subject remapping: `expr.remap_entity` (referenced in S5 NOTE)\n- Physical trait (source of `.mass`): stdlib (`Material`, `Physical`, `MaterialSpec`, …), landed in task 1876, merge `a3f92e8d2`, feat `e09fd346b`",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -46458,9 +46458,12 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "60e24970cdfd1871e2d03b9eb90f518e657035da"
+          }
         },
-        "updatedAt": "2026-04-24T07:09:48.354Z"
+        "updatedAt": "2026-04-24T09:34:11.489Z"
       },
       {
         "id": "2182",
@@ -46798,9 +46801,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:34:02.344Z",
+      "lastModified": "2026-04-24T09:34:11.489Z",
       "taskCount": 2190,
-      "completedCount": 1937,
+      "completedCount": 1938,
       "tags": [
         "master"
       ]
