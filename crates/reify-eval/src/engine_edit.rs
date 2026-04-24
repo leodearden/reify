@@ -2092,61 +2092,6 @@ impl Engine {
         // If any structure_controlling count cell's value changed vs. the
         // pre-edit snapshot, add/remove instances to match the new count.
         {
-            // Task 2086: Invalidate cache entries for scoped cells of entirely-removed
-            // collection_subs. Phase 4's main loop below iterates only NEW
-            // collection_subs, so a sub present in eval_state.snapshot.graph.collection_subs
-            // but absent from new_snapshot.graph.collection_subs never has its scoped
-            // cells visited. This sweep is defense-in-depth alongside Step (9)'s
-            // diff_value_cells.removed invalidations — symmetric with Fix 1 above, it
-            // keeps all collection-scoped cache hygiene concentrated in Phase 4.
-            let scoped_ids_to_invalidate: Vec<ValueCellId> = {
-                if let Some(eval_state_ref) = self.eval_state.as_ref() {
-                    let old_subs = &eval_state_ref.snapshot.graph.collection_subs;
-                    let old_snapshot_values = &eval_state_ref.snapshot.values;
-                    let new_sub_keys: HashSet<(String, String)> = new_snapshot
-                        .graph
-                        .collection_subs
-                        .iter()
-                        .map(|s| (s.parent_entity.clone(), s.sub_name.clone()))
-                        .collect();
-                    let mut ids = Vec::new();
-                    for old_sub in old_subs {
-                        if new_sub_keys
-                            .contains(&(old_sub.parent_entity.clone(), old_sub.sub_name.clone()))
-                        {
-                            continue;
-                        }
-                        // Silent-zero for non-Int/non-Undef values is intentional:
-                        // this sub is *being removed* so emitting a warning about a
-                        // now-gone count cell would be noisy. `resolve_count` below
-                        // emits diagnostics only for *surviving* subs where an
-                        // unexpected count type would actually affect the result.
-                        let old_count = old_snapshot_values
-                            .get(&old_sub.count_cell)
-                            .map(|(v, _)| match v {
-                                Value::Int(n) => *n,
-                                _ => 0,
-                            })
-                            .unwrap_or(0);
-                        for i in 0..old_count {
-                            let scoped_entity = format!(
-                                "{}.{}[{}]",
-                                old_sub.parent_entity, old_sub.sub_name, i
-                            );
-                            for (member, _, _, _) in &old_sub.child_value_cells {
-                                ids.push(ValueCellId::new(&scoped_entity, member));
-                            }
-                        }
-                    }
-                    ids
-                } else {
-                    Vec::new()
-                }
-            };
-            for scoped_id in scoped_ids_to_invalidate {
-                self.cache.invalidate(&NodeId::Value(scoped_id));
-            }
-
             let collection_subs = new_snapshot.graph.collection_subs.clone();
             for col_sub in &collection_subs {
                 let new_count_val = values
