@@ -2736,6 +2736,136 @@ mod tests {
         );
     }
 
+    /// Phase-contract test: `check_phase_inject_defaults` skips annotated-Let cell injection
+    /// when the name is in `pass1_skipped` (task 1952 step-6).
+    ///
+    /// ## Invariant: annotated-Let injection is suppressed when name in pass1_skipped
+    ///
+    /// This is the mirror of the unannotated-Let / `pass2_skipped` suppression at
+    /// `checker.rs` (the `None`-cache-miss arm that calls `continue` when
+    /// `pass2_skipped.contains(name)`).  For annotated Lets, the new guard is:
+    ///
+    /// ```text
+    /// if cell_type.is_some() && pass1_skipped.contains(name) { continue; }
+    /// ```
+    ///
+    /// placed **before** `compile_expr` so the expression is never compiled for a
+    /// skipped name — no cell is pushed, no diagnostic is emitted.
+    ///
+    /// ## Fixture
+    ///
+    /// A single annotated Let default for "x" (cell_type = Some(Type::length())),
+    /// with pass1_skipped = {"x"}.  The injection loop must skip "x" entirely:
+    /// - `value_cells.is_empty()` — no Let cell emitted
+    /// - `constraints.is_empty()` — no constraint emitted
+    /// - `diagnostics.is_empty()` — no compile-error or any other diagnostic
+    ///
+    /// ## Cross-references
+    ///
+    /// - Step-7 adds `pass1_skipped: &HashSet<String>` to `check_phase_inject_defaults`
+    ///   (between `inferred_let_exprs` and `pass2_skipped`) and the guard in the
+    ///   `DefaultKind::Let { cell_type: Some(_), .. }` arm.
+    /// - Sibling test: `check_phase_inject_defaults_injects_param_cell_for_non_overridden_default`
+    ///   (the passthrough case, pass1_skipped = empty).
+    ///
+    /// **COMPILE-TRIPWIRE**: fails to compile until step-7 adds `pass1_skipped: &HashSet<String>`
+    /// as a parameter of `check_phase_inject_defaults` (between `inferred_let_exprs` and
+    /// `pass2_skipped`).
+    #[test]
+    fn check_phase_inject_defaults_skips_annotated_let_cell_for_pass1_skipped_name() {
+        // Annotated Let "x": Length = 80.0 — cell_type carried in DefaultKind, not type_expr.
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // type_expr not consulted — DefaultKind::Let carries cell_type directly
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Let {
+                cell_type: Some(Type::length()), // annotated — would be compiled if NOT in pass1_skipped
+                let_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_constraint_labels: HashSet<String> = HashSet::new();
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
+            HashMap::new();
+        // COMPILE-TRIPWIRE: `&pass1_skipped` is the new parameter added by step-7 between
+        // `inferred_let_exprs` and `pass2_skipped`. Fails to compile until step-7 updates
+        // `check_phase_inject_defaults` to accept `pass1_skipped: &HashSet<String>`.
+        let mut pass1_skipped: HashSet<String> = HashSet::new();
+        pass1_skipped.insert("x".to_string());
+        let pass2_skipped: HashSet<String> = HashSet::new();
+        let pass2_compile_errors: HashSet<String> = HashSet::new();
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index: u32 = 0;
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_inject_defaults(
+            &ctx,
+            &entity_ref,
+            &structure_members,
+            &structure_constraint_labels,
+            inferred_let_exprs,
+            &pass1_skipped,
+            &pass2_skipped,
+            &pass2_compile_errors,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
+
+        assert!(
+            value_cells.is_empty(),
+            "Expected no value cells: annotated Let 'x' is in pass1_skipped and must be \
+             suppressed by the injection loop; got: {:?}",
+            value_cells
+        );
+        assert!(
+            constraints.is_empty(),
+            "Expected no constraints; got: {:?}",
+            constraints
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics (pass1_skipped suppression must be silent); got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── task 1914 step-5: unit tests for resolve_let_advertised_type helper ──
     // These tests are compile-tripwires: they fail to compile until step-6 defines
     // `pub(super) fn resolve_let_advertised_type` in checker.rs.
