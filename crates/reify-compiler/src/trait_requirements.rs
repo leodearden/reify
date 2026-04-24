@@ -806,6 +806,45 @@ mod tests {
         }
     }
 
+    /// Cache-hit with mismatched value: emits exactly one `Error` diagnostic with the
+    /// builder-provided message and a uniform `"conflict between '…' and '…'"` label;
+    /// returns `Break(())`; the map is unchanged.
+    #[test]
+    fn try_dedup_or_conflict_emits_diagnostic_on_mismatch() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        map.insert("x".to_string(), (7_i32, "TraitA".to_string()));
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &9_i32, // different value → conflict
+            "TraitB",
+            SourceSpan::empty(0),
+            |name, existing, existing_trait, new, new_trait| {
+                format!(
+                    "BOOM '{}': {} vs {} (traits '{}' and '{}')",
+                    name, existing, new, existing_trait, new_trait
+                )
+            },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        // Map must remain unchanged (conflict does NOT overwrite)
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert_eq!(diags.len(), 1, "Expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(
+            diags[0].message,
+            "BOOM 'x': 7 vs 9 (traits 'TraitA' and 'TraitB')"
+        );
+        assert_eq!(diags[0].labels.len(), 1);
+        assert_eq!(
+            diags[0].labels[0].message,
+            "conflict between 'TraitA' and 'TraitB'"
+        );
+    }
+
     /// Cache-hit with equal value: returns `Break(())` silently; the map is unchanged and
     /// no diagnostic is emitted. The conflict closure must not be invoked (guarded by
     /// `unreachable!`).
