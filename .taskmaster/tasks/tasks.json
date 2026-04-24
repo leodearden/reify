@@ -47256,11 +47256,16 @@
         "description": "Convert 8 remaining inlined `EvalContext::new(values, functions).with_meta(meta_map)` call sites to the `eval_ctx_with_meta` helper introduced in task 397; fix truncated doc comment on the helper.",
         "details": "Convert 8 inlined sites to `eval_ctx_with_meta(...)`:\n- crates/reify-eval/src/unfold.rs: 88, 124, 316, 321, 549\n- crates/reify-eval/src/geometry_ops.rs: 55, 124, 335\n\nFix truncated doc comment at crates/reify-eval/src/lib.rs:417-418 (ends mid-sentence at \"...MetaAccess expressions resolve\").\n\nAcceptance: `git grep \"EvalContext::new.*with_meta\" crates/reify-eval/src` returns only the helper body; cargo test -p reify-eval passes.\n\nSource: follow-up from task 397 review (esc-397-72 suggestions 1, 3).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T14:13:50.495Z"
+        "updatedAt": "2026-04-24T14:28:17.366Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "ae5fbfc2babb418f89e42f58712b121ee2371ba1"
+          }
+        }
       },
       {
         "id": "2218",
@@ -47284,14 +47289,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T14:14:38.969Z",
+      "lastModified": "2026-04-24T14:28:17.366Z",
       "taskCount": 2207,
-      "completedCount": 1962,
+      "completedCount": 1963,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T14:17:56.892Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
