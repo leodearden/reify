@@ -17045,7 +17045,9 @@
             "crates/reify-compiler/src/units.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-compiler/tests/unit_registry_tests.rs"
           ]
         },
         "updatedAt": "2026-04-24T07:37:45.423Z"
@@ -46532,7 +46534,9 @@
       "completedCount": 1924,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T07:42:23.746Z",
+      "description": "Tasks for master context"
     }
   }
 }
