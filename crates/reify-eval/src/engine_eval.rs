@@ -279,8 +279,7 @@ impl Engine {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr }
                 | reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx =
-                        eval_ctx_with_meta(&values, &functions, &self.meta_map);
+                    let ctx = eval_ctx_with_meta(&values, &functions, &self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Arc::new(val)
                 }
