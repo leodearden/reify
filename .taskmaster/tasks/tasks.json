@@ -46264,7 +46264,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/diagnostics.rs",
+            "crates/reify-cli/src/main.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src",
+            "crates/reify-cli/src"
+          ]
+        }
       },
       {
         "id": "2177",
@@ -46278,7 +46289,15 @@
           "2181"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/examples_smoke_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "2178",
