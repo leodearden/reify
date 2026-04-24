@@ -1114,3 +1114,53 @@ structure def S : A {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// [#21 RED] Two traits A and B both declare `sub hole = Hole()`; structure S : A + B {}
+/// has no `sub hole` member. Currently (without the Sub dedup fix) TWO duplicate
+/// "missing required sub-component" errors fire because `collect_all_requirements`
+/// only deduplicates Param/Let requirements via `seen_names`, not Sub requirements.
+/// After the fix in step-2 (`seen_sub_names: HashSet<String>` added to `MergeContext`),
+/// exactly ONE error should fire.
+///
+/// Asserts `error_count == 1` — this will FAIL on current HEAD (before step-2's fix).
+#[test]
+fn duplicate_sub_requirement_emits_one_missing_error() {
+    let source = r#"
+structure def Hole {}
+
+trait A {
+    sub hole = Hole()
+}
+
+trait B {
+    sub hole = Hole()
+}
+
+structure def S : A + B {
+}
+"#;
+
+    let module = compile_source(source);
+
+    let missing_sub_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("missing required sub-component")
+                && d.message.contains("'hole'")
+        })
+        .collect();
+
+    assert_eq!(
+        missing_sub_errors.len(),
+        1,
+        "expected exactly 1 'missing required sub-component' error for 'hole' \
+         (Sub dedup via seen_sub_names), got {}: {:?}",
+        missing_sub_errors.len(),
+        missing_sub_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
