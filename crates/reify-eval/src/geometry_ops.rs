@@ -2850,9 +2850,9 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("for extrude")
-                && !diagnostics[0].message.contains("extrude_symmetric"),
-            "diagnostic message should identify the Extrude variant (not ExtrudeSymmetric), got: {}",
+            diagnostics[0].message.contains("extrude")
+                && !diagnostics[0].message.contains("extrude_"),
+            "diagnostic message should identify the Extrude variant (no underscore-suffixed sibling), got: {}",
             diagnostics[0].message
         );
     }
