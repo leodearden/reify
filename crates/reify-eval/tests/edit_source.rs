@@ -1625,6 +1625,132 @@ structure def Widget {
     );
 }
 
+// ── Arc refactor regression: meta_map stability across edit_source + edit_param ──
+
+/// Integration regression: `edit_source` followed by `edit_param` must both
+/// read the *updated* meta map installed by the Arc refactor (task 397, step-2).
+///
+/// The Arc refactor changed `Engine.meta_map` from `HashMap<...>` to
+/// `Arc<HashMap<...>>`, replacing it wholesale at the three write-sites
+/// (`engine_eval.rs:203`, `:1065`, `engine_edit.rs:1443`).  The risk is that a
+/// subtle bug could cause `edit_source`'s `self.meta_map = Arc::new(...)` to
+/// NOT install a fresh Arc (e.g. by accidentally cloning the old Arc instead
+/// of constructing a new one), so that `desc` / `tag` in module B would still
+/// read module A's stale meta value.
+///
+/// Note: `meta.key` access expressions hash entity+key only (NOT the meta
+/// value), so an existing reading cell's content_hash does not change when only
+/// the meta value is updated.  Module A therefore has NO reading cells — only
+/// a meta block and a param.  The reading cells (`desc`, `tag`) are ADDED in
+/// module B, guaranteeing that they receive fresh evaluation against the new
+/// meta_map Arc.  This matches the convention documented in
+/// `edit_source_refreshes_meta_map_against_cold_eval`.
+///
+/// Additional coverage over the existing meta-refresh test: after `edit_source`
+/// a subsequent `edit_param(width, Undef)` exercises the full incremental
+/// pipeline against the newly-installed Arc.  `desc` and `tag` (which don't
+/// depend on `width`) carry over their values from `edit_source` — they must
+/// still reflect the B meta map ("A gadget"), not the A map ("A widget").
+///
+/// Also serves as a safety net for step-6 and step-7 (call-site conversions in
+/// engine_eval.rs / engine_edit.rs): if any conversion accidentally drops the
+/// `.with_meta(meta_map)` chain the `desc` / `tag` assertions catch it.
+#[test]
+fn edit_source_meta_map_arc_stability() {
+    // Module A: Widget with meta description="A widget" and a Length param
+    // `width`.  NO reading cells — per the established convention, adding
+    // reading cells in module B forces their fresh evaluation against the
+    // refreshed meta_map (meta-value changes do not dirty existing cells).
+    let module_a_src = r#"
+structure def Widget {
+    meta {
+        description = "A widget"
+    }
+    param width : Length = 10mm
+}
+"#;
+    // Module B: meta value changed to "A gadget"; `width` param unchanged;
+    // two reading cells `desc` and `tag` ADDED so they evaluate against the
+    // freshly-installed meta_map Arc.
+    let module_b_src = r#"
+structure def Widget {
+    meta {
+        description = "A gadget"
+    }
+    param width : Length = 10mm
+    let desc : String = meta.description
+    let tag : String = meta.description
+}
+"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // ── incremental path ──────────────────────────────────────────────────────
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    // Subsequent edit_param on `width` (unchanged between A and B) exercises the
+    // full incremental edit pipeline after edit_source has replaced self.meta_map.
+    // desc and tag do not depend on width, so their values carry over from the
+    // edit_source result — they must still reflect the B meta map ("A gadget"),
+    // not the A meta map ("A widget") that was active before edit_source.
+    let width_id = ValueCellId::new("Widget", "width");
+    let after_edit_param = incremental
+        .edit_param(width_id, Value::Undef)
+        .expect("edit_param(width, Undef) must succeed after edit_source");
+
+    // ── cold path ─────────────────────────────────────────────────────────────
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) edit_source result must match cold eval entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    let desc_id = ValueCellId::new("Widget", "desc");
+    let tag_id = ValueCellId::new("Widget", "tag");
+
+    // (b) Both desc and tag must resolve to the module_b meta value across
+    // all phases.  If the Arc refactor's write-site at edit_source accidentally
+    // retained the A snapshot, these would read "A widget" instead.
+    // Note: the `edit_param(width, Undef)` result carries the added cells from
+    // `edit_source` unchanged (desc/tag don't depend on width), so checking
+    // them individually (rather than via assert_values_match against cold) is
+    // correct — `width` itself is Undef in the override path but 10mm in cold.
+    for (label, values) in [
+        ("edit_source", &incr.values),
+        ("edit_param", &after_edit_param.values),
+        ("cold", &cold_result.values),
+    ] {
+        assert_eq!(
+            values.get(&desc_id),
+            Some(&Value::String("A gadget".to_string())),
+            "Widget.desc must be 'A gadget' after {} (Arc refactor correctness); \
+             got {:?} — likely edit_source did not install a fresh meta_map Arc",
+            label,
+            values.get(&desc_id)
+        );
+        assert_eq!(
+            values.get(&tag_id),
+            Some(&Value::String("A gadget".to_string())),
+            "Widget.tag (added cell) must be 'A gadget' after {}; \
+             got {:?} — added cells must evaluate against the refreshed meta_map",
+            label,
+            values.get(&tag_id)
+        );
+    }
+
+    // (c) No diagnostics on the edit_param path (no error cascade from a stale
+    // or dropped meta_map Arc).
+    assert!(
+        after_edit_param.diagnostics.is_empty(),
+        "edit_param must not emit diagnostics; got {:?}",
+        after_edit_param.diagnostics
+    );
+}
+
 // ── Coverage gap 5: Step-11 objectives table refresh ─────────────────────────
 
 /// Flipping a template's objective from `Minimize` to `Maximize` (while also

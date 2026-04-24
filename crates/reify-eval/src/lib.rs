@@ -19,6 +19,7 @@ mod unfold;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_types::{
@@ -263,7 +264,9 @@ pub struct Engine {
     /// Maps template name → meta key/value pairs from the template's meta block.
     /// Populated during eval() so that edit_param() and other incremental paths
     /// can resolve MetaAccess expressions without re-reading the module.
-    meta_map: HashMap<String, HashMap<String, String>>,
+    /// Stored as Arc so hot-path clones (e.g. before evaluate_let_bindings calls)
+    /// are O(1) reference-count increments rather than deep HashMap copies.
+    meta_map: Arc<HashMap<String, HashMap<String, String>>>,
     /// Template-native optimization objectives from the last eval() call.
     /// Maps template name → optimization objective declared in the template.
     /// Populated during eval() so that edit_param() can look up the objective
@@ -401,6 +404,25 @@ fn guard_state_fingerprint(
 //   engine_edit.rs      — set_param_and_invalidate, edit_param, edit_check
 //   engine_build.rs     — build, build_snapshot, tessellate_*, execute_realization_ops
 //   concurrent.rs       — prepare_concurrent_edit, apply_concurrent_edit, …
+
+/// Canonical construction point for an [`reify_expr::EvalContext`] with meta-map binding.
+///
+/// Both `&mut self` methods (which previously had to inline the construction to avoid
+/// conflicting borrows) and free-function helpers (e.g. `evaluate_let_bindings`,
+/// `compile_geometry_op`) call this function to produce a consistently-wired context.
+///
+/// # Arguments
+/// * `values`    — current cell values for the evaluation pass
+/// * `functions` — compiled user functions available in scope
+/// * `meta_map`  — entity-name → (key → string-value) meta block entries;
+///   passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
+pub(crate) fn eval_ctx_with_meta<'a>(
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    meta_map: &'a HashMap<String, HashMap<String, String>>,
+) -> reify_expr::EvalContext<'a> {
+    reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
+}
 
 #[cfg(test)]
 mod tests {
@@ -762,6 +784,89 @@ structure S {
             count1, count2,
             "eval() must replace, not extend, self.functions: count1={} count2={}",
             count1, count2
+        );
+    }
+
+    // ── eval_ctx_with_meta helper ─────────────────────────────────────────────
+
+    /// Canonical construction test: `eval_ctx_with_meta` must produce an
+    /// `EvalContext` that resolves a `MetaAccess` expression to the correct
+    /// `Value::String`.
+    ///
+    /// Expected compile-failure before step-4 impl: `eval_ctx_with_meta` does
+    /// not exist — `error[E0425]: cannot find function 'eval_ctx_with_meta'`.
+    #[test]
+    fn eval_ctx_with_meta_resolves_meta_access() {
+        use reify_types::{CompiledExpr, Value, ValueMap};
+        use std::collections::HashMap;
+
+        let values = ValueMap::new();
+        let functions: &[reify_types::CompiledFunction] = &[];
+        let mut widget_meta = HashMap::new();
+        widget_meta.insert("description".to_string(), "A gadget".to_string());
+        let mut meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        meta_map.insert("Widget".to_string(), widget_meta);
+
+        let ctx = eval_ctx_with_meta(&values, functions, &meta_map);
+
+        let expr = CompiledExpr::meta_access("Widget".into(), "description".into());
+        let result = reify_expr::eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::String("A gadget".to_string()),
+            "eval_ctx_with_meta must produce an EvalContext that resolves MetaAccess correctly"
+        );
+    }
+
+    // ── Arc-sharing invariant: Engine.meta_map ────────────────────────────────
+
+    /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
+    /// `ConcurrentEditSetup.meta_map` must share the *same* Arc as
+    /// `Engine.meta_map` (i.e. `Arc::ptr_eq` returns true, and `strong_count >= 2`).
+    ///
+    /// Expected compile-failure before step-2 impl: `Engine.meta_map` is
+    /// `HashMap<String, HashMap<String, String>>`, not `Arc<...>`, so
+    /// `Arc::ptr_eq(&engine.meta_map, ...)` is a type error.
+    #[test]
+    fn meta_map_arc_shared_with_concurrent_setup() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{literal, CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_types::{ModulePath, Type, Value, ValueCellId};
+        use std::sync::Arc;
+
+        let meta_entries = {
+            let mut m = std::collections::HashMap::new();
+            m.insert("color".to_string(), "blue".to_string());
+            m
+        };
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("Widget")
+                    .meta(meta_entries)
+                    .param("Widget", "width", Type::Real, Some(literal(Value::Real(1.0))))
+                    .build(),
+            )
+            .build();
+
+        let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine.eval(&module);
+
+        let cell = ValueCellId::new("Widget", "width");
+        let setup = engine
+            .prepare_concurrent_edit(cell, Value::Real(2.0))
+            .expect("prepare_concurrent_edit must succeed after eval");
+
+        // Before step-2 this does not compile:
+        //   error[E0308]: expected `&Arc<_>`, found `&HashMap<_, _>`
+        assert!(
+            Arc::ptr_eq(&engine.meta_map, &setup.meta_map),
+            "Engine.meta_map and ConcurrentEditSetup.meta_map must share the same Arc (not deep clone)"
+        );
+        assert!(
+            Arc::strong_count(&engine.meta_map) >= 2,
+            "strong_count must be >= 2 (engine + setup both hold a ref); got {}",
+            Arc::strong_count(&engine.meta_map)
         );
     }
 }

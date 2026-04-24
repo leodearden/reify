@@ -21,7 +21,7 @@ use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
-    guard_state_fingerprint,
+    eval_ctx_with_meta, guard_state_fingerprint,
 };
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
@@ -115,8 +115,7 @@ fn post_solver_re_eval_guard_cells(
                     if let Some(ref expr) = cell.default_expr {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(values, functions)
-                                .with_meta(meta_map)
+                            &eval_ctx_with_meta(values, functions, meta_map)
                                 .with_determinacy(snapshot_values),
                         );
                         values.insert(cell.id.clone(), val.clone());
@@ -200,12 +199,14 @@ impl Engine {
         self.active_objective_map.clear();
         // Build meta_map: template name → meta key/value pairs.
         // Only includes templates with non-empty meta blocks.
-        self.meta_map = module
-            .templates
-            .iter()
-            .filter(|t| !t.meta.is_empty())
-            .map(|t| (t.name.clone(), t.meta.clone()))
-            .collect();
+        self.meta_map = Arc::new(
+            module
+                .templates
+                .iter()
+                .filter(|t| !t.meta.is_empty())
+                .map(|t| (t.name.clone(), t.meta.clone()))
+                .collect(),
+        );
         // Use the merged function table (user functions prepended before prelude functions) so
         // that EvalContext has the full dispatch set — both user-defined overloads AND
         // non-shadowed prelude functions. This matches the SHADOWING INVARIANT: first-match-wins
@@ -278,8 +279,7 @@ impl Engine {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr }
                 | reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx =
-                        reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map);
+                    let ctx = eval_ctx_with_meta(&values, &functions, &self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Arc::new(val)
                 }
@@ -452,8 +452,7 @@ impl Engine {
                     } else if let Some(ref expr) = cell.default_expr {
                         reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &functions)
-                                .with_meta(&self.meta_map)
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                 .with_determinacy(&snapshot.values),
                         )
                     } else {
@@ -528,7 +527,7 @@ impl Engine {
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
             {
-                let meta_map = self.meta_map.clone();
+                let meta_map = Arc::clone(&self.meta_map);
                 self.evaluate_let_bindings(
                     template,
                     &mut values,
@@ -547,8 +546,7 @@ impl Engine {
                 // Evaluate the guard cell expression
                 let guard_val = reify_expr::eval_expr(
                     &group.guard_expr,
-                    &reify_expr::EvalContext::new(&values, &functions)
-                        .with_meta(&self.meta_map)
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
                 values.insert(group.guard_value_cell.clone(), guard_val.clone());
@@ -573,8 +571,7 @@ impl Engine {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map)
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                         .with_determinacy(&snapshot.values),
                                 );
                                 values.insert(cell.id.clone(), val.clone());
@@ -613,8 +610,7 @@ impl Engine {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map)
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                         .with_determinacy(&snapshot.values),
                                 );
                                 values.insert(cell.id.clone(), val.clone());
@@ -779,7 +775,7 @@ impl Engine {
             // - regular subs create {parent}.{sub}.{member} cells via elaborate_child_instance
             // Both become available only after elaboration, so re-evaluate if any subs exist.
             if !template.sub_components.is_empty() {
-                let meta_map = self.meta_map.clone();
+                let meta_map = Arc::clone(&self.meta_map);
                 self.evaluate_let_bindings(
                     template,
                     &mut values,
@@ -933,7 +929,7 @@ impl Engine {
                         };
 
                         // Re-run let binding evaluation in topological order
-                        let meta_map = self.meta_map.clone();
+                        let meta_map = Arc::clone(&self.meta_map);
                         self.evaluate_let_bindings(
                             template,
                             &mut values,
@@ -979,8 +975,7 @@ impl Engine {
                 for group in &template.guarded_groups {
                     let guard_val = reify_expr::eval_expr(
                         &group.guard_expr,
-                        &reify_expr::EvalContext::new(&values, &functions)
-                            .with_meta(&self.meta_map)
+                        &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                             .with_determinacy(&snapshot.values),
                     );
                     values.insert(group.guard_value_cell.clone(), guard_val.clone());
@@ -1062,12 +1057,14 @@ impl Engine {
         // Build meta_map from module templates (same logic as eval()).
         // This ensures MetaAccess expressions resolve correctly even when
         // eval_cached is called without a prior eval().
-        self.meta_map = module
-            .templates
-            .iter()
-            .filter(|t| !t.meta.is_empty())
-            .map(|t| (t.name.clone(), t.meta.clone()))
-            .collect();
+        self.meta_map = Arc::new(
+            module
+                .templates
+                .iter()
+                .filter(|t| !t.meta.is_empty())
+                .map(|t| (t.name.clone(), t.meta.clone()))
+                .collect(),
+        );
 
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
@@ -1215,8 +1212,7 @@ impl Engine {
                     } else if let Some(ref expr) = cell.default_expr {
                         reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &self.functions)
-                                .with_meta(&self.meta_map),
+                            &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
                         )
                     } else {
                         reify_types::Value::Undef
@@ -1311,8 +1307,7 @@ impl Engine {
 
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(&values, &self.functions)
-                            .with_meta(&self.meta_map),
+                        &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
                     );
 
                     // Build dependency trace from expression refs
@@ -1446,8 +1441,7 @@ impl Engine {
 
             let val = reify_expr::eval_expr(
                 expr,
-                &reify_expr::EvalContext::new(values, functions)
-                    .with_meta(meta_map)
+                &eval_ctx_with_meta(values, functions, meta_map)
                     .with_determinacy(&snapshot.values),
             );
             values.insert(cell_id.clone(), val.clone());
