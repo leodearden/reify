@@ -1300,6 +1300,89 @@ structure S {
     }
 }
 
+/// Regression test (Step 9 path): `edit_source(B)` where Module B *entirely removes*
+/// the `sub bolts` declaration must not leave stale cache entries for
+/// `S.bolts[i].diameter` established by `eval(A)`.
+///
+/// Mechanism: Step (9) of `edit_source` diffs `old_snapshot.graph.value_cells`
+/// against `new_snapshot.graph.value_cells` by content_hash.  Scoped cells
+/// present in the old graph but absent from the new graph (because the whole sub
+/// was removed) appear in `diff_value_cells.removed`, and Step (9) calls
+/// `self.cache.invalidate` for each.  Phase 4's main loop iterates only NEW
+/// `collection_subs` and never visits removed subs, so Step (9) is the sole
+/// responsible path here.
+///
+/// This test pins that behavior independent of any Fix-2 sweep so future changes
+/// to Phase 4 cannot silently regress the entirely-removed-sub case.
+#[test]
+fn edit_source_step9_invalidates_cache_for_entirely_removed_collection_sub() {
+    // Module A: S has a 4-instance bolt sub; eval populates cache at V_A.
+    let module_a_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    // Module B: `sub bolts` is entirely removed; no scoped cells in new graph.
+    let module_b_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S { param n : Int = 4 }
+"#;
+
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut engine = fresh_engine();
+    engine.eval(&module_a);
+
+    // Pre-edit: all 4 bolt cache entries must be present at V_A so the
+    // post-edit assertion is meaningful (not trivially satisfied by an empty
+    // cache).
+    let v_a = engine.snapshot().expect("snapshot after eval(A)").version;
+    for i in 0..4_usize {
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
+        let entry = engine
+            .cache_store()
+            .get(&bolt_node)
+            .unwrap_or_else(|| panic!("S.bolts[{}].diameter must be in cache after eval(A)", i));
+        assert_eq!(
+            entry.basis_version,
+            v_a,
+            "S.bolts[{}].diameter must be at V_A before the edit",
+            i
+        );
+    }
+
+    engine
+        .edit_source(&module_b)
+        .expect("edit_source to B (remove sub bolts entirely) must succeed");
+
+    // Post-edit: Step (9) must have invalidated all old scoped-cell cache
+    // entries via diff_value_cells.removed.  Each entry must be absent or
+    // fresh at the new snapshot version — a Some(entry) at V_A is a stale
+    // artifact that would cause correctness failures if the sub is re-added.
+    let current_version = engine
+        .snapshot()
+        .expect("snapshot after edit_source")
+        .version;
+    for i in 0..4_usize {
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
+        if let Some(entry) = engine.cache_store().get(&bolt_node) {
+            assert_eq!(
+                entry.basis_version,
+                current_version,
+                "S.bolts[{}].diameter must be absent or fresh after sub removal via Step 9; \
+                 got stale basis_version {:?}, expected {:?}",
+                i,
+                entry.basis_version,
+                current_version
+            );
+        }
+    }
+}
+
 // ── Task 2086 amendment: Fix 2 direct coverage (entirely-removed sub) ─────────
 
 /// Regression test for Fix 2: `edit_source(B)` where Module B *entirely removes*
