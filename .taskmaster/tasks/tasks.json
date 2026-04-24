@@ -46758,12 +46758,24 @@
             "crates/reify-compiler/src/conformance"
           ]
         }
+      },
+      {
+        "id": "2199",
+        "title": "Purpose reflective aggregation: populate .params/.geometric_params at runtime (or add trap-behavior eval test)",
+        "description": "Task 2181 shipped a compile-time placeholder that makes `subject.params` / `subject.geometric_params` / `subject.material_params` compile to an empty ListLiteral in purpose bodies. At runtime this means `forall p in subject.params: determined(p)` evaluates vacuously true — purposes like `manufacturing_ready` and `dimensionally_valid` in `examples/m5_purpose.ri` silently pass for any entity regardless of whether params are actually determined. Previously the compiler errored loudly; now it passes silently, which is strictly worse from a correctness standpoint. Either expand the placeholder at activation time against the bound entity's real params, or at minimum add a visible trap.",
+        "details": "**Hook point:** `crates/reify-compiler/src/expr.rs:1166-1180` (the `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS` arm emitting `CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)))`).\n\n**Two acceptable paths:**\n\n1. **Runtime expansion** (preferred, higher value): plumb the bound entity's param set into `activate_purpose` / `remap_entity` so the empty list is replaced with the real `ParamRef` list at activation time. `determined()` / `constrained()` predicates already exist; the missing piece is the mapping from \"reflective member → concrete param list of the bound entity\". Likely needs a synthetic `Type::ParamRef` variant (flagged in the FIXME at expr.rs:1171 — any runtime populator MUST update the element type in lockstep, or forall typechecks against the wrong element type).\n\n2. **Eval-layer characterization test** (minimum viable): add an integration test in `crates/reify-eval/tests/purpose_activation.rs` that activates `manufacturing_ready` against a Bracket with deliberately undetermined params and asserts the purpose currently reports Satisfied. Document the trap behavior in the test body so the silent pass is test-visible and the runtime-expansion task has a clear RED→GREEN target. Optionally emit a one-shot warning diagnostic when the empty-list placeholder is emitted, so users aren't surprised by a purpose that has no teeth.\n\n**Acceptance:**\n- Either (a) reflective aggregations in purpose bodies populate at runtime and `manufacturing_ready` against an undetermined-param entity reports Unsatisfied/Violated instead of Satisfied, OR (b) a characterization test lives at `purpose_activation.rs` that asserts the current trap behavior so the next contributor cannot silently regress the semantics.\n- FIXME at `expr.rs:1171` is resolved or tightened.\n\n**Source:** esc-2181-18 S1 (reviewer_comprehensive on task 2181)",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T09:33:12.486Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:30:56.472Z",
-      "taskCount": 2187,
+      "lastModified": "2026-04-24T09:33:12.487Z",
+      "taskCount": 2188,
       "completedCount": 1937,
       "tags": [
         "master"
