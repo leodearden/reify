@@ -46985,15 +46985,16 @@
         "description": "The integration tests added in task 387 cover (1) identical Sub requirements in A+B dedup to one missing error, and (2) mismatched structure names emit a conflict. Neither exercises the diamond-refinement path for Sub (Base declares `sub hole = Hole`, Mid1 and Mid2 both refine Base, Top refines both) — the scenario that originally motivated Param/Let's `seen_names` dedup. Add a unit test in crates/reify-compiler/src/trait_requirements.rs's `#[cfg(test)] mod tests` block analogous to the existing `collect_all_requirements_dedups_diamond_refinement` but with `RequirementKind::Sub`. Assert `ctx.requirements.iter().filter(|r| r.name == \"hole\").count() == 1` and `diags.is_empty()`. Directly exercises `seen_sub_names` via the diamond at much lower cost than a full compile pipeline test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-24T10:59:44.183Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T10:59:43.614Z",
+      "lastModified": "2026-04-24T10:59:44.183Z",
       "taskCount": 2196,
       "completedCount": 1947,
       "tags": [
