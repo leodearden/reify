@@ -46664,12 +46664,24 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-24T09:12:32.216Z"
+      },
+      {
+        "id": "2196",
+        "title": "engine_eval: unify Param-cell skip paths or document EvalResult.values partial-map invariant",
+        "description": "Task 2179 introduced an intentional asymmetry in the Param-cell loop in `crates/reify-eval/src/engine_eval.rs`:\n\n- **Rejected-override-no-default** (lines ~460-499): writes `(Undef, Undetermined)` into both `values` and `snapshot.values` so external callers never see a missing key.\n- **No-override-no-default** (lines ~394-416): silently `continue`s, leaving `values` without an entry for that cell. This preserves pre-task-2017 behaviour for untouched no-default Param cells.\n\nThis partial-map contract is a `.get().unwrap()` footgun — exactly what S4 was introduced to eliminate on the other arm. The in-code comment at engine_eval.rs:400-413 already flags this as a follow-up.\n\nResolve by picking ONE of:\n(a) Make both skip paths insert `(Undef, Undetermined)` uniformly — cross-cutting; audit downstream callers and tests that may rely on absent-key semantics first.\n(b) Document the partial-map invariant on `EvalResult.values` (doc comment describing exactly when a key may be absent) AND audit existing `.get(&id).unwrap()` callers to confirm none rely on absent-key behaviour for no-default untouched Param cells.\n\nPrefer (a) unless the audit surfaces a blocker; otherwise (b).\n\nSource: esc-2179-15 S2 (reviewer_comprehensive).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T09:13:37.924Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:12:32.216Z",
-      "taskCount": 2184,
+      "lastModified": "2026-04-24T09:13:37.924Z",
+      "taskCount": 2185,
       "completedCount": 1935,
       "tags": [
         "master"
