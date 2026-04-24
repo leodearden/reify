@@ -94,7 +94,6 @@ impl TraitDefBuilder {
                     DefaultKind::Param { .. } => "Param",
                     DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
-                    _ => unreachable!("unhandled DefaultKind variant in content-hash tag"),
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });
@@ -222,7 +221,6 @@ impl CompiledTraitBuilder {
                     DefaultKind::Param { .. } => "Param",
                     DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
-                    _ => unreachable!("unhandled DefaultKind variant in content-hash tag"),
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });
