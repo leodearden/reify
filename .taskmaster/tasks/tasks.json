@@ -46131,11 +46131,11 @@
         "description": "The 10-group fixture (10 `param uN: Bool = true` lines + 10 `where uN { let xN = 1mm }` lines) is duplicated ~4 times across perf-lock tests: T1's module_a and module_b in crates/reify-eval/tests/edit_source.rs:2326-2374, T4's module_src in crates/reify-eval/tests/guard_eval.rs:2201-2222, and the pre-existing fixture in `edit_param_phase1_and_3_skip_unchanged_guarded_groups`. Each copy is ~20 lines and they differ only in group 3's guard text. Extract a shared `fn ten_bool_guarded_groups(group3_guard_expr: &str) -> String` helper (likely in a tests/common module or directly in tests/edit_source.rs if that's where the existing pattern lives) and call it with `\"u3\"` / `\"u3 && true\"` in T1 and `\"u3\"` in T4. Eliminates ~60 lines of near-identical source literals and makes the reader-intent (\"only group 3's guard text differs\") visible in one line. Source: post-merge review on task 2138.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:29:30.838Z",
+        "updatedAt": "2026-04-24T07:09:54.541Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/common",
@@ -46318,7 +46318,7 @@
         "description": "Two related hot-path hardenings in engine_eval.rs Param handling. (1) Performance: inner loop does `contains_key(&cell.id)` followed by `get(&cell.id)`; collapse to a single `get()` match. (2) Robustness: when override validation fails AND cell has no `default_expr`, the cell is currently skipped entirely — no entry in `values` or `snapshot.values`, so downstream readers see a missing key instead of Undef. Insert Value::Undef with DeterminacyState::Undetermined and add a regression test (a struct with a no-default Param whose override is rejected, plus a downstream Let reading it) to confirm no unwrap panic. Source: esc-2017-31 (S3+S4).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -46331,7 +46331,8 @@
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-24T07:09:55.678Z"
       },
       {
         "id": "2180",
@@ -46435,7 +46436,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:09:53.101Z",
+      "lastModified": "2026-04-24T07:09:55.678Z",
       "taskCount": 2175,
       "completedCount": 1921,
       "tags": [
