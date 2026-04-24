@@ -61,7 +61,7 @@ impl AnalysisContext {
     pub fn new(source: &str, uri: &Url) -> Self {
         let module_name = module_name_from_uri(uri);
         let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
-        let compiled = reify_compiler::compile(&parsed);
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
         let check_result = engine.check(&compiled);
