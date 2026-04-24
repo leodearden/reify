@@ -2202,6 +2202,104 @@ mod tests {
         );
     }
 
+    /// Phase-contract test: `check_phase_build_available_defaults_map` excludes an
+    /// annotated-Let advertisement when its name is in `pass1_skipped` (task 1952 step-4).
+    ///
+    /// ## Invariant: advertisement mirrors injection
+    ///
+    /// The injection loop skips annotated-Let cell emission when `pass1_skipped.contains(name)`.
+    /// For correctness, the advertisement map must also omit the corresponding `(name, Let)`
+    /// entry — otherwise a `RequirementKind::Let` lookup could match a phantom advertisement
+    /// that has no injected cell backing it, producing a spurious "requirement satisfied"
+    /// answer.
+    ///
+    /// This test pins the suppression guard: `cell_type.is_some() && pass1_skipped.contains(name)`
+    /// returns `None` (excluded). The companion positive-control assertion below confirms that
+    /// the same fixture WITHOUT `pass1_skipped` DOES produce `Some(&Type::length())`, so the
+    /// test isolates exactly the new guard's effect.
+    ///
+    /// ## Fixture
+    ///
+    /// `ctx.defaults = [annotated Let "x":Length]` — the Let that Pass 1 would have skipped.
+    /// `pass1_skipped = {"x"}` — simulates the Pass 1 race loss.
+    ///
+    /// ## Assertions
+    ///
+    /// - With `pass1_skipped = {"x"}`: `available_defaults.get(("x", Let)) == None`.
+    /// - Positive control (empty pass1_skipped): `available_defaults.get(("x", Let)) == Some(&Length)`.
+    ///
+    /// **COMPILE-TRIPWIRE**: fails to compile until step-5 adds `pass1_skipped: &HashSet<String>`
+    /// as the new third parameter of `check_phase_build_available_defaults_map`.
+    #[test]
+    fn check_phase_build_available_defaults_map_excludes_annotated_let_for_pass1_skipped_name() {
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // type_expr not consulted — DefaultKind carries cell_type directly
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Let {
+                cell_type: Some(Type::length()), // annotated Let — Pass 1 processes this
+                let_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
+            HashMap::new();
+        // Positive control: without pass1_skipped, the annotated Let IS advertised.
+        let empty_pass1_skipped: HashSet<String> = HashSet::new();
+        let pass2_skipped: HashSet<String> = HashSet::new();
+        let pass2_compile_errors: HashSet<String> = HashSet::new();
+
+        // COMPILE-TRIPWIRE: `&empty_pass1_skipped` is the new 3rd parameter — fails to compile
+        // until step-5 adds `pass1_skipped: &HashSet<String>` to the function signature.
+        let positive_control = check_phase_build_available_defaults_map(
+            &ctx,
+            &inferred_let_exprs,
+            &empty_pass1_skipped,
+            &pass2_skipped,
+            &pass2_compile_errors,
+        );
+        assert_eq!(
+            positive_control.get(&("x".to_string(), AvailableDefaultKind::Let)),
+            Some(&Type::length()),
+            "positive control: without pass1_skipped, annotated Let 'x' must be advertised \
+             as Some(&Type::length()); the guard must not over-suppress"
+        );
+
+        // Negative test: with pass1_skipped = {"x"}, the annotated Let must be suppressed.
+        let mut pass1_skipped: HashSet<String> = HashSet::new();
+        pass1_skipped.insert("x".to_string());
+
+        let available_defaults = check_phase_build_available_defaults_map(
+            &ctx,
+            &inferred_let_exprs,
+            &pass1_skipped,
+            &pass2_skipped,
+            &pass2_compile_errors,
+        );
+        assert_eq!(
+            available_defaults.get(&("x".to_string(), AvailableDefaultKind::Let)),
+            None,
+            "annotated Let 'x' must be excluded from available_defaults when its name is \
+             in pass1_skipped — advertisement mirrors injection (no phantom entry for a \
+             cell that will not be injected)"
+        );
+    }
+
     /// Phase-contract test for `check_phase_check_members_against_requirements`.
     ///
     /// Verifies that the helper emits a "missing required member" diagnostic when a
