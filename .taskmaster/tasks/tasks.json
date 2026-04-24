@@ -25152,11 +25152,13 @@
             "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/src/traits.rs",
             "crates/reify-compiler/tests/deprecated_use_tests.rs",
+            "crates/reify-lsp/src/hover.rs",
             "crates/reify-syntax/src/lib.rs",
             "crates/reify-syntax/src/ts_parser.rs",
             "crates/reify-syntax/tests/trait_tests.rs",
             "crates/reify-types/src/lib.rs",
-            "crates/reify-types/src/spanned_ident.rs"
+            "crates/reify-types/src/spanned_ident.rs",
+            "crates/reify-types/tests/exports.rs"
           ],
           "files": [
             "crates/reify-types/src/traits.rs",
@@ -46500,7 +46502,9 @@
       "completedCount": 1923,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T07:16:53.321Z",
+      "description": "Tasks for master context"
     }
   }
 }
