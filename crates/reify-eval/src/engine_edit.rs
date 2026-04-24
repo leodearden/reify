@@ -2263,7 +2263,7 @@ mod tests {
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{deactivate_if_not_auto, reelaborate_guarded_group};
+    use super::{deactivate_if_not_auto, guard_value_unchanged, reelaborate_guarded_group};
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -2979,5 +2979,49 @@ mod tests {
                 Some(&(Value::Undef, DeterminacyState::Undetermined))
             );
         }
+    }
+
+    // ── guard_value_unchanged ─────────────────────────────────────────────
+
+    /// (a) Snapshot contains guard_cell with Bool(true); new_val is Bool(true)
+    /// → guard is unchanged → returns true.
+    #[test]
+    fn guard_value_unchanged_returns_true_when_value_matches() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+
+        assert!(guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(true)));
+    }
+
+    /// (b) Snapshot contains guard_cell with Bool(true); new_val is Bool(false)
+    /// → guard changed → returns false.
+    #[test]
+    fn guard_value_unchanged_returns_false_when_value_differs() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+
+        assert!(!guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(false)));
+    }
+
+    /// (c) Snapshot does NOT contain guard_cell → old value is absent → returns false.
+    #[test]
+    fn guard_value_unchanged_returns_false_when_cell_absent_from_snapshot() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        assert!(!guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(true)));
+    }
+
+    /// (d) snapshot_values is None (no prior eval state) → returns false.
+    #[test]
+    fn guard_value_unchanged_returns_false_when_snapshot_is_none() {
+        let guard_cell = ValueCellId::new("E", "guard");
+
+        assert!(!guard_value_unchanged(None, &guard_cell, &Value::Bool(true)));
     }
 }
