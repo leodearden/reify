@@ -141,6 +141,11 @@ export function Viewport(props: ViewportProps) {
       requestRender();
     });
 
+    // One-shot auto-fit: CAD defaults frame a ~10m scene, but most .ri files
+    // are small (mm-scale). Without an auto-fit, the model is invisible on
+    // first open. Fire once when the first non-empty mesh state arrives.
+    let hasAutoFit = false;
+
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
@@ -157,6 +162,12 @@ export function Viewport(props: ViewportProps) {
         bounds.expandByObject(mesh);
       }
       adjustClipping(bounds);
+
+      if (!hasAutoFit && meshManager.getSceneMeshes().size > 0) {
+        selection.fitToView();
+        hasAutoFit = true;
+      }
+
       requestRender();
     });
 
