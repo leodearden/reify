@@ -8499,7 +8499,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "blocked",
+        "status": "cancelled",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -8511,10 +8511,16 @@
             "crates/reify-compiler/src/expr.rs",
             "crates/reify-compiler/tests/constraint_inst_tests.rs",
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Review: Compiler constraint instantiation polish (20 suggestions from task 197)"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-24T12:03:25.074Z"
+        "updatedAt": "2026-04-24T12:04:15.013Z"
       },
       {
         "id": "395",
@@ -47151,7 +47157,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T12:03:25.075Z",
+      "lastModified": "2026-04-24T12:04:15.013Z",
       "taskCount": 2202,
       "completedCount": 1956,
       "tags": [
