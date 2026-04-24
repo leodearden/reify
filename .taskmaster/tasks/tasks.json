@@ -47221,12 +47221,24 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-24T14:12:16.741Z"
+      },
+      {
+        "id": "2216",
+        "title": "reify-eval: extract build_meta_map helper to dedupe 3 Arc rebuild sites",
+        "description": "The 5-line `Arc::new(module.templates.iter().filter(|t| !t.meta.is_empty()).map(|t| (t.name.clone(), t.meta.clone())).collect())` incantation is duplicated verbatim in three sibling modules after task 397's Arc refactor. Extract a helper so future meta_map shape changes (interning, filter rules) only land in one place.",
+        "details": "## Scope\n\nAdd a small helper in crates/reify-eval/src/lib.rs alongside\n`eval_ctx_with_meta`:\n\n```rust\npub(crate) fn build_meta_map(\n    module: &CompiledModule,\n) -> Arc<HashMap<String, HashMap<String, String>>> {\n    Arc::new(\n        module\n            .templates\n            .iter()\n            .filter(|t| !t.meta.is_empty())\n            .map(|t| (t.name.clone(), t.meta.clone()))\n            .collect(),\n    )\n}\n```\n\nReplace the three duplicate call sites:\n- crates/reify-eval/src/engine_eval.rs ~line 203\n- crates/reify-eval/src/engine_eval.rs ~line 1062\n- crates/reify-eval/src/engine_edit.rs ~line 1442\n\n(Line numbers per escalation esc-397-72; verify against current HEAD.)\n\n## Acceptance\n\n- `git grep \"filter(|t| !t.meta.is_empty())\" crates/reify-eval/src` returns\n  only the helper.\n- cargo test -p reify-eval passes.\n\n## Source\n\nFollow-up from task 397 review (esc-397-72 suggestion 2).",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T14:13:03.597Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T14:12:16.744Z",
-      "taskCount": 2204,
+      "lastModified": "2026-04-24T14:13:03.597Z",
+      "taskCount": 2205,
       "completedCount": 1962,
       "tags": [
         "master"
