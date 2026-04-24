@@ -47021,15 +47021,18 @@
         "description": "In crates/reify-compiler/src/trait_requirements.rs the Param/Let dedup block (lines ~122-149) and the new Sub dedup block (lines ~150-188) share nearly identical shape: look up in a `seen_*` map, emit a conflict diagnostic on mismatch, `continue` on dedup, otherwise insert and push. They differ only in which `seen_*` field they consult, the diagnostic wording, and the value type (`Type` vs `String`). Factor the pattern into a helper on `MergeContext` (or a free function) that takes a mutable reference to the seen-map, the name, the new value, and a closure that builds the diagnostic on mismatch — e.g. `try_dedup_or_conflict<V: PartialEq + Clone>(&mut HashMap<String, (V, String)>, name, value, trait_name, span, conflict_msg_builder) -> ControlFlow`. Collapses ~50 lines to ~20 and eliminates the copy-paste divergence risk for a future `RequirementKind::Collection` (or similar).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T11:42:15.250Z",
+        "updatedAt": "2026-04-24T12:00:01.116Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/trait_requirements.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "872c8a9140cf08390f4db7b2833d12ed6b17fabb"
+          }
         }
       },
       {
@@ -47148,14 +47151,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T11:52:32.659Z",
+      "lastModified": "2026-04-24T12:00:01.116Z",
       "taskCount": 2202,
-      "completedCount": 1955,
+      "completedCount": 1956,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T11:55:39.300Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
