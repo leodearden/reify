@@ -1929,3 +1929,123 @@ fn three_prelude_collision_emits_two_chained_warnings() {
         bar.factor
     );
 }
+
+// ── task-1931: intra-module duplicate prelude units — no nonsense collision warning ──
+
+/// Regression test: when a (malformed) prelude `CompiledModule` contains two
+/// `CompiledUnit` entries with the same name from the same module, the seeding
+/// loop must NOT emit a `'mod_a' and 'mod_a'`-style collision warning. That
+/// message is nonsense — it names the same module twice, implying a cross-module
+/// conflict that doesn't exist.
+///
+/// Intra-module duplicate unit declarations are rejected earlier by `compile()`
+/// before they can reach `CompiledModule.units`. The cross-prelude warning only
+/// makes sense for genuine cross-module pairs. This test bypasses `compile()` by
+/// hand-constructing the malformed `CompiledModule` directly.
+#[test]
+fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() {
+    use reify_compiler::{CompiledModule, CompiledUnit};
+    use reify_types::ContentHash;
+
+    // Hand-construct a malformed prelude module with two CompiledUnit entries
+    // both named 'foo' — bypassing compile() which would reject the duplicate.
+    // First entry: factor 1.0; second entry: factor 2.0 (last-wins in registry).
+    let malformed_mod = CompiledModule {
+        path: ModulePath::single("mod_a"),
+        imports: vec![],
+        enum_defs: vec![],
+        functions: vec![],
+        trait_defs: vec![],
+        fields: vec![],
+        compiled_purposes: vec![],
+        templates: vec![],
+        units: vec![
+            CompiledUnit {
+                name: "foo".to_string(),
+                is_pub: true,
+                dimension: DimensionVector::LENGTH,
+                factor: 1.0,
+                offset: None,
+                content_hash: ContentHash::of_str("foo-1"),
+            },
+            CompiledUnit {
+                name: "foo".to_string(),
+                is_pub: true,
+                dimension: DimensionVector::LENGTH,
+                factor: 2.0,
+                offset: None,
+                content_hash: ContentHash::of_str("foo-2"),
+            },
+        ],
+        type_aliases: vec![],
+        constraint_defs: vec![],
+        pragmas: vec![],
+        diagnostics: vec![],
+        content_hash: ContentHash::of_str(""),
+    };
+
+    // Parse a trivial user module that references `foo`.
+    let user_parsed = reify_syntax::parse(
+        "unit bar : Length = 1foo",
+        ModulePath::single("user_module"),
+    );
+    assert!(
+        user_parsed.errors.is_empty(),
+        "parse errors in user: {:?}",
+        user_parsed.errors
+    );
+    let user_module = compile_with_prelude(&user_parsed, &[malformed_mod]);
+
+    // (a) No Warning diagnostic containing the nonsense substring "'mod_a' and 'mod_a'".
+    //     Current (unfixed) code emits: "prelude unit 'foo' declared in both 'mod_a' and 'mod_a'; last-wins"
+    let nonsense_warnings: Vec<_> = user_module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Warning
+                && d.message.contains("'mod_a' and 'mod_a'")
+        })
+        .collect();
+    assert!(
+        nonsense_warnings.is_empty(),
+        "no nonsense \"'mod_a' and 'mod_a'\" warning should fire for intra-module dup, got: {:?}",
+        nonsense_warnings
+    );
+
+    // (b) Stronger: no Warning about 'foo' with 'declared in both' at all —
+    //     intra-module dups are silent in the seeding loop; that responsibility
+    //     belongs to compile().
+    let foo_collision_warns: Vec<_> = user_module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Warning
+                && d.message.contains("foo")
+                && d.message.contains("declared in both")
+        })
+        .collect();
+    assert!(
+        foo_collision_warns.is_empty(),
+        "no 'declared in both' warning for 'foo' should fire for intra-module dup, got: {:?}",
+        foo_collision_warns
+    );
+
+    // (c) User compilation still succeeds — the guard doesn't regress the happy path.
+    let errors = errors_only(&user_module);
+    assert!(
+        errors.is_empty(),
+        "user compilation should succeed (no errors), got: {:?}",
+        errors
+    );
+
+    // (d) Last-wins semantics still apply in the registry — second 'foo' (factor 2.0) wins.
+    //     The fix changes only the diagnostic emission, not the registry overwrite.
+    let bar = user_module.units.iter().find(|u| u.name == "bar");
+    assert!(bar.is_some(), "'bar' should be compiled successfully");
+    let bar = bar.unwrap();
+    assert!(
+        (bar.factor - 2.0).abs() < common::UNIT_EPSILON,
+        "bar's SI factor should be 2.0 (last-wins: second foo wins), got {}",
+        bar.factor
+    );
+}
