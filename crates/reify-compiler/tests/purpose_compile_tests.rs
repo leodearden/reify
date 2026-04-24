@@ -548,3 +548,125 @@ purpose dimensionally_valid(part : Structure) {
         other => panic!("expected Quantifier constraint expression, got {:?}", other),
     }
 }
+
+// ── Step 3 (task-2181): regular member access on StructureRef subject ────────
+
+/// Test that `subject.mass` in a purpose body compiles to a remappable `ValueRef`.
+///
+/// Fixture: `purpose lightweight(subject : Structure) { constraint subject.mass > 0
+///           minimize subject.mass }`.
+///
+/// Assertions:
+/// (a) no "member access not yet supported" diagnostic is emitted;
+/// (b) `constraints[0].expr` is a `BinOp(Gt, left, _)` where `left` is a
+///     `ValueRef(id)` with `id.entity == "lightweight"` (purpose name, pre-remap)
+///     and `id.member == "mass"`, and `left.result_type == Type::Real`;
+/// (c) `objective` is `Some(Minimize(expr))` where `expr.kind` is
+///     `ValueRef(id)` with `id.entity == "lightweight"` and `id.member == "mass"`.
+///
+/// RED: fails before step 4 because the catch-all emits "member access not yet supported".
+#[test]
+fn compile_purpose_regular_member_compiles_as_remappable_valueref() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose lightweight(subject : Structure) {
+    constraint subject.mass > 0
+    minimize subject.mass
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // (a) No "member access not yet supported" diagnostic
+    let unsupported: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .collect();
+    assert!(
+        unsupported.is_empty(),
+        "expected no 'member access not yet supported' diagnostics, got: {:?}",
+        unsupported
+    );
+
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "lightweight");
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    // (b) constraint is BinOp(Gt, ValueRef(lightweight.mass : Real), _)
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(
+                *op,
+                BinOp::Gt,
+                "expected BinOp::Gt for 'subject.mass > 0', got {:?}",
+                op
+            );
+            // left must be ValueRef with entity == purpose name and member == "mass"
+            match &left.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.entity, "lightweight",
+                        "ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                        id.entity
+                    );
+                    assert_eq!(
+                        id.member, "mass",
+                        "ValueRef member must be 'mass', got {:?}",
+                        id.member
+                    );
+                    assert_eq!(
+                        left.result_type,
+                        Type::Real,
+                        "expected result_type == Type::Real for subject.mass, got {:?}",
+                        left.result_type
+                    );
+                }
+                other => panic!(
+                    "expected ValueRef for left side of constraint BinOp, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "expected BinOp constraint expression, got {:?}",
+            other
+        ),
+    }
+
+    // (c) objective is Some(Minimize(ValueRef(lightweight.mass)))
+    match &purpose.objective {
+        Some(OptimizationObjective::Minimize(expr)) => {
+            match &expr.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.entity, "lightweight",
+                        "objective ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                        id.entity
+                    );
+                    assert_eq!(
+                        id.member, "mass",
+                        "objective ValueRef member must be 'mass', got {:?}",
+                        id.member
+                    );
+                }
+                other => panic!(
+                    "expected ValueRef for minimize objective expr, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "expected Some(Minimize(_)) for objective, got {:?}",
+            other
+        ),
+    }
+}
