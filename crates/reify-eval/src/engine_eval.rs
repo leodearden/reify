@@ -356,9 +356,7 @@ impl Engine {
                         version: VersionId(version_id),
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
-                } else if cell.kind == ValueCellKind::Param
-                    && (cell.default_expr.is_some() || self.param_overrides.contains_key(&cell.id))
-                {
+                } else if cell.kind == ValueCellKind::Param {
                     // Param cells: an entry in `self.param_overrides` takes
                     // precedence over evaluating `default_expr`. This mirrors
                     // edit_source's seeding rule ("override wins for Param
@@ -367,11 +365,17 @@ impl Engine {
                     // subsequent `eval()` instead of being silently rebuilt
                     // from the module default.
                     //
-                    // If there is no default_expr we only enter this branch
-                    // when an override exists (so the cell gets seeded from
-                    // the override); this preserves the pre-task-2017
-                    // behaviour of silently skipping a no-default Param with
-                    // no override.
+                    // Single lookup: the `get` below is the single source of
+                    // truth for both the existence check and value retrieval.
+                    // This eliminates the earlier double-lookup pattern
+                    // (`contains_key` in the outer `else if` predicate + `get`
+                    // inside the match arm) — mirroring the same refactor
+                    // already applied in `engine_edit.rs`.
+                    //
+                    // The `None` arm early-continues (BEFORE recording the
+                    // journal `Started` event) when there is also no
+                    // `default_expr`, preserving the pre-task-2017 silent-skip
+                    // semantics for untouched no-default Param cells.
                     //
                     // Validation mirrors Engine::edit_param via the shared
                     // `validate_param_override` helper (task 2017 amend-pass):
@@ -387,7 +391,16 @@ impl Engine {
                     // Orphan purging runs once, before this loop (see the
                     // retain call after Snapshot::from_compiled_module).
                     let override_val = match self.param_overrides.get(&cell.id) {
-                        None => None,
+                        None => {
+                            // No override stored: only proceed if a default
+                            // exists — otherwise silently skip this cell
+                            // (preserves the pre-task-2017 behaviour for
+                            // untouched no-default Param cells).
+                            if cell.default_expr.is_none() {
+                                continue;
+                            }
+                            None
+                        }
                         Some(v) => match validate_param_override(v, &cell.cell_type) {
                             Ok(()) => Some(v.clone()),
                             Err(ParamOverrideRejection::TypeKindMismatch) => {
