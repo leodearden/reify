@@ -3465,3 +3465,56 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
         probes
     );
 }
+
+// ── Invariant-check tests ──────────────────────────────────────────────────
+
+/// `edit_source` must panic (in debug builds) on a malformed module whose
+/// `ValueCellDecl.cell_type` is `Type::TypeParam`, an unrepresentable variant
+/// that has no `Value` counterpart.
+///
+/// This mirrors the defensive invariant already present on the `Engine::eval`
+/// cold-start path (engine_eval.rs:247-249).  Without the corresponding fix in
+/// engine_edit.rs the call either returns normally or panics later with an
+/// unrelated message — the assertion must fire immediately after
+/// `Snapshot::from_compiled_module`.
+#[test]
+#[cfg(debug_assertions)]
+fn edit_source_panics_on_unrepresentable_cell_type() {
+    use std::panic;
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+    use reify_types::{ModulePath, Type};
+
+    // Satisfy the NotInitialized precondition with a valid initial eval.
+    let mut engine = fresh_engine();
+    let good = bracket_compiled_module();
+    engine.eval(&good);
+
+    // Build a malformed module that bypasses the compiler: a single ValueCellDecl
+    // whose cell_type = Type::TypeParam("T"), a variant that has no Value
+    // counterpart and triggers the invariant assertion.
+    let bad_module = CompiledModuleBuilder::new(ModulePath::single("bad"))
+        .template(
+            TopologyTemplateBuilder::new("Bad")
+                .param("Bad", "x", Type::TypeParam("T".into()), None)
+                .build(),
+        )
+        .build();
+
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let _ = engine.edit_source(&bad_module);
+    }));
+    assert!(
+        result.is_err(),
+        "expected edit_source to panic on unrepresentable cell_type but it returned normally",
+    );
+    let err = result.unwrap_err();
+    let msg = err
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic>");
+    assert!(
+        msg.contains("unrepresentable cell_type"),
+        "panic message did not contain expected substring \"unrepresentable cell_type\": {msg}",
+    );
+}
