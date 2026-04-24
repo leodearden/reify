@@ -49,6 +49,10 @@ pub(crate) struct MergeContext {
     seen_let_hashes: HashMap<String, (ContentHash, String)>,
     /// Let binding names that already have a conflict diagnostic (emit at most 1 per name).
     seen_let_conflict_names: HashSet<String>,
+    /// Sub requirement names already collected — prevents duplicate `MissingSub` errors when
+    /// two or more traits require the same sub-component name (e.g. `sub hole = Hole()`).
+    /// Follows the same pattern as `seen_names` for Param/Let requirements.
+    seen_sub_names: HashSet<String>,
 }
 
 impl MergeContext {
@@ -111,35 +115,44 @@ pub(crate) fn collect_all_requirements(
 
     // Collect requirements from this trait, checking for conflicts.
     for req in &compiled_trait.required_members {
-        let expected_type = match &req.kind {
-            RequirementKind::Param(ty) | RequirementKind::Let(ty) => Some(ty.clone()),
-            _ => None,
-        };
-
-        if let Some(expected_type) = &expected_type {
-            if let Some((existing_type, existing_trait)) = ctx.seen_names.get(&req.name) {
-                if existing_type != expected_type {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "conflicting trait requirements for '{}': \
-                             trait '{}' requires {}, trait '{}' requires {}",
-                            req.name, existing_trait, existing_type, trait_name, expected_type
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            span,
-                            format!("conflict between '{}' and '{}'", existing_trait, trait_name),
-                        )),
-                    );
+        match &req.kind {
+            RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
+                if let Some((existing_type, existing_trait)) = ctx.seen_names.get(&req.name) {
+                    if existing_type != expected_type {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "conflicting trait requirements for '{}': \
+                                 trait '{}' requires {}, trait '{}' requires {}",
+                                req.name, existing_trait, existing_type, trait_name, expected_type
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                format!(
+                                    "conflict between '{}' and '{}'",
+                                    existing_trait, trait_name
+                                ),
+                            )),
+                        );
+                    }
+                    continue; // Deduplicated
                 }
-                continue; // Deduplicated
+                ctx.seen_names.insert(
+                    req.name.clone(),
+                    (expected_type.clone(), trait_name.to_string()),
+                );
+                ctx.requirements.push(req.clone());
             }
-            ctx.seen_names.insert(
-                req.name.clone(),
-                (expected_type.clone(), trait_name.to_string()),
-            );
+            RequirementKind::Sub(_) => {
+                // Dedup Sub requirements by name: two traits requiring `sub hole = Hole()`
+                // should produce at most one `MissingSub` error (not one per trait).
+                // Same pattern as `seen_names` for Param/Let — insert returns false when
+                // the name was already present, meaning we skip the duplicate.
+                if !ctx.seen_sub_names.insert(req.name.clone()) {
+                    continue; // Already collected a Sub requirement for this name
+                }
+                ctx.requirements.push(req.clone());
+            }
         }
-
-        ctx.requirements.push(req.clone());
     }
 
     // Collect defaults from this trait, deduplicating by name.
