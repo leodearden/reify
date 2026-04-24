@@ -46404,10 +46404,11 @@
         "description": "In crates/reify-eval/src/engine_edit.rs, `edit_param`'s Phase 4 collection re-elaboration remove loop (~lines 891-900) has the same missing `self.cache.invalidate(&NodeId::Value(scoped_id))` call that task 2086 fixes for `edit_source`. The remove loop evicts scoped cells from `new_snapshot.graph.value_cells`, `new_snapshot.values`, and `values` but never touches `self.cache`. A subsequent `edit_param` that re-grows the same collection sub could find stale `CachedResult` entries from a prior incarnation at the same scoped index. Mirror the invalidate-cache call added by task 2086, and add a grow→shrink→regrow regression test via edit_param. Source: esc-2086-29 (dependency_discovered).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-24T07:09:50.190Z"
       },
       {
         "id": "2185",
@@ -46434,7 +46435,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:09:49.383Z",
+      "lastModified": "2026-04-24T07:09:50.190Z",
       "taskCount": 2175,
       "completedCount": 1921,
       "tags": [
