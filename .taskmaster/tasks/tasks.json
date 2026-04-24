@@ -47307,15 +47307,16 @@
         "description": "Extend `tests/edit_source.rs::edit_source_panics_on_unrepresentable_cell_type` (lines 3480-3522) to iterate over both unrepresentable variants `Type::TypeParam(\"T\".into())` and `Type::Geometry`, matching the style of the in-crate unit test `invariant_tests::panics_on_unrepresentable_cell_types`. Today only Type::TypeParam is exercised, leaving a drift risk between the variant list in `assert_value_cell_types_representable` and the edit-path coverage.",
         "details": "Suggestion from task 2132 review (reviewer_comprehensive, test_coverage_gap).\n\nCurrent test (tests/edit_source.rs:3495-3501) builds a single bad_module with Type::TypeParam(\"T\"). Wrap the bad-module construction + engine seeding + panic::catch_unwind block in `for ty in [Type::TypeParam(\"T\".into()), Type::Geometry] { ... }` so both variants exercise the edit-path assertion.\n\nNote: the engine may need to be re-created inside the loop since edit_source mutates state; confirm by rerunning.\n\nSource: engine_eval.rs:60 matches both `Type::TypeParam(_)` and `Type::Geometry` — pairing the integration test with the guard list prevents the variant list and the test from drifting.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-24T14:44:25.614Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T14:44:23.360Z",
+      "lastModified": "2026-04-24T14:44:25.614Z",
       "taskCount": 2209,
       "completedCount": 1964,
       "tags": [
