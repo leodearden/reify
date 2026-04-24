@@ -17041,12 +17041,12 @@
       {
         "id": "763",
         "title": "Add From<&CompiledUnit> for UnitEntry conversion",
-        "description": "The prelude-unit seeding loop in compile_with_prelude constructs UnitEntry field-by-field from CompiledUnit. This is fragile: if UnitEntry gains a new field, the manual copy will silently compile with a default rather than carrying the field through.\n\nFix: Implement `From<&CompiledUnit> for UnitEntry` (using `SourceSpan::empty(0)` for span) and use it in the seeding loop. This makes the conversion canonical and ensures new fields are automatically carried through.\n\nLocations: crates/reify-compiler/src/lib.rs:2805-2813 (seeding loop), UnitEntry/CompiledUnit struct definitions.\n\nmemory_hints: search \"UnitEntry CompiledUnit struct fields\" for current struct shapes.",
-        "details": "",
-        "testStrategy": "",
+        "description": "The prelude-unit seeding loop in compile_with_prelude constructs UnitEntry field-by-field from CompiledUnit. This is fragile: if UnitEntry gains a new field, the manual copy will silently compile with a default rather than carrying the field through.\n\nFix: Implement `From<&CompiledUnit> for UnitEntry` (using `SourceSpan::empty(0)` for span) and use it in the seeding loop. This makes the conversion canonical and ensures new fields are automatically carried through.\n\nLocations: crates/reify-compiler/src/lib.rs:2805-2813 (seeding loop), UnitEntry/CompiledUnit struct definitions.\n\nMemory hints: search \"UnitEntry CompiledUnit struct fields\" for current struct shapes. Attach memory hints: entities [\"UnitEntry\", \"CompiledUnit\"]; queries [\"UnitEntry CompiledUnit struct fields conversion\", \"From trait impl seeding loop compile_with_prelude\"].",
         "status": "in-progress",
         "dependencies": [],
         "priority": "low",
+        "details": "Ensure that the `From` trait implementation correctly maps all fields from `CompiledUnit` to `UnitEntry`, including any new fields that may be added in the future.",
+        "testStrategy": "Create unit tests to verify that all fields are correctly transferred from `CompiledUnit` to `UnitEntry` using the `From` trait implementation. Include tests for any new fields added to ensure they are carried through automatically.",
         "subtasks": [],
         "metadata": {
           "files": [
@@ -17057,9 +17057,19 @@
             "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/src/units.rs",
             "crates/reify-compiler/tests/unit_registry_tests.rs"
-          ]
-        },
-        "updatedAt": "2026-04-24T07:37:45.423Z"
+          ],
+          "memory_hints": {
+            "entities": [
+              "UnitEntry",
+              "CompiledUnit"
+            ],
+            "queries": [
+              "UnitEntry CompiledUnit struct fields conversion",
+              "From trait impl seeding loop compile_with_prelude"
+            ]
+          },
+          "_causation_id": "ab53b07c-1edc-4e1f-bc6c-4a4c4bb11af9"
+        }
       },
       {
         "id": "764",
@@ -47187,7 +47197,9 @@
       "completedCount": 1959,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T12:30:34.782Z",
+      "description": "Tasks for master context"
     }
   }
 }
