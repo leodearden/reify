@@ -47118,11 +47118,16 @@
         "description": "Replace the free-form `context: &str` parameter on `emit_ice_unresolved` (crates/reify-compiler/src/ice.rs:22) with a small typed enum so adding a new ICE category is a conscious type change rather than a free-form string that can produce grammatically broken messages.\n\nProposed shape:\n```\npub(crate) enum UnresolvedKind { Name, GuardedMember }\nimpl UnresolvedKind { fn as_phrase(&self) -> &'static str { ... } }\n```\n\nUpdate both callsites (entity.rs structure/port pass-2 paths and guards.rs guarded-member pass-2 path) and the unit tests in `ice.rs` accordingly. Today there are only two callers (`\"name\"`, `\"guarded member\"`); the enum locks the wording set so a new caller cannot silently produce e.g. `\"unresolved the composite in pass 2\"`.\n\nSource: post-merge review suggestion on Task 1368 (api_design / reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T11:39:57.452Z"
+        "updatedAt": "2026-04-24T12:08:56.742Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "4208f5fb436539e741f3492037180f44446bdbf9"
+          }
+        }
       },
       {
         "id": "2212",
@@ -47157,9 +47162,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T12:04:15.013Z",
+      "lastModified": "2026-04-24T12:08:56.754Z",
       "taskCount": 2202,
-      "completedCount": 1956,
+      "completedCount": 1957,
       "tags": [
         "master"
       ]
