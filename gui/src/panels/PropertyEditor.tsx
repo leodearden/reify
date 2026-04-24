@@ -159,6 +159,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
 
   return (
     <div data-testid="property-editor" class={styles.container}>
+      <div class="panel-title" data-testid="panel-title-parameters">Parameters</div>
       <input
         type="text"
         placeholder="Filter properties..."

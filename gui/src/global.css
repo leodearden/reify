@@ -26,3 +26,19 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* Shared panel-title bar at the top of each side-panel sub-region. */
+.panel-title {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--reify-text-secondary, #a6adc8);
+  background: var(--reify-surface, #2a2a3a);
+  border-bottom: 1px solid var(--reify-border, #45475a);
+  user-select: none;
+}
