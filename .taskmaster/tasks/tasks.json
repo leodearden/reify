@@ -46954,12 +46954,46 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-24T10:58:38.686Z"
+      },
+      {
+        "id": "2205",
+        "title": "Introduce diagnostic codes to replace wording-coupled test assertions",
+        "description": "Tests currently assert substring matches on human-readable diagnostic messages (e.g. qualified_access_compile_tests.rs:281-298 pins the phrase \"does not implement trait\"). Any rewording of the conformance error breaks these tests without catching a behavioral regression. Introduce a `DiagnosticCode` enum (e.g. `TraitNotImplemented`, `ConflictingTraitRequirements`, etc.) attached to `Diagnostic`, then migrate tests from substring matching to `d.code == DiagnosticCode::TraitNotImplemented`. This is a cross-cutting infra change: define the enum and wire the most commonly asserted-on diagnostics first, then migrate tests incrementally. Note: only the canonical \"does not implement trait\" substring assertion is in place today (task 387); broader rollout comes as tests are touched.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T10:59:42.743Z"
+      },
+      {
+        "id": "2206",
+        "title": "Extract dedup-or-conflict helper for trait requirement collection",
+        "description": "In crates/reify-compiler/src/trait_requirements.rs the Param/Let dedup block (lines ~122-149) and the new Sub dedup block (lines ~150-188) share nearly identical shape: look up in a `seen_*` map, emit a conflict diagnostic on mismatch, `continue` on dedup, otherwise insert and push. They differ only in which `seen_*` field they consult, the diagnostic wording, and the value type (`Type` vs `String`). Factor the pattern into a helper on `MergeContext` (or a free function) that takes a mutable reference to the seen-map, the name, the new value, and a closure that builds the diagnostic on mismatch — e.g. `try_dedup_or_conflict<V: PartialEq + Clone>(&mut HashMap<String, (V, String)>, name, value, trait_name, span, conflict_msg_builder) -> ControlFlow`. Collapses ~50 lines to ~20 and eliminates the copy-paste divergence risk for a future `RequirementKind::Collection` (or similar).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2207",
+        "title": "Add diamond-refinement unit test for Sub requirement dedup",
+        "description": "The integration tests added in task 387 cover (1) identical Sub requirements in A+B dedup to one missing error, and (2) mismatched structure names emit a conflict. Neither exercises the diamond-refinement path for Sub (Base declares `sub hole = Hole`, Mid1 and Mid2 both refine Base, Top refines both) — the scenario that originally motivated Param/Let's `seen_names` dedup. Add a unit test in crates/reify-compiler/src/trait_requirements.rs's `#[cfg(test)] mod tests` block analogous to the existing `collect_all_requirements_dedups_diamond_refinement` but with `RequirementKind::Sub`. Assert `ctx.requirements.iter().filter(|r| r.name == \"hole\").count() == 1` and `diags.is_empty()`. Directly exercises `seen_sub_names` via the diamond at much lower cost than a full compile pipeline test.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T10:58:38.686Z",
-      "taskCount": 2193,
+      "lastModified": "2026-04-24T10:59:42.744Z",
+      "taskCount": 2196,
       "completedCount": 1947,
       "tags": [
         "master"
