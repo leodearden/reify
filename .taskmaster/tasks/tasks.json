@@ -47137,7 +47137,13 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T11:50:31.094Z"
+        "updatedAt": "2026-04-24T11:50:31.094Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/purpose_compile_tests.rs"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -47147,7 +47153,9 @@
       "completedCount": 1955,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T11:55:39.300Z",
+      "description": "Tasks for master context"
     }
   }
 }
