@@ -12,11 +12,17 @@
 //! reviewer suggestion S3). The unique test `eval_clears_stale_purpose_state`
 //! is preserved in §2 below.
 //!
-//! NOTE: Two feature categories remain deferred (post task-2181):
+//! NOTE: Three feature categories remain deferred (post task-2181 / task-2200):
 //!   - `.geometric_params` filtering (runtime expansion of reflective-aggregation
 //!     elements against the bound entity; compile-time empty-list wiring is now done)
 //!   - `forall p in subject.params: determined(p)` evaluated at runtime (vacuously
 //!     true today due to empty-list emission; runtime expansion is a follow-up task)
+//!   - Member-type resolution for concrete subjects: task-2200 added compile-time
+//!     existence validation (unknown member → Error diagnostic) for concrete subject
+//!     types, but member types still fall back to `Type::Real`. The generic
+//!     `subject : Structure` wildcard still has no template to validate against,
+//!     so `subject.bogus` on a wildcard subject compiles silently — a known
+//!     limitation documented by the characterization test in purpose_compile_tests.rs.
 //!
 //! Compile-time `subject.<param>` member-access wiring (task-2181) is now complete;
 //! see §5 below for the remap_entity integration test.
