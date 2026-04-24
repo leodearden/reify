@@ -36,6 +36,12 @@ fn all_examples_parse_and_compile_with_stdlib() {
 
     let paths = discover_ri_files();
     let total = paths.len();
+    assert!(
+        total >= 40,
+        "examples_smoke discovered only {} .ri files — expected ~42; \
+         did the examples/ directory move or get renamed?",
+        total
+    );
 
     for path in &paths {
         let filename = path
@@ -46,7 +52,7 @@ fn all_examples_parse_and_compile_with_stdlib() {
         if skip.contains(filename.as_str()) {
             continue;
         }
-        smoke_one(path, &mut failures);
+        smoke_one(path, &filename, &mut failures);
     }
 
     if !failures.is_empty() {
@@ -97,6 +103,14 @@ fn discover_ri_files() -> Vec<PathBuf> {
         .filter_map(|entry| {
             let entry = entry.expect("IO error reading examples dir entry");
             let path = entry.path();
+            // Guard: assert no subdirectories exist so future restructuring
+            // surfaces this limitation loudly rather than silently losing files.
+            assert!(
+                !path.is_dir(),
+                "examples_smoke: unexpected subdirectory '{}' under examples/; \
+                 discover_ri_files is non-recursive — update it or escalate",
+                path.display()
+            );
             if path.extension().and_then(|e| e.to_str()) == Some("ri") {
                 Some(path)
             } else {
@@ -116,15 +130,12 @@ fn discover_ri_files() -> Vec<PathBuf> {
 /// Parse `path`, compile it with the stdlib prelude, and append an entry to
 /// `failures` if either parse errors or Error-severity compile diagnostics are
 /// found.  Returns without appending when the file is clean.
-fn smoke_one(path: &Path, failures: &mut Vec<(String, String)>) {
+///
+/// `filename` is the `file_name()` string computed by the caller; passing it
+/// in avoids a second extraction of the same data.
+fn smoke_one(path: &Path, filename: &str, failures: &mut Vec<(String, String)>) {
     use reify_compiler::compile_with_stdlib;
     use reify_types::{ModulePath, Severity};
-
-    let filename = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
 
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
         panic!("examples_smoke: cannot read '{}': {}", filename, e)
@@ -144,9 +155,9 @@ fn smoke_one(path: &Path, failures: &mut Vec<(String, String)>) {
         let msgs: Vec<String> = parsed
             .errors
             .iter()
-            .map(|e| format!("{:?}", e))
+            .map(|e| e.message.clone())
             .collect();
-        failures.push((filename, msgs.join("\n")));
+        failures.push((filename.to_owned(), msgs.join("\n")));
         return;
     }
 
@@ -160,6 +171,6 @@ fn smoke_one(path: &Path, failures: &mut Vec<(String, String)>) {
         .collect();
 
     if !errors.is_empty() {
-        failures.push((filename, errors.join("\n")));
+        failures.push((filename.to_owned(), errors.join("\n")));
     }
 }
