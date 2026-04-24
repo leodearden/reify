@@ -890,7 +890,11 @@ const App: Component = () => {
 
   function handleSideResize(delta: number) {
     const ch = sidePanelRef?.clientHeight ?? 0;
-    const maxHeight = ch > 0 ? ch - MIN_PANEL_HEIGHT - 4 : Infinity;
+    // Reserve the min floors of the other rows so the splitter can't silently
+    // shrink them past visibility. Matches the `minmax(..., 1fr)` values
+    // in the sidePanel grid-template-rows.
+    const RESERVED_OTHER = 120 + 80 + (chatOpen() ? 160 : 0) + 4;
+    const maxHeight = ch > 0 ? ch - RESERVED_OTHER : Infinity;
     setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
@@ -1029,7 +1033,7 @@ const App: Component = () => {
               ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
-              style={{ 'grid-template-rows': `minmax(120px, 1fr) ${propertyHeight()}px 4px 1fr ${chatOpen() ? '1fr' : '0'}` }}
+              style={{ 'grid-template-rows': `minmax(120px, 1fr) ${propertyHeight()}px 4px minmax(80px, 1fr) ${chatOpen() ? 'minmax(160px, 1fr)' : '0'}` }}
             >
               <DesignTree
                 tree={entityTree()}

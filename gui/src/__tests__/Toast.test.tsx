@@ -80,13 +80,11 @@ describe('Toast auto-dismiss', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onDismiss after 5000ms for error type', () => {
+  it('does not auto-dismiss error toasts (user must close them manually)', () => {
     const onDismiss = vi.fn();
     render(() => <Toast message="Fail" type="error" onDismiss={onDismiss} />);
-    vi.advanceTimersByTime(3000);
+    vi.advanceTimersByTime(60_000);
     expect(onDismiss).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(2000);
-    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it('calls onDismiss after 3000ms for info type', () => {

@@ -27,10 +27,12 @@ export const Toast: Component<ToastProps> = (props) => {
   let timerId: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
-    const timeout = props.type === 'error' ? 5000 : 3000;
+    // Errors stay up until the user dismisses them — parse/compile error
+    // messages are long and users need time to read them.
+    if (props.type === 'error') return;
     timerId = setTimeout(() => {
       props.onDismiss();
-    }, timeout);
+    }, 3000);
   });
 
   onCleanup(() => {
