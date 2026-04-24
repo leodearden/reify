@@ -1156,14 +1156,47 @@ pub(crate) fn compile_expr_guarded(
                     //     entity_ref)` which rewrites this ref to
                     //     `ValueCellId(entity_ref, member)` — exactly the bound
                     //     entity's member cell.
-                    //   - Type::Real is a compile-time fallback because
-                    //     entity_kind == "Structure" is a generic wildcard with no
-                    //     matching template in template_registry.  For concrete
-                    //     subject types a future task can thread template_registry
-                    //     into the scope to resolve the actual member type.
-                    //     Limitation: dimension-mismatch cases like
-                    //     `subject.width > 0mm` could misclassify; no such case
-                    //     exists in m5_purpose.ri or the S5 test fixture.
+                    //   - Concrete-subject validation (task-2200): when the subject
+                    //     type is a named structure (not the generic "Structure"
+                    //     wildcard) and template_registry is available, verify that
+                    //     `member` is declared in the template's value_cells.  If
+                    //     not, emit "has no member" and return a Type::Error poison
+                    //     so downstream checks (e.g., `subject.bogus > 0`) do not
+                    //     cascade.
+                    //   - Wildcard path: when entity_kind == "Structure" or
+                    //     registry lookup fails (no template by that name), fall
+                    //     through silently — the generic form binds at activation
+                    //     time and has no static template to validate against.
+                    //   - Type::Real is a compile-time fallback; member-type
+                    //     resolution (e.g., Length vs. Mass) is a separate
+                    //     follow-up task and is NOT addressed here.
+                    let struct_name = match &compiled_obj.result_type {
+                        Type::StructureRef(name) => name.clone(),
+                        _ => unreachable!("outer guard ensures StructureRef"),
+                    };
+                    if struct_name != "Structure" {
+                        if let Some(registry) = scope.template_registry {
+                            if let Some(template) = registry.get(struct_name.as_str()) {
+                                if !template
+                                    .value_cells
+                                    .iter()
+                                    .any(|vc| vc.id.member == *member)
+                                {
+                                    return make_poison_literal(
+                                        diagnostics,
+                                        Diagnostic::error(format!(
+                                            "structure '{}' has no member '{}'",
+                                            struct_name, member
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            expr.span,
+                                            "unknown member",
+                                        )),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     let member_id = ValueCellId::new(&id.entity, member);
                     return CompiledExpr::value_ref(member_id, Type::Real);
                 }
