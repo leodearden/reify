@@ -6,7 +6,7 @@
 //! without a wrapper drift silently.  This test walks the directory and catches
 //! every file at once.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Absolute path to the workspace `examples/` directory, resolved at compile
 /// time from this crate's manifest directory (two levels up).
@@ -78,5 +78,88 @@ fn skip_set_entries_exist_under_examples_dir() {
             reason,
             EXAMPLES_DIR,
         );
+    }
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// Return all `*.ri` files under `EXAMPLES_DIR`, sorted by filename for
+/// deterministic output.
+fn discover_ri_files() -> Vec<PathBuf> {
+    let dir = std::fs::read_dir(EXAMPLES_DIR).unwrap_or_else(|e| {
+        panic!(
+            "examples_smoke: cannot read examples directory '{}': {}",
+            EXAMPLES_DIR, e
+        )
+    });
+
+    let mut paths: Vec<PathBuf> = dir
+        .filter_map(|entry| {
+            let entry = entry.expect("IO error reading examples dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("ri") {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    paths.sort_by(|a, b| {
+        a.file_name()
+            .unwrap_or_default()
+            .cmp(b.file_name().unwrap_or_default())
+    });
+    paths
+}
+
+/// Parse `path`, compile it with the stdlib prelude, and append an entry to
+/// `failures` if either parse errors or Error-severity compile diagnostics are
+/// found.  Returns without appending when the file is clean.
+fn smoke_one(path: &Path, failures: &mut Vec<(String, String)>) {
+    use reify_compiler::compile_with_stdlib;
+    use reify_types::{ModulePath, Severity};
+
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!("examples_smoke: cannot read '{}': {}", filename, e)
+    });
+
+    // Derive a module name from the file stem (e.g. "m5_geometry_flange").
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let module_path = ModulePath::single(&stem);
+
+    // Parse phase — accumulate, do NOT panic on errors.
+    let parsed = reify_syntax::parse(&source, module_path);
+    if !parsed.errors.is_empty() {
+        let msgs: Vec<String> = parsed
+            .errors
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect();
+        failures.push((filename, msgs.join("\n")));
+        return;
+    }
+
+    // Compile phase — filter to Error severity only.
+    let compiled = compile_with_stdlib(&parsed);
+    let errors: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+
+    if !errors.is_empty() {
+        failures.push((filename, errors.join("\n")));
     }
 }
