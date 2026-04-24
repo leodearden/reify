@@ -406,6 +406,40 @@ mod tests {
         }
     }
 
+    // --- task-2176 step-5: stateful diagnostics resolve stdlib types ---
+
+    #[test]
+    fn stateful_diagnostics_resolve_stdlib_material_and_rigid() {
+        // Same stdlib-referencing source as the stateless test; drives the
+        // stateful compute_diagnostics_with_state() path.
+        let source = r#"structure S : Rigid {
+    param density: Real = 7850
+    param name: String = "steel"
+    param volume: Real = 1.0
+    param centroid_x: Real = 0.0
+    param centroid_y: Real = 0.0
+    param centroid_z: Real = 0.0
+    param moment_of_inertia: Real = 1.0
+    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 2e11)
+}"#;
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, source, &test_uri());
+        let unresolved_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && (d.message.contains("unresolved type: Material")
+                        || d.message.contains("unresolved trait"))
+            })
+            .collect();
+        assert!(
+            unresolved_errors.is_empty(),
+            "stateful pipeline: stdlib types Material and trait Rigid should resolve; \
+             got errors: {unresolved_errors:?}"
+        );
+    }
+
     // --- task-2176 step-3: stateless diagnostics resolve stdlib types ---
 
     #[test]
