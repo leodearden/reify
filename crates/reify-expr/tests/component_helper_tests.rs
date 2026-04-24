@@ -3,7 +3,6 @@
 //! through the public eval_expr API.
 
 use reify_expr::{EvalContext, eval_expr};
-#[allow(unused_imports)]
 use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueMap};
 
 // ── Helpers ────────────────────────────────────────────────────────────────
