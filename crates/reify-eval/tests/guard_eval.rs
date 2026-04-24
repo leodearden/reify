@@ -3,6 +3,8 @@
 //! Tests for evaluating guarded groups: conditional member activation,
 //! else branches, undef guards, and schema re-elaboration.
 
+mod common;
+
 use std::collections::HashMap;
 
 use reify_eval::Engine;
@@ -15,6 +17,8 @@ use reify_test_support::{
 use reify_types::*;
 
 use reify_compiler::{CompiledConstraint, ValueCellDecl, ValueCellKind, Visibility};
+
+use common::ten_bool_guarded_groups;
 
 /// Helper to create a ValueCellDecl for tests.
 fn make_param_decl(entity: &str, member: &str, cell_type: Type, default: Value) -> ValueCellDecl {
@@ -2080,29 +2084,8 @@ fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
 /// Task 2140 — cross-phase dedup via `phase1_reelaborated` set.
 #[test]
 fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
-    let module_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where u3 { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
-    let module = parse_and_compile(module_src);
+    let module_src = ten_bool_guarded_groups("u3");
+    let module = parse_and_compile(&module_src);
 
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None);
@@ -2198,29 +2181,8 @@ fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
 /// Task 2138 — edit_param Phase-1-only perf lock (T4).
 #[test]
 fn edit_param_phase1_fires_but_skips_when_same_value_edit_on_structure_controlling_cell() {
-    let module_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where u3 { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
-    let module = parse_and_compile(module_src);
+    let module_src = ten_bool_guarded_groups("u3");
+    let module = parse_and_compile(&module_src);
 
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None);
