@@ -46319,7 +46319,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/param_override_rejection_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "2180",
@@ -46330,7 +46340,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/param_override_rejection_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "2181",
@@ -46341,7 +46361,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/purpose_compile_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "2182",
