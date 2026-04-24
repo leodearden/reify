@@ -889,10 +889,6 @@ purpose check(subject : Widget) {
 #[test]
 fn compile_purpose_wildcard_structure_subject_bogus_member_still_silent() {
     let source = r#"
-structure Bracket {
-    param width : Length = 80mm
-}
-
 purpose check(subject : Structure) {
     constraint subject.bogus > 0
 }
