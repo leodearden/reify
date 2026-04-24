@@ -1,5 +1,26 @@
 use super::*;
 
+/// The kind of item that could not be resolved in pass 2, for use with
+/// [`emit_ice_unresolved`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnresolvedKind {
+    /// A named entity (structure parameter, port member, etc.).
+    Name,
+    /// A guarded member binding.
+    GuardedMember,
+}
+
+impl UnresolvedKind {
+    /// Returns the grammatical phrase that fits
+    /// `"unresolved {phrase} '{name}' in pass 2"`.
+    pub(crate) fn as_phrase(&self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::GuardedMember => "guarded member",
+        }
+    }
+}
+
 /// Emit a pass-2 "unresolved name" ICE diagnostic and return `Type::Real` as
 /// the established fallback.
 ///
