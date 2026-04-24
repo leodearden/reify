@@ -71,6 +71,25 @@ use reify_types::{
 ///
 /// Performs name resolution, type checking, and expression compilation.
 /// Equivalent to `compile_with_prelude(parsed, &[])`.
+///
+/// # Warning
+///
+/// This function compiles with **no prelude** — it will **not** resolve any
+/// standard library definitions. In particular, the nine previously
+/// hard-coded units (`mm`, `cm`, `m`, `in`, `deg`, `rad`, `kg`, `g`, `s`),
+/// standard traits (`MaterialSpec`, `Physical`, etc.), and all stdlib enum
+/// types are absent from the compilation environment. Source code that
+/// references any of those names will produce unresolved-name diagnostics.
+///
+/// This entry point is intended only for **prelude-module bootstrapping**:
+/// compiling a module whose output will itself be used as a prelude, at a
+/// point where no compiled prelude exists yet.
+///
+/// For all other use cases prefer:
+///
+/// * [`compile_with_stdlib`] — full standard library prelude (recommended
+///   default for user modules)
+/// * [`compile_with_prelude`] — caller-supplied prelude modules
 pub fn compile(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
     compile_with_prelude(parsed, &[])
 }
