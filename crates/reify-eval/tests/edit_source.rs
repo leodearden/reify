@@ -68,6 +68,31 @@ fn fresh_eval(module_b: &CompiledModule) -> EvalResult {
     engine.eval(module_b)
 }
 
+/// Run a role-flip probe scenario end-to-end: parse both sources, run
+/// `eval(A) + edit_source(B)` on one fresh engine, run cold `eval(B)` on
+/// another fresh engine, cross-check the two value maps agree, and return
+/// `(cold_result, probes)` for the caller's per-test positive-anchor and
+/// perf-lock assertions.
+#[allow(dead_code)]
+fn run_probe_scenario(src_a: &str, src_b: &str) -> (EvalResult, usize) {
+    let module_a = parse_and_compile(src_a);
+    let module_b = parse_and_compile(src_b);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+    let probes = incremental.last_role_flip_probes();
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    assert_values_match(&incr.values, &cold_result.values);
+
+    (cold_result, probes)
+}
+
 // ── Precondition tests ─────────────────────────────────────────────────────
 
 /// `edit_source` requires a prior `eval()` to establish the baseline snapshot,
@@ -3120,22 +3145,7 @@ fn edit_source_role_flip_probe_deferred_when_every_guard_value_changes() {
         let x1 = 1mm
     }
 }"#;
-    let module_a = parse_and_compile(module_a_src);
-    let module_b = parse_and_compile(module_b_src);
-
-    // Incremental: eval(A) then edit_source(B).
-    let mut incremental = fresh_engine();
-    incremental.eval(&module_a);
-    let incr = incremental
-        .edit_source(&module_b)
-        .expect("edit_source must succeed");
-
-    // Cold baseline: fresh eval(B).
-    let mut cold = fresh_engine();
-    let cold_result = cold.eval(&module_b);
-
-    // (a) Cross-check: incremental and cold must agree on all cells.
-    assert_values_match(&incr.values, &cold_result.values);
+    let (cold_result, probes) = run_probe_scenario(module_a_src, module_b_src);
 
     // (b) Positive anchor: x0 and x1 must be Undef in cold (guards now false).
     // Prevents a "both wrong" false-pass on the counter assertion below.
@@ -3162,7 +3172,6 @@ fn edit_source_role_flip_probe_deferred_when_every_guard_value_changes() {
     //         on every edit_source (the pre-refactor behaviour that task 2094
     //         eliminates; probe is back behind sc_dirty short-circuit failure).
     // >  1 → memoization broke: detect_role_flip called more than once per edit.
-    let probes = incremental.last_role_flip_probes();
     assert_eq!(
         probes,
         0,
