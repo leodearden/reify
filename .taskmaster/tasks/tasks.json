@@ -41868,7 +41868,7 @@
         "description": "Delete the `phantom_let_advertisement_contract_for_future_parser_extension` integration test in `crates/reify-compiler/tests/trait_merge_tests.rs` (~1404-1522, ~120 lines).\n\nThe test is explicitly self-documented as non-distinguishing: \"all three assertions pass unconditionally today\" and \"cannot distinguish the patched binary from the unpatched one\". The behavioral assertions are tautologies against the current code — it provides zero regression coverage for the Option B fix landed in task 1951 (the in-crate unit test `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name` in conformance.rs is what actually gates the behavior).\n\nAssertion 3 in particular is a pure wording pin on a diagnostic that is never emitted in the reachable universe, so it will continue to pass even if the Option B guard is deleted. Meanwhile the test locks in source-level details (trait/member/type names, compile-cleanly expectations) that can break for unrelated reasons.\n\nAction:\n- Delete the test function (and any test-only imports it solely uses).\n- Leave a short breadcrumb comment in `conformance.rs` near the pass2_skipped guard pointing to the in-crate unit test, so a future contributor extending the parser to make `RequirementKind::Let` reachable knows where the behavioral coverage lives.\n- When `RequirementKind::Let` becomes parser-reachable, write the regression test then in the reachable form (likely follow-up to esc-1951-6 / task 1951's design_concern escalation).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestion 2).\n\nMemory hints: search \"task 1951 forward-compat placeholder phantom Let advertisement test\"; the test was added in commit 7351ae1c0 (worktree 1951 branch).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41879,7 +41879,7 @@
             "crates/reify-compiler/tests/trait_merge_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-23T18:08:18.377Z"
+        "updatedAt": "2026-04-24T07:13:55.517Z"
       },
       {
         "id": "1980",
@@ -46455,15 +46455,16 @@
         "description": "Three related cleanups from review of task 2115.\n\n(1) Strip TDD-step narration doc-comments in crates/reify-compiler/tests/let_scope_tests.rs:1813-1821, 1859-1866, 1945-1948 — the fix landed in the same commit so the comments are now false (\"asserts tests fail when in fact they pass\"), and the embedded line-number references (e.g. \"line 1370\") will rot. Rewrite to describe the behavior under test (e.g. \"pins that a geometry-let realization's span is carried over from LetDecl.span rather than being defaulted to (0,0)\").\n\n(2) Tighten the `slice.contains(\"g\")` assertions at let_scope_tests.rs:1836-1840, 1893-1897, 1951-1955 — single-letter \"g\" appears in many unrelated tokens ('structure', 'cylinder', 'length'), so a span that accidentally includes other source still passes. Use `contains(\"param g\")` or assert the slice equals a known expected subrange of the source.\n\n(3) In crates/reify-test-support/src/builders/topology.rs:202 and 220, two RealizationDecl builder methods still construct `span: SourceSpan::new(0, 0)`. If downstream diagnostic-label tests ever rely on a meaningful span, they will silently label at byte 0. Either add a `span: Option<SourceSpan>` / `with_span()` helper, or add an intent-of-sentinel comment (matches project's silent-defaults anti-pattern flagged in Apr 3 review).\n\nSource: esc-2115-21 (S1+S2+S3).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-24T07:13:55.140Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:13:53.876Z",
+      "lastModified": "2026-04-24T07:13:55.518Z",
       "taskCount": 2176,
       "completedCount": 1922,
       "tags": [
