@@ -46374,11 +46374,11 @@
         "description": "engine_edit.rs:327-355 inlines the same type-kind + Scalar-dimension guard chain that `validate_param_override` in engine_admin.rs now encapsulates. Diff on task 2017 explicitly documents this as a follow-up. Adapt `ParamOverrideRejection` → `EngineError` in edit_param and call the shared validator so the two enforcement sites cannot drift (future guards like Tensor shape or List element-type would otherwise need to be added twice). Source: esc-2017-31 (S2).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:17:18.974Z",
+        "updatedAt": "2026-04-24T09:14:05.684Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_admin.rs",
@@ -46685,14 +46685,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:13:37.924Z",
+      "lastModified": "2026-04-24T09:14:05.684Z",
       "taskCount": 2185,
       "completedCount": 1935,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T09:14:00.348Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
