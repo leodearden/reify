@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 use reify_types::{CompiledFunction, Diagnostic, GeometryHandleId, ValueMap};
 
+use crate::eval_ctx_with_meta;
+
 /// Minimum meaningful distance in meters (1 picometer).
 ///
 /// Distances with `|v| < DEGENERATE_LENGTH_M` cannot produce a well-defined
@@ -52,7 +54,7 @@ pub(crate) fn eval_named_arg(
     match args.iter().find(|(n, _)| n == name) {
         Some((_, expr)) => Some(reify_expr::eval_expr(
             expr,
-            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+            &eval_ctx_with_meta(values, functions, meta_map),
         )),
         None => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -121,7 +123,7 @@ pub(crate) fn eval_all_args_to_f64(
         .map(|(name, expr)| {
             let v = reify_expr::eval_expr(
                 expr,
-                &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                &eval_ctx_with_meta(values, functions, meta_map),
             );
             match v.as_f64() {
                 Some(f) if f.is_finite() => Some(f),
@@ -332,7 +334,7 @@ pub(crate) fn compile_geometry_op(
                     for (name, expr) in args.iter().filter(|(n, _)| n.starts_with("face_")) {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                            &eval_ctx_with_meta(values, functions, meta_map),
                         );
                         // Arm ordering matters: -Infinity satisfies both !is_finite() AND < 0.0;
                         // the non-finite arm must come first so -Infinity is classified as
