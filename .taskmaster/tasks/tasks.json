@@ -8298,7 +8298,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -8315,7 +8315,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-23T21:04:27.952Z"
+        "updatedAt": "2026-04-24T07:09:43.340Z"
       },
       {
         "id": "388",
@@ -25142,11 +25142,11 @@
         "description": "TraitDecl.refinements is currently `Vec<String>` without individual spans. The deprecation warning for trait refinements (L4177-4191 in lib.rs) uses `trait_decl.span` (the entire child trait declaration) rather than pointing at the specific `: Base` refinement reference. This makes the warning highlight too much code.\n\nChange `refinements: Vec<String>` to `refinements: Vec<SpannedIdent>` (or similar span-bearing type) in reify-types, update the parser in reify-syntax to capture per-refinement spans, and update the compiler to use the precise span in the deprecation warning.\n\nmemory_hints: search \"TraitDecl refinements Vec<String>\" in reify-types; get_entity \"TraitDecl\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T18:41:57.078Z",
+        "updatedAt": "2026-04-24T07:09:43.526Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
@@ -46431,15 +46431,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-23T21:04:27.952Z",
-      "taskCount": 2164,
+      "lastModified": "2026-04-24T07:09:43.527Z",
+      "taskCount": 2175,
       "completedCount": 1921,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T06:51:16.228Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-24T07:09:17.263Z"
+      ]
     }
   }
 }
