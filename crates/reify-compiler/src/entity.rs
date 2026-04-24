@@ -679,7 +679,7 @@ pub(crate) fn compile_entity(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or_else(|| emit_ice_unresolved("name", &param.name, param.span, diagnostics));
+                    .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &param.name, param.span, diagnostics));
 
                 // Solid-typed params with a geometry-call default are lowered as
                 // realizations (third pass), not as scalar ValueCellDecls.
@@ -1070,7 +1070,7 @@ pub(crate) fn compile_entity(
                             let cell_type = scope
                                 .resolve(&composite_name)
                                 .map(|(_, ty)| ty.clone())
-                                .unwrap_or_else(|| emit_ice_unresolved("name", &composite_name, param.span, diagnostics));
+                                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &composite_name, param.span, diagnostics));
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 

@@ -30,22 +30,24 @@ impl UnresolvedKind {
 /// was violated, which is a compiler bug, not a user error.
 ///
 /// The emitted diagnostic message is:
-/// `"internal compiler error: unresolved {context} '{name}' in pass 2"`
+/// `"internal compiler error: unresolved {phrase} '{name}' in pass 2"`
+/// where `{phrase}` is determined by [`UnresolvedKind::as_phrase`],
 /// with a label `"ICE: name should have been registered in pass 1"` at `span`.
 ///
 /// Callers use this as:
 /// ```text
-/// .unwrap_or_else(|| emit_ice_unresolved("name", &param.name, param.span, diagnostics))
+/// .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &param.name, param.span, diagnostics))
 /// ```
 pub(crate) fn emit_ice_unresolved(
-    context: &str,
+    kind: UnresolvedKind,
     name: &str,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
+    let phrase = kind.as_phrase();
     diagnostics.push(
         Diagnostic::error(format!(
-            "internal compiler error: unresolved {context} '{name}' in pass 2"
+            "internal compiler error: unresolved {phrase} '{name}' in pass 2"
         ))
         .with_label(DiagnosticLabel::new(
             span,
