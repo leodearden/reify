@@ -396,6 +396,21 @@ impl Engine {
                             // exists — otherwise silently skip this cell
                             // (preserves the pre-task-2017 behaviour for
                             // untouched no-default Param cells).
+                            //
+                            // NOTE — asymmetry with the rejected-override path:
+                            // When an override EXISTS but is rejected below, the
+                            // `else` branch (line ~446) writes (Undef,
+                            // Undetermined) into both maps so external callers
+                            // never see a missing key. But when NO override was
+                            // ever stored (this arm), the cell is still skipped
+                            // silently, leaving `values` without an entry for
+                            // that cell. This pre-task-2017 baseline is preserved
+                            // deliberately — extending it here would be a
+                            // cross-cutting behaviour change with broad blast
+                            // radius across existing tests. A follow-up task
+                            // should unify the two skip paths (either both insert
+                            // Undef, or document the invariant in EvalResult's
+                            // type doc so callers know when a key may be absent).
                             if cell.default_expr.is_none() {
                                 continue;
                             }
@@ -462,6 +477,16 @@ impl Engine {
                             cell.id.clone(),
                             (Value::Undef, DeterminacyState::Undetermined),
                         );
+                        // Cache recording is intentionally omitted here.
+                        // The pre-refactor code reached `continue` before any
+                        // `self.cache.record_evaluation(...)` call, so no cache
+                        // entry was ever written for this path. Adding one now
+                        // would change incremental-eval semantics: `try_fast_path`
+                        // in `eval_cached` could start serving this Undef entry
+                        // across subsequent versions, potentially masking the
+                        // underlying source-level problem (rejected override) or
+                        // triggering stale-cache paths on module re-edits. Cache
+                        // semantics for this path are deferred to a follow-up task.
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
