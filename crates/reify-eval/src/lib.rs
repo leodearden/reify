@@ -415,7 +415,7 @@ fn guard_state_fingerprint(
 /// * `values`    — current cell values for the evaluation pass
 /// * `functions` — compiled user functions available in scope
 /// * `meta_map`  — entity-name → (key → string-value) meta block entries;
-///                 passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
+///   passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
 pub(crate) fn eval_ctx_with_meta<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
