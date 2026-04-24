@@ -604,19 +604,15 @@ pub(super) fn check_phase_build_available_defaults_map(
                     // Guard: unannotated names without an annotation must have a
                     // cache entry (pass2_compile_errors and pass2_skipped names were
                     // excluded above; anything else means the Pass 2 contract is broken).
+                    let key = (name.to_string(), AvailableDefaultKind::Let);
                     debug_assert!(
-                        cell_type.is_some()
-                            || inferred_let_exprs
-                                .contains_key(&(name.to_string(), AvailableDefaultKind::Let)),
+                        cell_type.is_some() || inferred_let_exprs.contains_key(&key),
                         "unannotated Let '{name}' absent from inferred_let_exprs (composite key \
                          (name, Let)) and not in pass2_skipped or pass2_compile_errors — Pass 2 \
                          contract broken; Type::Real fallback would re-introduce the \
                          phantom-type-mismatch bug fixed by task 1951 Option B"
                     );
-                    let resolved = resolve_let_advertised_type(
-                        cell_type,
-                        inferred_let_exprs.get(&(name.to_string(), AvailableDefaultKind::Let)),
-                    );
+                    let resolved = resolve_let_advertised_type(cell_type, inferred_let_exprs.get(&key));
                     (AvailableDefaultKind::Let, resolved)
                 }
                 DefaultKind::Constraint(_) => return None,
