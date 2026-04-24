@@ -36973,10 +36973,15 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "gui/src/stores/viewStore.ts",
-            "gui/src/utils/viewPersistence.ts",
+            "gui/src/stores/viewStateStore.ts",
+            "gui/src/stores/viewPersistence.ts",
+            "gui/src/stores/sidecarPersistence.ts",
+            "gui/src/stores/fuzzyPathMatcher.ts",
             "gui/src/bridge.ts",
-            "gui/src/__tests__/viewPersistence.test.ts"
+            "gui/src/__tests__/viewPersistence.test.ts",
+            "gui/src/__tests__/sidecarPersistence.test.ts",
+            "gui/src/__tests__/fuzzyPathMatcher.test.ts",
+            "gui/src/__tests__/viewStateStore.test.ts"
           ],
           "modules": [
             "gui/src-tauri/src/commands.rs",
@@ -46501,7 +46506,9 @@
       "completedCount": 1923,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T07:17:51.383Z",
+      "description": "Tasks for master context"
     }
   }
 }
