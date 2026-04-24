@@ -46775,7 +46775,20 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance"
-          ]
+          ],
+          "memory_hints": {
+            "entity_refs": [
+              "Task 2158",
+              "CompilationScope",
+              "checker.rs",
+              "conformance"
+            ],
+            "queries": [
+              "Pass 2 compile error suppression cascade order-dependent traversal",
+              "CompilationScope context carrier reify-compiler",
+              "conformance checker Pass 2 docstring cascade suppression"
+            ]
+          }
         }
       },
       {
