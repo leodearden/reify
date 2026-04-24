@@ -26,6 +26,56 @@
 
 use super::*;
 
+/// Returns `true` iff `expr` should be lowered as a geometry realization (a
+/// `GeomRef` or equivalent solid-geometry node) rather than as a plain value
+/// cell.
+///
+/// Two expression forms are recognised:
+///
+/// - **`FunctionCall`** — `true` when the callee name is a built-in geometry
+///   function (`is_geometry_function`) *and* no user function with the same name
+///   exists in `functions`. The `functions` slice is queried via
+///   `.iter().any(…)` and is therefore **order-independent** here. The
+///   first-match-wins user-vs-prelude shadow rule that determines which entries
+///   appear in `functions` is applied upstream by `merge_prelude_functions`
+///   (`lib.rs`).
+///
+/// - **`Ident`** — `true` when the identifier name is already present in
+///   `known_geometry_lets`. No `functions` shadow check is needed: an identifier
+///   is syntactically distinct from a function call, so a user-defined function
+///   cannot collide with a geometry let via this branch.
+///
+/// # Ordering invariant for `known_geometry_lets`
+///
+/// `known_geometry_lets` is built **incrementally** by the caller. It grows as
+/// each member is visited in `compile_entity`'s pass 1 (entity.rs) and inside
+/// `register_guarded_names` / `compile_guarded_members` (guards.rs).
+/// Consequently, whether an `Ident` expression is classified as a geometry let
+/// depends on *when* it is evaluated relative to the aliased name being
+/// inserted:
+///
+/// - If a let's value is `Ident("a")` and `"a"` is already in
+///   `known_geometry_lets`, the let is classified as geometry and its own name
+///   is appended — transitive chaining works forward.
+/// - If `"a"` has not yet been inserted (the alias appears before its referent
+///   in member order), the let is **not** classified as geometry, even if `"a"`
+///   is eventually inserted when that later member is processed.
+///
+/// This intentional conservative behaviour is pinned by
+/// `let_scope_tests::cyclic_ident_alias_does_not_crash`, whose inline comment
+/// notes "the forward-pass incremental set never adds either to
+/// known_geometry_lets".
+///
+/// Contrast with scope *name resolution*, which is fully order-free: all names
+/// are registered in pass 1 before any expression is compiled in pass 2, so
+/// an expression in pass 2 may freely reference a name declared later in the
+/// member list.
+///
+/// This predicate is the inner check used by `is_solid_geometry_param` and is
+/// called from four sites that must stay consistent: the `compile_entity`
+/// pre-pass (entity.rs), the `compile_entity` main member loop (entity.rs),
+/// `register_guarded_names` (guards.rs), and `compile_guarded_members`
+/// (guards.rs).
 pub(crate) fn is_geometry_let(
     expr: &reify_syntax::Expr,
     functions: &[CompiledFunction],
