@@ -3175,3 +3175,190 @@ fn edit_source_role_flip_probe_deferred_when_every_guard_value_changes() {
         probes
     );
 }
+
+/// Tests the `has_added_guard_member` short-circuit path of the deferred
+/// role-flip probe (task 2094 amendment).
+///
+/// When a new `let` is inserted into an existing `where` group without
+/// touching the guard param (`sc_dirty = false`, `has_added_guard_member =
+/// true`), the outer `||` chain fires at the `has_added_guard_member` arm —
+/// the role-flip deferred block is never entered and `last_role_flip_probes`
+/// stays at 0.
+///
+/// This exercises the second "0 probes" short-circuit path promised by task
+/// 2094. A regression that mistakenly placed `has_added_guard_member` inside
+/// the deferred-probe block (instead of before it) would produce probes == 1.
+///
+/// Task 2094 — has_added_guard_member short-circuit perf lock.
+#[test]
+fn edit_source_role_flip_probe_skipped_when_guard_member_added() {
+    // Module A: one guarded group, single member x0.
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    where u0 {
+        let x0 = 1mm
+    }
+}"#;
+    // Module B: same guard param (u0 default unchanged → u0 not in changed_set
+    // → __guard_0 not in dirty_cone → sc_dirty = false), new member x1 added to
+    // the group (x1 in added ∩ group.members → has_added_guard_member = true).
+    let module_b_src = r#"structure S {
+    param u0: Bool = true
+    where u0 {
+        let x0 = 1mm
+        let x1 = 2mm
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchor: x1 must be a determined Scalar in cold (u0=true
+    // activates the where-branch). Prevents a "both wrong" false-pass.
+    let x1_id = ValueCellId::new("S", "x1");
+    assert!(
+        matches!(cold_result.values.get(&x1_id), Some(Value::Scalar { .. })),
+        "x1 must be a determined Scalar when guard u0=true activates it; \
+         got {:?}",
+        cold_result.values.get(&x1_id)
+    );
+
+    // (c) Performance lock: detect_role_flip must NOT be called when
+    // has_added_guard_member fires the outer trigger (sc_dirty = false,
+    // has_added_guard_member = true → short-circuits before role-flip block).
+    //
+    // Regression catalogue:
+    // == 1 → has_added_guard_member was placed inside the deferred-probe block
+    //         rather than before it; detect_role_flip invoked when only the
+    //         added-member trigger fires.
+    // >  1 → memoization broke.
+    let probes = incremental.last_role_flip_probes();
+    assert_eq!(
+        probes,
+        0,
+        "expected 0 detect_role_flip probes (has_added_guard_member fires the \
+         outer trigger without entering the role-flip block); \
+         got {} — \
+         if 1, has_added_guard_member short-circuit regressed; \
+         if >1, memoization broke",
+        probes
+    );
+}
+
+/// Tests that role-flip memoization limits `detect_role_flip` to exactly one
+/// call even when multiple guarded groups reach the per-group skip check
+/// (task 2094 amendment).
+///
+/// Scenario: two guarded groups, both with unchanged guard VALUES (`sc_dirty =
+/// false`, `has_added_guard_member = false`). A role-flip in group 1 causes
+/// the outer deferred-probe block to fire: `detect_role_flip` returns true,
+/// probe count = 1, `role_flip_memo = Some(true)`. Both groups then reach the
+/// per-group skip check (`guard_value_unchanged = true`, no added members) and
+/// read from the memoised result — no additional `detect_role_flip` calls.
+///
+/// Expected: `last_role_flip_probes() == 1`.
+///
+/// Correctness remains pinned by the task-2084 lock
+/// `edit_source_role_flipped_guard_member_matches_cold_eval` (:945) and its
+/// symmetric counterpart `_inactive_to_active_matches_cold_eval` (:1027).
+///
+/// Task 2094 — memo reuse across multiple groups perf lock.
+#[test]
+fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
+    // Module A: two guarded groups; `moving` is on the active where-branch of
+    // group 1 (guarded by u0). Group 2 (guarded by u1) is stable.
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    where u0 {
+        let x0 = 1mm
+        let moving = 2mm
+    }
+    where u1 {
+        let y0 = 3mm
+    }
+}"#;
+    // Module B: `moving` (same id, same expr → same content_hash → not in
+    // `added`) relocates to the inactive else-branch of group 1. Group 2 is
+    // unchanged. Both u0 and u1 default to true in A and B:
+    //   → neither u0 nor u1 is in changed_set
+    //   → __guard_0 and __guard_1 are not in dirty_cone → sc_dirty = false.
+    //   → `moving` has the same content_hash → has_added_guard_member = false.
+    // The outer deferred-probe block evaluates, finds role_flip = true (probe
+    // #1, memo = Some(true)). Both groups reach the per-group skip check with
+    // guard_value_unchanged = true and no added members; both read the memo
+    // without a second probe.
+    let module_b_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    where u0 {
+        let x0 = 1mm
+    } else {
+        let moving = 2mm
+    }
+    where u1 {
+        let y0 = 3mm
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchor: `moving` must be Undef in cold (relocated to
+    // else-branch, which is inactive when u0=true). Prevents a "both wrong"
+    // false-pass on the counter assertion.
+    let moving_id = ValueCellId::new("S", "moving");
+    assert!(
+        matches!(cold_result.values.get(&moving_id), Some(Value::Undef)),
+        "moving must be Undef after role-flip to else-branch (u0=true, \
+         else-branch inactive); got {:?}",
+        cold_result.values.get(&moving_id)
+    );
+
+    // (c) Performance lock: exactly one detect_role_flip call (from the outer
+    // deferred-probe block); both per-group iterations read the memoised
+    // Some(true) without triggering a second probe.
+    //
+    // Regression catalogue:
+    // == 0 → outer probe incorrectly skipped (sc_dirty or has_added_guard_member
+    //         short-circuited when they should not have).
+    // >= 2 → memoization broke: the per-group None arm called detect_role_flip
+    //         again for a group that should have read role_flip_memo.
+    let probes = incremental.last_role_flip_probes();
+    assert_eq!(
+        probes,
+        1,
+        "expected exactly 1 detect_role_flip probe (outer deferred-probe block \
+         fires once; per-group loop reads memo for both groups); \
+         got {} — \
+         if 0, outer probe was incorrectly skipped; \
+         if >=2, memoization broke (per-group arm probed again)",
+        probes
+    );
+}

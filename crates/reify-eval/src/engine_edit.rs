@@ -1111,6 +1111,27 @@ impl Engine {
         })
     }
 
+    /// Invoke [`detect_role_flip`] and bump `last_role_flip_probes` in one place.
+    ///
+    /// Both call sites in `edit_source` Phase 1 — the outer short-circuit block
+    /// and the per-group lazy-memo `None` arm — share the same three-line
+    /// pattern: build `old_groups` from `eval_state`, call `detect_role_flip`,
+    /// write the memo, increment the counter. Extracting that here ensures the
+    /// counter increment cannot be omitted if a third call site ever appears.
+    ///
+    /// `new_groups` is sliced from the freshly-built snapshot and does NOT
+    /// borrow `self`. NLL releases the `self.eval_state` borrow (used only as
+    /// an argument to `detect_role_flip`) before `self.last_role_flip_probes`
+    /// is mutated, so `&mut self` is unambiguous.
+    fn probe_role_flip(&mut self, new_groups: &[GuardedGroupInfo]) -> bool {
+        let result = detect_role_flip(
+            &self.eval_state.as_ref().unwrap().snapshot.graph.guarded_groups,
+            new_groups,
+        );
+        self.last_role_flip_probes += 1;
+        result
+    }
+
     /// Incrementally re-evaluate after a structural source edit.
     ///
     /// Mirrors `edit_param`'s `NotInitialized` precondition: requires a prior
@@ -1625,20 +1646,12 @@ impl Engine {
             // value; memoize so detect_role_flip is called at most once per edit.
             // Correctness pinned by task-2084 locks. Counter tracked via
             // `self.last_role_flip_probes` for the perf-lock test (task 2094).
-            //
-            // Block expression (not a closure): accesses enclosing bindings
-            // directly. NLL releases the `eval_state` borrow at its last use
-            // (as an argument to detect_role_flip) before the disjoint mutable
-            // borrow `self.last_role_flip_probes += 1` is taken.
+            // `probe_role_flip` centralises the detect_role_flip call and counter
+            // increment (task 2094 amendment — eliminates duplicate call sites).
             let mut role_flip_memo: Option<bool> = None;
             let has_dirty_guards = sc_dirty || has_added_guard_member || {
-                let eval_state = self.eval_state.as_ref().unwrap();
-                let result = detect_role_flip(
-                    &eval_state.snapshot.graph.guarded_groups,
-                    &graph.guarded_groups,
-                );
+                let result = self.probe_role_flip(&graph.guarded_groups);
                 role_flip_memo = Some(result);
-                self.last_role_flip_probes += 1;
                 result
             };
 
@@ -1692,16 +1705,13 @@ impl Engine {
                     {
                         // Lazy role-flip check (task 2094): populate role_flip_memo
                         // on first query, reuse on subsequent groups.
+                        // probe_role_flip centralises the counter increment and
+                        // the detect_role_flip call (task 2094 amendment).
                         let flipped = match role_flip_memo {
                             Some(v) => v,
                             None => {
-                                let eval_state = self.eval_state.as_ref().unwrap();
-                                let result = detect_role_flip(
-                                    &eval_state.snapshot.graph.guarded_groups,
-                                    &graph.guarded_groups,
-                                );
+                                let result = self.probe_role_flip(&graph.guarded_groups);
                                 role_flip_memo = Some(result);
-                                self.last_role_flip_probes += 1;
                                 result
                             }
                         };
