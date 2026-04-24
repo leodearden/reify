@@ -261,8 +261,8 @@ mod tests {
             "labels[0] should point to the duplicate site (span_b)"
         );
         assert!(
-            diag.labels[0].message.contains("structure"),
-            "labels[0] message should interpolate the `{{kind}}` token, got: {:?}",
+            diag.labels[0].message.contains("structure defined here"),
+            "labels[0] message should interpolate the `{{kind}}` token into the '... defined here' template, got: {:?}",
             diag.labels[0].message,
         );
 
