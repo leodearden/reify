@@ -447,6 +447,8 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
 ///   (b) `result.values.get(&q_id) == Some(&Value::Undef)` — downstream Let
 ///       propagates Undef without panic.
 ///   (c) Exactly one Warning diagnostic mentions "S.p" and "type-kind".
+///   (d) `engine.snapshot().values[p] == (Value::Undef, Undetermined)` — orthogonal
+///       to (a): `EvalResult.values` and the persistent `Snapshot` are separate maps.
 #[test]
 fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
     let mut engine = fresh_engine();
@@ -493,6 +495,16 @@ fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
         "warning should mention 'type-kind', got: {:?}",
         warnings[0].message
     );
+
+    // (d) Snapshot half: the persistent snapshot entry must also be
+    // (Undef, Undetermined).  Orthogonal to (a): `EvalResult.values` and the
+    // persistent `Snapshot` are separate maps.  See engine_eval.rs:469-479.
+    assert_eq!(
+        engine.snapshot().unwrap().values.get(&p_id),
+        Some(&(Value::Undef, DeterminacyState::Undetermined)),
+        "rejected-override-no-default path (engine_eval.rs:469-479): \
+         snapshot entry for p must be (Undef, Undetermined)"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -517,6 +529,8 @@ fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
 ///   (b) `result.values.get(&q_id) == Some(&Value::Undef)` — downstream Let
 ///       propagates Undef without panic.
 ///   (c) Exactly one Warning diagnostic mentions "S.p" and "dimension".
+///   (d) `engine.snapshot().values[p] == (Value::Undef, Undetermined)` — orthogonal
+///       to (a): `EvalResult.values` and the persistent `Snapshot` are separate maps.
 #[test]
 fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
     let mut engine = fresh_engine();
@@ -565,105 +579,14 @@ fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
         "warning should mention 'dimension', got: {:?}",
         warnings[0].message
     );
-}
 
-// ──────────────────────────────────────────────────────────────────────────────
-// esc-2193-24: regression-lock — snapshot entry for rejected-override-no-default
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Regression-lock for the snapshot-rewrite invariant identified in esc-2193-24.
-///
-/// ## Context
-///
-/// Task 2193 fixed an S4 discriminator path: when a Param cell has NO
-/// `default_expr` AND its stored override is rejected (type-kind mismatch),
-/// `engine_eval.rs:475-479` writes both `values.insert(id, Value::Undef)` AND
-/// `snapshot.values.insert(id, (Value::Undef, Undetermined))`. The two sibling
-/// S4 tests (`eval_inserts_undef_for_no_default_param_with_rejected_override` and
-/// its dimension-mismatch sibling) cover the `result.values` half. This test
-/// covers the `engine.snapshot()` half.
-///
-/// ## Asymmetry with sibling tests
-///
-/// The sibling tests assert `result.values.get(&p_id) == Some(&Value::Undef)`.
-/// This test asserts `engine.snapshot().unwrap().values.get(&p_id) ==
-/// Some(&(Value::Undef, DeterminacyState::Undetermined))`. The two assertions
-/// are orthogonal: `EvalResult.values` and the persistent `Snapshot` are
-/// separate maps.
-///
-/// ## Three-phase setup (option (a) from esc-2193-24)
-///
-/// - Phase A: evaluate a module where `p` has a `default_expr = 1mm`. Sanity-
-///   assert that `engine.snapshot()` shows `(length_scalar(0.001), Determined)`
-///   for `p`. This makes the phase-C assertion's "rewritten" framing meaningful:
-///   without it, the test would be trivially satisfied by the pre-seed alone.
-/// - Phase B: call `set_param_and_invalidate` with a `Scalar[LENGTH]` value so
-///   the override is stored for the next eval.
-/// - Phase C: evaluate a module where `p` has type `Int` and NO `default_expr`.
-///   The stored LENGTH override is type-kind incompatible. Assert
-///   `engine.snapshot().values[p] == (Value::Undef, Undetermined)`.
-///
-/// ## Important subtlety
-///
-/// `Engine::eval()` always builds a **fresh** snapshot via
-/// `Snapshot::from_compiled_module` at the start of each call (engine_eval.rs:246).
-/// `from_compiled_module` pre-seeds every cell to `(Undef, Undetermined)`
-/// (snapshot.rs:38-46), so even if phase A left `eval_state.snapshot.values[p] =
-/// (Scalar, Determined)`, the phase-C `from_compiled_module` call resets `p` to
-/// `(Undef, Undetermined)` before the rejected-override path runs. Today the
-/// defence-in-depth insert at engine_eval.rs:476-479 and the pre-seed both
-/// produce the same observable state, so this test passes whether the insert is
-/// present or removed. The test locks the **API-level contract** rather than the
-/// specific line — it will catch any future regression where BOTH the pre-seed
-/// AND the defence-in-depth insert are dropped or changed for this cell.
-#[test]
-fn eval_rejected_override_no_default_rewrites_snapshot_entry_to_undef_undetermined() {
-    let mut engine = fresh_engine();
-    let p_id = ValueCellId::new("S", "p");
-
-    // Phase A: p has a default (1mm). Eval should populate the snapshot with a
-    // Determined Scalar value for p.
-    let module_a = compile_source("structure S { param p: Scalar = 1mm\n let q: Scalar = p }");
-    let _ = engine.eval(&module_a);
-
-    let snap_a = engine
-        .snapshot()
-        .expect("snapshot must exist after phase-A eval");
-    let (a_val, a_det) = snap_a
-        .values
-        .get(&p_id)
-        .expect("p must be in snapshot after phase-A eval");
+    // (d) Snapshot half: the persistent snapshot entry must also be
+    // (Undef, Undetermined).  Orthogonal to (a): EvalResult.values and the
+    // persistent Snapshot are separate maps.  See engine_eval.rs:469-479.
     assert_eq!(
-        *a_val,
-        length_scalar(0.001),
-        "phase-A sanity: snapshot value for p must be length_scalar(0.001)"
-    );
-    assert_eq!(
-        *a_det,
-        DeterminacyState::Determined,
-        "phase-A sanity: snapshot determinacy for p must be Determined"
-    );
-
-    // Phase B: store a Scalar[LENGTH] override so the next eval will reject it
-    // (p is about to be re-declared as Int with no default).
-    engine.set_param_and_invalidate(&p_id, length_scalar(0.5));
-
-    // Phase C: p is now Int (no default). The stored Scalar[LENGTH] override is
-    // type-kind incompatible — it will be rejected by the S4 discriminator.
-    let module_c = compile_source("structure S { param p: Int\n let q: Int = p }");
-    let _ = engine.eval(&module_c);
-
-    let snap_c = engine
-        .snapshot()
-        .expect("snapshot must exist after phase-C eval");
-    let snap_p = snap_c
-        .values
-        .get(&p_id)
-        .expect("p must be in snapshot after phase-C eval");
-    assert_eq!(
-        *snap_p,
-        (Value::Undef, DeterminacyState::Undetermined),
-        "rejected-override-no-default path (engine_eval.rs:469-479): snapshot entry for p \
-         must be (Undef, Undetermined), not a stale Determined value"
+        engine.snapshot().unwrap().values.get(&p_id),
+        Some(&(Value::Undef, DeterminacyState::Undetermined)),
+        "rejected-override-no-default path (engine_eval.rs:469-479): \
+         snapshot entry for p must be (Undef, Undetermined) after dimension-mismatch rejection"
     );
 }
