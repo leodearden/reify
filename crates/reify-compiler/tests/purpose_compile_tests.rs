@@ -670,3 +670,53 @@ purpose lightweight(subject : Structure) {
         ),
     }
 }
+
+// ── Step 5 (task-2181): m5_purpose.ri acceptance gate ────────────────────────
+
+/// Acceptance test: `examples/m5_purpose.ri` must compile with zero Error
+/// diagnostics under `compile_with_stdlib` (the "41/42 → 42/42 clean" gate).
+///
+/// Also asserts that exactly 3 purposes are compiled (manufacturing_ready,
+/// lightweight, dimensionally_valid) as a secondary sanity check that none
+/// were silently dropped.
+///
+/// RED: fails before step 6 when any of the five member-access sites in
+/// m5_purpose.ri still hit the catch-all "member access not yet supported".
+#[test]
+fn m5_purpose_example_compiles_under_stdlib_with_zero_errors() {
+    const M5_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/m5_purpose.ri"
+    );
+    let src = std::fs::read_to_string(M5_PATH)
+        .expect("failed to read examples/m5_purpose.ri — check CARGO_MANIFEST_DIR resolution");
+
+    let parsed = reify_syntax::parse(&src, ModulePath::single("m5_purpose"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in m5_purpose.ri: {:?}",
+        parsed.errors
+    );
+
+    let module = reify_compiler::compile_with_stdlib(&parsed);
+
+    // Primary acceptance gate: zero Error-severity diagnostics.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics compiling m5_purpose.ri under stdlib, got:\n{:#?}",
+        errors
+    );
+
+    // Secondary check: all three purposes must be present.
+    assert_eq!(
+        module.compiled_purposes.len(),
+        3,
+        "expected 3 compiled purposes (manufacturing_ready, lightweight, dimensionally_valid), got: {:?}",
+        module.compiled_purposes.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+}
