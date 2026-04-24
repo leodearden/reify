@@ -790,3 +790,109 @@ purpose check(subject : Widget) {
         no_member_errors
     );
 }
+
+/// GREEN test: accessing an existing member on a concrete (non-wildcard) subject type
+/// must NOT produce a "has no member" error and must emit a ValueRef.
+///
+/// Source: `Widget` structure with a `mass` param; purpose accesses `subject.mass`
+/// (a member that DOES exist on Widget). The validation must pass.
+///
+/// Assertions:
+/// (a) No "has no member" diagnostic;
+/// (b) The constraint expression is BinOp(Gt, ValueRef(check.mass : Real), _).
+#[test]
+fn compile_purpose_concrete_subject_valid_member_compiles_cleanly() {
+    let source = r#"
+structure Widget {
+    param mass : Mass = 5kg
+}
+
+purpose check(subject : Widget) {
+    constraint subject.mass > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // (a) No "has no member" diagnostic.
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for valid member 'mass', got: {:#?}",
+        no_member_errors
+    );
+
+    // (b) Compiled purpose exists with one constraint.
+    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "check");
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    // Constraint must be BinOp(Gt, ValueRef(check.mass : Real), _).
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(*op, BinOp::Gt, "expected BinOp::Gt for 'subject.mass > 0'");
+            match &left.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.entity, "check",
+                        "ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                        id.entity
+                    );
+                    assert_eq!(
+                        id.member, "mass",
+                        "ValueRef member must be 'mass', got {:?}",
+                        id.member
+                    );
+                    assert_eq!(
+                        left.result_type,
+                        Type::Real,
+                        "result_type must be Type::Real (compile-time fallback), got {:?}",
+                        left.result_type
+                    );
+                }
+                other => panic!("expected ValueRef for left of BinOp, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp constraint expression, got {:?}", other),
+    }
+}
+
+/// Characterization test: the generic `Structure` wildcard subject must NOT trigger
+/// a "has no member" error even when a non-existent member is accessed.
+///
+/// This pins the documented limitation: the wildcard form binds to any structure at
+/// activation time, so there is no static template against which to validate members.
+///
+/// Ensures no future over-reach (e.g., adding a synthetic "Structure" template to
+/// the registry) silently breaks this invariant.
+#[test]
+fn compile_purpose_wildcard_structure_subject_bogus_member_still_silent() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose check(subject : Structure) {
+    constraint subject.bogus > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // The wildcard case must NOT produce "has no member" diagnostics.
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for wildcard Structure subject, \
+         but got: {:#?}\n(Wildcard subjects have no static template to validate against.)",
+        no_member_errors
+    );
+}
