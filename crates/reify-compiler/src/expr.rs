@@ -1,6 +1,6 @@
 //! Expression compilation and the `Type::Error` anti-cascade sentinel.
 //!
-//! # Poison policy (task-448 / task-1912 / task-1921)
+//! # Poison policy (task-448 / task-1912 / task-1921 / task-1969)
 //!
 //! `Type::Error` is the poison-value sentinel for type-inference failure. Any
 //! producer site that emits a `Severity::Error` diagnostic for a truly
@@ -11,17 +11,17 @@
 //!
 //! ## Canonical producer helpers
 //!
-//! `make_poison_literal(diagnostics, pre_push_len)` wraps
-//! `CompiledExpr::literal(Value::Undef, Type::Error)` with a `debug_assert!`
-//! that at least one `Severity::Error` diagnostic was pushed at or after index
-//! `pre_push_len`.  Callers must capture `let n = diagnostics.len()` immediately
-//! before their `diagnostics.push(...)` and pass `n` as `pre_push_len`.  This
-//! catches the "dropped adjacent push" refactor regression — where an earlier
-//! diagnostic in the queue would silently satisfy a weaker queue-non-empty check.
+//! `make_poison_literal(diagnostics, diagnostic)` constructs the diagnostic,
+//! pushes it into the queue, and returns
+//! `CompiledExpr::literal(Value::Undef, Type::Error)`.  The "push paired with
+//! poison" invariant is enforced **by construction**: the caller passes the
+//! `Diagnostic` value directly so there is no separate push step to accidentally
+//! omit.  A `debug_assert!` on the diagnostic's severity catches callers that
+//! mistakenly pass a `Warning` or `Info` value.
 //!
-//! `make_poison_type(diagnostics, pre_push_len)` is the parallel helper for
+//! `make_poison_type(diagnostics, diagnostic)` is the parallel helper for
 //! ICE-path producer sites that assign a `Type` to a local variable rather than
-//! returning a `CompiledExpr`.  It carries the same `debug_assert!` invariant.
+//! returning a `CompiledExpr`.  It carries the same by-construction invariant.
 //! `grep "make_poison_"` finds every producer site uniformly.
 //!
 //! ## Consumer propagation helper
@@ -44,37 +44,6 @@
 //! `make_poison_literal` per the audit in task-1921.
 
 use super::*;
-
-/// Shared precondition check for [`make_poison_literal`] and [`make_poison_type`].
-///
-/// Asserts (in debug builds) that at least one `Severity::Error` diagnostic was
-/// pushed **at or after index `pre_push_len`** in `diagnostics`.  Both poison
-/// helpers carry the same "dropped adjacent push" invariant; extracting it here
-/// means a future tightening of the check only needs one change, and a
-/// regression that weakens it will break both helpers simultaneously.
-///
-/// `#[track_caller]` ensures that a failing `debug_assert!` points to the call
-/// site inside `make_poison_literal` / `make_poison_type` rather than to this
-/// helper's body — making the panic location useful without re-duplicating the
-/// condition.
-#[track_caller]
-fn debug_assert_error_pushed_since(diagnostics: &[Diagnostic], pre_push_len: usize) {
-    // Slicing diagnostics[pre_push_len..] is always safe here: callers capture
-    // `let n = diagnostics.len()` immediately before their push, so
-    // `pre_push_len <= diagnostics.len()` is a pre-call invariant.  An empty
-    // slice returns `false` from `.any()`, which correctly triggers the
-    // debug_assert if nothing was pushed.
-    debug_assert!(
-        diagnostics[pre_push_len..]
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "make_poison_* requires a Severity::Error diagnostic pushed at or after index {}; \
-         this catches 'dropped adjacent push' refactor regressions \
-         (pre_push_len={pre_push_len}, current_len={})",
-        pre_push_len,
-        diagnostics.len(),
-    );
-}
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
 /// use at any producer site that emits a `Severity::Error` diagnostic.
@@ -887,9 +856,9 @@ pub(crate) fn compile_expr_guarded(
                             return CompiledExpr::value_ref(id, ty);
                         }
                         None => {
-                            // Anti-cascade (task-448/task-1921): route through
-                            // make_poison_literal so the debug_assert enforces
-                            // that the adjacent diagnostic is always present.
+                            // Anti-cascade (task-448/task-1921/task-1969): by-construction
+                            // invariant — make_poison_literal pushes the diagnostic and
+                            // returns the poison literal in one call.
                             return make_poison_literal(
                                 diagnostics,
                                 Diagnostic::error(format!("unknown member '{}' on self", member))
@@ -1263,9 +1232,9 @@ pub(crate) fn compile_expr_guarded(
                 if compiled_obj.result_type.is_error() {
                     return propagate_poison();
                 }
-                // Anti-cascade (task-448/task-1921): route through
-                // make_poison_literal so the debug_assert enforces that the
-                // adjacent diagnostic is always present.
+                // Anti-cascade (task-448/task-1921/task-1969): by-construction
+                // invariant — make_poison_literal pushes the diagnostic and
+                // returns the poison literal in one call.
                 make_poison_literal(
                     diagnostics,
                     Diagnostic::error(format!("member access not yet supported: .{}", member))
