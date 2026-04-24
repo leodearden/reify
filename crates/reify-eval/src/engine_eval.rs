@@ -431,13 +431,24 @@ impl Engine {
                         )
                     } else {
                         // No override accepted and no default_expr. This is
-                        // only reachable if the override existed but was
-                        // rejected by the type-kind guard above. Skip the
-                        // cell — mirrors the pre-task-2017 behaviour and
-                        // avoids writing an invalid value into the snapshot.
-                        // Keep the journal well-formed by completing the
-                        // Started event with an Unchanged outcome (no value
-                        // was written; equivalent to a no-op).
+                        // only reachable if an override existed but was
+                        // rejected by the type-kind or dimension guard above.
+                        //
+                        // Write (Undef, Undetermined) into both maps so that
+                        // external readers of EvalResult.values see a
+                        // well-defined Undef instead of a missing key (which
+                        // would panic a caller that does `.get().unwrap()`).
+                        // The snapshot insert is defence-in-depth: the
+                        // pre-seed in Snapshot::from_compiled_module already
+                        // initialises every cell to (Undef, Undetermined),
+                        // but writing it explicitly here keeps the pattern
+                        // consistent with every other branch in this loop
+                        // and insulates us from future pre-seed changes.
+                        values.insert(cell.id.clone(), Value::Undef);
+                        snapshot.values.insert(
+                            cell.id.clone(),
+                            (Value::Undef, DeterminacyState::Undetermined),
+                        );
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
