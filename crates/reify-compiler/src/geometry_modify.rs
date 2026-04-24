@@ -326,7 +326,7 @@ mod tests {
         );
         let parsed = reify_syntax::parse(
             &source,
-            reify_types::ModulePath::single("test_fallback"),
+            reify_types::ModulePath::single(&format!("test_fallback_{}", fn_name)),
         );
         assert!(
             parsed.errors.is_empty(),
@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_modify_op_non_geometry_target_fallback_all_2arg_kinds() {
+    fn compile_modify_op_non_geometry_target_fallback_all_single_geom_target_kinds() {
         let cases: &[(ModifyKind, &str, &str)] = &[
             (ModifyKind::Chamfer, "chamfer", "distance"),
             (ModifyKind::Fillet, "fillet", "radius"),
