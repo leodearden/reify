@@ -2201,19 +2201,44 @@ mod tests {
         }
     }
 
-    /// `make_poison_literal` fires the `debug_assert!` when called with no
-    /// `Severity::Error` diagnostic pushed at or after `pre_push_len`.
+    /// `make_poison_literal` pushes the supplied `Diagnostic` into the vec and
+    /// returns `CompiledExpr::literal(Value::Undef, Type::Error)`.
     ///
-    /// This ensures the guard actually trips in debug builds — if someone strips
-    /// the adjacent `diagnostics.push(...)` at a producer site, the assertion
-    /// will fire rather than silently producing a poison literal with no
-    /// user-visible diagnostic.  Passing `pre_push_len=0` and an empty slice
-    /// tests the simplest case: the queue is empty and no error was ever pushed.
+    /// Verifies the new by-construction invariant: the helper is responsible for
+    /// the push, so callers no longer need the `let n = diagnostics.len()` /
+    /// `diagnostics.push(...)` / `make_poison_literal(diagnostics, n)` pattern.
+    #[test]
+    fn make_poison_literal_pushes_error_diagnostic_and_returns_poison_literal() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = make_poison_literal(
+            &mut diagnostics,
+            Diagnostic::error("root cause")
+                .with_label(DiagnosticLabel::new(SourceSpan::prelude(), "here")),
+        );
+        // Diagnostic was pushed internally.
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert_eq!(diagnostics[0].message, "root cause");
+        // Returned expr is the poison literal.
+        assert_eq!(result.result_type, Type::Error);
+        assert!(
+            matches!(result.kind, CompiledExprKind::Literal(_)),
+            "expected Literal kind, got: {:?}",
+            result.kind
+        );
+    }
+
+    /// `make_poison_literal` fires the `debug_assert!` when given a diagnostic
+    /// whose severity is not `Severity::Error`.
+    ///
+    /// The new API enforces the "push paired with poison" invariant by
+    /// construction: the helper itself pushes, so the only check left is that
+    /// callers don't accidentally pass a Warning or Info diagnostic.
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "dropped adjacent push")]
-    fn make_poison_literal_panics_with_no_errors_in_queue() {
-        make_poison_literal(&[], 0);
+    #[should_panic(expected = "severity")]
+    fn make_poison_literal_panics_with_non_error_severity_diagnostic() {
+        make_poison_literal(&mut vec![], Diagnostic::warning("not an error"));
     }
 
     /// `make_poison_type` fires the `debug_assert!` when called with no
