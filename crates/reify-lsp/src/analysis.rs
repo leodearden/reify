@@ -1607,4 +1607,43 @@ mod tests {
             "param at 33 levels of nesting should NOT be found (depth limit exceeded)"
         );
     }
+
+    // --- task-2176 step-7: AnalysisContext resolves stdlib types ---
+
+    #[test]
+    fn analysis_context_resolves_stdlib_types() {
+        // Source that references Rigid trait and Material struct from stdlib.
+        // With the empty-prelude compile() in AnalysisContext::new, these produce
+        // ERROR diagnostics. After swapping to compile_with_stdlib they must resolve.
+        let source = r#"structure S : Rigid {
+    param density: Real = 7850
+    param name: String = "steel"
+    param volume: Real = 1.0
+    param centroid_x: Real = 0.0
+    param centroid_y: Real = 0.0
+    param centroid_z: Real = 0.0
+    param moment_of_inertia: Real = 1.0
+    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 2e11)
+}"#;
+        let uri = Url::parse("file:///test.ri").unwrap();
+        let ctx = AnalysisContext::new(source, &uri);
+        use tower_lsp::lsp_types::DiagnosticSeverity;
+        let unresolved_errors: Vec<_> = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == reify_types::Severity::Error
+                    && (d.message.contains("unresolved type: Material")
+                        || d.message.contains("unresolved trait"))
+            })
+            .collect();
+        assert!(
+            unresolved_errors.is_empty(),
+            "AnalysisContext: stdlib types Material and trait Rigid should resolve; \
+             got errors: {unresolved_errors:?}"
+        );
+        // Suppress unused-import warning for DiagnosticSeverity brought in above
+        let _ = DiagnosticSeverity::ERROR;
+    }
 }
