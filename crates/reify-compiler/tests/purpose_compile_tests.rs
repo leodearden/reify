@@ -415,138 +415,154 @@ purpose check(subject : Widget) {
 
 // ── Step 1 (task-2181): reflective aggregation compiles as empty list ─────────
 
-/// Test that `subject.params` in a purpose body compiles to an empty
-/// `ListLiteral` with `result_type = Type::List(Box::new(Type::Real))`.
+/// Shared helper for all `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS` tests.
 ///
-/// RED: before the impl in step 2, the catch-all at `expr.rs:1181` fires
-/// and emits "member access not yet supported: .params", so assertion (a)
-/// fails immediately.
+/// Compiles `forall p in subject.<member>: determined(p)` in a purpose body
+/// and asserts the three acceptance criteria:
+/// (a) no "member access not yet supported" diagnostic,
+/// (b) `collection.result_type == Type::List(Box::new(Type::Real))`,
+/// (c) `collection.kind` is an empty `ListLiteral`.
+///
+/// Using a single helper avoids duplicating ~60 lines per member name and
+/// naturally extends to cover every entry in `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS`
+/// (currently `params`, `geometric_params`, `material_params`).
+fn assert_reflective_member_compiles_empty(member: &str) {
+    let source = format!(
+        r#"
+structure Part {{
+    param length : Length = 100mm
+}}
+
+purpose check_part(part : Structure) {{
+    constraint forall p in part.{member}: determined(p)
+}}
+"#
+    );
+    let module = compile_module_with_diagnostics(&source);
+
+    // (a) No "member access not yet supported" diagnostic
+    let unsupported: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .collect();
+    assert!(
+        unsupported.is_empty(),
+        "expected no 'member access not yet supported' diagnostics for member '{}', got: {:?}",
+        member,
+        unsupported
+    );
+
+    // (b) and (c): constraint is a Quantifier whose collection is an empty
+    // ListLiteral with result_type == Type::List(Box::new(Type::Real)).
+    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => {
+            // (b) collection result_type must be List<Real>
+            assert_eq!(
+                collection.result_type,
+                Type::List(Box::new(Type::Real)),
+                "expected collection result_type to be List<Real> for member '{}', got {:?}",
+                member,
+                collection.result_type
+            );
+            // (c) collection kind must be an empty ListLiteral
+            match &collection.kind {
+                CompiledExprKind::ListLiteral(elements) => {
+                    assert!(
+                        elements.is_empty(),
+                        "expected empty ListLiteral for subject.{}, got {} elements",
+                        member,
+                        elements.len()
+                    );
+                }
+                other => panic!(
+                    "expected ListLiteral collection for member '{}', got {:?}",
+                    member, other
+                ),
+            }
+        }
+        other => panic!(
+            "expected Quantifier constraint expression for member '{}', got {:?}",
+            member, other
+        ),
+    }
+}
+
+/// `subject.params` compiles to an empty ListLiteral (step 1, task-2181).
+///
+/// RED before step-2 impl: catch-all at `expr.rs` fires and emits
+/// "member access not yet supported: .params".
 #[test]
 fn compile_purpose_reflective_params_compiles_as_empty_list() {
-    let source = r#"
-structure Bracket {
-    param width : Length = 80mm
+    assert_reflective_member_compiles_empty("params");
 }
 
-purpose manufacturing_ready(subject : Structure) {
-    constraint forall p in subject.params: determined(p)
-}
-"#;
-    let module = compile_module_with_diagnostics(source);
-
-    // (a) No "member access not yet supported" diagnostic
-    let unsupported: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("member access not yet supported"))
-        .collect();
-    assert!(
-        unsupported.is_empty(),
-        "expected no 'member access not yet supported' diagnostics, got: {:?}",
-        unsupported
-    );
-
-    // (b) and (c): constraint is a Quantifier whose collection is an empty
-    // ListLiteral with result_type == Type::List(Box::new(Type::Real)).
-    assert_eq!(
-        module.compiled_purposes.len(),
-        1,
-        "expected 1 compiled purpose"
-    );
-    let purpose = &module.compiled_purposes[0];
-    assert_eq!(purpose.name, "manufacturing_ready");
-    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
-
-    let constraint = &purpose.constraints[0];
-    match &constraint.expr.kind {
-        CompiledExprKind::Quantifier { collection, .. } => {
-            // (b) collection result_type must be List<Real>
-            assert_eq!(
-                collection.result_type,
-                Type::List(Box::new(Type::Real)),
-                "expected collection result_type to be List<Real>, got {:?}",
-                collection.result_type
-            );
-            // (c) collection kind must be an empty ListLiteral
-            match &collection.kind {
-                CompiledExprKind::ListLiteral(elements) => {
-                    assert!(
-                        elements.is_empty(),
-                        "expected empty ListLiteral for subject.params, got {} elements",
-                        elements.len()
-                    );
-                }
-                other => panic!("expected ListLiteral collection, got {:?}", other),
-            }
-        }
-        other => panic!("expected Quantifier constraint expression, got {:?}", other),
-    }
-}
-
-/// Test that `part.geometric_params` in a purpose body compiles to an empty
-/// `ListLiteral` with `result_type = Type::List(Box::new(Type::Real))`.
+/// `part.geometric_params` compiles to an empty ListLiteral (step 1, task-2181).
 ///
-/// RED: analogous to the params test above — catch-all fires before step 2.
+/// RED before step-2 impl: analogous to the params test above.
 #[test]
 fn compile_purpose_reflective_geometric_params_compiles_as_empty_list() {
-    let source = r#"
-structure Part {
-    param length : Length = 100mm
+    assert_reflective_member_compiles_empty("geometric_params");
 }
 
-purpose dimensionally_valid(part : Structure) {
-    constraint forall p in part.geometric_params: constrained(p)
+/// `subject.material_params` compiles to an empty ListLiteral (task-2181).
+///
+/// `material_params` is the third entry in `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS`
+/// and previously had no dedicated compile-time coverage.
+#[test]
+fn compile_purpose_reflective_material_params_compiles_as_empty_list() {
+    assert_reflective_member_compiles_empty("material_params");
+}
+
+// ── Amendment (task-2181 review-1): entity-scope StructureRef regression ──────
+
+/// Regression guard: entity-scope `StructureRef` member access must NOT be
+/// silently routed through the purpose-subject branch.
+///
+/// When two structures are compiled together, `param material : Material` in an
+/// entity body registers `material` as `Type::StructureRef("Material")` (because
+/// `Material` is a known structure name).  The purpose-subject branch in
+/// `expr.rs` is gated by `!scope.is_entity_scope`; without that guard,
+/// `material.density > 0` in a structure constraint would silently emit
+/// `ValueRef(entity_name, "density")` — a dangling ref to a non-existent cell —
+/// instead of the correct "member access not yet supported" error.
+#[test]
+fn entity_scope_structureref_member_access_still_errors() {
+    // Two structures in the same compilation unit so `Material` lands in
+    // `structure_names` and `param material : Material` resolves to
+    // `Type::StructureRef("Material")` rather than falling back to Type::Real.
+    let source = r#"
+structure Material {
+    param density : Real = 7850.0
+}
+
+structure Widget {
+    param material : Material = Material(density: 7850.0)
+    constraint material.density > 0
 }
 "#;
     let module = compile_module_with_diagnostics(source);
 
-    // (a) No "member access not yet supported" diagnostic
+    // The "member access not yet supported" diagnostic must still fire.
+    // If the purpose-subject branch misfired, this would be empty.
     let unsupported: Vec<_> = module
         .diagnostics
         .iter()
         .filter(|d| d.message.contains("member access not yet supported"))
         .collect();
     assert!(
-        unsupported.is_empty(),
-        "expected no 'member access not yet supported' diagnostics, got: {:?}",
-        unsupported
+        !unsupported.is_empty(),
+        "expected 'member access not yet supported' for entity-scope StructureRef member \
+         access, but no such diagnostic was emitted.\n\
+         This likely means the purpose-subject branch misfired in entity scope.\n\
+         All diagnostics: {:?}",
+        module.diagnostics
     );
-
-    // (b) and (c): constraint is a Quantifier whose collection is an empty
-    // ListLiteral with result_type == Type::List(Box::new(Type::Real)).
-    assert_eq!(
-        module.compiled_purposes.len(),
-        1,
-        "expected 1 compiled purpose"
-    );
-    let purpose = &module.compiled_purposes[0];
-    assert_eq!(purpose.name, "dimensionally_valid");
-    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
-
-    let constraint = &purpose.constraints[0];
-    match &constraint.expr.kind {
-        CompiledExprKind::Quantifier { collection, .. } => {
-            // (b) collection result_type must be List<Real>
-            assert_eq!(
-                collection.result_type,
-                Type::List(Box::new(Type::Real)),
-                "expected collection result_type to be List<Real>, got {:?}",
-                collection.result_type
-            );
-            // (c) collection kind must be an empty ListLiteral
-            match &collection.kind {
-                CompiledExprKind::ListLiteral(elements) => {
-                    assert!(
-                        elements.is_empty(),
-                        "expected empty ListLiteral for part.geometric_params, got {} elements",
-                        elements.len()
-                    );
-                }
-                other => panic!("expected ListLiteral collection, got {:?}", other),
-            }
-        }
-        other => panic!("expected Quantifier constraint expression, got {:?}", other),
-    }
 }
 
 // ── Step 3 (task-2181): regular member access on StructureRef subject ────────

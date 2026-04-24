@@ -1136,48 +1136,64 @@ pub(crate) fn compile_expr_guarded(
 
             // ── Purpose-subject member access (task-2181) ──────────────────────
             //
-            // Trigger: compiled_obj has type StructureRef(_) AND its kind is a
-            // ValueRef whose entity stamp equals the current scope's entity name
-            // (= the purpose name, per CompilationScope::new(purpose_name)).
-            // This is a purpose-scope invariant: purpose params are registered as
-            // `Type::StructureRef(entity_kind)` and resolve to
-            // `ValueRef(ValueCellId(purpose_name, param_name), StructureRef(...))`.
+            // Trigger: compiled_obj is a ValueRef whose entity stamp equals the
+            // current scope's entity name (= the purpose name) AND its type is
+            // StructureRef(_) AND we are NOT in entity scope.
+            //
+            // The `!scope.is_entity_scope` guard prevents misfiring in entity
+            // bodies: `param material : Material` in a structure registers
+            // `material` as Type::StructureRef("Material") when Material is a
+            // known structure name.  Without the guard, `material.density` in a
+            // structure constraint would silently emit
+            // `ValueRef(entity_name, "density")` — a cell that doesn't exist —
+            // rather than the correct "member access not yet supported" error.
+            // Purpose scopes have is_entity_scope=false (traits.rs:228 uses
+            // CompilationScope::new); entity scopes set is_entity_scope=true
+            // (entity.rs:247).
+            //
+            // Combining the outer type-check with the inner ValueRef pattern into
+            // a single `if let` removes a statically infallible inner match and
+            // makes the control flow unambiguous — no implicit fall-through.
             //
             // Anti-cascade: this branch is placed AFTER the compile_obj call so
             // the existing `is_error()` poison short-circuit below still fires
-            // for already-poisoned subjects.  We guard on StructureRef — never
-            // on Type::Error — so this branch is never reachable from a poisoned
-            // compiled_obj.
-            if matches!(&compiled_obj.result_type, Type::StructureRef(_))
-                && matches!(&compiled_obj.kind, CompiledExprKind::ValueRef(id) if id.entity == scope.entity_name)
-            {
-                if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
-                    // Reflective aggregation (e.g., `subject.params`):
-                    //   - Compile-time: emit an empty list so forall evaluates
-                    //     vacuously true.  Runtime expansion against the bound
-                    //     entity's actual params is deferred (follow-up task).
-                    //   - Type::Real element type is safe for now; will be
-                    //     refined to List<ParamRef> when runtime expansion lands.
-                    //   - Empty list satisfies the Quantifier arm's
-                    //     `List(elem) | Set(elem)` type check at forall compile.
-                    return CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
-                } else {
-                    // Regular member access (e.g., `subject.mass`):
-                    //   - Emit a ValueRef whose entity stamp equals the purpose
-                    //     name (= scope.entity_name).  At activation time,
-                    //     `activate_purpose` calls `remap_entity(purpose_name,
-                    //     entity_ref)` which rewrites this ref to
-                    //     `ValueCellId(entity_ref, member)` — exactly the bound
-                    //     entity's member cell.
-                    //   - Type::Real is a compile-time fallback because
-                    //     entity_kind == "Structure" is a generic wildcard with no
-                    //     matching template in template_registry.  For concrete
-                    //     subject types a future task can thread template_registry
-                    //     into the scope to resolve the actual member type.
-                    //     Limitation: dimension-mismatch cases like
-                    //     `subject.width > 0mm` could misclassify; no such case
-                    //     exists in m5_purpose.ri or the S5 test fixture.
-                    if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind {
+            // for already-poisoned subjects.
+            if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind {
+                if matches!(&compiled_obj.result_type, Type::StructureRef(_))
+                    && id.entity == scope.entity_name
+                    && !scope.is_entity_scope
+                {
+                    if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                        // Reflective aggregation (e.g., `subject.params`):
+                        //   - Compile-time: emit an empty list so forall evaluates
+                        //     vacuously true.  Runtime expansion against the bound
+                        //     entity's actual params is deferred (follow-up task).
+                        //   - FIXME(task-2181 review-4): Type::Real element type is
+                        //     a compile-time placeholder.  Any follow-up task that
+                        //     populates the list at runtime MUST update this type in
+                        //     lockstep, or `forall p in subject.params: determined(p)`
+                        //     will typecheck `p` against the wrong type — silently,
+                        //     because the list is empty today.  Candidate refinement:
+                        //     Type::ParamRef once that variant is introduced.
+                        //   - Empty list satisfies the Quantifier arm's
+                        //     `List(elem) | Set(elem)` type check at forall compile.
+                        return CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+                    } else {
+                        // Regular member access (e.g., `subject.mass`):
+                        //   - Emit a ValueRef whose entity stamp equals the purpose
+                        //     name (= scope.entity_name).  At activation time,
+                        //     `activate_purpose` calls `remap_entity(purpose_name,
+                        //     entity_ref)` which rewrites this ref to
+                        //     `ValueCellId(entity_ref, member)` — exactly the bound
+                        //     entity's member cell.
+                        //   - Type::Real is a compile-time fallback because
+                        //     entity_kind == "Structure" is a generic wildcard with no
+                        //     matching template in template_registry.  For concrete
+                        //     subject types a future task can thread template_registry
+                        //     into the scope to resolve the actual member type.
+                        //     Limitation: dimension-mismatch cases like
+                        //     `subject.width > 0mm` could misclassify; no such case
+                        //     exists in m5_purpose.ri or the S5 test fixture.
                         let member_id = ValueCellId::new(&id.entity, member);
                         return CompiledExpr::value_ref(member_id, Type::Real);
                     }
