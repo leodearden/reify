@@ -46705,7 +46705,20 @@
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/eval_param_overrides.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entity_refs": [
+              "EvalResult",
+              "Task 2179",
+              "Task 2017",
+              "engine_eval"
+            ],
+            "queries": [
+              "EvalResult.values partial-map invariant absent key convention",
+              "Param cell no-override no-default skip continue engine_eval",
+              "EvalResult values unwrap footgun caller audit"
+            ]
+          }
         }
       },
       {
