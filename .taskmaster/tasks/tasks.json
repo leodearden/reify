@@ -46039,7 +46039,7 @@
         "id": "2159",
         "title": "conformance cleanup: dedupe kind-keyed cache test, single-bind composite key lookup, re-evaluate resolve_let_advertised_type helper, replace filter().count()==0 with !any()",
         "description": "Four small code/test cleanups on task 1914's kind-keyed cache and advertised-type helper, plus one assertion-idiom fix, all in `crates/reify-compiler/src/conformance/{checker.rs,mod.rs}`.\n\nMemory hints: search \"task 1914 resolve_let_advertised_type inferred_let_exprs composite key\"; entities: resolve_let_advertised_type, AvailableDefaultKind.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1914"
         ],
@@ -46058,7 +46058,8 @@
           "curator_action": "combine",
           "curator_justification": "The candidate is a tiny single-file cosmetic fix (< 300 chars of real detail, 1 file) inside `crates/reify-compiler/src/conformance.rs`. Task 2159 is already an explicit \"conformance cleanup\" bundle of small code/test tidying items scoped entirely to `crates/reify-compiler/src/conformance` — the same module-lock key. Combining adds one more bullet (#4) without crossing a new module boundary, keeps the concern count at 4 (≤ 5), and loses zero parallelism since the scheduler serializes them on the",
           "combined_at": "2026-04-24T07:12:24.002138+00:00"
-        }
+        },
+        "updatedAt": "2026-04-24T09:20:14.228Z"
       },
       {
         "id": "2160",
@@ -46720,7 +46721,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:20:11.312Z",
+      "lastModified": "2026-04-24T09:20:14.228Z",
       "taskCount": 2187,
       "completedCount": 1936,
       "tags": [
