@@ -8563,7 +8563,7 @@
         "id": "397",
         "title": "Review: Eval meta_map performance and refactoring (17 suggestions from task 212)",
         "description": "Triage and address 17 code review suggestions from the task-212 review. Key themes: hot-path clones, code duplication, eager cloning, async safety, test gaps.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "<info added on 2026-04-21T14:28:33.374Z>\nMemory hints have been updated to include entities: [\"evaluate_let_bindings\", \"meta_map\", \"TopologyTemplate\"] and queries: [\"evaluate_let_bindings extract_dependency_trace topological sort\", \"meta_map performance review suggestions task 212\", \"task 470 eliminate redundant computation let_bindings\"]. Note: Task 470 (Eliminate redundant computation in evaluate_let_bindings) was created directly from this review's findings and completed via commit 2ab85ba6578c (2026-04-22). Task 397 is now unblocked and pending.\n</info added on 2026-04-21T14:28:33.374Z>\n<info added on 2026-04-22T04:14:27.079Z>\nREPLAN REQUIRED (reconciliation 2026-04-22): The original review target `crates/reify-eval/src/lib.rs` was split by task 2032 into `engine_*.rs` sibling modules (`engine_eval.rs`, `engine_edit.rs`, and related siblings). The 17 suggestions from task 212 (hot-path clones, code duplication, eager cloning, async safety, test gaps) must now be triaged against the post-split `engine_*.rs` structure. Memory hints: search 'task 2032 engine_*.rs split restructuring reify-eval lib.rs', search 'meta_map performance review suggestions task 212 hot-path clones', entities: evaluate_let_bindings, meta_map, engine_eval, engine_edit.\n</info added on 2026-04-22T04:14:27.079Z>",
@@ -8593,7 +8593,7 @@
           "files": [],
           "_causation_id": "f6512fb7-cad5-4e80-86da-ddbca8dc0e37"
         },
-        "updatedAt": "2026-04-22T11:55:28.476Z"
+        "updatedAt": "2026-04-24T13:13:15.923Z"
       },
       {
         "id": "398",
@@ -47209,7 +47209,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T13:13:12.237Z",
+      "lastModified": "2026-04-24T13:13:15.923Z",
       "taskCount": 2203,
       "completedCount": 1961,
       "tags": [
