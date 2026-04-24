@@ -46627,7 +46627,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:03:34.518Z"
+        "updatedAt": "2026-04-24T09:03:34.518Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry_modify.rs"
+          ]
+        }
       },
       {
         "id": "2193",
@@ -46685,7 +46690,9 @@
       "completedCount": 1935,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T09:14:00.348Z",
+      "description": "Tasks for master context"
     }
   }
 }
