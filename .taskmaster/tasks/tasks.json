@@ -40952,7 +40952,7 @@
         "id": "1940",
         "title": "Add non-zero step_offset companion test for chamfer non-geometry target fallback",
         "description": "Consolidate and extend non-geometry-target fallback test coverage in crates/reify-compiler/src/geometry_modify.rs: (1) extract a parameterized helper that runs the fallback assertion across all 2arg modify kinds (chamfer, fillet, thicken, shell), eliminating the near-identical compile_modify_op_chamfer_non_geometry_target_fallback (~line 341) and compile_modify_op_fillet_preserves_step0 (~line 387) copies; (2) add a companion test placing chamfer(scalar_param, dist) in a context where step_offset > 0 and asserting the target resolves to GeomRef::Step(step_offset), not Step(0).",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "details": "Two improvements to fallback test coverage in geometry_modify.rs, both scoped to crates/reify-compiler/src:\n\n1. **Parameterize existing fallback tests** (geometry_modify.rs ~lines 341, 387): `compile_modify_op_chamfer_non_geometry_target_fallback` and `compile_modify_op_fillet_preserves_step0` are near-identical — differing only in op name/kind. Extract a helper (e.g. `assert_non_geometry_target_fallback(kind: ModifyKind, ...)`) that runs the fallback assertion for a given 2arg modify kind. Drive it with a table covering chamfer, fillet, thicken, and shell so coverage is uniform and scaffold is not hand-duplicated.\n\n2. **Add step_offset > 0 companion test** (geometry_modify.rs / lib.rs): The existing chamfer test compiles at top level with step_offset=0, so asserting `GeomRef::Step(0)` is indistinguishable from the old bug-preserving behavior. Add a companion test that places `chamfer(scalar_param, dist)` in a context where step_offset > 0 (e.g. nested inside a boolean op / let chain after prior ops in the same realization) and asserts the target is `GeomRef::Step(step_offset)`, not `Step(0)`.",
@@ -40969,7 +40969,7 @@
           "curator_justification": "Task 1940 (pending, combine_eligible=true) targets the same functions in geometry_modify.rs — the chamfer/fillet non-geometry-target fallback tests (~lines 341 and 387). Both tasks are tiny, share a root cause (sparse fallback test coverage in geometry_modify.rs), and serialize on the same module lock. Together they form one coherent \"harden fallback test coverage\" concern: parameterize the existing chamfer+fillet tests to cover all 2arg modify kinds AND add the step_offset>0 companion variant. ",
           "combined_at": "2026-04-23T19:16:13.072578+00:00"
         },
-        "updatedAt": "2026-04-23T20:58:23.106Z"
+        "updatedAt": "2026-04-24T07:09:44.416Z"
       },
       {
         "id": "1941",
@@ -41253,11 +41253,11 @@
         "description": "The two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` (task 1834/1907) suppresses duplicate Let-cell injection only when an *unannotated* Let loses to a Param/annotated-Let in Pass 1 (via `pass2_skipped`). The symmetric case — an annotated Let whose name was already claimed in Pass 1 by a Param registered earlier in the same Pass 1 loop — still causes the injection loop to emit both a Param cell and an annotated-Let cell for the same `(entity, member)` pair.\n\nThe `cross_kind_pre_registration_preserves_first_type` test (updated in commit 7a7c7127d) pins 1 cell in the Param + unannotated-Let case, but a Param + annotated-Let case is not covered by any test and still produces 2 cells. Pre-existing behavior, but inconsistent with the design comment at ~197-215 that frames the split as restoring symmetry.\n\nMemory hints: search \"task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells\"; entities: DefaultKind, AvailableDefaultKind.",
         "details": "Two options (reviewer proposed both):\n\nOption A (symmetric fix) — Extend Pass 1's Occupied path to mark annotated-Let conflicts in a new `pass1_skipped: HashSet<String>` set consumed by the injection loop the same way `pass2_skipped` is. This makes the two arms (Pass 1 / Pass 2) behaviorally identical: first-seen wins, and the loser's cell injection is suppressed regardless of kind.\n\nOption B (documented asymmetry) — Explicitly call out in the design comment at ~197-215 that annotated-Let + Param name collisions still emit duplicate cells. Add a follow-up task link. Pin current behavior with a test so future refactors don't silently flip it.\n\nRecommendation: Option A. The injection loop already reads `pass2_skipped`; adding a parallel `pass1_skipped` consumed at the same checkpoint is a small surgical change and removes a reviewer-accessible surprise. Option B effectively documents \"we know this is inconsistent\" and adds no mechanical guarantee.\n\nAdd test in `crates/reify-compiler/tests/trait_merge_tests.rs` mirroring `cross_kind_pre_registration_preserves_first_type` but using annotated-Let + Param (both with explicit types). Assert exactly 1 cell for the shared name (whichever default Pass 1 sees first wins).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 3).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:34:26.456Z",
+        "updatedAt": "2026-04-24T07:09:44.540Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -46431,7 +46431,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:09:44.288Z",
+      "lastModified": "2026-04-24T07:09:44.540Z",
       "taskCount": 2175,
       "completedCount": 1921,
       "tags": [
