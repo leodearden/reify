@@ -152,36 +152,26 @@ pub(crate) fn collect_all_requirements(
                 //   - Different structure_name → conflicting requirements, emit a diagnostic
                 //     (e.g. `sub hole = Hole` vs `sub hole = Rectangle`) then skip so the
                 //     checker sees at most one entry per sub-name.
-                if let Some((existing_structure, existing_trait)) =
-                    ctx.seen_sub_names.get(&req.name)
+                if try_dedup_or_conflict(
+                    &mut ctx.seen_sub_names,
+                    &req.name,
+                    structure_name,
+                    trait_name,
+                    span,
+                    |name, existing, existing_trait, new, new_trait| {
+                        format!(
+                            "conflicting trait sub requirements for '{}': \
+                             trait '{}' requires sub '{}', \
+                             trait '{}' requires sub '{}'",
+                            name, existing_trait, existing, new_trait, new
+                        )
+                    },
+                    diagnostics,
+                )
+                .is_break()
                 {
-                    if existing_structure != structure_name {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "conflicting trait sub requirements for '{}': \
-                                 trait '{}' requires sub '{}', \
-                                 trait '{}' requires sub '{}'",
-                                req.name,
-                                existing_trait,
-                                existing_structure,
-                                trait_name,
-                                structure_name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                span,
-                                format!(
-                                    "conflict between '{}' and '{}'",
-                                    existing_trait, trait_name
-                                ),
-                            )),
-                        );
-                    }
-                    continue; // Deduplicated (same or conflicting structure_name)
+                    continue;
                 }
-                ctx.seen_sub_names.insert(
-                    req.name.clone(),
-                    (structure_name.clone(), trait_name.to_string()),
-                );
                 ctx.requirements.push(req.clone());
             }
         }
