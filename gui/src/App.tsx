@@ -73,7 +73,11 @@ const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const DEFAULT_EDITOR_WIDTH = 300;
 const DEFAULT_SIDE_WIDTH = 300;
+const DEFAULT_DESIGN_TREE_HEIGHT = 160;
 const DEFAULT_PROPERTY_HEIGHT = 200;
+const DEFAULT_CONSTRAINT_HEIGHT = 140;
+const CHAT_MIN_HEIGHT = 160;
+const SPLITTER_THICKNESS = 4;
 
 let toastIdCounter = 0;
 
@@ -341,7 +345,9 @@ const App: Component = () => {
   const savedLayout = loadPanelLayout();
   const [editorWidth, setEditorWidth] = createSignal(savedLayout?.editorWidth ?? DEFAULT_EDITOR_WIDTH);
   const [sideWidth, setSideWidth] = createSignal(savedLayout?.sideWidth ?? DEFAULT_SIDE_WIDTH);
+  const [designTreeHeight, setDesignTreeHeight] = createSignal(savedLayout?.designTreeHeight ?? DEFAULT_DESIGN_TREE_HEIGHT);
   const [propertyHeight, setPropertyHeight] = createSignal(savedLayout?.propertyHeight ?? DEFAULT_PROPERTY_HEIGHT);
+  const [constraintHeight, setConstraintHeight] = createSignal(savedLayout?.constraintHeight ?? DEFAULT_CONSTRAINT_HEIGHT);
 
   // Debounced persistence of panel layout dimensions
   let saveTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -349,7 +355,9 @@ const App: Component = () => {
     const layout = {
       editorWidth: editorWidth(),
       sideWidth: sideWidth(),
+      designTreeHeight: designTreeHeight(),
       propertyHeight: propertyHeight(),
+      constraintHeight: constraintHeight(),
     };
     clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => savePanelLayout(layout), 300);
@@ -888,10 +896,34 @@ const App: Component = () => {
     setSideWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w - delta)));
   }
 
+  // Total pixels reserved by sibling panels + splitters when resizing one sub-panel.
+  // Three splitters when chat is open, two when closed. The chat-open case reserves
+  // CHAT_MIN_HEIGHT so chat can never be silently hidden.
+  function reservedForOthers(currentSignal: 'designTree' | 'property' | 'constraint'): number {
+    const splitters = (chatOpen() ? 3 : 2) * SPLITTER_THICKNESS;
+    const chatFloor = chatOpen() ? CHAT_MIN_HEIGHT : 0;
+    const designTree = currentSignal === 'designTree' ? 0 : designTreeHeight();
+    const property = currentSignal === 'property' ? 0 : propertyHeight();
+    const constraint = currentSignal === 'constraint' ? 0 : constraintHeight();
+    return designTree + property + constraint + chatFloor + splitters;
+  }
+
+  function handleDesignTreeResize(delta: number) {
+    const ch = sidePanelRef?.clientHeight ?? 0;
+    const maxHeight = ch > 0 ? ch - reservedForOthers('designTree') : Infinity;
+    setDesignTreeHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
+  }
+
   function handleSideResize(delta: number) {
     const ch = sidePanelRef?.clientHeight ?? 0;
-    const maxHeight = ch > 0 ? ch - MIN_PANEL_HEIGHT - 4 : Infinity;
+    const maxHeight = ch > 0 ? ch - reservedForOthers('property') : Infinity;
     setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
+  }
+
+  function handleConstraintResize(delta: number) {
+    const ch = sidePanelRef?.clientHeight ?? 0;
+    const maxHeight = ch > 0 ? ch - reservedForOthers('constraint') : Infinity;
+    setConstraintHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleViewportSelect(entityPath: string | null, modifiers?: { ctrl: boolean; shift: boolean }) {
@@ -1029,7 +1061,9 @@ const App: Component = () => {
               ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
-              style={{ 'grid-template-rows': `minmax(120px, 1fr) ${propertyHeight()}px 4px 1fr ${chatOpen() ? '1fr' : '0'}` }}
+              style={{ 'grid-template-rows': chatOpen()
+                ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`
+                : `${designTreeHeight()}px 4px ${propertyHeight()}px 4px 1fr` }}
             >
               <DesignTree
                 tree={entityTree()}
@@ -1043,6 +1077,7 @@ const App: Component = () => {
                 onOpenManage={() => setViewManageOpen(true)}
                 onSaveViews={handleSaveViews}
               />
+              <Splitter orientation="horizontal" onResize={handleDesignTreeResize} data-testid="splitter-design-tree" />
               <PropertyEditor
                 values={engineStore.state.values}
                 selectedEntity={selectionStore.state.selectedEntity}
@@ -1058,6 +1093,7 @@ const App: Component = () => {
                 onAskClaude={handleAskClaude}
               />
               <Show when={chatOpen()}>
+                <Splitter orientation="horizontal" onResize={handleConstraintResize} data-testid="splitter-constraint" />
                 <ChatPanel
                   store={claudeStore}
                   selectedEntity={selectionStore.state.selectedEntity ?? undefined}

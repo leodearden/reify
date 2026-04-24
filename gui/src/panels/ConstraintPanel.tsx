@@ -97,6 +97,7 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
 
   return (
     <div data-testid="constraint-panel" class={styles.container}>
+      <div class="panel-title" data-testid="panel-title-constraints">Constraints</div>
       <Show when={isEmpty()}>
         <div class={styles.emptyState}>No constraints</div>
       </Show>

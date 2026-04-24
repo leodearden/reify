@@ -1977,17 +1977,18 @@ describe('App splitter max bounds', () => {
     fireEvent.mouseMove(document, { clientX: 500, clientY: 1000 });
     fireEvent.mouseUp(document);
 
-    // Property height should be clamped so constraint panel remains visible
-    // containerHeight(600) - MIN_PANEL_HEIGHT(80) - 4(splitter) = 516
+    // Property height should be clamped so the other panels (design tree,
+    // constraint, chat) and their splitters still fit.
     const rows = sidePanel.style.gridTemplateRows;
-    // Verify the DesignTree minmax track is still at the front and the layout shape is intact:
-    // minmax(120px, 1fr) <propertyHeight>px 4px <constraintTrack> <chatTrack>
-    expect(rows).toMatch(/^minmax\(120px, 1fr\) \d+px 4px/);
-    // Extract the standalone Npx tokens (not inside function parens) to read propertyHeight:
-    const standaloneMatches = rows.match(/\b(\d+)px(?=\s)/g)!;
-    const heightPx = parseInt(standaloneMatches[0], 10);
-    expect(heightPx).toBeLessThanOrEqual(600 - 80 - 4);
-    expect(heightPx).toBeGreaterThan(0);
+    // Layout with chat open:
+    //   <designTreeHeight>px 4px <propertyHeight>px 4px <constraintHeight>px 4px minmax(160px, 1fr)
+    expect(rows).toMatch(/^\d+px 4px \d+px 4px \d+px 4px minmax\(160px, 1fr\)$/);
+    // Standalone `Npx ` tokens are [designTree, splitter, property, splitter, constraint, splitter].
+    const standalonePx = rows.match(/\b(\d+)px(?=\s)/g)!.map((s) => parseInt(s, 10));
+    const [designTreeHeight, , propertyHeight, , constraintHeight] = standalonePx;
+    // Property height must leave room for design tree, constraint, chat floor, and 3 splitters
+    expect(propertyHeight).toBeLessThanOrEqual(600 - designTreeHeight - constraintHeight - 160 - 3 * 4);
+    expect(propertyHeight).toBeGreaterThan(0);
   });
 });
 

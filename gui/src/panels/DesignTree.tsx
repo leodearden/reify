@@ -223,6 +223,7 @@ const DesignTree: Component<Props> = (props) => {
       tabindex="0"
       onKeyDown={handleKeyDown}
     >
+      <div class="panel-title" data-testid="panel-title-outline">Outline</div>
       <Show when={props.onOpenManage !== undefined}>
         <ViewSelector
           store={props.viewStateStore}
@@ -230,9 +231,11 @@ const DesignTree: Component<Props> = (props) => {
           onSaveViews={props.onSaveViews}
         />
       </Show>
-      <For each={props.tree}>
-        {(node) => renderNode(node)}
-      </For>
+      <div class={styles.treeScroll}>
+        <For each={props.tree}>
+          {(node) => renderNode(node)}
+        </For>
+      </div>
       <Show when={menu()}>
         {(m) => (
           <DesignTreeContextMenu
