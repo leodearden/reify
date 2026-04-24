@@ -2372,6 +2372,189 @@ fn edit_param_phase3_fires_for_auto_driven_guard_change() {
     );
 }
 
+/// Perf-lock regression guard for Phase 3 iterating and re-elaborating MULTIPLE
+/// guarded groups in a single `edit_param` call (task 2145).
+///
+/// Design: two independent auto params (`depth_a`, `depth_b`), two ref params
+/// (`ref_a = 5mm`, `ref_b = 5mm`), two constraints (`depth_a >= ref_a`,
+/// `depth_b >= ref_b`), and two guarded groups:
+///   - group A: guard `depth_a > 3mm`, member `m_a = 1mm`
+///   - group B: guard `depth_b > 3mm`, member `m_b = 1mm`
+///
+/// A `SequencedMockConstraintSolver` returns:
+///   - initial eval: `depth_a = depth_b = 5mm` (both guards true; members active).
+///   - post-edit:    `depth_a = depth_b = 2mm` (both guards flip false).
+///
+/// Edit: `edit_param(ref_a, 2mm)`.  `ref_a` is NOT structure_controlling (it does
+/// not appear in any guard expression), so Phase 1 does not fire and
+/// `phase1_reelaborated` is empty.  The solver re-resolves both autos to 2mm;
+/// wave2 re-evaluates both guard cells to false; Phase 3 fires (`guard_changed`)
+/// and must iterate and re-elaborate BOTH groups.
+///
+/// Assertions:
+/// - `m_a == Undef`: member A deactivated via Phase 3.
+/// - `m_b == Undef`: member B deactivated via Phase 3 (the critical multi-group
+///   assertion — if Phase 3's loop is truncated after the first group, m_b retains
+///   its 1mm value and this assertion fails).
+/// - `last_guard_phase_group_evals() == 2`: counter pins that Phase 3 processed
+///   exactly two groups.
+///   - == 0 → over-aggressive dedup (Phase 3 skipped everything)
+///   - == 1 → loop truncation / iteration regression (task 2145 target)
+///   - > 2 → extra or double elaboration
+///
+/// The test passes on both the pre-refactor (`.clone()`) and post-refactor
+/// (field-splitting) code; its value is locking the multi-iteration path.
+#[test]
+fn edit_param_phase3_reelaborates_multiple_auto_driven_guard_groups() {
+    let ref_a_id = ValueCellId::new("S", "ref_a");
+    let depth_a_id = ValueCellId::new("S", "depth_a");
+    let depth_b_id = ValueCellId::new("S", "depth_b");
+    let guard_a_id = ValueCellId::new("S", "__guard_0");
+    let guard_b_id = ValueCellId::new("S", "__guard_1");
+    let m_a_id = ValueCellId::new("S", "m_a");
+    let m_b_id = ValueCellId::new("S", "m_b");
+
+    // Guard expressions: each reads its own auto param.
+    let guard_a_expr = gt(value_ref("S", "depth_a"), literal(mm(3.0)));
+    let guard_b_expr = gt(value_ref("S", "depth_b"), literal(mm(3.0)));
+
+    // Member declarations: simple 1mm constants; deactivated when guard = false.
+    let m_a_decl = ValueCellDecl {
+        id: m_a_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(1.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+    let m_b_decl = ValueCellDecl {
+        id: m_b_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(1.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        // ref_a, ref_b: plain params — NOT structure_controlling (not in any guard).
+        .param("S", "ref_a", Type::length(), Some(literal(mm(5.0))))
+        .param("S", "ref_b", Type::length(), Some(literal(mm(5.0))))
+        // depth_a, depth_b: auto params resolved by the constraint solver.
+        .auto_param("S", "depth_a", Type::length())
+        .auto_param("S", "depth_b", Type::length())
+        // Constraints: solver must satisfy depth_a >= ref_a and depth_b >= ref_b.
+        .constraint(
+            "S",
+            0,
+            Some("depth_a_ge_ref_a"),
+            ge(value_ref("S", "depth_a"), value_ref("S", "ref_a")),
+        )
+        .constraint(
+            "S",
+            1,
+            Some("depth_b_ge_ref_b"),
+            ge(value_ref("S", "depth_b"), value_ref("S", "ref_b")),
+        )
+        // Group A: guard = depth_a > 3mm, member = m_a.
+        .guarded_group(
+            guard_a_expr,
+            guard_a_id.clone(),
+            vec![m_a_decl],
+            vec![],
+            vec![],
+            vec![],
+        )
+        // Group B: guard = depth_b > 3mm, member = m_b.
+        .guarded_group(
+            guard_b_expr,
+            guard_b_id.clone(),
+            vec![m_b_decl],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Sequenced solver: first call → depth_a = depth_b = 5mm (initial eval);
+    //                   second call → depth_a = depth_b = 2mm (after edit_param).
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_a_id.clone(), mm(5.0));
+    solved1.insert(depth_b_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_a_id.clone(), mm(2.0));
+    solved2.insert(depth_b_id.clone(), mm(2.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
+    ]);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval: depth_a = depth_b = 5mm, both guards true, m_a = m_b = 1mm.
+    let initial = engine.eval(&module);
+    assert!(
+        matches!(initial.values.get(&m_a_id), Some(Value::Scalar { .. })),
+        "initial: m_a should be active (1mm) when depth_a=5mm > 3mm; got {:?}",
+        initial.values.get(&m_a_id),
+    );
+    assert!(
+        matches!(initial.values.get(&m_b_id), Some(Value::Scalar { .. })),
+        "initial: m_b should be active (1mm) when depth_b=5mm > 3mm; got {:?}",
+        initial.values.get(&m_b_id),
+    );
+
+    // edit_param(ref_a, 2mm): ref_a is NOT structure_controlling, so Phase 1 does
+    // not fire (phase1_reelaborated = {}).  The solver re-resolves both depth params
+    // to 2mm; wave2 re-evaluates both guard cells to false (2mm > 3mm = false).
+    // Phase 3 must iterate and deactivate BOTH groups.
+    let edited = engine
+        .edit_param(ref_a_id, Value::length(0.002)) // 2mm in SI
+        .expect("edit_param must succeed");
+
+    // (a) member A deactivated: guard_a flipped true→false via Phase 3.
+    assert!(
+        matches!(edited.values.get(&m_a_id), Some(Value::Undef)),
+        "m_a must be Undef after guard_a flips false via Phase 3; got {:?}",
+        edited.values.get(&m_a_id),
+    );
+
+    // (b) member B deactivated: the critical multi-group assertion.
+    // If Phase 3's loop truncates after the first group, m_b remains 1mm here.
+    assert!(
+        matches!(edited.values.get(&m_b_id), Some(Value::Undef)),
+        "m_b must be Undef after guard_b flips false via Phase 3; got {:?} \
+         (== 1mm means Phase 3 loop was truncated after the first group — \
+         this is the regression task 2145 guards against)",
+        edited.values.get(&m_b_id),
+    );
+
+    // (c) Counter == 2: Phase 3 processed exactly both groups.
+    let counter = engine.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 2,
+        "expected counter == 2 (Phase 3 re-elaborates both guarded groups); \
+         got {} — \
+         == 0: over-aggressive dedup (both skipped), \
+         == 1: loop truncation regression (task 2145), \
+         > 2: extra or double elaboration",
+        counter
+    );
+}
+
 // ── Wave2 interaction: inactive members must stay Undef after cleanup ─────────
 
 /// Regression guard for the post-wave2 cleanup (task 2140 amendment):
