@@ -46770,12 +46770,35 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-24T09:33:12.486Z"
+      },
+      {
+        "id": "2200",
+        "title": "Purpose-body regular member access: validate member exists on bound subject type (thread template_registry)",
+        "description": "Task 2181's regular-member-access branch at `crates/reify-compiler/src/expr.rs:1197-1198` emits `ValueCellId::new(&id.entity, member)` with zero validation that `member` exists on the bound subject's structure. At eval time unknown members resolve to `Undef` with no diagnostic — so `subject.mispelled` compiles clean and silently produces Undef, strictly worse than the previous \"member access not yet supported\" error. The compiler can't validate today because `subject : Structure` is a generic wildcard and `template_registry` isn't available in `compile_purpose`. Thread `template_registry` into the purpose compilation scope so concrete (non-wildcard) subject types can have their members validated at compile time.",
+        "details": "**Hook point:** `crates/reify-compiler/src/expr.rs:1181-1200` (regular-member branch + FIXME comment at 1189-1196 notes `entity_kind == \"Structure\"` is a generic wildcard).\n\n**Approach:**\n1. Thread `template_registry` (or a reference/handle) through `compile_purpose` into `CompilationScope` so the member-access branch can look up the subject's StructureRef template and its declared fields/params.\n2. When subject type is a concrete `StructureRef(name)` and `name` exists in the registry, validate that `member` is a declared field/param on that template; emit a clear \"no member `X` on structure `Y`\" diagnostic otherwise.\n3. When subject is the generic `Structure` wildcard (today's m5_purpose.ri case), preserve current behavior but document the limitation.\n\n**Tests to add:**\n- `subject.bogus_member` in a purpose body compiles quietly today (characterization of the gap) — pins current behavior so the regression becomes visible once the validation lands.\n- Once template_registry is threaded: concrete-subject purposes flag misspelled member names as errors.\n\n**Also:** note this limitation in the deferred-work block at the top of `crates/reify-eval/tests/purpose_activation.rs` so it isn't forgotten.\n\n**Source:** esc-2181-18 S2 (reviewer_comprehensive on task 2181)",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T09:34:01.695Z"
+      },
+      {
+        "id": "2201",
+        "title": "Purpose-body ValueCellId encoding: eliminate multi-StructureRef-param collision (per-param identity or reject)",
+        "description": "Task 2181's regular-member branch at `crates/reify-compiler/src/expr.rs:1197` emits `ValueCellId::new(&id.entity, member)` where `id.entity == scope.entity_name == purpose_name`. For a hypothetical multi-param purpose `purpose check(a : Structure, b : Structure) { constraint a.mass > b.mass }`, BOTH `a.mass` and `b.mass` would compile to the same `ValueRef(check, mass)` — per-param identity is lost. Not exercised today (single-entity `activate_purpose` + single-param purposes in m5_purpose.ri), but the encoding offers no forward path: `remap_entity` rewrites a single `from_entity` at a time. Fix either by rejecting multi-StructureRef-param purposes with a clear diagnostic until the binding scheme is designed, OR by encoding per-param identity in the ValueCellId entity stamp.",
+        "details": "**Hook point:** `crates/reify-compiler/src/expr.rs:1161-1200` (purpose-subject member-access branch).\n\n**Two acceptable approaches:**\n\n1. **Reject (safer, minimal scope):** in `compile_purpose`, if more than one param has `Type::StructureRef(_)`, emit a compile-time error \"multi-StructureRef purpose params not supported; binding scheme TBD\" and refuse to compile. Lets us delay the design until a real use case appears.\n\n2. **Encode per-param identity:** change the ValueCellId entity stamp from `id.entity` (= purpose_name) to e.g. `format!(\"{}::{}\", purpose_name, param_name)`. `activate_purpose` / `remap_entity` would need to know which synthetic stamp maps to which caller-supplied entity, so this requires a multi-arg activate_purpose signature design.\n\n**Tests to add:**\n- A pinning test for current single-param behavior.\n- Whichever approach is chosen, a test that documents the multi-param case (either rejection diagnostic or collision-free ValueRef stamping).\n\n**Source:** esc-2181-18 S3 (reviewer_comprehensive on task 2181)",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:33:12.487Z",
-      "taskCount": 2188,
+      "lastModified": "2026-04-24T09:34:01.696Z",
+      "taskCount": 2190,
       "completedCount": 1937,
       "tags": [
         "master"
