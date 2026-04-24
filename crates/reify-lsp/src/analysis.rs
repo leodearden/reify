@@ -354,6 +354,19 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
+    /// Shared across all task-2176 stdlib-resolution tests to avoid tripling the literal.
+    const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
+    param density: Real = 7850
+    param name: String = "steel"
+    param volume: Real = 1.0
+    param centroid_x: Real = 0.0
+    param centroid_y: Real = 0.0
+    param centroid_z: Real = 0.0
+    param moment_of_inertia: Real = 1.0
+    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+}"#;
+
     // --- module_name_from_uri tests ---
 
     #[test]
@@ -1612,38 +1625,21 @@ mod tests {
 
     #[test]
     fn analysis_context_resolves_stdlib_types() {
-        // Source that references Rigid trait and Material struct from stdlib.
-        // With the empty-prelude compile() in AnalysisContext::new, these produce
-        // ERROR diagnostics. After swapping to compile_with_stdlib they must resolve.
-        let source = r#"structure S : Rigid {
-    param density: Real = 7850
-    param name: String = "steel"
-    param volume: Real = 1.0
-    param centroid_x: Real = 0.0
-    param centroid_y: Real = 0.0
-    param centroid_z: Real = 0.0
-    param moment_of_inertia: Real = 1.0
-    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 2e11)
-}"#;
+        // Source references Rigid trait and Material struct from stdlib.
+        // With the empty-prelude compile() these produce ERROR diagnostics;
+        // after swapping to compile_with_stdlib the module must be error-free.
         let uri = Url::parse("file:///test.ri").unwrap();
-        let ctx = AnalysisContext::new(source, &uri);
-        use tower_lsp::lsp_types::DiagnosticSeverity;
-        let unresolved_errors: Vec<_> = ctx
+        let ctx = AnalysisContext::new(STDLIB_PROBE_SRC, &uri);
+        let errors: Vec<_> = ctx
             .compiled
             .diagnostics
             .iter()
-            .filter(|d| {
-                d.severity == reify_types::Severity::Error
-                    && (d.message.contains("unresolved type: Material")
-                        || d.message.contains("unresolved trait"))
-            })
+            .filter(|d| d.severity == reify_types::Severity::Error)
             .collect();
         assert!(
-            unresolved_errors.is_empty(),
-            "AnalysisContext: stdlib types Material and trait Rigid should resolve; \
-             got errors: {unresolved_errors:?}"
+            errors.is_empty(),
+            "AnalysisContext: stdlib source should compile without errors; \
+             got: {errors:?}"
         );
-        // Suppress unused-import warning for DiagnosticSeverity brought in above
-        let _ = DiagnosticSeverity::ERROR;
     }
 }
