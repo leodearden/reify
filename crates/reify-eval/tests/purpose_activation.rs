@@ -12,18 +12,20 @@
 //! reviewer suggestion S3). The unique test `eval_clears_stale_purpose_state`
 //! is preserved in §2 below.
 //!
-//! NOTE: Two feature categories are not yet implemented by Task 259:
-//!   - `.geometric_params` filtering
-//!   - `forall p in subject.params: determined(p)` evaluated at runtime
+//! NOTE: Two feature categories remain deferred (post task-2181):
+//!   - `.geometric_params` filtering (runtime expansion of reflective-aggregation
+//!     elements against the bound entity; compile-time empty-list wiring is now done)
+//!   - `forall p in subject.params: determined(p)` evaluated at runtime (vacuously
+//!     true today due to empty-list emission; runtime expansion is a follow-up task)
 //!
-//! A follow-up task should implement them and add tests here. See
-//! `crates/reify-compiler/src/traits.rs` (resolved_queries building loop).
+//! Compile-time `subject.<param>` member-access wiring (task-2181) is now complete;
+//! see §5 below for the remap_entity integration test.
 
 use reify_eval::Engine;
 use reify_test_support::{
     make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_types::{ModulePath, OptimizationObjective, Satisfaction, Severity};
+use reify_types::{BinOp, CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -681,9 +683,94 @@ fn m10_purpose_activation_example_activate_multi_constraint_purpose() {
     );
 }
 
-// NOTE (suggestion S5): The reviewer requested a purpose body that references
-// `subject.<param>` (e.g., `minimize subject.width + subject.height`) to exercise
-// `expr.remap_entity`. This cannot be added yet — the compiler emits
-// "member access not yet supported: .width" for any MemberAccess in a purpose
-// body expression. A follow-up task should wire MemberAccess in purpose-body
-// compilation and then add a remap_entity integration test here.
+// §5 (was S5 deferral — task-2181): see subject_member_access_is_remapped_to_bound_entity_on_activation below.
+
+// ── §5: subject.<param> remap_entity integration (task-2181) ─────────────────
+//
+// Exercises `CompiledExpr::remap_entity` on a `subject.<param>` reference
+// produced by the new StructureRef-subject branch in the MemberAccess arm.
+// Pre-activation: constraint's ValueRef entity == purpose name.
+// Post-activation: remap_entity("weight_target", "Bracket") rewrites it to
+// "Bracket".  This is the S5 acceptance criterion.
+
+/// Verifies that `subject.mass` in a purpose body is remapped to the bound
+/// entity's `mass` member when the purpose is activated.
+///
+/// Flow:
+///  1. Compile `purpose weight_target(subject : Structure) { constraint subject.mass > 0 }`.
+///  2. Pre-activation: assert constraint BinOp left ValueRef entity == "weight_target".
+///  3. `engine.activate_purpose("weight_target", "Bracket")`.
+///  4. Post-activation: find injected constraint, assert ValueRef entity == "Bracket".
+#[test]
+fn subject_member_access_is_remapped_to_bound_entity_on_activation() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose weight_target(subject : Structure) {
+    constraint subject.mass > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(compiled.compiled_purposes.len(), 1);
+    let purpose = &compiled.compiled_purposes[0];
+    assert_eq!(purpose.name, "weight_target");
+
+    // Pre-activation: ValueRef entity must equal the purpose name (pre-remap stamp).
+    let constraint = &purpose.constraints[0];
+    let pre_entity = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { left, .. } => match &left.kind {
+            CompiledExprKind::ValueRef(id) => id.entity.clone(),
+            other => panic!(
+                "pre-activation: expected ValueRef for left of BinOp, got {:?}",
+                other
+            ),
+        },
+        other => panic!(
+            "pre-activation: expected BinOp constraint expr, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        pre_entity, "weight_target",
+        "pre-activation: ValueRef entity must equal the purpose name"
+    );
+
+    // Activate against Bracket — remap_entity fires inside activate_purpose.
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("weight_target", "Bracket");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate_purpose");
+
+    // Find the injected constraint by its purpose-prefixed entity id.
+    let injected_data = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:weight_target@Bracket"))
+        .map(|(_, data)| data.clone())
+        .expect(
+            "expected at least one constraint with entity prefix 'purpose:weight_target@Bracket'"
+        );
+
+    // Post-activation: remap_entity must have rewritten the ValueRef entity to "Bracket".
+    let post_entity = match &injected_data.expr.kind {
+        CompiledExprKind::BinOp { left, .. } => match &left.kind {
+            CompiledExprKind::ValueRef(id) => id.entity.clone(),
+            other => panic!(
+                "post-activation: expected ValueRef in remapped BinOp left, got {:?}",
+                other
+            ),
+        },
+        other => panic!(
+            "post-activation: expected BinOp in remapped constraint expr, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        post_entity, "Bracket",
+        "post-activation: remap_entity must rewrite ValueRef entity from 'weight_target' to 'Bracket'"
+    );
+}
