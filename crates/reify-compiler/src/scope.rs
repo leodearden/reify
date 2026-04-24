@@ -29,6 +29,10 @@ pub(crate) struct CompilationScope<'u> {
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
     pub(crate) unit_registry: Option<&'u UnitRegistry>,
+    /// Reference to the template registry for purpose-body member validation.
+    /// Set by compile_purpose so that concrete subject types can be validated
+    /// against their declared value cells (task-2200). None for entity/function scopes.
+    pub(crate) template_registry: Option<&'u HashMap<String, &'u TopologyTemplate>>,
     /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
     /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
@@ -56,6 +60,7 @@ impl<'u> CompilationScope<'u> {
             meta_entries: HashMap::new(),
             has_meta_block: false,
             unit_registry: None,
+            template_registry: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
             has_geometry: false,
@@ -65,6 +70,15 @@ impl<'u> CompilationScope<'u> {
     /// Set the unit registry reference for this scope.
     pub(crate) fn set_unit_registry(&mut self, registry: &'u UnitRegistry) {
         self.unit_registry = Some(registry);
+    }
+
+    /// Set the template registry reference for purpose-body member validation (task-2200).
+    /// Mirrors `set_unit_registry`; called once from `compile_purpose` after scope construction.
+    pub(crate) fn set_template_registry(
+        &mut self,
+        registry: &'u HashMap<String, &'u TopologyTemplate>,
+    ) {
+        self.template_registry = Some(registry);
     }
 
     /// Look up a unit by name, applying factor and offset.
