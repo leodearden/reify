@@ -17110,7 +17110,7 @@
         "description": "The public API now has three entry points: compile() (no prelude), compile_with_prelude() (caller-supplied), and compile_with_stdlib() (full stdlib). The bare compile() silently fails to resolve any standard units — including the nine that were previously hard-coded — making it a trap for callers.\n\nFix: Either mark compile() with #[deprecated] pointing to compile_with_stdlib, or add a prominent doc warning that compile() is intended only for prelude-module bootstrapping and will not resolve standard units.\n\nLocation: crates/reify-compiler/src/lib.rs:2636-2641.\n\nmemory_hints: search \"compile entry point API\" for context on the three-function API.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17118,9 +17118,12 @@
           "files": [],
           "modules": [
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "98fa3b7497d45f8075644389d1abb8fbd9ea65ca"
+          }
         },
-        "updatedAt": "2026-04-24T07:42:25.635Z"
+        "updatedAt": "2026-04-24T08:56:20.364Z"
       },
       {
         "id": "767",
@@ -46586,9 +46589,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T08:55:55.212Z",
+      "lastModified": "2026-04-24T08:56:20.365Z",
       "taskCount": 2179,
-      "completedCount": 1931,
+      "completedCount": 1932,
       "tags": [
         "master"
       ]
