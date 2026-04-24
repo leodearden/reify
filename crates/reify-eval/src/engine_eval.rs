@@ -377,16 +377,15 @@ impl Engine {
                     // `default_expr`, preserving the pre-task-2017 silent-skip
                     // semantics for untouched no-default Param cells.
                     //
-                    // Validation mirrors Engine::edit_param via the shared
-                    // `validate_param_override` helper (task 2017 amend-pass):
-                    // type-kind and Scalar-dimension are both checked there.
-                    // On mismatch we emit a Warning diagnostic, retain the
-                    // entry in param_overrides (reverting the source edit
-                    // should resurrect it), and fall back to the default_expr
-                    // path.  `engine_edit.rs` still inlines the same guard
-                    // chain; a follow-up task will migrate that site onto
-                    // `validate_param_override` so any future third guard
-                    // (e.g. Tensor shape) lands in one place.
+                    // Validation mirrors `Engine::edit_param` via the shared
+                    // `validate_param_override` helper (task 2017 amend-pass +
+                    // task 2178 follow-up): type-kind and Scalar-dimension are
+                    // both checked there.  On mismatch we emit a Warning
+                    // diagnostic, retain the entry in param_overrides
+                    // (reverting the source edit should resurrect it), and fall
+                    // back to the default_expr path.  `Engine::edit_param`
+                    // translates the same rejection variants into an
+                    // `EngineError` instead.
                     //
                     // Orphan purging runs once, before this loop (see the
                     // retain call after Snapshot::from_compiled_module).

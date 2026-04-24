@@ -18,12 +18,11 @@ use std::collections::HashMap;
 /// - `Engine::edit_param` returns the corresponding `EngineError`
 ///   variant (`TypeKindMismatch` / `DimensionMismatch`).
 ///
-/// Centralising the rejection vocabulary (task 2017 amend-pass) lets a
-/// future third guard (e.g. Tensor shape, List element-type check) land
-/// in one place rather than drifting between the cold-start and
-/// incremental paths.  `Engine::edit_param`'s adoption of this helper is
-/// a follow-up — the amend-pass scope did not include `engine_edit.rs`
-/// and that call site still inlines its guard chain for now.
+/// Centralising the rejection vocabulary (task 2017 amend-pass → completed
+/// under task 2178) lets a future third guard (e.g. Tensor shape, List
+/// element-type check) land in one place rather than drifting between the
+/// cold-start (`Engine::eval`) and incremental (`Engine::edit_param`) paths.
+/// Both call sites now route through this helper.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParamOverrideRejection {
     /// Value and cell type disagree at the type-kind level (Int vs
@@ -48,9 +47,7 @@ pub(crate) enum ParamOverrideRejection {
 ///    LENGTH value into a MASS cell).
 ///
 /// Any future refinement lands here and is picked up by every call site
-/// automatically.  See the type-level comment on
-/// [`ParamOverrideRejection`] for the parallel `engine_edit.rs` site
-/// that is slated to migrate onto this helper in a follow-up.
+/// automatically.
 pub(crate) fn validate_param_override(
     value: &reify_types::Value,
     cell_type: &reify_types::Type,

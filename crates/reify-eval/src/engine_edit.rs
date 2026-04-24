@@ -40,8 +40,8 @@ use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
-    value_type_kind_matches,
 };
+use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
 /// `values` map and the snapshot's `values` map — UNLESS the member is an
@@ -460,34 +460,25 @@ impl Engine {
             None => return Err(EngineError::CellNotFound { cell }),
         };
 
-        // Validate type-kind compatibility: reject cross-variant mismatches before
-        // the narrower dimension check below.  Value::Undef is always accepted
-        // (it is the Auto/no-value sentinel used extensively by the solver and
-        // compiler for unresolved params).
-        if !value_type_kind_matches(&new_value, &cell_node.cell_type) {
-            return Err(EngineError::TypeKindMismatch {
-                cell,
-                expected: Box::new(cell_node.cell_type.clone()),
-                got: Box::new(new_value),
-            });
-        }
-
-        // Validate dimension compatibility for Scalar cells.
-        // If the cell is Type::Scalar { dimension: expected } and the supplied
-        // value is Value::Scalar { dimension: got } where got != expected,
-        // reject the edit immediately rather than propagating a dimension-corrupt
-        // value through the eval graph.
-        if let reify_types::Type::Scalar {
-            dimension: expected,
-        } = cell_node.cell_type
-            && let reify_types::Value::Scalar { dimension: got, .. } = &new_value
-            && *got != expected
-        {
-            return Err(EngineError::DimensionMismatch {
-                cell,
-                expected,
-                got: *got,
-            });
+        // Validate type-kind + Scalar-dimension compatibility via the shared
+        // `validate_param_override` helper (see `engine_admin.rs`).  Kept in
+        // one place so a future third guard (Tensor shape, List element-type)
+        // lands once and is picked up by both the cold-start path in
+        // `Engine::eval` and the incremental path here.  `Value::Undef` is
+        // accepted as the Auto/no-value sentinel — `value_type_kind_matches`
+        // inside the helper handles that.
+        match validate_param_override(&new_value, &cell_node.cell_type) {
+            Ok(()) => {}
+            Err(ParamOverrideRejection::TypeKindMismatch) => {
+                return Err(EngineError::TypeKindMismatch {
+                    cell,
+                    expected: Box::new(cell_node.cell_type.clone()),
+                    got: Box::new(new_value),
+                });
+            }
+            Err(ParamOverrideRejection::ScalarDimensionMismatch { expected, got }) => {
+                return Err(EngineError::DimensionMismatch { cell, expected, got });
+            }
         }
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
