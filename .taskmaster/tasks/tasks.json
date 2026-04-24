@@ -47329,12 +47329,24 @@
             "crates/reify-eval/tests/edit_source.rs"
           ]
         }
+      },
+      {
+        "id": "2221",
+        "title": "edit_source re-incarnation test: remove or rewrite non-witnessing block + fix self-contradictory comment",
+        "description": "The re-incarnation block in crates/reify-eval/tests/edit_source.rs at lines 1385-1428 does not meaningfully test cache-invalidation behavior for entirely-removed collection_sub re-adds, and its rationale comment is self-contradictory.\n\nTwo concrete problems:\n\n1. The comment (lines 1385-1391) posits that a stale V_A entry would be served because post-B cells would appear UNCHANGED in the B→C' diff, which would allow a basis_version short-circuit. But module_c_prime changes Bolt.diameter from 10mm to 12mm (line 1393), which changes the child template's default_expr.content_hash, so those cells are classified ADDED/CHANGED — NOT UNCHANGED. The described short-circuit scenario cannot arise, making the comment's rationale logically invalid.\n\n2. Phase 4's create loop in engine_edit.rs:2198-2209 evaluates default_expr directly via reify_expr::eval_expr and writes straight into new_snapshot.values — it does not consult self.cache. So the assertion at 1406-1427 on snapshot.values will hold fresh 12mm regardless of whether Step (9) cleared the cache after B. The assertion passes under both the working and the broken implementations, providing no regression coverage beyond the earlier V_A-absent-or-fresh check at 1370-1383 (which IS meaningful because it inspects engine.cache_store() directly).\n\nTwo acceptable fixes:\n\n(a) Delete lines 1385-1428 entirely. The cache-invalidation contract is already pinned by the V_A-basis_version check at 1370-1383. Simplest, lowest-risk.\n\n(b) If additional same-id re-incarnation coverage is desired: rewrite with a C' that keeps diameter == 10mm (so content_hash is UNCHANGED and the comment's short-circuit scenario actually becomes reachable), and assert against engine.cache_store() post-re-add — NOT snapshot.values — to actually exercise the cache path.\n\nSource: esc-2182-49 (post-merge review of task 2182). Reviewer: reviewer_comprehensive.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T15:18:11.077Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T15:17:19.132Z",
-      "taskCount": 2209,
+      "lastModified": "2026-04-24T15:18:11.077Z",
+      "taskCount": 2210,
       "completedCount": 1965,
       "tags": [
         "master"
