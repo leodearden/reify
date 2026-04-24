@@ -47026,12 +47026,24 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-24T11:20:47.133Z"
+      },
+      {
+        "id": "2209",
+        "title": "conformance: drop hardcoded line-number references in pass1_skipped docstring",
+        "description": "The doc comment above the `pass1_skipped` injection guard in `crates/reify-compiler/src/conformance/checker.rs` (around line 1000) says:\n\n  \"This mirrors the `pass2_skipped` guard in the `None` arm below (checker.rs:999-1008 in task 1907's injection guard).\"\n\nHardcoded line numbers drift the moment anyone edits the file — a maintenance tripwire with no test backing it. Same fragility class as task 2134 (engine_edit.rs doc comments) and the convention note being written alongside this task.",
+        "details": "Replace the parenthetical `(checker.rs:999-1008 in task 1907's injection guard)` with a code-shape description, e.g. \"mirrors the pass2_skipped / None-cache-miss guard in the `None` arm of the `DefaultKind::Let` dispatch below in this same function\".\n\nNo test needed — pure docstring hygiene.\n\nVerify: `cargo fmt --check`; `cargo clippy --workspace -- -D warnings` clean.\n\nOrigin: reviewer_comprehensive on task 1952 (esc-1952-39, suggestion 1).",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-24T11:21:20.741Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T11:20:47.140Z",
-      "taskCount": 2197,
+      "lastModified": "2026-04-24T11:21:20.741Z",
+      "taskCount": 2198,
       "completedCount": 1948,
       "tags": [
         "master"
