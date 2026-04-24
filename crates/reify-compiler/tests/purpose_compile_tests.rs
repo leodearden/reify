@@ -909,6 +909,44 @@ purpose check(subject : Structure) {
     );
 }
 
+/// Characterization test: an `Occurrence` wildcard subject must NOT trigger
+/// a "has no member" error even when a non-existent member is accessed.
+///
+/// Sibling to `compile_purpose_wildcard_structure_subject_bogus_member_still_silent`.
+/// The `Occurrence` entity kind is not registered in the template registry,
+/// so the registry-miss guard at expr.rs:1188-1189 applies — the compiler
+/// skips member validation entirely (documented at expr.rs:1170-1182).
+///
+/// No `structure Occurrence` or `occurrence def Occurrence` is declared here
+/// because registering a template named "Occurrence" would defeat the test by
+/// taking the member-known branch instead of the registry-miss path.
+///
+/// Ensures no future change (e.g., adding a stdlib `Occurrence` template)
+/// silently removes this silent-fallthrough guarantee without a test failure.
+#[test]
+fn compile_purpose_wildcard_occurrence_subject_bogus_member_still_silent() {
+    let source = r#"
+purpose check(subject : Occurrence) {
+    constraint subject.bogus > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // The registry-miss path must NOT produce "has no member" diagnostics.
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for wildcard Occurrence subject, \
+         but got: {:#?}\n(Unregistered wildcard kinds fall through silently via \
+         the registry-miss guard — see expr.rs:1188-1189.)",
+        no_member_errors
+    );
+}
+
 /// Characterization test: a sub-component name on a concrete subject must NOT
 /// trigger a "has no member" diagnostic — sub_components are valid member
 /// kinds even though their type resolution is not yet implemented.
