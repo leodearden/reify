@@ -46594,11 +46594,16 @@
         "description": "In crates/reify-eval/src/geometry_ops.rs:2852-2857 and 2913-2918, the current assertions narrow the negative check to a single sibling literal (`extrude_symmetric`, `linear_2d`). Since SweepKind and PatternKind derive `strum_macros::EnumIter` and future variants (e.g. `ExtrudeThin` -> `extrude_thin`, `LinearHex` -> `linear_hex`) are plausible, a regression mis-identifying `Extrude`/`Linear` as any new underscore-suffixed sibling would slip past. Broaden the negative check to reject any `extrude_` / `linear_` prefix while keeping it decoupled from the ` for {kind}` diagnostic template (the motivation for task 2186). Suggested form:\n\n```rust\nassert!(msg.contains(\"extrude\") && !msg.contains(\"extrude_\"), ...);\nassert!(msg.contains(\"linear\") && !msg.contains(\"linear_\"), ...);\n```\n\nThis keeps template-independence (task 2186's intent) while catching any future underscore-suffixed variant (reviewer's concern).\n\nSource: esc-2186-9 S1+S2 (reviewer_comprehensive on task 2186).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T08:37:56.396Z"
+        "updatedAt": "2026-04-24T09:37:53.468Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "22f15d3ba2a2600eaf500c1952b1c7f090e4771c"
+          }
+        }
       },
       {
         "id": "2190",
@@ -46802,9 +46807,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:34:15.569Z",
+      "lastModified": "2026-04-24T09:37:53.468Z",
       "taskCount": 2190,
-      "completedCount": 1938,
+      "completedCount": 1939,
       "tags": [
         "master"
       ]
