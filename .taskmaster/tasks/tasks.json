@@ -45445,17 +45445,20 @@
         "description": "Add a cfg(debug_assertions)-gated call to assert_value_cell_types_representable on the snapshot produced by Snapshot::from_compiled_module inside Engine::edit_source (crates/reify-eval/src/engine_edit.rs around line 951). Today the invariant is only asserted on the eval() cold-start path (engine_eval.rs:176-177), so a compiler-introduced violation during an edit-time recompile could slip past the guard until the next full eval.",
         "details": "Context: task 1867 added `#[cfg(debug_assertions)] assert_value_cell_types_representable(&snapshot.graph);` right after `Snapshot::from_compiled_module(module)` in Engine::eval (engine_eval.rs:175-177). Reviewer flagged that Engine::edit_source also calls Snapshot::from_compiled_module but does not re-run the assertion, leaving a coverage gap for edit-time recompiles.\n\nFix: add the same cfg-gated call immediately after the from_compiled_module invocation in engine_edit.rs (around line 951). The helper `assert_value_cell_types_representable` is `pub(crate)`-reachable via `crate::engine_eval::` or by re-exporting; confirm visibility and adjust if needed. Zero release-build cost because the call is cfg(debug_assertions).\n\nSource: task 1867 review suggestion (reviewer_comprehensive); skipped at the time because engine_edit.rs was outside task 1867's locked modules.\n\nmemory_hints:\n- search: \"assert_value_cell_types_representable engine_eval debug_assertions\"\n- entity: Engine, Snapshot",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T14:14:38.969Z",
+        "updatedAt": "2026-04-24T14:44:23.360Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/edit_source.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "22fe91753d1b1e1120ba4a13fd6b26ede20728f5"
+          }
         }
       },
       {
@@ -47297,13 +47300,24 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-24T14:43:38.512Z"
+      },
+      {
+        "id": "2220",
+        "title": "edit_source invariant test: loop over both Type::TypeParam and Type::Geometry",
+        "description": "Extend `tests/edit_source.rs::edit_source_panics_on_unrepresentable_cell_type` (lines 3480-3522) to iterate over both unrepresentable variants `Type::TypeParam(\"T\".into())` and `Type::Geometry`, matching the style of the in-crate unit test `invariant_tests::panics_on_unrepresentable_cell_types`. Today only Type::TypeParam is exercised, leaving a drift risk between the variant list in `assert_value_cell_types_representable` and the edit-path coverage.",
+        "details": "Suggestion from task 2132 review (reviewer_comprehensive, test_coverage_gap).\n\nCurrent test (tests/edit_source.rs:3495-3501) builds a single bad_module with Type::TypeParam(\"T\"). Wrap the bad-module construction + engine seeding + panic::catch_unwind block in `for ty in [Type::TypeParam(\"T\".into()), Type::Geometry] { ... }` so both variants exercise the edit-path assertion.\n\nNote: the engine may need to be re-created inside the loop since edit_source mutates state; confirm by rerunning.\n\nSource: engine_eval.rs:60 matches both `Type::TypeParam(_)` and `Type::Geometry` — pairing the integration test with the guard list prevents the variant list and the test from drifting.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T14:43:38.512Z",
-      "taskCount": 2208,
-      "completedCount": 1963,
+      "lastModified": "2026-04-24T14:44:23.360Z",
+      "taskCount": 2209,
+      "completedCount": 1964,
       "tags": [
         "master"
       ]
