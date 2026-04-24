@@ -1481,7 +1481,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, _pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1500,6 +1500,14 @@ mod tests {
         assert!(
             inferred_let_exprs.is_empty(),
             "Expected no inferred_let_exprs for a param-only context"
+        );
+        // Negative control: a param-only fixture must never populate pass1_skipped
+        // (no annotated-Let losers can exist without an annotated Let in ctx.defaults).
+        assert!(
+            pass1_skipped.is_empty(),
+            "Expected pass1_skipped to be empty for a param-only context; \
+             got: {:?}",
+            pass1_skipped
         );
         assert!(
             pass2_skipped.is_empty(),
@@ -1556,7 +1564,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, _pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1571,6 +1579,15 @@ mod tests {
             diagnostics.is_empty(),
             "Expected no diagnostics for a simple number literal; got: {:?}",
             diagnostics
+        );
+        // Negative control: an unannotated-Let-only fixture must never populate
+        // pass1_skipped (no annotated-Let loser can exist without a competing
+        // annotated default earlier in ctx.defaults).
+        assert!(
+            pass1_skipped.is_empty(),
+            "Expected pass1_skipped to be empty for a unannotated-let-only context; \
+             got: {:?}",
+            pass1_skipped
         );
         assert!(
             pass2_skipped.is_empty(),
@@ -1653,7 +1670,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, _pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1674,6 +1691,14 @@ mod tests {
         assert!(
             pass2_skipped.contains("x"),
             "Expected 'x' in pass2_skipped after Pass 2 found its scope slot already claimed"
+        );
+        // Negative control: an unannotated Let losing to a Param goes into pass2_skipped,
+        // NOT pass1_skipped. The two sets are mutually exclusive by cell_type predicate.
+        assert!(
+            pass1_skipped.is_empty(),
+            "Expected pass1_skipped to be empty: the unannotated-Let loser is recorded in \
+             pass2_skipped, not pass1_skipped; got: {:?}",
+            pass1_skipped
         );
         assert!(
             pass2_compile_errors.is_empty(),

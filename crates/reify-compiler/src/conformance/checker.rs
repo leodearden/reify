@@ -76,7 +76,11 @@ pub(super) fn check_phase_resolve_structure_members(
     enum_defs: &[reify_types::EnumDef],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
-) -> (HashMap<String, Type>, HashMap<String, Type>, HashSet<String>) {
+) -> (
+    HashMap<String, Type>,
+    HashMap<String, Type>,
+    HashSet<String>,
+) {
     // Collect all structure member names for conformance checking.
     let empty_params: HashSet<String> = HashSet::new();
     // Build a HashSet of enum names once (O(E)) so the filter_map below performs
@@ -104,18 +108,17 @@ pub(super) fn check_phase_resolve_structure_members(
     // poison the downstream requirement check whenever the trait requires a non-Real type
     // (e.g. Length), generating a misleading second diagnostic and obscuring the actual
     // problem for the user.
-    let resolve_member_annotation_type = |te: &reify_syntax::TypeExpr,
-                                          diagnostics: &mut Vec<Diagnostic>|
-     -> Type {
-        match &te.kind {
-            reify_syntax::TypeExprKind::Named { name, type_args } => {
-                resolve_type_with_aliases(
-                    name,
-                    &empty_params,
-                    alias_registry,
-                    structure_names,
-                    trait_names,
-                )
+    let resolve_member_annotation_type =
+        |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
+            match &te.kind {
+                reify_syntax::TypeExprKind::Named { name, type_args } => {
+                    resolve_type_with_aliases(
+                        name,
+                        &empty_params,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                    )
                     .or_else(|| {
                         enum_names.contains(name.as_str()).then(|| {
                             if !type_args.is_empty() {
@@ -148,22 +151,22 @@ pub(super) fn check_phase_resolve_structure_members(
                         // cause; a second mismatch diagnostic would mislead the user.
                         Type::Error
                     })
+                }
+                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+                    diagnostics.push(
+                        Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                            .with_label(DiagnosticLabel::new(
+                                te.span,
+                                "unexpected dimensional expression",
+                            )),
+                    );
+                    // Return Type::Error (poison sentinel) — same rationale as the Named
+                    // arm above: suppress downstream "type mismatch for trait member"
+                    // cascade via the type_compat.rs producer-side wildcard.
+                    Type::Error
+                }
             }
-            reify_syntax::TypeExprKind::DimensionalOp { .. } => {
-                diagnostics.push(
-                    Diagnostic::error(format!("unresolved type in conformance check: {}", te))
-                        .with_label(DiagnosticLabel::new(
-                            te.span,
-                            "unexpected dimensional expression",
-                        )),
-                );
-                // Return Type::Error (poison sentinel) — same rationale as the Named
-                // arm above: suppress downstream "type mismatch for trait member"
-                // cascade via the type_compat.rs producer-side wildcard.
-                Type::Error
-            }
-        }
-    };
+        };
 
     // Build separate maps for param and let members so phase 5 can perform
     // kind-aware lookups: a `param` requirement must be satisfied by a structure
@@ -217,7 +220,11 @@ pub(super) fn check_phase_resolve_structure_members(
         })
         .collect();
 
-    (structure_param_members, structure_let_members, structure_constraint_labels)
+    (
+        structure_param_members,
+        structure_let_members,
+        structure_constraint_labels,
+    )
 }
 
 /// Phase 2 of trait conformance checking: collect all requirements and defaults from
@@ -430,12 +437,15 @@ pub(super) fn check_phase_pre_register_default_types(
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
         {
-            let ty = match &default.kind {
-                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+            // Compute both the type to register and whether this default is an
+            // annotated Let in a single match, so the Occupied path (below) can
+            // act on `is_annotated_let` without re-inspecting `default.kind`.
+            let (ty, is_annotated_let) = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => (cell_type.clone(), false),
                 DefaultKind::Let {
                     cell_type: Some(annotation_ty),
                     ..
-                } => annotation_ty.clone(),
+                } => (annotation_ty.clone(), true),
                 // Deferred to Pass 2 — needs Pass 1's scope to compile against.
                 DefaultKind::Let {
                     cell_type: None, ..
@@ -456,7 +466,7 @@ pub(super) fn check_phase_pre_register_default_types(
                 // records unannotated-Let losers.  Only annotated-Let losers are tracked
                 // here (not Param losers) — see the `pass1_skipped` declaration above for
                 // the documented scope limitation regarding the reverse direction.
-                if matches!(&default.kind, DefaultKind::Let { cell_type: Some(_), .. }) {
+                if is_annotated_let {
                     pass1_skipped.insert(name.to_string());
                 }
             }
@@ -561,7 +571,12 @@ pub(super) fn check_phase_pre_register_default_types(
         }
     }
 
-    (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors)
+    (
+        inferred_let_exprs,
+        pass1_skipped,
+        pass2_skipped,
+        pass2_compile_errors,
+    )
 }
 
 /// Phase 4 of trait conformance checking: build the `available_defaults` advertisement map.
@@ -678,7 +693,8 @@ pub(super) fn check_phase_build_available_defaults_map(
                          contract broken; Type::Real fallback would re-introduce the \
                          phantom-type-mismatch bug fixed by task 1951 Option B"
                     );
-                    let resolved = resolve_let_advertised_type(cell_type, inferred_let_exprs.get(&key));
+                    let resolved =
+                        resolve_let_advertised_type(cell_type, inferred_let_exprs.get(&key));
                     (AvailableDefaultKind::Let, resolved)
                 }
                 DefaultKind::Constraint(_) => return None,
@@ -833,8 +849,10 @@ pub(super) fn check_phase_check_members_against_requirements(
                             )
                         };
                         diagnostics.push(
-                            Diagnostic::error(message)
-                                .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
+                            Diagnostic::error(message).with_label(DiagnosticLabel::new(
+                                structure.span,
+                                "required by trait",
+                            )),
                         );
                     }
                 }
