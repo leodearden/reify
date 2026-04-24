@@ -760,6 +760,28 @@ mod tests {
         }
     }
 
+    /// Cache-miss path of `try_dedup_or_conflict`: calling with a name not in the map
+    /// inserts `(value, trait_name)` and returns `Continue(())`. The conflict closure is
+    /// never invoked.
+    #[test]
+    fn try_dedup_or_conflict_inserts_on_cache_miss() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &7_i32,
+            "TraitA",
+            SourceSpan::empty(0),
+            |_, _, _, _, _| -> String { unreachable!("not on cache miss") },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Continue(()));
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
+    }
+
     /// Param/Constraint cross-interference: two traits each providing a named default
     /// for the same member name — one `Param`, one `Constraint` — produce no conflict
     /// diagnostic and both defaults are collected.
