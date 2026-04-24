@@ -41287,8 +41287,8 @@
       {
         "id": "1952",
         "title": "conformance.rs: restore Pass 1 ↔ Pass 2 symmetry for annotated-Let + Param cell-injection collisions",
-        "description": "The two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` (task 1834/1907) suppresses duplicate Let-cell injection only when an *unannotated* Let loses to a Param/annotated-Let in Pass 1 (via `pass2_skipped`). The symmetric case — an annotated Let whose name was already claimed in Pass 1 by a Param registered earlier in the same Pass 1 loop — still causes the injection loop to emit both a Param cell and an annotated-Let cell for the same `(entity, member)` pair.\n\nThe `cross_kind_pre_registration_preserves_first_type` test (updated in commit 7a7c7127d) pins 1 cell in the Param + unannotated-Let case, but a Param + annotated-Let case is not covered by any test and still produces 2 cells. Pre-existing behavior, but inconsistent with the design comment at ~197-215 that frames the split as restoring symmetry.\n\nMemory hints: search \"task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells\"; entities: DefaultKind, AvailableDefaultKind.",
-        "details": "Two options (reviewer proposed both):\n\nOption A (symmetric fix) — Extend Pass 1's Occupied path to mark annotated-Let conflicts in a new `pass1_skipped: HashSet<String>` set consumed by the injection loop the same way `pass2_skipped` is. This makes the two arms (Pass 1 / Pass 2) behaviorally identical: first-seen wins, and the loser's cell injection is suppressed regardless of kind.\n\nOption B (documented asymmetry) — Explicitly call out in the design comment at ~197-215 that annotated-Let + Param name collisions still emit duplicate cells. Add a follow-up task link. Pin current behavior with a test so future refactors don't silently flip it.\n\nRecommendation: Option A. The injection loop already reads `pass2_skipped`; adding a parallel `pass1_skipped` consumed at the same checkpoint is a small surgical change and removes a reviewer-accessible surprise. Option B effectively documents \"we know this is inconsistent\" and adds no mechanical guarantee.\n\nAdd test in `crates/reify-compiler/tests/trait_merge_tests.rs` mirroring `cross_kind_pre_registration_preserves_first_type` but using annotated-Let + Param (both with explicit types). Assert exactly 1 cell for the shared name (whichever default Pass 1 sees first wins).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 3).",
+        "description": "The two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` (task 1834/1907) suppresses duplicate Let-cell injection only when an *unannotated* Let loses to a Param/annotated-Let in Pass 1 (via `pass2_skipped`). The symmetric case — an annotated Let whose name was already claimed in Pass 1 by a Param registered earlier in the same Pass 1 loop — still causes the injection loop to emit both a Param cell and an annotated-Let cell for the same `(entity, member)` pair.\n\nThe `cross_kind_pre_registration_preserves_first_type` test (updated in commit 7a7c7127d) pins 1 cell in the Param + unannotated-Let case, but a Param + annotated-Let case is not covered by any test and still produces 2 cells. Pre-existing behavior, but inconsistent with the design comment at ~197-215 that frames the split as restoring symmetry.\n\nMemory hints: search \"task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells\"; entities: DefaultKind, AvailableDefaultKind. [Updated: 4/24/2026]",
+        "details": "Two options (reviewer proposed both):\n\nOption A (symmetric fix) — Extend Pass 1's Occupied path to mark annotated-Let conflicts in a new `pass1_skipped: HashSet<String>` set consumed by the injection loop the same way `pass2_skipped` is. This makes the two arms (Pass 1 / Pass 2) behaviorally identical: first-seen wins, and the loser's cell injection is suppressed regardless of kind.\n\nOption B (documented asymmetry) — Explicitly call out in the design comment at ~197-215 that annotated-Let + Param name collisions still emit duplicate cells. Add a follow-up task link. Pin current behavior with a test so future refactors don't silently flip it.\n\nRecommendation: Option A. The injection loop already reads `pass2_skipped`; adding a parallel `pass1_skipped` consumed at the same checkpoint is a small surgical change and removes a reviewer-accessible surprise. Option B effectively documents \"we know this is inconsistent\" and adds no mechanical guarantee.\n\nAdd test in `crates/reify-compiler/tests/trait_merge_tests.rs` mirroring `cross_kind_pre_registration_preserves_first_type` but using annotated-Let + Param (both with explicit types). Assert exactly 1 cell for the shared name (whichever default Pass 1 sees first wins).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 3).\n<info added on 2026-04-24T09:02:35.120Z>\nMemory hints for execution-time context lookup:\n\n- Search terms: \"task 1952 pass1_skipped pass2_skipped annotated-Let Param symmetry\"\n- Entities involved: DefaultKind, AvailableDefaultKind\n- Related tasks: 1834, 1907\n- Key concepts: Pass 1 ↔ Pass 2 symmetry, annotated-Let, Param, cell-injection collisions\n</info added on 2026-04-24T09:02:35.120Z>",
         "testStrategy": "",
         "status": "pending",
         "dependencies": [],
@@ -41298,13 +41298,14 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "DefaultKind",
-              "AvailableDefaultKind"
+              "task 1907",
+              "conformance.rs",
+              "pass2_skipped"
             ],
             "queries": [
-              "task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells cross_kind_pre_registration",
-              "conformance.rs Pass1 Pass2 symmetry annotated-Let Param name collision duplicate injection",
-              "task 1834 1907 cross_kind_pre_registration_preserves_first_type test"
+              "conformance.rs cell injection pass1 pass2 symmetry",
+              "annotated-Let Param name collision cell registration",
+              "task 1907 reviewer comprehensive suggestion"
             ]
           },
           "_causation_id": "ffd591f4-e7aa-4f68-80cd-f939f0b08e96",
@@ -46608,7 +46609,9 @@
       "completedCount": 1934,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T09:02:24.194Z",
+      "description": "Tasks for master context"
     }
   }
 }
