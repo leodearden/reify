@@ -46,7 +46,6 @@ use reify_eval::graph::EvaluationGraph;
 use reify_eval::{CheckResult, ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 use reify_types::{
     CompiledFunction, ContentHash, DeterminacyState, PersistentMap, Value, ValueCellId, ValueMap,
-    VersionId,
 };
 
 use crate::concurrent::{
@@ -116,9 +115,6 @@ pub struct ConcurrentEvalAdapter {
     functions: Vec<CompiledFunction>,
     /// Template-to-meta-entries mapping for resolving MetaAccess expressions.
     meta_map: Arc<HashMap<String, HashMap<String, String>>>,
-    /// Version for this evaluation.
-    #[allow(dead_code)]
-    version: VersionId,
 }
 
 impl ConcurrentEvalAdapter {
@@ -135,7 +131,6 @@ impl ConcurrentEvalAdapter {
             results: Arc::new(Mutex::new(Vec::new())),
             functions: setup.functions.clone(),
             meta_map: Arc::clone(&setup.meta_map),
-            version: setup.version,
         }
     }
 
