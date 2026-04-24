@@ -45,7 +45,7 @@ use crate::{
 /// Enforcement points: this call (runtime) and
 /// `crates/reify-eval/tests/value_cell_type_invariants.rs` (CI regression lock).
 #[cfg(debug_assertions)]
-fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) {
+pub(crate) fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) {
     use reify_types::Type;
     for (id, node) in graph.value_cells.iter() {
         assert!(

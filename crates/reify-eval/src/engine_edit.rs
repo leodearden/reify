@@ -1203,6 +1203,9 @@ impl Engine {
         let version_id = self.next_version_id;
         self.next_version_id += 1;
         let mut new_snapshot = crate::snapshot::Snapshot::from_compiled_module(module);
+        // Invariant mirror of engine_eval.rs:248-249 — covers the edit-time recompile path.
+        #[cfg(debug_assertions)]
+        crate::engine_eval::assert_value_cell_types_representable(&new_snapshot.graph);
         new_snapshot.id = SnapshotId(snapshot_id);
         new_snapshot.version = VersionId(version_id);
 
