@@ -283,18 +283,18 @@ pub(super) fn check_phase_collect_trait_bounds(
 ///
 /// # PASS 2 COMPILE-ERROR SUPPRESSION (`pass2_compile_errors`, task 1914 / task 2158)
 ///
-/// Pass 2 snapshots the count of **`Severity::Error`** diagnostics before each `compile_expr`
-/// call. When the count grows (i.e., at least one new Error-severity diagnostic was pushed),
-/// the expression itself failed to compile (e.g. unresolved forward reference, unknown unit).
-/// In that case the name is recorded in `pass2_compile_errors` and **excluded from
-/// `inferred_let_exprs`**.  The scope slot is additionally **poisoned with `Type::Error`** via
-/// `register_if_absent(name, Type::Error)` so that sibling unannotated-let expressions
-/// referencing this name resolve to the anti-cascade sentinel rather than emitting a fresh
-/// "unresolved name" cascade.  `implicitly_converts_to(Error, _) -> true` (type_compat.rs:52-75)
-/// and `infer_binop_type`'s leading Error guard (type_compat.rs:371-376) propagate the poison
-/// silently — the same pattern used at `check_phase_resolve_structure_members` (checker.rs:77-92,
-/// 135-150).  `register_if_absent` preserves any prior Pass-1 registration so `Type::Error` can
-/// never overwrite a real type.
+/// Pass 2 snapshots the diagnostic-vector length before each `compile_expr` call, then scans
+/// only the newly-appended tail for `Severity::Error`.  When at least one Error-severity
+/// diagnostic is found in the tail, the expression itself failed to compile (e.g. unresolved
+/// forward reference, unknown unit).  In that case the name is recorded in
+/// `pass2_compile_errors` and **excluded from `inferred_let_exprs`**.  The scope slot is
+/// additionally **poisoned with `Type::Error`** via `register_if_absent(name, Type::Error)` so
+/// that sibling unannotated-let expressions referencing this name resolve to the anti-cascade
+/// sentinel rather than emitting a fresh "unresolved name" cascade.
+/// `implicitly_converts_to(Error, _) -> true` and `infer_binop_type`'s leading Error guard
+/// (see `type_compat.rs`) propagate the poison silently — the same pattern used at
+/// `check_phase_resolve_structure_members`.  `register_if_absent` preserves any prior
+/// Pass-1 registration so `Type::Error` can never overwrite a real type.
 ///
 /// The `pass2_compile_errors` set is threaded through `check_phase_build_available_defaults_map`
 /// (where names in the set are excluded from the advertisement — no phantom `(name, Let) →
@@ -303,15 +303,15 @@ pub(super) fn check_phase_collect_trait_bounds(
 ///
 /// Filtering by `Severity::Error` (rather than total diagnostic count) is required because
 /// `compile_expr` legitimately emits `Severity::Warning` and `Severity::Info` on valid paths
-/// (e.g. `Diagnostic::warning` for empty list/set/map literals at `expr.rs:1211/1241/1281`
-/// and zero-arg return-type inference at `expr.rs:800`; `Diagnostic::info` at
-/// `expr.rs:1056/1924`). A len-based snapshot would incorrectly classify those non-error
-/// emissions as compile failures, silently dropping successfully-typed expressions such as
-/// `let x = []` from the inferred cache. The Error-count filter is safe under future drift:
+/// (e.g. `Diagnostic::warning` for `ExprKind::ListLiteral`/`SetLiteral`/`MapLiteral` (empty
+/// literal) and zero-arg return-type inference; `Diagnostic::info` for dynamic collection index
+/// and qualified-access not-in-scope). A len-based snapshot would incorrectly classify those
+/// non-error emissions as compile failures, silently dropping successfully-typed expressions such
+/// as `let x = []` from the inferred cache. Scanning only the tail is safe under future drift:
 /// any new warning/info path in `compile_expr` or its callees is silently tolerated.
 ///
-/// Using error-count rather than `matches!(result_type, Type::Error)` remains more robust:
-/// some error-recovery paths in `expr.rs` (e.g. unknown-unit at expr.rs:278–290) return
+/// Using a diagnostic-based check rather than `matches!(result_type, Type::Error)` is more
+/// robust: some error-recovery paths in `expr.rs` (e.g. unknown-unit coercion) return
 /// `Type::Scalar{DIMENSIONLESS}` instead of `Type::Error`, and would escape a type-based check.
 ///
 /// # TWO-PASS DESIGN RATIONALE (task 1834 amendment)
@@ -425,23 +425,23 @@ pub(super) fn check_phase_pre_register_default_types(
     // instead of the old `Type::Real` fallback).
     //
     // Error suppression (task 1914 suggestion #1, hardened by task 2158):
-    // snapshot the count of *Severity::Error* diagnostics before each
-    // compile_expr call.  If the count grew, the expression failed to compile
-    // (root-cause diagnostic already emitted).  In that case the name is
-    // recorded in `pass2_compile_errors` and excluded from both
-    // `inferred_let_exprs` and `register_if_absent` — no poisoned entry
-    // enters the cache or the scope, preventing phantom "available default
+    // snapshot the diagnostic-vector length before each compile_expr call, then
+    // scan only the newly-appended tail for Severity::Error.  If the tail
+    // contains at least one Error, the expression failed to compile (root-cause
+    // diagnostic already emitted).  In that case the name is recorded in
+    // `pass2_compile_errors` and the scope slot is poisoned with Type::Error —
+    // no inferred cache entry is produced, preventing phantom "available default
     // has Real/Error" cascade diagnostics downstream.
     //
-    // Severity::Error filtering (rather than total len) is required because
-    // compile_expr legitimately emits Severity::Warning and Severity::Info
-    // diagnostics on valid paths (e.g. Diagnostic::warning for empty list/set/
-    // map literals at expr.rs:1211/1241/1281 and zero-arg return-type
-    // inference at expr.rs:800; Diagnostic::info at expr.rs:1056/1924).
-    // Counting those as compile failures would incorrectly suppress
-    // successfully-typed expressions such as `let x = []`.  The filter is
-    // safe under future drift: any new warning/info path in compile_expr or
-    // its callees is silently tolerated.
+    // Scanning only the tail (rather than counting total Errors) is required
+    // because compile_expr legitimately emits Severity::Warning and
+    // Severity::Info on valid paths (e.g. Diagnostic::warning for
+    // ExprKind::ListLiteral/SetLiteral/MapLiteral (empty literal), zero-arg
+    // return-type inference, and Diagnostic::info for dynamic collection index /
+    // qualified-access not-in-scope).  Counting those as compile failures would
+    // incorrectly suppress successfully-typed expressions such as `let x = []`.
+    // The tail-scan is safe under future drift: any new warning/info path in
+    // compile_expr or its callees is silently tolerated.
     for default in &ctx.defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
@@ -450,21 +450,20 @@ pub(super) fn check_phase_pre_register_default_types(
                 let_decl,
             } = &default.kind
         {
-            // Snapshot the count of Severity::Error diagnostics before compilation
-            // so we can detect if compile_expr pushed a new error (including
-            // partial error-recovery cases that return a non-Error type such as
-            // Type::Scalar{DIMENSIONLESS}).  Warning/Info additions are tolerated.
-            let err_count_before = diagnostics
-                .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .count();
+            // Snapshot the diagnostic-vector length before compilation, then scan
+            // only the newly-appended tail for Severity::Error.  This avoids
+            // rescanning the entire (growing) diagnostics vector on every default
+            // in the loop — O(emitted diagnostics) rather than O(N × |diagnostics|).
+            // Warning/Info entries in the tail are tolerated; only Error entries
+            // indicate a compile failure.  Partial error-recovery paths may return
+            // non-Error types (e.g. Type::Scalar{DIMENSIONLESS}), so the diagnostic
+            // tail-scan is more reliable than inspecting compiled_expr.result_type.
+            let diag_before = diagnostics.len();
             let compiled_expr =
                 compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
-            let err_count_after = diagnostics
+            let had_compile_error = diagnostics[diag_before..]
                 .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .count();
-            let had_compile_error = err_count_after > err_count_before;
+                .any(|d| d.severity == Severity::Error);
 
             if had_compile_error {
                 // compile_expr itself emitted at least one Severity::Error diagnostic —
@@ -475,19 +474,26 @@ pub(super) fn check_phase_pre_register_default_types(
                 // Poison the scope slot with Type::Error so sibling unannotated-let
                 // expressions (or trait constraints) that reference this name resolve to
                 // the anti-cascade sentinel rather than emitting a fresh "unresolved name"
-                // cascade.  `implicitly_converts_to(Error, _) -> true` (type_compat.rs:52-75)
-                // and `infer_binop_type`'s Type::Error leading guard (type_compat.rs:371-376)
+                // cascade.  `implicitly_converts_to(Error, _) -> true` and
+                // `infer_binop_type`'s leading Type::Error guard (see `type_compat.rs`)
                 // then propagate the poison silently through downstream compilation —
-                // the same pattern used at `check_phase_resolve_structure_members`
-                // (checker.rs:77-92, 135-150) for unresolved structure-member annotations.
+                // the same pattern used at `check_phase_resolve_structure_members` for
+                // unresolved structure-member annotations.
                 //
                 // `register_if_absent` preserves any prior registration: a Pass 1 annotated
                 // Param/Let that already claimed the slot keeps its real type (Type::Error
-                // can never displace a real type, only fill a vacant slot).  The returned
-                // `Option<Type>` (Some on collision) is intentionally discarded — unlike the
-                // success arm, we don't log a conflict because Type::Error carries no
-                // user-facing information.
-                let _ = scope.register_if_absent(name, Type::Error);
+                // can never displace a real type, only fill a vacant slot).  A collision
+                // here means Pass 1 already registered this name with a real type; log it
+                // at trace level for observability.
+                if let Some(prior_ty) = scope.register_if_absent(name, Type::Error) {
+                    tracing::trace!(
+                        target: "reify_compiler::conformance",
+                        name = %name,
+                        prior_ty = ?prior_ty,
+                        "pass2 compile-error: scope slot already claimed by Pass-1 \
+                         registration; Type::Error sentinel not inserted (prior type wins)"
+                    );
+                }
             } else {
                 let inferred_ty = compiled_expr.result_type.clone();
                 if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {

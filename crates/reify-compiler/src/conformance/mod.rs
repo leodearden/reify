@@ -1880,6 +1880,200 @@ mod tests {
         );
     }
 
+    /// Phase-level guard test: chained-let `Type::Error` sentinel suppresses the
+    /// requirement-check cascade (task 2158 amendment #3).
+    ///
+    /// Companion to the integration test
+    /// `chained_unannotated_lets_with_unresolved_ref_do_not_cascade`
+    /// (`tests/let_type_disambiguation_tests.rs`), which pins the
+    /// absence-of-cascade at the "unresolved name" site.  This test locks in the
+    /// *downstream* consequence: the `Type::Error` sentinel propagated through
+    /// sibling `let c = a` lands in `available_defaults` as
+    /// `("c", Let) -> Type::Error`, and `implicitly_converts_to(Error, _) -> true`
+    /// (wildcard in `type_compat.rs`) absorbs the mismatch silently at the
+    /// requirement-check site.
+    ///
+    /// ## Why this is here and not in `let_type_disambiguation_tests.rs`
+    ///
+    /// `RequirementKind::Let` is not parser-reachable from reify source today
+    /// (see mod.rs:256-260).  The test hand-builds the requirement so we can
+    /// exercise `check_phase_check_members_against_requirements`' anti-cascade
+    /// path without an RFC-level API promotion.
+    ///
+    /// ## Scenario
+    ///
+    /// - Trait T provides `let a = b` (b undefined → compile error → `a` poisoned
+    ///   with `Type::Error` in scope) and `let c = a` (a resolves to `Type::Error`
+    ///   → c compiles silently to `Type::Error`, no new error diagnostic).
+    /// - Trait T also declares `require let c : Length`
+    ///   (`RequirementKind::Let(Type::length())` — hand-built).
+    /// - Structure S : T { } — no member overrides.
+    ///
+    /// ## Expected behavior
+    ///
+    /// Pass 2 records "a" in `pass2_compile_errors` (compile failure).  "c" is NOT
+    /// in `pass2_compile_errors` — `c = a` compiles successfully to `Type::Error`
+    /// via the scope sentinel.  `available_defaults` advertises
+    /// `("c", Let) -> Type::Error`.  The requirement-check calls
+    /// `implicitly_converts_to(Type::Error, Type::length())` → `true` → no
+    /// "type mismatch for trait member 'c'" cascade.
+    ///
+    /// The only expected diagnostic is the root-cause "unresolved name: b".
+    ///
+    /// ## Failure without task 2158 step-4 (scope-poison)
+    ///
+    /// Without the scope-poison fix, "a" is absent from scope when `c = a` is
+    /// compiled, emitting "unresolved name: a" and adding "c" to
+    /// `pass2_compile_errors`.  `available_defaults` then has no entry for
+    /// `("c", Let)`, and the requirement check emits "missing required member 'c'"
+    /// — a spurious secondary cascade on top of the root-cause "unresolved b".
+    #[test]
+    fn chained_unannotated_lets_error_sentinel_suppresses_requirement_check_cascade() {
+        // --- let a = b (b is undefined — will fail compile) ---
+        let let_decl_a = reify_syntax::LetDecl {
+            name: "a".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // unannotated
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::Ident("b".to_string()), // b is undefined
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        // --- let c = a (a resolves to Type::Error from the scope sentinel) ---
+        let let_decl_c = reify_syntax::LetDecl {
+            name: "c".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // unannotated
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::Ident("a".to_string()), // a → Type::Error sentinel
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        // --- Trait T: requires `let c : Length`; provides `let a = b`, `let c = a` ---
+        // `RequirementKind::Let` is hand-built because it is not parser-reachable today.
+        let trait_t = CompiledTrait {
+            name: "TraitT".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "c".to_string(),
+                kind: RequirementKind::Let(Type::length()),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![
+                TraitDefault {
+                    name: Some("a".to_string()),
+                    kind: DefaultKind::Let {
+                        cell_type: None,
+                        let_decl: let_decl_a,
+                    },
+                    span: SourceSpan::empty(0),
+                },
+                TraitDefault {
+                    name: Some("c".to_string()),
+                    kind: DefaultKind::Let {
+                        cell_type: None,
+                        let_decl: let_decl_c,
+                    },
+                    span: SourceSpan::empty(0),
+                },
+            ],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // --- Structure S : TraitT { } — no member overrides ---
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_syntax::TraitBoundRef {
+                name: "TraitT".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let diagnostics = run_conformance(&[trait_t], &structure_def, &[]);
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+
+        // (a) Root-cause "unresolved b" error must be present.
+        let has_unresolved_b = errors.iter().any(|d| {
+            d.message.contains("unresolved")
+                && (d.message.contains(": b")
+                    || d.message.contains("'b'")
+                    || d.message.contains("`b`"))
+        });
+        assert!(
+            has_unresolved_b,
+            "expected at least one diagnostic naming the unresolved identifier `b` \
+             (root cause); got: {:?}",
+            errors
+        );
+
+        // (b) No "type mismatch for trait member 'c'" cascade.
+        // After scope-poison, `c = a` compiles to Type::Error (a is in scope as
+        // the sentinel).  `implicitly_converts_to(Type::Error, Type::length())`
+        // returns true via the wildcard in `type_compat.rs`.
+        let cascade_mismatch: Vec<_> = errors
+            .iter()
+            .filter(|d| {
+                d.message.contains("type mismatch for trait member")
+                    && (d.message.contains("'c'") || d.message.contains("\"c\""))
+            })
+            .collect();
+        assert!(
+            cascade_mismatch.is_empty(),
+            "cascade 'type mismatch for trait member c' found — \
+             `implicitly_converts_to(Type::Error, Type::length())` should return true \
+             (wildcard in type_compat.rs), absorbing the poisoned type rather than \
+             emitting a mismatch.  Cascade diagnostics: {:?}",
+            cascade_mismatch
+        );
+
+        // (c) No "missing required member 'c'" cascade.
+        // Without scope-poison, `c = a` would also fail compile (a unresolved),
+        // putting "c" in pass2_compile_errors and leaving no entry in
+        // available_defaults — causing a spurious "missing required member 'c'".
+        let missing_c: Vec<_> = errors
+            .iter()
+            .filter(|d| {
+                d.message.contains("missing required member")
+                    && (d.message.contains("'c'") || d.message.contains("\"c\""))
+            })
+            .collect();
+        assert!(
+            missing_c.is_empty(),
+            "spurious 'missing required member c' found — without scope-poison, `c = a` \
+             would fail compile (a unresolved in scope) and c would be excluded from \
+             available_defaults entirely.  Diagnostics: {:?}",
+            missing_c
+        );
+    }
+
     /// Phase-contract test for `check_phase_build_available_defaults_map`.
     ///
     /// Verifies that the helper builds a composite-keyed HashMap from ctx.defaults,
