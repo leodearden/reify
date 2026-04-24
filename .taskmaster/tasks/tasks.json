@@ -41658,13 +41658,13 @@
         "description": "Refactor crates/reify-compiler/src/expr.rs `make_poison_literal(diagnostics, pre_push_len)` to accept a fully-constructed `Diagnostic` and push it internally, removing the `let n = diagnostics.len()` book-keeping at every call site (~25 sites). Enforces the \"push paired with poison\" invariant by construction rather than discipline. Alternative: a `#[must_use]` `PoisonBuilder` wrapper. Apply equivalently to `make_poison_type` (added in task 1921 S3). Source: review suggestion S1 in esc-1921-36 (reviewer_comprehensive, api_ergonomics).",
         "details": "Files: crates/reify-compiler/src/expr.rs. Risk: large mechanical refactor across ~25 call sites; ensure all expr_error_sentinel_tests + type_error_propagation_tests still pass. memory_hints: search \"task-1921 poison policy\"; entity \"make_poison_literal\".",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1921"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:53:18.057Z",
+        "updatedAt": "2026-04-24T09:34:15.569Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -46802,7 +46802,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T09:34:15.073Z",
+      "lastModified": "2026-04-24T09:34:15.569Z",
       "taskCount": 2190,
       "completedCount": 1938,
       "tags": [
