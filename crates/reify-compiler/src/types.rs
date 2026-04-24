@@ -68,6 +68,7 @@ pub struct TraitDefault {
 /// Variants are matched exhaustively across the crate; add a new variant only
 /// after updating every match site.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum DefaultKind {
     /// A param with a default expression: `param x : Length = 10mm`
     Param {
