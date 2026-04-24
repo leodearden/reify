@@ -493,7 +493,6 @@ fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
         "warning should mention 'type-kind', got: {:?}",
         warnings[0].message
     );
-
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -566,5 +565,4 @@ fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
         "warning should mention 'dimension', got: {:?}",
         warnings[0].message
     );
-
 }
