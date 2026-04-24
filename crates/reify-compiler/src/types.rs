@@ -65,11 +65,11 @@ pub struct TraitDefault {
 
 /// The kind of default a trait provides.
 ///
-/// Marked `#[non_exhaustive]` so that adding a new variant in the future does not
-/// break source compatibility in external crates (they must use a wildcard arm).
-/// Within this crate, all match sites must still be updated when a variant is added.
+/// Exhaustive by design: adding a variant here must fail compilation at every
+/// match site (reify-compiler internals, reify-test-support builders, and the
+/// silent-defaults integration tests) so the new variant cannot silently slip
+/// through conformance, content-hash, or regression paths.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum DefaultKind {
     /// A param with a default expression: `param x : Length = 10mm`
     Param {
