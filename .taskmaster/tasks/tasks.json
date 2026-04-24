@@ -46679,7 +46679,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:12:32.216Z"
+        "updatedAt": "2026-04-24T09:12:32.216Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/cache.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/eval_param_overrides.rs",
+            "crates/reify-runtime/src/concurrent.rs"
+          ]
+        }
       },
       {
         "id": "2196",
