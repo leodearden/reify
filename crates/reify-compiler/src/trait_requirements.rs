@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use super::*;
 
 /// Maximum allowed depth for trait refinement chains to prevent stack overflow
@@ -122,29 +124,25 @@ pub(crate) fn collect_all_requirements(
     for req in &compiled_trait.required_members {
         match &req.kind {
             RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
-                if let Some((existing_type, existing_trait)) = ctx.seen_names.get(&req.name) {
-                    if existing_type != expected_type {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "conflicting trait requirements for '{}': \
-                                 trait '{}' requires {}, trait '{}' requires {}",
-                                req.name, existing_trait, existing_type, trait_name, expected_type
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                span,
-                                format!(
-                                    "conflict between '{}' and '{}'",
-                                    existing_trait, trait_name
-                                ),
-                            )),
-                        );
-                    }
-                    continue; // Deduplicated
+                if try_dedup_or_conflict(
+                    &mut ctx.seen_names,
+                    &req.name,
+                    expected_type,
+                    trait_name,
+                    span,
+                    |name, existing, existing_trait, new, new_trait| {
+                        format!(
+                            "conflicting trait requirements for '{}': \
+                             trait '{}' requires {}, trait '{}' requires {}",
+                            name, existing_trait, existing, new_trait, new
+                        )
+                    },
+                    diagnostics,
+                )
+                .is_break()
+                {
+                    continue;
                 }
-                ctx.seen_names.insert(
-                    req.name.clone(),
-                    (expected_type.clone(), trait_name.to_string()),
-                );
                 ctx.requirements.push(req.clone());
             }
             RequirementKind::Sub(structure_name) => {
@@ -154,36 +152,26 @@ pub(crate) fn collect_all_requirements(
                 //   - Different structure_name → conflicting requirements, emit a diagnostic
                 //     (e.g. `sub hole = Hole` vs `sub hole = Rectangle`) then skip so the
                 //     checker sees at most one entry per sub-name.
-                if let Some((existing_structure, existing_trait)) =
-                    ctx.seen_sub_names.get(&req.name)
+                if try_dedup_or_conflict(
+                    &mut ctx.seen_sub_names,
+                    &req.name,
+                    structure_name,
+                    trait_name,
+                    span,
+                    |name, existing, existing_trait, new, new_trait| {
+                        format!(
+                            "conflicting trait sub requirements for '{}': \
+                             trait '{}' requires sub '{}', \
+                             trait '{}' requires sub '{}'",
+                            name, existing_trait, existing, new_trait, new
+                        )
+                    },
+                    diagnostics,
+                )
+                .is_break()
                 {
-                    if existing_structure != structure_name {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "conflicting trait sub requirements for '{}': \
-                                 trait '{}' requires sub '{}', \
-                                 trait '{}' requires sub '{}'",
-                                req.name,
-                                existing_trait,
-                                existing_structure,
-                                trait_name,
-                                structure_name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                span,
-                                format!(
-                                    "conflict between '{}' and '{}'",
-                                    existing_trait, trait_name
-                                ),
-                            )),
-                        );
-                    }
-                    continue; // Deduplicated (same or conflicting structure_name)
+                    continue;
                 }
-                ctx.seen_sub_names.insert(
-                    req.name.clone(),
-                    (structure_name.clone(), trait_name.to_string()),
-                );
                 ctx.requirements.push(req.clone());
             }
         }
@@ -295,6 +283,50 @@ pub(crate) fn collect_all_requirements(
             ctx.defaults.push(default.clone());
         }
     }
+}
+
+/// Deduplicates or reports a conflict for a single requirement/sub-requirement entry.
+///
+/// Looks up `name` in `seen`.
+/// - **Cache miss**: inserts `(value.clone(), trait_name.to_string())` and returns `Continue(())`.
+///   The caller should push the requirement.
+/// - **Cache hit, equal value**: returns `Break(())` silently (deduplicated).
+/// - **Cache hit, mismatched value**: builds the conflict message via `conflict_msg_builder`,
+///   emits a `Diagnostic::error` with a uniform label `"conflict between '…' and '…'"`,
+///   and returns `Break(())`. The caller should skip (do not push).
+///
+/// The caller pattern is:
+/// ```rust,ignore
+/// if try_dedup_or_conflict(&mut seen, name, value, trait_name, span, msg_fn, diags).is_break() {
+///     continue;
+/// }
+/// ctx.requirements.push(req.clone());
+/// ```
+fn try_dedup_or_conflict<V, F>(
+    seen: &mut HashMap<String, (V, String)>,
+    name: &str,
+    value: &V,
+    trait_name: &str,
+    span: SourceSpan,
+    conflict_msg_builder: F,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ControlFlow<()>
+where
+    V: PartialEq + Clone,
+    F: FnOnce(&str, &V, &str, &V, &str) -> String,
+{
+    if let Some((existing_value, existing_trait)) = seen.get(name) {
+        if existing_value != value {
+            let msg = conflict_msg_builder(name, existing_value, existing_trait, value, trait_name);
+            let label = format!("conflict between '{}' and '{}'", existing_trait, trait_name);
+            diagnostics.push(
+                Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, label)),
+            );
+        }
+        return ControlFlow::Break(());
+    }
+    seen.insert(name.to_string(), (value.clone(), trait_name.to_string()));
+    ControlFlow::Continue(())
 }
 
 #[cfg(test)]
@@ -758,6 +790,91 @@ mod tests {
                 diags
             );
         }
+    }
+
+    /// Cache-hit with mismatched value: emits exactly one `Error` diagnostic with the
+    /// builder-provided message and a uniform `"conflict between '…' and '…'"` label;
+    /// returns `Break(())`; the map is unchanged.
+    #[test]
+    fn try_dedup_or_conflict_emits_diagnostic_on_mismatch() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        map.insert("x".to_string(), (7_i32, "TraitA".to_string()));
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &9_i32, // different value → conflict
+            "TraitB",
+            SourceSpan::empty(0),
+            |name, existing, existing_trait, new, new_trait| {
+                format!(
+                    "BOOM '{}': {} vs {} (traits '{}' and '{}')",
+                    name, existing, new, existing_trait, new_trait
+                )
+            },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        // Map must remain unchanged (conflict does NOT overwrite)
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert_eq!(diags.len(), 1, "Expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(
+            diags[0].message,
+            "BOOM 'x': 7 vs 9 (traits 'TraitA' and 'TraitB')"
+        );
+        assert_eq!(diags[0].labels.len(), 1);
+        assert_eq!(
+            diags[0].labels[0].message,
+            "conflict between 'TraitA' and 'TraitB'"
+        );
+    }
+
+    /// Cache-hit with equal value: returns `Break(())` silently; the map is unchanged and
+    /// no diagnostic is emitted. The conflict closure must not be invoked (guarded by
+    /// `unreachable!`).
+    #[test]
+    fn try_dedup_or_conflict_dedups_silently_on_equal_value() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        map.insert("x".to_string(), (7_i32, "TraitA".to_string()));
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &7_i32, // same value as already present
+            "TraitB",
+            SourceSpan::empty(0),
+            |_, _, _, _, _| -> String { unreachable!("no closure on equal-value dedup") },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        // Map must not be overwritten (still TraitA, not TraitB)
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert!(diags.is_empty(), "Expected no diagnostics on dedup, got: {:?}", diags);
+    }
+
+    /// Cache-miss path of `try_dedup_or_conflict`: calling with a name not in the map
+    /// inserts `(value, trait_name)` and returns `Continue(())`. The conflict closure is
+    /// never invoked.
+    #[test]
+    fn try_dedup_or_conflict_inserts_on_cache_miss() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &7_i32,
+            "TraitA",
+            SourceSpan::empty(0),
+            |_, _, _, _, _| -> String { unreachable!("not on cache miss") },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Continue(()));
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
     }
 
     /// Param/Constraint cross-interference: two traits each providing a named default
