@@ -1265,13 +1265,9 @@ mod tests {
         // never reached — the default IS present in available_defaults, just with an
         // incompatible type.
         assert!(
-            diagnostics
+            !diagnostics
                 .iter()
-                .filter(
-                    |d| d.message.contains("missing required member") && d.message.contains("'x'")
-                )
-                .count()
-                == 0,
+                .any(|d| d.message.contains("missing required member") && d.message.contains("'x'")),
             "negative case should hit the Some(default_type) arm, not the None arm; \
              got: {:?}",
             diagnostics
