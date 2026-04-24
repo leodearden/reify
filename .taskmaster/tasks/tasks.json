@@ -46146,11 +46146,11 @@
         "description": "Expand pragma hash/diagnostic tests in crates/reify-compiler/tests/pragma_compile_tests.rs.",
         "details": "Three test additions:\n\n1) Block-level pragma mutation → module hash: add sibling to `module_pragma_change_changes_module_content_hash` that toggles a structure-level pragma (e.g. `structure S { #precision(bits=32) ... }` vs `bits=64`) and asserts different `compiled.content_hash`. Block pragmas reach template via `structure.pragmas.to_vec()`; invariant holds only if `TopologyTemplate::content_hash` folds `template.pragmas`. If the new test fails, template hashing needs updating.\n\n2) PragmaValue+PragmaArg variant coverage: current determinism test only exercises KeyValue+Number. Add `#precision(bare_a)` vs `#precision(bare_b)` (Bare+Ident), `#flag(enabled=true)` vs `#flag(enabled=false)` (KV+Bool), `#tag(name=\"a\")` vs `#tag(name=\"b\")` (KV+String) — one per `format_pragma_value` variant.\n\n3) `no_prelude_on_structure_emits_module_only_warning` (pragma_compile_tests.rs:340-351): add `assert!(pragma_warnings(&module, \"unknown pragma\").is_empty())` to pin absence of the old generic warning.\n\nContext: task 1163 commits 03cbc1e29, d17f0554a, 35bcc9dde.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:22:23.836Z",
+        "updatedAt": "2026-04-24T08:53:18.427Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
@@ -46583,7 +46583,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T08:53:15.318Z",
+      "lastModified": "2026-04-24T08:53:18.431Z",
       "taskCount": 2179,
       "completedCount": 1930,
       "tags": [
