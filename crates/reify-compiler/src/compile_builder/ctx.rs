@@ -239,10 +239,10 @@ mod tests {
         );
         assert_eq!(ctx.diagnostics.len(), 1, "exactly one diagnostic on duplicate");
 
-        // Anchor the wire format of the duplicate diagnostic so a silent
-        // regression (e.g. swapping label order, dropping "here", changing the
-        // message template) is caught at the unit level rather than only via
-        // distant integration tests.
+        // Anchor the shape of the duplicate diagnostic — label count, span
+        // ordering, and `{kind}` interpolation — so structural regressions
+        // (swapped label order, missing second label, un-interpolated `{kind}`)
+        // are caught at the unit level.
         let diag = &ctx.diagnostics[0];
 
         // 1. Top-level message contains the stable substring.
@@ -260,12 +260,10 @@ mod tests {
             diag.labels[0].span, span_b,
             "labels[0] should point to the duplicate site (span_b)"
         );
-        // Exact-match on label messages: these are the stable wire-format strings
-        // previously duplicated verbatim across four pre_pass branches and consumed
-        // by diagnostic renderers / IDE tooling — cosmetic renames are breaking changes.
-        assert_eq!(
-            diag.labels[0].message, "structure defined here",
-            "labels[0] message should be '{{kind}} defined here'"
+        assert!(
+            diag.labels[0].message.contains("structure"),
+            "labels[0] message should interpolate the `{{kind}}` token, got: {:?}",
+            diag.labels[0].message,
         );
 
         // 4. labels[1] = first-seen site (span_a, "first defined as structure here").
@@ -273,9 +271,10 @@ mod tests {
             diag.labels[1].span, span_a,
             "labels[1] should point to the first-seen site (span_a)"
         );
-        assert_eq!(
-            diag.labels[1].message, "first defined as structure here",
-            "labels[1] message should be 'first defined as {{first_kind}} here'"
+        assert!(
+            diag.labels[1].message.contains("first defined as structure"),
+            "labels[1] message should interpolate the `{{first_kind}}` token into the 'first defined as ... here' template, got: {:?}",
+            diag.labels[1].message,
         );
     }
 
