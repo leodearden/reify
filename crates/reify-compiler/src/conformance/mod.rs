@@ -62,6 +62,7 @@ pub(crate) fn check_trait_conformance(
     let available_defaults = check_phase_build_available_defaults_map(
         &ctx,
         &inferred_let_exprs,
+        &pass1_skipped,
         &pass2_skipped,
         &pass2_compile_errors,
     );

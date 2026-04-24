@@ -583,26 +583,33 @@ pub(super) fn check_phase_pre_register_default_types(
 ///    are small in practice so this is acceptable; a two-level map is the escape hatch if
 ///    it ever becomes a hot path.
 ///
-/// ## `pass2_skipped` exclusion (Option B, task 1951) — narrowed to unannotated Lets
+/// ## Pass 1/Pass 2 skipped exclusions — `cell_type`-gated for mutual exclusion
 ///
-/// When `cell_type` is `None` (unannotated Let) *and* the name is in `pass2_skipped`, this
-/// entry is excluded from `available_defaults`. The rationale:
+/// Two symmetric guards suppress phantom Let advertisements to maintain the
+/// "advertisement mirrors injection" invariant (task 1951 Option B + task 1952):
 ///
-/// - Pass 2 populates `pass2_skipped` exclusively from the `DefaultKind::Let { cell_type: None, .. }`
-///   arm of the pre-register loop (annotated Lets never reach Pass 2).
-/// - The injection loop (`check_phase_inject_defaults`, phase 6) uses `pass2_skipped` to skip
-///   Let-cell injection for the unannotated entry, but it still injects a cell for any
-///   *annotated* Let with the same name (a `Some(_)` arm that runs unconditionally when
-///   `cell_type.is_some()`). Advertising the unannotated phantom would violate the
-///   "advertisement mirrors injection" invariant and cause a spurious type-mismatch if a
-///   `RequirementKind::Let` lookup ever matches it.
-/// - **Annotated Lets** (`cell_type: Some(_)`) for the same name are **not** suppressed — they
-///   advertise their `cell_type` normally. Dropping them would asymmetrically hide a legitimately
-///   injected annotated-Let advertisement and produce a spurious "missing required member"
-///   diagnostic if `RequirementKind::Let` becomes parser-reachable in the future.
+/// | Guard                                            | Skipped by | Cell_type predicate |
+/// |--------------------------------------------------|------------|---------------------|
+/// | `cell_type.is_none() && pass2_skipped.contains` | Pass 2     | unannotated (`None`)|
+/// | `cell_type.is_some() && pass1_skipped.contains` | Pass 1     | annotated (`Some`)  |
 ///
-/// The `cell_type.is_none() &&` conjunction implements this narrower scope and is the minimal
-/// change from the original `pass2_skipped.contains(name)` guard (task 1951 Option B).
+/// The `cell_type` predicates are mutually exclusive: a given Let entry can only satisfy
+/// one of the two guards — it is either annotated or unannotated, never both.
+///
+/// **pass2_skipped**: When `cell_type` is `None` (unannotated Let) *and* the name is in
+/// `pass2_skipped`, this entry is excluded. Pass 2 populates `pass2_skipped` exclusively
+/// from the `DefaultKind::Let { cell_type: None, .. }` arm; annotated Lets (`Some(_)`)
+/// for the same name still advertise normally (the injection loop injects them). The
+/// `cell_type.is_none() &&` conjunction is the minimal narrowing from the original guard
+/// (task 1951 Option B).
+///
+/// **pass1_skipped**: When `cell_type` is `Some(_)` (annotated Let) *and* the name is in
+/// `pass1_skipped`, this entry is excluded. Pass 1 populates `pass1_skipped` when an
+/// annotated Let's `register_if_absent` call finds the scope slot already claimed by an
+/// earlier Pass 1 default (task 1952). The injection loop skips annotated-Let cell emission
+/// for names in `pass1_skipped`, so advertising such a name would produce a phantom
+/// `(name, Let) → Type` entry with no injected cell backing it — a "requirement satisfied"
+/// lie. The `cell_type.is_some() &&` conjunction parallels the `is_none()` guard.
 ///
 /// ## `pass2_compile_errors` exclusion (task 1914 suggestion #1)
 ///
@@ -622,6 +629,7 @@ pub(super) fn check_phase_pre_register_default_types(
 pub(super) fn check_phase_build_available_defaults_map(
     ctx: &MergeContext,
     inferred_let_exprs: &HashMap<(String, AvailableDefaultKind), CompiledExpr>,
+    pass1_skipped: &HashSet<String>,
     pass2_skipped: &HashSet<String>,
     pass2_compile_errors: &HashSet<String>,
 ) -> HashMap<(String, AvailableDefaultKind), Type> {
@@ -634,14 +642,21 @@ pub(super) fn check_phase_build_available_defaults_map(
                     (AvailableDefaultKind::Param, cell_type.clone())
                 }
                 DefaultKind::Let { cell_type, .. } => {
-                    // Suppress only the *unannotated* Let phantom entry for names in
-                    // pass2_skipped: the `cell_type.is_none()` conjunction restricts
-                    // suppression to entries where Pass 2 would have recorded the name
-                    // (Pass 2 only processes `cell_type: None` entries). Annotated Lets
-                    // (`cell_type: Some(_)`) continue to advertise even when a sibling
-                    // unannotated Let populated pass2_skipped for the same name — the
-                    // injection loop injects a cell for them unconditionally.
+                    // Suppress the *unannotated* Let phantom entry for names in pass2_skipped
+                    // (task 1951 Option B, narrowed to unannotated Lets). Pass 2 populates
+                    // pass2_skipped exclusively from `cell_type: None` entries; the
+                    // `cell_type.is_none()` conjunction restricts suppression to that case.
                     if cell_type.is_none() && pass2_skipped.contains(name) {
+                        return None;
+                    }
+                    // SYMMETRIC FIX (task 1952): suppress the *annotated* Let phantom entry
+                    // for names in pass1_skipped. Pass 1 populates pass1_skipped when an
+                    // annotated Let's register_if_absent found the scope slot already claimed;
+                    // the injection loop will NOT emit a cell for this name, so advertising
+                    // it would produce a phantom (name, Let) entry with no injected cell.
+                    // The `cell_type.is_some()` conjunction is the mirror of `is_none()`
+                    // above — the two guards are mutually exclusive by construction.
+                    if cell_type.is_some() && pass1_skipped.contains(name) {
                         return None;
                     }
                     // Do not advertise a phantom Let entry for names whose Pass 2
