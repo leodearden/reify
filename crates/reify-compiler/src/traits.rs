@@ -227,6 +227,7 @@ pub(crate) fn compile_purpose(
     // Purpose params are registered so their members can be referenced.
     let mut scope = CompilationScope::new(purpose_name);
     scope.set_unit_registry(unit_registry);
+    scope.set_template_registry(template_registry);
 
     // Register purpose params as identifiers in scope.
     // Each param binds an entity reference (e.g., `subject : Structure`).
