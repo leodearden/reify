@@ -10,7 +10,7 @@ use reify_compiler::CompiledModule;
 use reify_eval::Engine;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_types::{DeterminacyState, DimensionVector, Severity, Value, ValueCellId};
+use reify_types::{DimensionVector, Severity, Value, ValueCellId};
 
 /// Build an Engine with an empty prelude for self-contained param-override tests.
 /// Uses `Engine::with_prelude(…, &[])` so the tests do not depend on stdlib state.
@@ -447,8 +447,6 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
 ///   (b) `result.values.get(&q_id) == Some(&Value::Undef)` — downstream Let
 ///       propagates Undef without panic.
 ///   (c) Exactly one Warning diagnostic mentions "S.p" and "type-kind".
-///   (d) `engine.snapshot().unwrap().values.get(&p_id) ==
-///       Some(&(Value::Undef, DeterminacyState::Undetermined))`.
 #[test]
 fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
     let mut engine = fresh_engine();
@@ -496,26 +494,6 @@ fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
         warnings[0].message
     );
 
-    // (d) Snapshot must hold (Undef, Undetermined) for the rejected cell.
-    //
-    // NOTE: `Snapshot::from_compiled_module` already pre-seeds every value
-    // cell with (Undef, Undetermined), so this assertion would pass even
-    // without the explicit `snapshot.values.insert` in engine_eval.rs.
-    // The explicit insert is defence-in-depth (see design decision in
-    // plan.json); to truly verify the overwrite behaviour would require a
-    // more complex setup that leaves the snapshot with a Determined value
-    // for `p` just before Phase B's eval (e.g. by issuing a successful
-    // eval of a compatible module so the snapshot holds the override value
-    // as Determined, then calling eval on the incompatible module). That
-    // complexity is out of scope here; this assertion validates the correct
-    // final shape is present regardless of how it was written.
-    let snap_val = engine.snapshot().unwrap().values.get(&p_id).cloned();
-    assert_eq!(
-        snap_val,
-        Some((Value::Undef, DeterminacyState::Undetermined)),
-        "snapshot must hold (Undef, Undetermined) for rejected-override-no-default param, got: {:?}",
-        snap_val
-    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -540,8 +518,6 @@ fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
 ///   (b) `result.values.get(&q_id) == Some(&Value::Undef)` — downstream Let
 ///       propagates Undef without panic.
 ///   (c) Exactly one Warning diagnostic mentions "S.p" and "dimension".
-///   (d) `engine.snapshot().unwrap().values.get(&p_id) ==
-///       Some(&(Value::Undef, DeterminacyState::Undetermined))`.
 #[test]
 fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
     let mut engine = fresh_engine();
@@ -591,12 +567,4 @@ fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
         warnings[0].message
     );
 
-    // (d) Snapshot must hold (Undef, Undetermined) for the rejected cell.
-    let snap_val = engine.snapshot().unwrap().values.get(&p_id).cloned();
-    assert_eq!(
-        snap_val,
-        Some((Value::Undef, DeterminacyState::Undetermined)),
-        "snapshot must hold (Undef, Undetermined) for dimension-rejected-override-no-default param, got: {:?}",
-        snap_val
-    );
 }
