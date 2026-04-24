@@ -412,3 +412,139 @@ purpose check(subject : Widget) {
         errors
     );
 }
+
+// ── Step 1 (task-2181): reflective aggregation compiles as empty list ─────────
+
+/// Test that `subject.params` in a purpose body compiles to an empty
+/// `ListLiteral` with `result_type = Type::List(Box::new(Type::Real))`.
+///
+/// RED: before the impl in step 2, the catch-all at `expr.rs:1181` fires
+/// and emits "member access not yet supported: .params", so assertion (a)
+/// fails immediately.
+#[test]
+fn compile_purpose_reflective_params_compiles_as_empty_list() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose manufacturing_ready(subject : Structure) {
+    constraint forall p in subject.params: determined(p)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // (a) No "member access not yet supported" diagnostic
+    let unsupported: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .collect();
+    assert!(
+        unsupported.is_empty(),
+        "expected no 'member access not yet supported' diagnostics, got: {:?}",
+        unsupported
+    );
+
+    // (b) and (c): constraint is a Quantifier whose collection is an empty
+    // ListLiteral with result_type == Type::List(Box::new(Type::Real)).
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "manufacturing_ready");
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => {
+            // (b) collection result_type must be List<Real>
+            assert_eq!(
+                collection.result_type,
+                Type::List(Box::new(Type::Real)),
+                "expected collection result_type to be List<Real>, got {:?}",
+                collection.result_type
+            );
+            // (c) collection kind must be an empty ListLiteral
+            match &collection.kind {
+                CompiledExprKind::ListLiteral(elements) => {
+                    assert!(
+                        elements.is_empty(),
+                        "expected empty ListLiteral for subject.params, got {} elements",
+                        elements.len()
+                    );
+                }
+                other => panic!("expected ListLiteral collection, got {:?}", other),
+            }
+        }
+        other => panic!("expected Quantifier constraint expression, got {:?}", other),
+    }
+}
+
+/// Test that `part.geometric_params` in a purpose body compiles to an empty
+/// `ListLiteral` with `result_type = Type::List(Box::new(Type::Real))`.
+///
+/// RED: analogous to the params test above — catch-all fires before step 2.
+#[test]
+fn compile_purpose_reflective_geometric_params_compiles_as_empty_list() {
+    let source = r#"
+structure Part {
+    param length : Length = 100mm
+}
+
+purpose dimensionally_valid(part : Structure) {
+    constraint forall p in part.geometric_params: constrained(p)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // (a) No "member access not yet supported" diagnostic
+    let unsupported: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .collect();
+    assert!(
+        unsupported.is_empty(),
+        "expected no 'member access not yet supported' diagnostics, got: {:?}",
+        unsupported
+    );
+
+    // (b) and (c): constraint is a Quantifier whose collection is an empty
+    // ListLiteral with result_type == Type::List(Box::new(Type::Real)).
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "dimensionally_valid");
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => {
+            // (b) collection result_type must be List<Real>
+            assert_eq!(
+                collection.result_type,
+                Type::List(Box::new(Type::Real)),
+                "expected collection result_type to be List<Real>, got {:?}",
+                collection.result_type
+            );
+            // (c) collection kind must be an empty ListLiteral
+            match &collection.kind {
+                CompiledExprKind::ListLiteral(elements) => {
+                    assert!(
+                        elements.is_empty(),
+                        "expected empty ListLiteral for part.geometric_params, got {} elements",
+                        elements.len()
+                    );
+                }
+                other => panic!("expected ListLiteral collection, got {:?}", other),
+            }
+        }
+        other => panic!("expected Quantifier constraint expression, got {:?}", other),
+    }
+}
