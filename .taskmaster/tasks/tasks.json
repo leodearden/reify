@@ -47086,7 +47086,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T11:39:41.436Z"
+        "updatedAt": "2026-04-24T11:39:41.436Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/guards.rs",
+            "crates/reify-compiler/src/ice.rs"
+          ]
+        }
       },
       {
         "id": "2211",
@@ -47108,7 +47115,9 @@
       "completedCount": 1953,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T11:43:51.299Z",
+      "description": "Tasks for master context"
     }
   }
 }
