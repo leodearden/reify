@@ -416,6 +416,8 @@ fn guard_state_fingerprint(
 /// * `functions` — compiled user functions available in scope
 /// * `meta_map`  — entity-name → (key → string-value) meta block entries;
 ///   passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
+///   to the `Value::String` declared for `<entity>.<key>` in the source module's
+///   `meta {}` blocks (or `Value::Undef` if no such entry exists).
 pub(crate) fn eval_ctx_with_meta<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
