@@ -17,12 +17,21 @@ use super::*;
 /// .unwrap_or_else(|| emit_ice_unresolved("name", &param.name, param.span, diagnostics))
 /// ```
 pub(crate) fn emit_ice_unresolved(
-    _context: &str,
-    _name: &str,
-    _span: SourceSpan,
-    _diagnostics: &mut Vec<Diagnostic>,
+    context: &str,
+    name: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
-    unimplemented!()
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "internal compiler error: unresolved {context} '{name}' in pass 2"
+        ))
+        .with_label(DiagnosticLabel::new(
+            span,
+            "ICE: name should have been registered in pass 1",
+        )),
+    );
+    Type::Real
 }
 
 #[cfg(test)]
