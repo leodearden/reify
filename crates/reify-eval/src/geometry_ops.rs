@@ -2850,7 +2850,7 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("extrude")
+            diagnostics[0].message.contains("for extrude")
                 && !diagnostics[0].message.contains("extrude_"),
             "diagnostic message should identify the Extrude variant (no underscore-suffixed sibling), got: {}",
             diagnostics[0].message
@@ -2911,7 +2911,7 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("linear")
+            diagnostics[0].message.contains("for linear")
                 && !diagnostics[0].message.contains("linear_"),
             "diagnostic message should identify the Linear variant (no underscore-suffixed sibling), got: {}",
             diagnostics[0].message
