@@ -1111,6 +1111,27 @@ impl Engine {
         })
     }
 
+    /// Invoke [`detect_role_flip`] and bump `last_role_flip_probes` in one place.
+    ///
+    /// Both call sites in `edit_source` Phase 1 — the outer short-circuit block
+    /// and the per-group lazy-memo `None` arm — share the same three-line
+    /// pattern: build `old_groups` from `eval_state`, call `detect_role_flip`,
+    /// write the memo, increment the counter. Extracting that here ensures the
+    /// counter increment cannot be omitted if a third call site ever appears.
+    ///
+    /// `new_groups` is sliced from the freshly-built snapshot and does NOT
+    /// borrow `self`. NLL releases the `self.eval_state` borrow (used only as
+    /// an argument to `detect_role_flip`) before `self.last_role_flip_probes`
+    /// is mutated, so `&mut self` is unambiguous.
+    fn probe_role_flip(&mut self, new_groups: &[GuardedGroupInfo]) -> bool {
+        let result = detect_role_flip(
+            &self.eval_state.as_ref().unwrap().snapshot.graph.guarded_groups,
+            new_groups,
+        );
+        self.last_role_flip_probes += 1;
+        result
+    }
+
     /// Incrementally re-evaluate after a structural source edit.
     ///
     /// Mirrors `edit_param`'s `NotInitialized` precondition: requires a prior
@@ -1558,6 +1579,10 @@ impl Engine {
         // is incremented for each group that is NOT skipped in Phase 1 or Phase 3;
         // it is exposed via last_guard_phase_group_evals() for test assertions.
         self.last_guard_phase_group_evals = 0;
+        // Reset the role-flip probe counter (task 2094). Counts detect_role_flip
+        // invocations on the hot path; exposed via last_role_flip_probes() for
+        // the deferred-probe perf-lock test.
+        self.last_role_flip_probes = 0;
 
         // Cross-phase dedup set (task 2142): records guard_cell IDs for every
         // group that Phase 1 actually re-elaborated in this edit_source call.
@@ -1610,20 +1635,25 @@ impl Engine {
                 group.members.iter().any(|m| added.contains(m))
                     || group.else_members.iter().any(|m| added.contains(m))
             });
-            // Detect role flips via symmetric `build_role_map` comparison.
-            // `detect_role_flip` applies the same last-write-wins reduction to
-            // both sides so intra-group duplicates resolve identically, then
-            // compares the two `HashMap`s for equality — this subsumes both the
-            // per-element role check and the dedup'd count check in one step.
-            // See `detect_role_flip` for the full correctness rationale.
-            let eval_state = self.eval_state.as_ref().unwrap();
-            let old_groups = &eval_state.snapshot.graph.guarded_groups;
-            let new_groups = &graph.guarded_groups;
-            let has_role_flipped_guard_member = detect_role_flip(old_groups, new_groups);
-            let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
+            // Cheap check 1: structure_controlling dirtiness.
+            let sc_dirty = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
-            }) || has_added_guard_member
-                || has_role_flipped_guard_member;
+            });
+            // Lazy memo for role-flip (task 2094): `detect_role_flip` builds two
+            // O(N) HashMaps over guarded_groups. Defer behind the cheap checks —
+            // when sc_dirty or has_added_guard_member already fires, we skip the
+            // HashMap build entirely. The per-group skip below also needs this
+            // value; memoize so detect_role_flip is called at most once per edit.
+            // Correctness pinned by task-2084 locks. Counter tracked via
+            // `self.last_role_flip_probes` for the perf-lock test (task 2094).
+            // `probe_role_flip` centralises the detect_role_flip call and counter
+            // increment (task 2094 amendment — eliminates duplicate call sites).
+            let mut role_flip_memo: Option<bool> = None;
+            let has_dirty_guards = sc_dirty || has_added_guard_member || {
+                let result = self.probe_role_flip(&graph.guarded_groups);
+                role_flip_memo = Some(result);
+                result
+            };
 
             if has_dirty_guards {
                 for group in &graph.guarded_groups {
@@ -1644,10 +1674,13 @@ impl Engine {
                     };
                     // Per-group skip: if this group's guard value is unchanged vs.
                     // the pre-edit snapshot, AND no members of this group were
-                    // added in this edit, AND no role-flip was detected (role-flip
-                    // suppresses all per-group skips because we can't identify
-                    // which groups were affected without a second full walk), then
-                    // skip the member re-elaboration for this group.
+                    // added in this edit, AND no role-flip was detected. Role-flip
+                    // suppresses the skip because we can't identify which groups
+                    // were affected without a full role-map walk. The role-flip
+                    // check is evaluated lazily via role_flip_memo (task 2094):
+                    // consult detect_role_flip only when both cheaper conditions
+                    // pass. Gives zero detect_role_flip calls when sc_dirty fires
+                    // the outer trigger AND every group's guard VALUE changed.
                     let has_added_in_group = group.members.iter().any(|m| added.contains(m))
                         || group.else_members.iter().any(|m| added.contains(m));
                     // Always write the guard cell value before the skip check.
@@ -1669,9 +1702,22 @@ impl Engine {
                         &group.guard_cell,
                         &guard_val,
                     ) && !has_added_in_group
-                        && !has_role_flipped_guard_member
                     {
-                        continue;
+                        // Lazy role-flip check (task 2094): populate role_flip_memo
+                        // on first query, reuse on subsequent groups.
+                        // probe_role_flip centralises the counter increment and
+                        // the detect_role_flip call (task 2094 amendment).
+                        let flipped = match role_flip_memo {
+                            Some(v) => v,
+                            None => {
+                                let result = self.probe_role_flip(&graph.guarded_groups);
+                                role_flip_memo = Some(result);
+                                result
+                            }
+                        };
+                        if !flipped {
+                            continue;
+                        }
                     }
                     self.last_guard_phase_group_evals += 1;
                     // Record this group as re-elaborated by Phase 1 so Phase 3

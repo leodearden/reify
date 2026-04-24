@@ -115,6 +115,7 @@ impl Engine {
             next_version_id: 0,
             last_eval_set: Vec::new(),
             last_guard_phase_group_evals: 0,
+            last_role_flip_probes: 0,
             journal: EventJournal::new(),
             functions: Vec::new(),
             compiled_purposes: Vec::new(),
@@ -331,6 +332,16 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_guard_phase_group_evals(&self) -> usize {
         self.last_guard_phase_group_evals
+    }
+
+    /// Returns the number of times `detect_role_flip` was invoked during the
+    /// most recent `edit_source` call. Reset to 0 at the start of each
+    /// `edit_source` call.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_role_flip_probes(&self) -> usize {
+        self.last_role_flip_probes
     }
 
     /// Access the event journal (for testing/inspection).
