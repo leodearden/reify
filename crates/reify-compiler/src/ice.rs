@@ -80,4 +80,10 @@ mod tests {
         assert_eq!(ty, Type::Real);
     }
 
+    #[test]
+    fn unresolved_kind_as_phrase_returns_expected_strings() {
+        assert_eq!(UnresolvedKind::Name.as_phrase(), "name");
+        assert_eq!(UnresolvedKind::GuardedMember.as_phrase(), "guarded member");
+    }
+
 }
