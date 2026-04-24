@@ -45509,7 +45509,7 @@
         "id": "2139",
         "title": "Extract guard lookup and guard_changed helpers to dedupe duplicated closures in engine_edit",
         "description": "Two related helper extractions in `crates/reify-eval/src/engine_edit.rs` to eliminate duplicated guard-related code patterns and prevent future divergence bugs.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "**1. `guard_value_unchanged` helper** (original task 2139)\n\nThe same `old_guard_val` lookup is duplicated verbatim across three sites in `crates/reify-eval/src/engine_edit.rs` (around lines 516, 744, and 1492/1759), each pulling:\n```rust\nself.eval_state.as_ref().and_then(|s| s.snapshot.values.get(&group.guard_cell)).map(|(v, _)| v)\n```\nwith near-identical comment blocks. Phase 3 edit_param (~744) and Phase 3 edit_source (~1759) skip logic is identical; Phase 1 edit_param and Phase 1 edit_source differ only by the added/role-flip clause. Extract a small helper (e.g. `fn guard_value_unchanged(...)`) to encapsulate this lookup and make future changes safe.\n\n**2. `phase3_guard_changed` helper** (new)\n\nThe `guard_changed` any-closure is duplicated verbatim between edit_param Phase 3 (lines 891-906) and edit_source Phase 3 (lines 1958-1973), including the task-2146 flip-then-revert clause:\n```rust\nphase1_reelaborated.get(...).is_some_and(|p1| Some(p1) != new_val)\n```\nDiverging these two predicates in the future is a real risk — the bug task 2146 fixed was exactly that kind of missed symmetry. Extract a helper, e.g.:\n```rust\nfn phase3_guard_changed(\n    groups: &[GuardedGroupIn],\n    ...\n) -> bool { ... }\n```\nso both Phase 3 sites share a single predicate definition.\n\nBoth helpers are pure deduplication; no behavioral changes expected.",
@@ -45530,7 +45530,8 @@
           "curator_action": "combine",
           "curator_justification": "Task 2139 is also a \"extract a small helper to dedupe duplicated code in engine_edit.rs\" refactor — it extracts `guard_value_unchanged` to dedupe the `old_guard_val` lookup pattern. The candidate extracts `phase3_guard_changed` to dedupe the guard_changed any-closure. Both are tiny (single file, helper extraction), share the same root cause (duplicated guard-related closures/lookups in engine_edit.rs), and will serialize on the same module lock. Combining satisfies all four hard rules: coherent ",
           "combined_at": "2026-04-23T20:12:22.349378+00:00"
-        }
+        },
+        "updatedAt": "2026-04-24T07:28:17.013Z"
       },
       {
         "id": "2140",
@@ -46526,14 +46527,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:23:14.383Z",
+      "lastModified": "2026-04-24T07:28:17.013Z",
       "taskCount": 2177,
       "completedCount": 1924,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T07:28:15.727Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
