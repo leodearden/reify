@@ -826,6 +826,7 @@ mod tests {
         let available_defaults = check_phase_build_available_defaults_map(
             &ctx,
             &inferred_let_exprs,
+            &pass1_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
         );
@@ -1479,7 +1480,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, _pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1554,7 +1555,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, _pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1651,7 +1652,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, _pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -2176,12 +2177,14 @@ mod tests {
 
         let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
             HashMap::new();
+        let pass1_skipped: HashSet<String> = HashSet::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
 
         let available_defaults = check_phase_build_available_defaults_map(
             &ctx,
             &inferred_let_exprs,
+            &pass1_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
         );
