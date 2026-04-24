@@ -46042,7 +46042,7 @@
         "id": "2159",
         "title": "conformance cleanup: dedupe kind-keyed cache test, single-bind composite key lookup, re-evaluate resolve_let_advertised_type helper, replace filter().count()==0 with !any()",
         "description": "Four small code/test cleanups on task 1914's kind-keyed cache and advertised-type helper, plus one assertion-idiom fix, all in `crates/reify-compiler/src/conformance/{checker.rs,mod.rs}`.\n\nMemory hints: search \"task 1914 resolve_let_advertised_type inferred_let_exprs composite key\"; entities: resolve_let_advertised_type, AvailableDefaultKind.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1914"
         ],
@@ -46060,9 +46060,12 @@
           ],
           "curator_action": "combine",
           "curator_justification": "The candidate is a tiny single-file cosmetic fix (< 300 chars of real detail, 1 file) inside `crates/reify-compiler/src/conformance.rs`. Task 2159 is already an explicit \"conformance cleanup\" bundle of small code/test tidying items scoped entirely to `crates/reify-compiler/src/conformance` — the same module-lock key. Combining adds one more bullet (#4) without crossing a new module boundary, keeps the concern count at 4 (≤ 5), and loses zero parallelism since the scheduler serializes them on the",
-          "combined_at": "2026-04-24T07:12:24.002138+00:00"
+          "combined_at": "2026-04-24T07:12:24.002138+00:00",
+          "done_provenance": {
+            "commit": "735fcb9efe84fc843d1f853891361d5078352549"
+          }
         },
-        "updatedAt": "2026-04-24T09:20:14.228Z"
+        "updatedAt": "2026-04-24T10:05:16.804Z"
       },
       {
         "id": "2160",
@@ -46896,14 +46899,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T10:01:53.782Z",
+      "lastModified": "2026-04-24T10:05:16.804Z",
       "taskCount": 2191,
-      "completedCount": 1939,
+      "completedCount": 1940,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T10:02:17.376Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
