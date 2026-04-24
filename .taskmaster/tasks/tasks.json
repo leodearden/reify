@@ -40440,13 +40440,13 @@
         "description": "Three design-hardening follow-ups for the `inferred_let_exprs` cache and `available_defaults` map added in task 1834's conformance.rs pre-register pass. All three were surfaced by reviewer_comprehensive on task 1834 amendment round 3 (esc-1834-144) but deferred as non-urgent hardening rather than task 1834 deliverables.\n\nMemory hints: search \"task 1834 inferred_let_exprs cache available_defaults AvailableDefaultKind\"; entities: DefaultKind, AvailableDefaultKind, Type, compile_expr.",
         "details": "Three independent changes in `crates/reify-compiler/src/conformance.rs`. Each is small; bundling avoids repeated touch-passes on the same code region.\n\n1. **Error-cascade suppression (robustness)** — conformance.rs:~236-246\n   When `compile_expr` fails in the unannotated-let pre-register path (e.g. forward reference to a name not yet registered), `result_type` falls back to `Type::Real` (compile_expr error-recovery type). That `Type::Real` then flows into `inferred_let_exprs`, `available_defaults`, and the injected cell_type — causing a secondary `type mismatch for trait member … available default has Real` diagnostic whose wording leaks an implementation detail instead of the real cause (unresolved identifier).\n   Fix: Track a per-default compile-error bit (snapshot `diagnostics.len()` before/after `compile_expr`); when it trips, either skip inserting into `inferred_let_exprs` / return `None` from the `available_defaults` filter_map for that name, OR prefer a \"missing required member\" diagnostic over \"available default has Real\". Goal: a single unresolved-identifier error, not a cascade.\n   Add regression test: `unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch` in let_type_disambiguation_tests.rs — input like `trait HasA { let a = b + 1mm } structure S : HasA {}` must produce the unresolved-name diagnostic only, NOT a secondary \"available default has Real\" type-mismatch.\n\n2. **Kind-keyed cache (architecture)** — conformance.rs:~167-208\n   The cache's name-only key (`HashMap<String, CompiledExpr>`) is safe today under three documented invariants (no cross-kind writes; kind-guarded reads; `collect_all_requirements` dedup). Two of those invariants are enforced in a different function 100+ lines away. The symmetric `(String, AvailableDefaultKind)` key already exists on the `available_defaults` map ~70 lines below. Changing the cache key to match eliminates the cross-module invariant dependency at near-zero cost.\n   Fix: `HashMap<(String, AvailableDefaultKind), CompiledExpr>`, keyed on `(name.clone(), AvailableDefaultKind::Let)` at insert/read. Delete invariant #1 and #2 from the doc comment; keep #3 (dedup) since that is still load-bearing for the no-double-compile guarantee. Remove the `If any of these ever drift, key the cache on (String, AvailableDefaultKind) for symmetry` note.\n\n3. **Shared advertised-type helper (code_reuse)** — conformance.rs:~293-299 and ~536-538\n   Two sites compute \"annotation wins, else inferred\" for a Let default's advertised type, with slightly different formulations:\n   - `available_defaults` builder: `cell_type.clone().unwrap_or_else(|| inferred_let_exprs.get(name).map(|e| e.result_type.clone()).unwrap_or(Type::Real))`\n   - injection loop: `cell_type.clone().unwrap_or_else(|| compiled_expr.result_type.clone())`\n   Fix: Extract a small helper (module-private fn or closure) like `resolve_let_advertised_type(cell_type: &Option<Type>, inferred: Option<&CompiledExpr>) -> Type` that both sites call, centralizing the \"Real fallback on inference failure\" rule. Note: suggestion #1 above may remove the `Type::Real` safety net entirely (by dropping failed entries from the cache) — coordinate design order: if #1 lands first, the helper's fallback arm disappears.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: esc-1834-144 triage. Reviewer comments captured in that escalation detail. Task 1834 is complete as-is; this follow-up is pure design hardening.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1834"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:09:44.166Z",
+        "updatedAt": "2026-04-24T07:09:47.272Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -46431,7 +46431,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T07:09:46.788Z",
+      "lastModified": "2026-04-24T07:09:47.272Z",
       "taskCount": 2175,
       "completedCount": 1921,
       "tags": [
