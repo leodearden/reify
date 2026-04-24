@@ -40453,9 +40453,16 @@
             "crates/reify-compiler/tests"
           ],
           "files": [
-            "crates/reify-compiler/src/conformance.rs",
-            "crates/reify-compiler/tests/trait_conformance_tests.rs"
-          ]
+            "crates/reify-compiler/src/conformance/checker.rs",
+            "crates/reify-compiler/src/conformance/mod.rs",
+            "crates/reify-compiler/tests/let_type_disambiguation_tests.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Conformance let-default cache: error-cascade suppression, explicit kind-keyed cache, shared advertised-type helper"
+            ]
+          }
         }
       },
       {
@@ -46481,7 +46488,9 @@
       "completedCount": 1922,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-24T07:15:00.813Z",
+      "description": "Tasks for master context"
     }
   }
 }
