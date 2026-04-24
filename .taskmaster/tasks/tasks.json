@@ -47192,23 +47192,26 @@
         "description": "crates/reify-eval/tests/edit_source.rs:3065-3365 — the three task-2094 perf-lock tests (`edit_source_role_flip_probe_deferred_when_every_guard_value_changes`, `_skipped_when_guard_member_added`, `_memoised_across_multiple_groups`) repeat the same 5-step scaffold: parse module A, parse module B, fresh_engine + eval(A) + edit_source(B), fresh_engine + eval(B), cross-check `assert_values_match`. Extracting a helper `run_probe_scenario(src_a: &str, src_b: &str) -> (EditResult, EvalResult)` (or similar) would halve the per-test size and make future role-flip probe tests cheaper to add. Keep the per-test probe-count assertion (with its tailored regression catalogue) and the positive anchor inline — those are uniquely valuable per scenario and should stay visible in each test body. Reviewer flagged as non-blocking; this is cleanup/polish only.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T12:16:48.759Z"
+        "updatedAt": "2026-04-24T12:33:55.906Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "07ebff04b398ca40a2dbb4704be152c58513187c"
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T12:27:21.429Z",
+      "lastModified": "2026-04-24T12:33:55.906Z",
       "taskCount": 2203,
-      "completedCount": 1959,
+      "completedCount": 1960,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T12:30:34.782Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
