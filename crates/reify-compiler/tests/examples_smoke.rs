@@ -43,6 +43,7 @@ fn all_examples_parse_and_compile_with_stdlib() {
         total
     );
 
+    let mut exercised = 0usize;
     for path in &paths {
         let filename = path
             .file_name()
@@ -52,19 +53,22 @@ fn all_examples_parse_and_compile_with_stdlib() {
         if skip.contains(filename.as_str()) {
             continue;
         }
+        exercised += 1;
         smoke_one(path, &filename, &mut failures);
     }
 
     if !failures.is_empty() {
         let n = failures.len();
+        let skipped = total - exercised;
         let blocks: Vec<String> = failures
             .into_iter()
             .map(|(name, errors)| format!("=== {} ===\n{}", name, errors))
             .collect();
         panic!(
-            "examples_smoke: {} of {} files failed:\n\n{}",
+            "examples_smoke: {} of {} exercised files failed ({} skipped):\n\n{}",
             n,
-            total,
+            exercised,
+            skipped,
             blocks.join("\n\n")
         );
     }
