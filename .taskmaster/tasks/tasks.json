@@ -46960,11 +46960,16 @@
         "description": "Task 387 marked `DefaultKind` (crates/reify-compiler/src/types.rs:68-73) as `#[non_exhaustive]` and added `_ => unreachable!(...)` arms in reify-test-support and integration tests (silent_defaults_tests.rs:164, trait_def.rs:97 and :225). Reviewer flagged this as speculative generality: `DefaultKind` lives inside reify-compiler with no documented external consumer, and the wildcard arms silently route future variants into runtime panics instead of triggering compile-time exhaustiveness errors. Evaluate: is there a specific downstream crate that requires API-evolution tolerance? If not, remove `#[non_exhaustive]` and the three wildcard arms to restore exhaustive-match safety. If kept, document the external consumer in the doc comment and convert the `unreachable!()` arms to `unimplemented!(\"new DefaultKind variant not yet wired through test helpers\")` with a maintainer reminder comment.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T10:58:38.686Z"
+        "updatedAt": "2026-04-24T11:33:26.501Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "763f03c5c85554e46b1c2e12fd1439d36add0373"
+          }
+        }
       },
       {
         "id": "2205",
@@ -47066,14 +47071,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T11:25:18.474Z",
+      "lastModified": "2026-04-24T11:33:26.501Z",
       "taskCount": 2198,
-      "completedCount": 1950,
+      "completedCount": 1951,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T11:28:43.740Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
