@@ -286,6 +286,26 @@ fn guard_value_unchanged(
         == Some(new_val)
 }
 
+/// Returns `true` when any guarded group's guard cell has a different value in
+/// `values` vs. the pre-edit snapshot, indicating that Phase 3
+/// re-elaboration is needed.
+///
+/// Accepts the snapshot `values` map directly (rather than the full
+/// `EvaluationState`) to keep callers and unit tests dependency-free.
+fn phase3_guard_changed(
+    groups: &[GuardedGroupInfo],
+    values: &ValueMap,
+    snapshot_values: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+) -> bool {
+    groups.iter().any(|group| {
+        let new_val = values.get(&group.guard_cell);
+        let old_val = snapshot_values
+            .and_then(|vs| vs.get(&group.guard_cell))
+            .map(|(v, _)| v);
+        new_val != old_val
+    })
+}
+
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
 /// collections.
 ///
@@ -896,15 +916,11 @@ impl Engine {
         // branch (members or else_members) and deactivate the other.
         // Finally, recompute topology fingerprint to reflect guard state.
         {
-            let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
-                let new_val = values.get(&group.guard_cell);
-                let old_val = self
-                    .eval_state
-                    .as_ref()
-                    .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                    .map(|(v, _)| v);
-                new_val != old_val
-            });
+            let guard_changed = phase3_guard_changed(
+                &new_snapshot.graph.guarded_groups,
+                &values,
+                self.eval_state.as_ref().map(|s| &s.snapshot.values),
+            );
 
             if guard_changed {
                 // Re-evaluate each guarded group based on current guard values
@@ -1921,15 +1937,11 @@ impl Engine {
         // Uses GuardLookup::Strict because eval() has populated every guard
         // cell by this point; a missing cell would be a logic error.
         {
-            let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
-                let new_val = values.get(&group.guard_cell);
-                let old_val = self
-                    .eval_state
-                    .as_ref()
-                    .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                    .map(|(v, _)| v);
-                new_val != old_val
-            });
+            let guard_changed = phase3_guard_changed(
+                &new_snapshot.graph.guarded_groups,
+                &values,
+                self.eval_state.as_ref().map(|s| &s.snapshot.values),
+            );
 
             if guard_changed {
                 for group in new_snapshot.graph.guarded_groups.clone() {
