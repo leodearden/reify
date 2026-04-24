@@ -320,6 +320,12 @@ mod tests {
     /// `target` param falls back to `GeomRef::Step(0)` (the step_offset when there are no
     /// prior sub-ops). Each name in `tail_arg_names` becomes a `param <name>: Scalar` in the
     /// generated source; the call is `fn_name(target, name0, name1, ...)`.
+    ///
+    /// Tail arg values are assigned uniform `Scalar = (i+2)mm` literals regardless of
+    /// real-world semantics (e.g. `draft`'s `angle` would normally be dimensionless and
+    /// `plane` would be a geometry).  This is intentional: the fallback path under test is
+    /// triggered by `target` not being a geometry ref; arg types for tail parameters do not
+    /// affect that path.
     fn assert_non_geometry_target_fallback(
         kind: ModifyKind,
         fn_name: &str,
@@ -382,16 +388,35 @@ mod tests {
         }
     }
 
-    #[test]
-    fn compile_modify_op_non_geometry_target_fallback_all_single_geom_target_kinds() {
-        let cases: &[(ModifyKind, &str, &[&str])] = &[
+    /// Returns the canonical test-table for all single-geometry-target modify kinds:
+    /// `(ModifyKind, fn_name, tail_arg_names)`.
+    ///
+    /// The exhaustiveness closure below has **no wildcard arm**.  Adding a new `ModifyKind`
+    /// variant will cause a compile error here, forcing an explicit classify-or-skip
+    /// decision before the new kind silently escapes regression coverage.
+    fn single_geom_target_kinds() -> &'static [(ModifyKind, &'static str, &'static [&'static str])] {
+        static CASES: &[(ModifyKind, &str, &[&str])] = &[
             (ModifyKind::Chamfer, "chamfer", &["distance"]),
             (ModifyKind::Fillet, "fillet", &["radius"]),
             (ModifyKind::Thicken, "thicken", &["offset"]),
             (ModifyKind::Shell, "shell", &["thickness"]),
             (ModifyKind::Draft, "draft", &["angle", "plane"]),
         ];
-        for &(kind, fn_name, tail) in cases {
+        // Exhaustiveness sentinel: no wildcard arm ensures a new ModifyKind variant
+        // causes a compile error here, requiring an explicit update to this table.
+        let _ = |k: ModifyKind| match k {
+            ModifyKind::Chamfer
+            | ModifyKind::Fillet
+            | ModifyKind::Thicken
+            | ModifyKind::Shell
+            | ModifyKind::Draft => (),
+        };
+        CASES
+    }
+
+    #[test]
+    fn compile_modify_op_non_geometry_target_fallback_all_single_geom_target_kinds() {
+        for &(kind, fn_name, tail) in single_geom_target_kinds() {
             assert_non_geometry_target_fallback(kind, fn_name, tail);
         }
     }
@@ -402,6 +427,9 @@ mod tests {
     /// hardcoded `Step(0)` as was the pre-fix bug (task-612/task-1732).
     ///
     /// Each name in `tail_arg_names` becomes a `param <name>: Scalar` in the generated source.
+    /// Tail arg values are uniform `Scalar = (i+2)mm` literals — see
+    /// `assert_non_geometry_target_fallback` for the rationale (the fallback path is independent
+    /// of tail arg types).
     /// The sphere compiles at step_offset=0 and emits 1 op; the modify call then compiles
     /// at step_offset=1.  Expected ops: [Primitive(Sphere), Modify(<kind>, target=Step(1)),
     /// Boolean(Union, left=Step(0), right=Step(1))].
@@ -513,14 +541,7 @@ mod tests {
     ) {
         // Regression-lock for all 5 single-geometry-target modify kinds — proves each
         // uses step_offset from context rather than a hardcoded 0 (task-612/task-1732).
-        let cases: &[(ModifyKind, &str, &[&str])] = &[
-            (ModifyKind::Chamfer, "chamfer", &["distance"]),
-            (ModifyKind::Fillet, "fillet", &["radius"]),
-            (ModifyKind::Thicken, "thicken", &["offset"]),
-            (ModifyKind::Shell, "shell", &["thickness"]),
-            (ModifyKind::Draft, "draft", &["angle", "plane"]),
-        ];
-        for &(kind, fn_name, tail) in cases {
+        for &(kind, fn_name, tail) in single_geom_target_kinds() {
             assert_non_geometry_target_fallback_step_offset_nonzero(kind, fn_name, tail);
         }
     }
