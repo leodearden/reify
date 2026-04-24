@@ -46592,15 +46592,18 @@
         "description": "In crates/reify-compiler/src/compile_builder/ctx.rs:266-279, the new assertions exact-match label prose (\"structure defined here\" and \"first defined as structure here\"), justified by a comment claiming the strings are a \"wire format ... consumed by IDE tooling.\" There is no evidence of a machine consumer parsing this prose — LSP consumers read severity/message/spans, not label text. Drop the two `assert_eq!` checks on `diag.labels[*].message` exact strings (or relax them to substring checks that verify the `{kind}` token interpolates, e.g. `assert!(diag.labels[0].message.contains(\"structure\"))`). Keep the span-ordering and label-count assertions — those are the real contract. Remove the overstated \"wire format\" justification comment. Source: esc-2089-9.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:37:56.432Z",
+        "updatedAt": "2026-04-24T10:35:14.607Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "9170f12626795fde397ef7b4561a7d262042900e"
+          }
         }
       },
       {
@@ -46937,9 +46940,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T10:30:45.772Z",
+      "lastModified": "2026-04-24T10:35:14.607Z",
       "taskCount": 2192,
-      "completedCount": 1944,
+      "completedCount": 1945,
       "tags": [
         "master"
       ]
