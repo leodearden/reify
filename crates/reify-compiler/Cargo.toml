@@ -15,5 +15,3 @@ tracing.workspace = true
 reify-test-support.workspace = true
 reify-expr.workspace = true
 tempfile.workspace = true
-strum = "0.26"
-strum_macros = "0.26"
