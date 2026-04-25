@@ -19,7 +19,8 @@ fn main() -> ExitCode {
         eprintln!("  test <file>               Run @test-annotated structures");
         eprintln!("  build <file> -o <output>   Build geometry and export");
         eprintln!("  lsp                        Start language server (stdin/stdout)");
-        eprintln!("  gui <file>                 Open file in GUI");
+        eprintln!("  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)");
+        eprintln!("  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)");
         eprintln!("  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)");
         return ExitCode::FAILURE;
     }
@@ -250,12 +251,23 @@ fn cmd_build(args: &[String]) -> ExitCode {
 }
 
 fn cmd_gui(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        eprintln!("Usage: reify gui <file>");
+    // Parse `--debug` / `--mcp` flags (both set the same `debug` boolean) and
+    // strip them from the positional args before extracting the file path.
+    let mut debug = false;
+    let mut positional: Vec<&String> = Vec::with_capacity(args.len());
+    for a in args {
+        match a.as_str() {
+            "--debug" | "--mcp" => debug = true,
+            _ => positional.push(a),
+        }
+    }
+
+    if positional.is_empty() {
+        eprintln!("Usage: reify gui [--debug] <file>");
         return ExitCode::FAILURE;
     }
 
-    let file = &args[0];
+    let file = positional[0].as_str();
     let path = std::path::Path::new(file);
 
     // Validate .ri extension (checked before existence to give a clear error for wrong file types)
@@ -273,9 +285,14 @@ fn cmd_gui(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Check if launch is suppressed (for testing / CI)
+    // Check if launch is suppressed (for testing / CI). The error message
+    // includes the parsed debug-mode state so tests can assert on it without
+    // spawning a real reify-gui subprocess.
     if std::env::var("REIFY_GUI_SKIP_LAUNCH").is_ok() {
-        eprintln!("Error: could not launch reify-gui (launch skipped via REIFY_GUI_SKIP_LAUNCH)");
+        eprintln!(
+            "Error: could not launch reify-gui (launch skipped via REIFY_GUI_SKIP_LAUNCH; debug={})",
+            debug
+        );
         return ExitCode::FAILURE;
     }
 
@@ -292,7 +309,8 @@ fn cmd_gui(args: &[String]) -> ExitCode {
         .filter(|p| p.exists())
         .unwrap_or_else(|| std::path::PathBuf::from(gui_binary_name));
 
-    match std::process::Command::new(&gui_path).arg(file).status() {
+    let mut cmd = build_gui_command(&gui_path, file, debug);
+    match cmd.status() {
         Ok(status) => {
             if status.success() {
                 ExitCode::SUCCESS
@@ -309,6 +327,25 @@ fn cmd_gui(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Build a [`std::process::Command`] for launching `reify-gui` with the given
+/// file argument and (optionally) `REIFY_DEBUG=1` set in the child's
+/// environment when `debug` is true.
+///
+/// Extracted as a pure helper so it can be unit-tested via `Command::get_envs()`
+/// without spawning a subprocess.
+fn build_gui_command(
+    gui_path: &std::path::Path,
+    file: &str,
+    debug: bool,
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new(gui_path);
+    cmd.arg(file);
+    if debug {
+        cmd.env("REIFY_DEBUG", "1");
+    }
+    cmd
 }
 
 fn cmd_lsp() -> ExitCode {
