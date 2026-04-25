@@ -47413,14 +47413,11 @@
             "crates/reify-compiler/tests/purpose_compile_tests.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "WILDCARD_STRUCTURE_KIND",
-              "expr.rs",
-              "purpose-subject member access"
-            ],
+            "entities": [],
             "queries": [
-              "Structure wildcard guard purpose member validation expr.rs entity_kind",
-              "purpose_compile_tests wildcard Occurrence characterization coverage"
+              "Structure wildcard guard purpose member validation named constant",
+              "purpose body member validation Structure-typed subject",
+              "purpose member access subject reflection structure wildcard"
             ]
           },
           "_causation_id": "6964b007-e4e0-4e06-a277-cb1ab4f1ea89",
