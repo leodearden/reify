@@ -1120,33 +1120,29 @@ structure def S : TraitA + TraitB {
     );
 }
 
-/// Known asymmetry (task 1952 scope limitation): reverse-order annotated Let + Param.
+/// Reverse-order annotated Let + Param: annotated Let wins, Param loser is suppressed.
 ///
-/// # Problem
+/// # Invariant (task 2208)
 ///
-/// `pass1_skipped` (task 1952) tracks **annotated-Let losers** in Pass 1. It does NOT track
-/// **Param losers**. When the bound-list order puts the annotated Let *before* the Param
-/// (`S : TraitB + TraitA`), the annotated Let wins the scope slot and the Param loses — but
-/// the Param loser is not recorded anywhere, so the Param injection arm has no skip guard.
-/// The injection loop injects BOTH an annotated-Let cell (winner) AND a Param cell (loser),
-/// producing two `(entity, "x")` cells — the same duplicate-cell bug that task 1952 fixed for
-/// the reverse direction.
+/// When the bound-list order puts the annotated Let *before* the Param
+/// (`S : TraitB + TraitA`), the annotated Let wins the Pass 1 `register_if_absent` race.
+/// The losing Param's name is recorded in `pass1_param_skipped` (task 2208), which guards
+/// both the advertisement map (`check_phase_build_available_defaults_map`) and the injection
+/// loop (`check_phase_inject_defaults`). As a result, exactly **one** `(entity, "x")` cell
+/// is emitted — the annotated-Let winner's cell from TraitB.
 ///
-/// # Why it's not fixed here
+/// This is the symmetric counterpart of `cross_kind_pre_registration_preserves_first_type_annotated_let`
+/// (which tests the opposite order: Param first, annotated Let second) and mirrors the
+/// fix task 1952 applied for annotated-Let losers.
 ///
-/// Fixing the Param-loser direction requires tracking Param losers separately (e.g., a new
-/// `pass1_param_skipped: HashSet<String>`) and adding a skip guard in the
-/// `DefaultKind::Param` injection arm. This is outside the scope of task 1952.
+/// # Fixture
 ///
-/// # This test
+/// - `TraitB` provides `let x : Length = 80mm` (annotated Let).
+/// - `TraitA` provides `param x : Length = 10mm` + a constraint.
+/// - `S : TraitB + TraitA` — TraitB is listed first, so the Let wins Pass 1.
 ///
-/// This test is `#[ignore]`d and asserts the **correct** outcome (1 cell) to serve as a
-/// TODO regression guard. It will start passing once Param-loser tracking is implemented.
-/// Run `cargo test -- --ignored annotated_let_wins_param_loses_known_asymmetry` to confirm
-/// the current failure.
+/// Expected: no errors, exactly 1 `x` cell (the annotated Let from TraitB).
 #[test]
-#[ignore = "known asymmetry (task 1952 scope limitation): Param losers are not tracked \
-            by pass1_skipped; reverse-order [annotated Let, Param] still produces 2 cells"]
 fn annotated_let_wins_param_loses_known_asymmetry() {
     // Reverse of cross_kind_pre_registration_preserves_first_type_annotated_let:
     // TraitB (annotated Let) is listed first in the bound list.
@@ -1172,10 +1168,9 @@ structure def S : TraitB + TraitA {
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    // CURRENTLY FAILS: the Param loser (TraitA's `param x`) is not tracked in any
-    // skip-set, so the injection loop emits BOTH a Let cell (TraitB, winner) AND a
-    // Param cell (TraitA, loser), producing 2 cells.
-    // When Param-loser tracking is added, this assertion will pass.
+    // The Param loser (TraitA's `param x`) is tracked in `pass1_param_skipped` (task 2208).
+    // The injection loop and advertisement map both suppress the phantom Param, so only
+    // the annotated-Let winner (TraitB's `let x : Length = 80mm`) produces a cell.
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -1185,7 +1180,7 @@ structure def S : TraitB + TraitA {
         x_cells.len(),
         1,
         "expected exactly 1 'x' cell (annotated Let from TraitB wins scope; \
-         Param from TraitA should be suppressed once Param-loser tracking is added), \
+         Param from TraitA is suppressed by pass1_param_skipped), \
          got {}",
         x_cells.len()
     );
