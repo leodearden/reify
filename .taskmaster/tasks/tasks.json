@@ -28136,7 +28136,18 @@
             "crates/reify-compiler/src/termination.rs",
             "crates/reify-compiler/tests/guard_compilation.rs",
             "crates/reify-compiler/tests/termination_check_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "guard compilation",
+              "reify-compiler",
+              "severity filtering"
+            ],
+            "queries": [
+              "guard compilation failure distinguish no-guard broken-guard severity",
+              "guard compilation diagnostic severity filter reify-compiler"
+            ]
+          }
         }
       },
       {
