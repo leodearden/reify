@@ -814,6 +814,16 @@ purpose manufacturing_ready(subject : Structure) {
 }
 "#;
     let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "fixture failed to compile cleanly"
+    );
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "fixture produced unexpected error diagnostics: {:?}",
+        compiled.diagnostics
+    );
 
     // make_simple_engine() uses SimpleConstraintChecker (not MockConstraintChecker)
     // so it can return Satisfied/Violated rather than Unchecked.
