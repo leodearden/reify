@@ -455,6 +455,57 @@ mod tests {
         );
     }
 
+    // --- step-1: content-hash tracking across calls ---
+
+    #[test]
+    fn eval_state_tracks_content_hash_across_calls() {
+        let uri = test_uri();
+
+        // (1) Fresh state: last_content_hash() == None, is_engine_initialized() == false
+        let mut state = EvalState::new();
+        assert_eq!(
+            state.last_content_hash(),
+            None,
+            "fresh EvalState must have no last_content_hash"
+        );
+        assert!(
+            !state.is_engine_initialized(),
+            "fresh EvalState engine must not be initialized"
+        );
+
+        // (2) After one call: last_content_hash() is Some(_), is_engine_initialized() is true
+        let source_valid = reify_test_support::bracket_source();
+        compute_diagnostics_with_state(&mut state, source_valid, &uri);
+        let hash1 = state
+            .last_content_hash()
+            .expect("last_content_hash must be Some after first call");
+        assert!(
+            state.is_engine_initialized(),
+            "engine must be initialized after first call"
+        );
+
+        // (3) Calling again with the SAME source: hash unchanged
+        compute_diagnostics_with_state(&mut state, source_valid, &uri);
+        let hash2 = state
+            .last_content_hash()
+            .expect("last_content_hash must be Some after second call");
+        assert_eq!(
+            hash1, hash2,
+            "same source must produce the same content_hash"
+        );
+
+        // (4) Calling with violating source: hash differs
+        let source_violating = reify_test_support::bracket_source_violating();
+        compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+        let hash3 = state
+            .last_content_hash()
+            .expect("last_content_hash must be Some after violating call");
+        assert_ne!(
+            hash1, hash3,
+            "violating source must produce a different content_hash"
+        );
+    }
+
     // --- constraint violation diagnostic range tests (step-31) ---
 
     #[test]
