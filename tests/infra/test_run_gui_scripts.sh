@@ -273,4 +273,27 @@ assert "run-gui-dev.sh with non-.ri file exits non-zero" \
 assert "run-gui-dev.sh non-.ri error message mentions '.ri'" \
     bash -c 'printf "%s\n" "$1" | grep -qF .ri' _ "$dev_non_ri_out"
 
+# -- Test 23: CLAUDE.md documents the new launchers --------------------------
+echo ""
+echo "=== CLAUDE.md documentation tests ==="
+echo ""
+echo "--- Test 23: CLAUDE.md documents the GUI launcher entry points ---"
+
+CLAUDE_MD="$REPO_ROOT/CLAUDE.md"
+
+assert "CLAUDE.md exists" \
+    test -f "$CLAUDE_MD"
+
+assert "CLAUDE.md mentions scripts/run-gui.sh" \
+    grep -qF 'scripts/run-gui.sh' "$CLAUDE_MD"
+
+assert "CLAUDE.md mentions scripts/run-gui-dev.sh" \
+    grep -qF 'scripts/run-gui-dev.sh' "$CLAUDE_MD"
+
+assert "CLAUDE.md mentions '--debug' flag" \
+    grep -qF -- '--debug' "$CLAUDE_MD"
+
+assert "CLAUDE.md mentions REIFY_DEBUG env var" \
+    grep -qF 'REIFY_DEBUG' "$CLAUDE_MD"
+
 test_summary
