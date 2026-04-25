@@ -46850,13 +46850,13 @@
         "description": "Three small follow-ups from task 2158 review (reviewer_comprehensive, all \"suggestion\" severity, test/doc polish only — no behavior change).",
         "details": "Origin: esc-2158-16 triage — reviewer_comprehensive suggestions #1–#3 on task 2158.\n\n**(a) checker.rs:445-509 — docstring clarification (robustness/limitation).**\nThe Pass-2 docstring block (checker.rs:415-444) and the `# PASS 2 COMPILE-ERROR SUPPRESSION` section (checker.rs:284-300) describe the `Type::Error` scope-poison fix as preventing \"unresolved name\" cascades generally, but the protection is *order-dependent* on `ctx.defaults` traversal order. Given `let c = a  let a = b` (with `b` undefined): Pass 2 compiles `c` first, finds `a` absent, emits an \"unresolved a\" cascade and records/poisons `c` — only *then* does `a = b` fail and poison `a`. The cascade for `c` has already fired. The existing `# DESIGN LIMITATION` block (checker.rs:325-331) covers the mutual-forward-reference case but not the *reverse-order same-direction* chain.\n\nFix: add one sentence to both doc blocks (the `# PASS 2 COMPILE-ERROR SUPPRESSION` section and the Pass 2 inline comment at ~line 427) noting that cascade suppression is effective only when the failing dependency is defined *before* its dependents in trait-default order; reverse-ordered chains still cascade. No topological pre-pass is warranted unless such cases become a real concern.\n\n**(b) mod.rs:1873-1880 — use non-mutating scope probe in the warning-only test.**\nThe `warning_only_compile_does_not_trigger_pass2_compile_error` test probes scope membership by *calling* `scope.register_if_absent(\"x\", Type::Int)` and expecting `Some(..)`. `CompilationScope::resolve(&self, name) -> Option<(&ValueCellId, &Type)>` (scope.rs:118) is a non-mutating read and would both (1) avoid the mutating call and (2) let the test also assert the *type* actually registered equals `Type::List(Box::new(Type::Real))` — strengthening the contract.\n\nFix: replace the mutating probe with `scope.resolve(\"x\")`; assert `is_some()` and that the returned `Type` equals `Type::List(Box::new(Type::Real))`.\n\n**(c) mod.rs:1820-1826 — soften `diagnostics.len() == 1` to severity-based contract.**\nThe warning-only test pins `assert_eq!(diagnostics.len(), 1)`. The actual contract under test is \"no Error-severity diagnostic ⇒ expression is cached\", not the exact diagnostic count. Any future compile_expr refactor that adds a second Info/note diagnostic on the empty-list-literal path (e.g. a span annotation) will break this test without any real regression.\n\nFix: soften to `assert!(!diagnostics.is_empty())` plus `assert!(diagnostics.iter().all(|d| d.severity != Severity::Error))`. Keep the existing `pass2_compile_errors` / `pass2_skipped` / `inferred_let_exprs` / `Type::List(Real)` assertions.\n\n**Verify:**\n- `cargo test -p reify-compiler` (both the unit test in `conformance/mod.rs` and integration tests pass)\n- `cargo clippy --workspace -- -D warnings`\n- `cargo fmt --check`",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2158"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:20:15.137Z",
+        "updatedAt": "2026-04-25T06:58:09.106Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance"
@@ -46899,7 +46899,7 @@
         "id": "2199",
         "title": "Purpose reflective aggregation: populate .params/.geometric_params at runtime (or add trap-behavior eval test)",
         "description": "Task 2181 shipped a compile-time placeholder that makes `subject.params` / `subject.geometric_params` / `subject.material_params` compile to an empty ListLiteral in purpose bodies. At runtime this means `forall p in subject.params: determined(p)` evaluates vacuously true — purposes like `manufacturing_ready` and `dimensionally_valid` in `examples/m5_purpose.ri` silently pass for any entity regardless of whether params are actually determined. Previously the compiler errored loudly; now it passes silently, which is strictly worse from a correctness standpoint. Either expand the placeholder at activation time against the bound entity's real params, or at minimum add a visible trap. Additionally, memory hints metadata should be added to assist future agents in prefetching relevant context at execution time.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "details": "**Hook point:** `crates/reify-compiler/src/expr.rs:1166-1180` (the `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS` arm emitting `CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)))`).\n\n**Two acceptable paths:**\n\n1. **Runtime expansion** (preferred, higher value): plumb the bound entity's param set into `activate_purpose` / `remap_entity` so the empty list is replaced with the real `ParamRef` list at activation time. `determined()` / `constrained()` predicates already exist; the missing piece is the mapping from \"reflective member → concrete param list of the bound entity\". Likely needs a synthetic `Type::ParamRef` variant (flagged in the FIXME at expr.rs:1171 — any runtime populator MUST update the element type in lockstep, or forall typechecks against the wrong element type).\n\n2. **Eval-layer characterization test** (minimum viable): add an integration test in `crates/reify-eval/tests/purpose_activation.rs` that activates `manufacturing_ready` against a Bracket with deliberately undetermined params and asserts the purpose currently reports Satisfied. Document the trap behavior in the test body so the silent pass is test-visible and the runtime-expansion task has a clear RED→GREEN target. Optionally emit a one-shot warning diagnostic when the empty-list placeholder is emitted, so users aren't surprised by a purpose that has no teeth.\n\n**Acceptance:**\n- Either (a) reflective aggregations in purpose bodies populate at runtime and `manufacturing_ready` against an undetermined-param entity reports Unsatisfied/Violated instead of Satisfied, OR (b) a characterization test lives at `purpose_activation.rs` that asserts the current trap behavior so the next contributor cannot silently regress the semantics.\n- FIXME at `expr.rs:1171` is resolved or tightened.\n\n**Source:** esc-2181-18 S1 (reviewer_comprehensive on task 2181)\n\n**Memory Hints:** Add metadata to prefetch relevant context at execution time.",
@@ -46924,7 +46924,8 @@
             ]
           },
           "_causation_id": "8163d829-88fd-4a81-80bd-24fa9891e2ba"
-        }
+        },
+        "updatedAt": "2026-04-25T06:58:09.239Z"
       },
       {
         "id": "2200",
@@ -46956,11 +46957,11 @@
         "description": "Task 2181's regular-member branch at `crates/reify-compiler/src/expr.rs:1197` emits `ValueCellId::new(&id.entity, member)` where `id.entity == scope.entity_name == purpose_name`. For a hypothetical multi-param purpose `purpose check(a : Structure, b : Structure) { constraint a.mass > b.mass }`, BOTH `a.mass` and `b.mass` would compile to the same `ValueRef(check, mass)` — per-param identity is lost. Not exercised today (single-entity `activate_purpose` + single-param purposes in m5_purpose.ri), but the encoding offers no forward path: `remap_entity` rewrites a single `from_entity` at a time. Fix either by rejecting multi-StructureRef-param purposes with a clear diagnostic until the binding scheme is designed, OR by encoding per-param identity in the ValueCellId entity stamp.",
         "details": "**Hook point:** `crates/reify-compiler/src/expr.rs:1161-1200` (purpose-subject member-access branch).\n\n**Two acceptable approaches:**\n\n1. **Reject (safer, minimal scope):** in `compile_purpose`, if more than one param has `Type::StructureRef(_)`, emit a compile-time error \"multi-StructureRef purpose params not supported; binding scheme TBD\" and refuse to compile. Lets us delay the design until a real use case appears.\n\n2. **Encode per-param identity:** change the ValueCellId entity stamp from `id.entity` (= purpose_name) to e.g. `format!(\"{}::{}\", purpose_name, param_name)`. `activate_purpose` / `remap_entity` would need to know which synthetic stamp maps to which caller-supplied entity, so this requires a multi-arg activate_purpose signature design.\n\n**Tests to add:**\n- A pinning test for current single-param behavior.\n- Whichever approach is chosen, a test that documents the multi-param case (either rejection diagnostic or collision-free ValueRef stamping).\n\n**Source:** esc-2181-18 S3 (reviewer_comprehensive on task 2181)",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:34:02.343Z",
+        "updatedAt": "2026-04-25T06:58:09.394Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -47409,7 +47410,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:08.978Z",
+      "lastModified": "2026-04-25T06:58:09.394Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
