@@ -597,23 +597,33 @@ pub enum ModifyKind {
 }
 
 impl ModifyKind {
-    /// The number of variants in this enum.
+    /// Every variant of this enum, as a fixed-size const array.
     ///
-    /// **Maintenance contract**: MUST be bumped whenever a variant is added to
-    /// `ModifyKind`.  Two automated checks enforce this:
+    /// This is the **single source of truth** for the set of `ModifyKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
     ///
-    /// - **Runtime**: `kind_display_tests::modify_kind_variant_count_matches_exhaustive_enumeration`
-    ///   in this file uses a no-wildcard `match k: ModifyKind` closure to anchor the count; adding
-    ///   a variant breaks that test's compile, routing the author here.  After bumping, the runtime
-    ///   `assert_eq!` confirms the new value is consistent.
+    /// **Maintenance contract**: to add a new variant, extend this array (add the new
+    /// element) and bump its explicit size annotation from `[Self; N]` to `[Self; N+1]`.
+    /// Rust rejects any length mismatch at compile time, so the size annotation is itself
+    /// an additional tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates, and
+    /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
+    /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
+    /// matching `CASES` row to be added.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Fillet,
+        Self::Chamfer,
+        Self::Shell,
+        Self::Draft,
+        Self::Thicken,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
     ///
-    /// - **Compile-time**: `geometry_modify::single_geom_target_kinds()` contains
-    ///   `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)`.  If `CASES` is
-    ///   not extended to match the bumped count, `cargo check` fails immediately.
-    ///
-    /// Consumer ground-truth: `crates/reify-compiler/src/geometry_modify.rs`'s
-    /// `single_geom_target_kinds()` must have one `CASES` row per variant.
-    pub const VARIANT_COUNT: usize = 5;
+    /// Cannot independently drift from `ALL` because it is `Self::ALL.len()`.  Consumer:
+    /// `geometry_modify::single_geom_target_kinds()` uses `const _: () = assert!(CASES.len()
+    /// == ModifyKind::VARIANT_COUNT, ...)` to lock `CASES` coverage at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for ModifyKind {
@@ -853,32 +863,6 @@ mod kind_display_tests {
         (ModifyKind::Draft, "draft"),
         (ModifyKind::Thicken, "thicken"),
     ]); }
-
-    #[test]
-    fn modify_kind_variant_count_matches_exhaustive_enumeration() {
-        // No-wildcard arm: adding a new ModifyKind variant breaks compile here,
-        // routing the author to this test before they can satisfy the compiler.
-        let _exhaustive_check = |k: ModifyKind| match k {
-            ModifyKind::Fillet => (),
-            ModifyKind::Chamfer => (),
-            ModifyKind::Shell => (),
-            ModifyKind::Draft => (),
-            ModifyKind::Thicken => (),
-        };
-        // Ground-truth enumeration: must list every variant exactly once.
-        let all = [
-            ModifyKind::Fillet,
-            ModifyKind::Chamfer,
-            ModifyKind::Shell,
-            ModifyKind::Draft,
-            ModifyKind::Thicken,
-        ];
-        assert_eq!(
-            ModifyKind::VARIANT_COUNT,
-            all.len(),
-            "VARIANT_COUNT must equal the count of ModifyKind variants enumerated above"
-        );
-    }
 
     #[test] fn transform_kind_display() { check(&[
         (TransformKind::Translate, "translate"),
