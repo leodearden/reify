@@ -2830,7 +2830,7 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
     );
 }
 
-<<<<<<< HEAD
+
 // ── Wave2 guard flip: else_members must be activated when guard flips post-wave2 ──
 
 /// Regression guard for the cross-phase dedup guard-flip bug (task 2146).
@@ -2883,7 +2883,195 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
 /// Task 2146 — cross-phase dedup guard-flip fix.
 #[test]
 fn edit_source_wave2_guard_flip_activates_else_members() {
-=======
+    use std::collections::HashMap;
+    use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
+    use reify_test_support::{
+        CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
+        TopologyTemplateBuilder, and, ge, gt, literal, mm, value_ref,
+    };
+    use reify_types::{ModulePath, SolveResult, SourceSpan, Type};
+
+    let depth_id = ValueCellId::new("S", "depth");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let m_id = ValueCellId::new("S", "m");
+    let n_id = ValueCellId::new("S", "n");
+
+    // Composite guard: (x > 0mm) && (depth > 5mm).
+    // Reads x (edited → Phase 1 fires) AND depth (resolved → wave2 flips guard).
+    let guard_expr = and(
+        gt(value_ref("S", "x"), literal(mm(0.0))),
+        gt(value_ref("S", "depth"), literal(mm(5.0))),
+    );
+
+    // Member m: literal 99mm. Does NOT read depth — wave2 won't overwrite it.
+    // Active when guard=true.
+    let m_decl = ValueCellDecl {
+        id: m_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(99.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Else_member n: literal 42mm. Does NOT read depth — wave2 won't overwrite it.
+    // Active when guard=false.
+    let n_decl = ValueCellDecl {
+        id: n_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(literal(mm(42.0))),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Module A: x=-1mm → guard = (-1>0)&&(depth>5) = false regardless of depth.
+    // n=42mm (else_members active), m=Undef (members inactive).
+    let template_a = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(literal(mm(-1.0))))
+        .auto_param("S", "depth", Type::length())
+        // constraint reads both depth and x → dirty when x changes → solver re-runs
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_x"),
+            ge(value_ref("S", "depth"), value_ref("S", "x")),
+        )
+        // guarded group: guard reads x (Phase 1) and depth (wave2 flip)
+        .guarded_group(
+            guard_expr.clone(),
+            guard_id.clone(),
+            vec![m_decl.clone()], // members: active when guard=true
+            vec![],               // constraints
+            vec![n_decl.clone()], // else_members: active when guard=false
+            vec![],               // else_constraints
+        )
+        .build();
+    let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .build();
+
+    // Module B: x=1mm. Solver will return depth=3mm for the edit_source call.
+    // After fix: guard = (1>0)&&(3>5) = false → m=Undef, n=42mm.
+    let template_b = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(literal(mm(1.0))))
+        .auto_param("S", "depth", Type::length())
+        .constraint(
+            "S",
+            0,
+            Some("depth_ge_x"),
+            ge(value_ref("S", "depth"), value_ref("S", "x")),
+        )
+        .guarded_group(
+            guard_expr.clone(),
+            guard_id.clone(),
+            vec![m_decl.clone()],
+            vec![],
+            vec![n_decl.clone()],
+            vec![],
+        )
+        .build();
+    let module_b = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_b)
+        .build();
+
+    // Sequenced solver:
+    //   first call (eval A)       → depth=8mm (stale in Phase 1: 8>5=true → guard flips)
+    //   second call (edit_source) → depth=3mm (wave2 re-eval: 3>5=false → guard flips back)
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_id.clone(), mm(8.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_id.clone(), mm(3.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
+    ]);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval(A): x=-1mm, guard=false, solver→depth=8mm.
+    // m=Undef (members inactive), n=42mm (else_members active).
+    let initial = engine.eval(&module_a);
+    assert!(
+        matches!(initial.values.get(&m_id), Some(Value::Undef)),
+        "initial eval: m should be Undef (guard=false; x=-1mm), got {:?}",
+        initial.values.get(&m_id),
+    );
+    assert!(
+        matches!(initial.values.get(&n_id), Some(Value::Scalar { si_value, .. })
+            if (*si_value - 0.042).abs() < 1e-10),
+        "initial eval: n should be 42mm (else_members active; guard=false), got {:?}",
+        initial.values.get(&n_id),
+    );
+
+    // edit_source(B): x changes -1mm → 1mm.
+    //   Phase 1: guard_cell in dirty_cone(x); eval with x=1mm, depth=8mm(stale)
+    //     → (1>0)&&(8>5)=true. old=false≠new=true → Phase 1 fires.
+    //     phase1_reelaborated = {guard_cell: Bool(true)}.
+    //     m=99mm, n=Undef.
+    //   Solver: constraint depth>=x reads x (dirty) → depth=3mm.
+    //   Wave2: guard_cell reads depth → re-eval: (1>0)&&(3>5)=false. Guard flips!
+    //   reapply: m deactivated (Undef). n skipped (else_members; active branch).
+    //   Phase 3 (OLD): guard_cell in phase1_reelaborated → skip → n stays Undef.  BUG.
+    //   Phase 3 (FIXED): recorded Bool(true) ≠ current Bool(false) → n=42mm.  FIX.
+    let edited = engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // (a) m must be Undef: guard is false → members branch inactive.
+    assert!(
+        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        "m must be Undef after guard ends up false (x=1mm; guard=(1>0)&&(3>5)=false). \
+         Got {:?}",
+        edited.values.get(&m_id),
+    );
+
+    // (b) n must be 42mm (Determined): guard is false → else_members branch active.
+    // BUG (pre-fix): n remains Undef because Phase 3 skips the group via the stale
+    // phase1_reelaborated entry (recorded Bool(true)) without detecting the wave2
+    // guard flip to Bool(false). n's literal default_expr is never evaluated.
+    assert!(
+        matches!(edited.values.get(&n_id), Some(Value::Scalar { si_value, .. })
+            if (*si_value - 0.042).abs() < 1e-10),
+        "n must be 42mm (else_members active; guard ended up false after wave2 flip); \
+         if n is Undef, Phase 3 incorrectly skipped the group via stale \
+         phase1_reelaborated (task 2146 bug). Got {:?}",
+        edited.values.get(&n_id),
+    );
+
+    // (c) Cross-check: incremental result must match cold eval of module_b.
+    let mut cold_solved = HashMap::new();
+    cold_solved.insert(depth_id.clone(), mm(3.0));
+    let cold_solver = SequencedMockConstraintSolver::new(vec![SolveResult::Solved {
+        values: cold_solved,
+        unique: true,
+    }]);
+    let cold_checker = MockConstraintChecker::new();
+    let mut cold_engine =
+        Engine::new(Box::new(cold_checker), None).with_solver(Box::new(cold_solver));
+    let cold = cold_engine.eval(&module_b);
+
+    assert_eq!(
+        edited.values.get(&m_id),
+        cold.values.get(&m_id),
+        "m: incremental edit_source result must match cold eval of module_b",
+    );
+    assert_eq!(
+        edited.values.get(&n_id),
+        cold.values.get(&n_id),
+        "n: incremental edit_source result must match cold eval of module_b",
+    );
+}
+
 // ── Role-flip + wave2 + Phase 3 dedup interaction ────────────────────────────
 
 /// Regression guard for the interaction between the role-flip trigger, the
@@ -2968,35 +3156,15 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
 /// Responds to esc-2142-102 (reviewer_comprehensive) post-merge coverage gap.
 #[test]
 fn edit_source_role_flip_wave2_and_phase3_dedup() {
->>>>>>> main
     use std::collections::HashMap;
     use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
     use reify_test_support::{
         CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
-<<<<<<< HEAD
-        TopologyTemplateBuilder, and, ge, gt, literal, mm, value_ref,
-=======
         TopologyTemplateBuilder, eq, gt, literal, mm, value_ref, value_ref_typed,
->>>>>>> main
     };
     use reify_types::{ModulePath, SolveResult, SourceSpan, Type};
 
     let depth_id = ValueCellId::new("S", "depth");
-<<<<<<< HEAD
-    let guard_id = ValueCellId::new("S", "__guard_0");
-    let m_id = ValueCellId::new("S", "m");
-    let n_id = ValueCellId::new("S", "n");
-
-    // Composite guard: (x > 0mm) && (depth > 5mm).
-    // Reads x (edited → Phase 1 fires) AND depth (resolved → wave2 flips guard).
-    let guard_expr = and(
-        gt(value_ref("S", "x"), literal(mm(0.0))),
-        gt(value_ref("S", "depth"), literal(mm(5.0))),
-    );
-
-    // Member m: literal 99mm. Does NOT read depth — wave2 won't overwrite it.
-    // Active when guard=true.
-=======
     let guard_1_id = ValueCellId::new("S", "__guard_0");
     let guard_2_id = ValueCellId::new("S", "__guard_1");
     let m_id = ValueCellId::new("S", "m");
@@ -3012,64 +3180,27 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
     // Member m: let m = depth (reads auto param; role-flipped between A and B).
     // Same id + same default_expr in both modules → same content_hash →
     // diff_value_cells treats m as neither changed nor added.
->>>>>>> main
     let m_decl = ValueCellDecl {
         id: m_id.clone(),
         kind: ValueCellKind::Let,
         visibility: Visibility::Private,
         cell_type: Type::length(),
-<<<<<<< HEAD
-        default_expr: Some(literal(mm(99.0))),
-=======
         default_expr: Some(value_ref("S", "depth")),
->>>>>>> main
         solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
-<<<<<<< HEAD
-    // Else_member n: literal 42mm. Does NOT read depth — wave2 won't overwrite it.
-    // Active when guard=false.
-=======
     // Member n: let n = 1mm (literal; does NOT read depth → wave2 won't touch it).
->>>>>>> main
     let n_decl = ValueCellDecl {
         id: n_id.clone(),
         kind: ValueCellKind::Let,
         visibility: Visibility::Private,
         cell_type: Type::length(),
-<<<<<<< HEAD
-        default_expr: Some(literal(mm(42.0))),
-=======
         default_expr: Some(literal(mm(1.0))),
->>>>>>> main
         solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
-<<<<<<< HEAD
-    // Module A: x=-1mm → guard = (-1>0)&&(depth>5) = false regardless of depth.
-    // n=42mm (else_members active), m=Undef (members inactive).
-    let template_a = TopologyTemplateBuilder::new("S")
-        .param("S", "x", Type::length(), Some(literal(mm(-1.0))))
-        .auto_param("S", "depth", Type::length())
-        // constraint reads both depth and x → dirty when x changes → solver re-runs
-        .constraint(
-            "S",
-            0,
-            Some("depth_ge_x"),
-            ge(value_ref("S", "depth"), value_ref("S", "x")),
-        )
-        // guarded group: guard reads x (Phase 1) and depth (wave2 flip)
-        .guarded_group(
-            guard_expr.clone(),
-            guard_id.clone(),
-            vec![m_decl.clone()], // members: active when guard=true
-            vec![],               // constraints
-            vec![n_decl.clone()], // else_members: active when guard=false
-            vec![],               // else_constraints
-        )
-=======
     // Module A:
     //   x=10mm (guard_1: x>5mm = true → members=[m] active),
     //   u=true  (guard_2: u      = true → members=[n] active),
@@ -3107,18 +3238,11 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
             vec![],
             vec![],
         )
->>>>>>> main
         .build();
     let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template_a)
         .build();
 
-<<<<<<< HEAD
-    // Module B: x=1mm. Solver will return depth=3mm for the edit_source call.
-    // After fix: guard = (1>0)&&(3>5) = false → m=Undef, n=42mm.
-    let template_b = TopologyTemplateBuilder::new("S")
-        .param("S", "x", Type::length(), Some(literal(mm(1.0))))
-=======
     // Module B:
     //   x=10mm UNCHANGED  (guard_1: x>5mm = true, value unchanged → role-flip only)
     //   u=false CHANGED   (guard_2: u     = false → n deactivates)
@@ -3134,22 +3258,10 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
             Type::Bool,
             Some(literal(Value::Bool(false))), // flipped
         )
->>>>>>> main
         .auto_param("S", "depth", Type::length())
         .constraint(
             "S",
             0,
-<<<<<<< HEAD
-            Some("depth_ge_x"),
-            ge(value_ref("S", "depth"), value_ref("S", "x")),
-        )
-        .guarded_group(
-            guard_expr.clone(),
-            guard_id.clone(),
-            vec![m_decl.clone()],
-            vec![],
-            vec![n_decl.clone()],
-=======
             Some("depth_eq"),
             eq(value_ref("S", "depth"), literal(mm(20.0))), // expr text changed
         )
@@ -3169,7 +3281,6 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
             vec![n_decl],
             vec![],
             vec![],
->>>>>>> main
             vec![],
         )
         .build();
@@ -3178,21 +3289,6 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
         .build();
 
     // Sequenced solver:
-<<<<<<< HEAD
-    //   first call (eval A)       → depth=8mm (stale in Phase 1: 8>5=true → guard flips)
-    //   second call (edit_source) → depth=3mm (wave2 re-eval: 3>5=false → guard flips back)
-    let mut solved1 = HashMap::new();
-    solved1.insert(depth_id.clone(), mm(8.0));
-    let mut solved2 = HashMap::new();
-    solved2.insert(depth_id.clone(), mm(3.0));
-    let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved {
-            values: solved1,
-            unique: true,
-        },
-        SolveResult::Solved {
-            values: solved2,
-=======
     //   Call 1 (eval A):        depth = 10mm
     //   Call 2 (edit_source B): depth = 20mm  (drives wave2 overwrite of m)
     let mut solved_a = HashMap::new();
@@ -3206,7 +3302,6 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
         },
         SolveResult::Solved {
             values: solved_b,
->>>>>>> main
             unique: true,
         },
     ]);
@@ -3214,33 +3309,6 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
-<<<<<<< HEAD
-    // Initial eval(A): x=-1mm, guard=false, solver→depth=8mm.
-    // m=Undef (members inactive), n=42mm (else_members active).
-    let initial = engine.eval(&module_a);
-    assert!(
-        matches!(initial.values.get(&m_id), Some(Value::Undef)),
-        "initial eval: m should be Undef (guard=false; x=-1mm), got {:?}",
-        initial.values.get(&m_id),
-    );
-    assert!(
-        matches!(initial.values.get(&n_id), Some(Value::Scalar { si_value, .. })
-            if (*si_value - 0.042).abs() < 1e-10),
-        "initial eval: n should be 42mm (else_members active; guard=false), got {:?}",
-        initial.values.get(&n_id),
-    );
-
-    // edit_source(B): x changes -1mm → 1mm.
-    //   Phase 1: guard_cell in dirty_cone(x); eval with x=1mm, depth=8mm(stale)
-    //     → (1>0)&&(8>5)=true. old=false≠new=true → Phase 1 fires.
-    //     phase1_reelaborated = {guard_cell: Bool(true)}.
-    //     m=99mm, n=Undef.
-    //   Solver: constraint depth>=x reads x (dirty) → depth=3mm.
-    //   Wave2: guard_cell reads depth → re-eval: (1>0)&&(3>5)=false. Guard flips!
-    //   reapply: m deactivated (Undef). n skipped (else_members; active branch).
-    //   Phase 3 (OLD): guard_cell in phase1_reelaborated → skip → n stays Undef.  BUG.
-    //   Phase 3 (FIXED): recorded Bool(true) ≠ current Bool(false) → n=42mm.  FIX.
-=======
     // Initial eval(A): x=10mm, guard_1=true, solver→depth=10mm, m=10mm, n=1mm.
     let initial = engine.eval(&module_a);
 
@@ -3265,55 +3333,10 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
     //   reapply_phase1_deactivations: group 1 (guard=true, else=[m]) → m=Undef.
     //                                  group 2 (guard=false, members=[n]) → n=Undef.
     //   Phase 3: guard_changed fires (group 2). Both groups dedup-skipped.
->>>>>>> main
     let edited = engine
         .edit_source(&module_b)
         .expect("edit_source must succeed");
 
-<<<<<<< HEAD
-    // (a) m must be Undef: guard is false → members branch inactive.
-    assert!(
-        matches!(edited.values.get(&m_id), Some(Value::Undef)),
-        "m must be Undef after guard ends up false (x=1mm; guard=(1>0)&&(3>5)=false). \
-         Got {:?}",
-        edited.values.get(&m_id),
-    );
-
-    // (b) n must be 42mm (Determined): guard is false → else_members branch active.
-    // BUG (pre-fix): n remains Undef because Phase 3 skips the group via the stale
-    // phase1_reelaborated entry (recorded Bool(true)) without detecting the wave2
-    // guard flip to Bool(false). n's literal default_expr is never evaluated.
-    assert!(
-        matches!(edited.values.get(&n_id), Some(Value::Scalar { si_value, .. })
-            if (*si_value - 0.042).abs() < 1e-10),
-        "n must be 42mm (else_members active; guard ended up false after wave2 flip); \
-         if n is Undef, Phase 3 incorrectly skipped the group via stale \
-         phase1_reelaborated (task 2146 bug). Got {:?}",
-        edited.values.get(&n_id),
-    );
-
-    // (c) Cross-check: incremental result must match cold eval of module_b.
-    let mut cold_solved = HashMap::new();
-    cold_solved.insert(depth_id.clone(), mm(3.0));
-    let cold_solver = SequencedMockConstraintSolver::new(vec![SolveResult::Solved {
-        values: cold_solved,
-        unique: true,
-    }]);
-    let cold_checker = MockConstraintChecker::new();
-    let mut cold_engine =
-        Engine::new(Box::new(cold_checker), None).with_solver(Box::new(cold_solver));
-    let cold = cold_engine.eval(&module_b);
-
-    assert_eq!(
-        edited.values.get(&m_id),
-        cold.values.get(&m_id),
-        "m: incremental edit_source result must match cold eval of module_b",
-    );
-    assert_eq!(
-        edited.values.get(&n_id),
-        cold.values.get(&n_id),
-        "n: incremental edit_source result must match cold eval of module_b",
-=======
     // (a) m must be Undef: guard_1=true but m is on the now-inactive else branch.
     // If m is a concrete value (e.g. 20mm), wave2 corrupted the inactive member
     // AND the post-wave2 cleanup failed for the role-flipped group — either
@@ -3362,6 +3385,5 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
          for role-flip triggers); if >=4, per-group skip in Phase 3 regressed; \
          if <2, Phase 1 counter increment dropped for one of the trigger paths",
         counter,
->>>>>>> main
     );
 }
