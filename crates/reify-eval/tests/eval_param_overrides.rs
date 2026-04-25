@@ -578,6 +578,78 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// task-2154 step-7: dimension mismatch on guarded-group member emits warning
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A guarded-group Param whose Scalar override carries a different SI dimension
+/// (here: LENGTH override against a Mass/MASS cell) is type-kind compatible —
+/// both sides are Scalar — so this path exercises ScalarDimensionMismatch, not
+/// TypeKindMismatch. eval() must detect the dimension drift, skip the override,
+/// emit a Warning mentioning "dimension", retain the override, fall back to the
+/// Mass default.
+///
+/// Mirrors eval_param_overrides.rs:208-260 but on a guarded-group Param.
+#[test]
+fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning() {
+    let mut engine = fresh_engine();
+    let x_id = ValueCellId::new("S", "x");
+
+    // Module A: x is Scalar[LENGTH] inside a guarded group. Set a LENGTH override.
+    let module_a = compile_source(
+        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
+    );
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&x_id, length_scalar(0.12));
+
+    // Module B: x is now Mass (still Scalar kind; type-kind guard passes,
+    // ScalarDimensionMismatch fires).
+    let module_b = compile_source(
+        "structure S { param active : Bool = true\n where active { param x : Mass = 2kg } }",
+    );
+    let result_b = engine.eval(&module_b);
+
+    // (a) The Mass default wins (2kg → 2.0 SI).
+    let expected_mass_default = Value::Scalar {
+        si_value: 2.0,
+        dimension: DimensionVector::MASS,
+    };
+    assert_eq!(
+        result_b.values.get(&x_id),
+        Some(&expected_mass_default),
+        "dimension-mismatched override must be skipped in favour of the Mass default on guarded-group Param"
+    );
+
+    // (b) Exactly one Warning mentions the cell + the word "dimension".
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.x"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.x, got: {:?}",
+        result_b.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("dimension"),
+        "dimension-mismatch warning should mention 'dimension', got: {:?}",
+        warnings[0].message
+    );
+
+    // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
+    let module_a_again = compile_source(
+        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
+    );
+    let result_a2 = engine.eval(&module_a_again);
+    assert_eq!(
+        result_a2.values.get(&x_id),
+        Some(&length_scalar(0.12)),
+        "override must survive a transient dimension-mismatch eval on guarded-group Param"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // task-2179 S4: rejected-override-with-no-default inserts Undef into result.values
 // ──────────────────────────────────────────────────────────────────────────────
 
