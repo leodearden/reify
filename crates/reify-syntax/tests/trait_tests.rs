@@ -275,6 +275,59 @@ fn backward_compat_no_def_keyword() {
     assert_eq!(structure.members.len(), 1);
 }
 
+// ── span tests for refinements ────────────────────────────────────
+
+#[test]
+fn parse_trait_refinement_has_span() {
+    let source = "trait Fastener : Rigid { param thread_pitch : Length }";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    let rigid_start = source.find("Rigid").unwrap();
+    assert_eq!(trait_decl.refinements.len(), 1);
+    assert_eq!(trait_decl.refinements[0].name, "Rigid");
+    assert_eq!(
+        trait_decl.refinements[0].span,
+        reify_types::SourceSpan::new(rigid_start as u32, (rigid_start + 5) as u32),
+        "span should cover exactly the 'Rigid' token"
+    );
+}
+
+#[test]
+fn parse_trait_multiple_refinements_have_distinct_spans() {
+    let source = "trait A : B + C { }";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let trait_decl = match &decls[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+
+    assert_eq!(trait_decl.refinements.len(), 2);
+
+    let b_start = source.find('B').unwrap();
+    assert_eq!(trait_decl.refinements[0].name, "B");
+    assert_eq!(
+        trait_decl.refinements[0].span,
+        reify_types::SourceSpan::new(b_start as u32, (b_start + 1) as u32),
+        "span for 'B' should cover exactly 1 byte"
+    );
+
+    let c_start = source.find('C').unwrap();
+    assert_eq!(trait_decl.refinements[1].name, "C");
+    assert_eq!(
+        trait_decl.refinements[1].span,
+        reify_types::SourceSpan::new(c_start as u32, (c_start + 1) as u32),
+        "span for 'C' should cover exactly 1 byte"
+    );
+}
+
 // ── pre-2: type_expr with type args ────────────────────────────────
 
 #[test]
