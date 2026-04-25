@@ -222,6 +222,30 @@ fn phase3_skip_group(
     }
 }
 
+/// Returns `true` iff Phase 3 **must** re-elaborate a guarded group —
+/// the inverse of [`phase3_skip_group`], lifted to handle the case where
+/// the guard cell is absent from `values`.
+///
+/// Used for **both** the `.any()` early-exit predicate (`guard_changed`) and
+/// the per-group `continue` inside the Phase 3 loop so both sites share a
+/// single source of truth (tasks 2140, 2146).
+///
+/// When the guard cell is absent from `values` (post-eval invariant violation,
+/// defended against in `edit_source` Phase 3), the group is treated as needing
+/// Phase 3 iff there was a prior value — i.e. the guard cell disappeared,
+/// which is a structural change.
+fn group_needs_phase3(
+    group: &GuardedGroupInfo,
+    values: &ValueMap,
+    old_guard_val: Option<&Value>,
+    phase1: &HashMap<ValueCellId, Value>,
+) -> bool {
+    match values.get(&group.guard_cell) {
+        None => old_guard_val.is_some(),
+        Some(new_val) => !phase3_skip_group(&group.guard_cell, new_val, phase1, old_guard_val),
+    }
+}
+
 /// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
 /// probe in `Engine::edit_source`.
 ///
@@ -882,51 +906,38 @@ impl Engine {
         // Finally, recompute topology fingerprint to reflect guard state.
         //
         // `guard_changed` is also true when Phase 1 processed a group with a
-        // guard value that wave2 subsequently changed (flip-then-revert). In
-        // that case the final guard value may match the pre-edit snapshot, but
-        // Phase 1 left the group's member state inconsistent; Phase 3 must
-        // re-elaborate to fix it (task 2146).
+        // guard value that wave2 subsequently changed (flip-then-revert); in
+        // that case `group_needs_phase3` detects the inconsistency regardless
+        // of whether the final guard value matches the pre-edit snapshot
+        // (task 2146).
         {
             let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
-                let new_val = values.get(&group.guard_cell);
-                let old_val = self
+                let old_guard_val = self
                     .eval_state
                     .as_ref()
                     .and_then(|s| s.snapshot.values.get(&group.guard_cell))
                     .map(|(v, _)| v);
-                if new_val != old_val {
-                    return true;
-                }
-                // Phase-1 flip-then-revert: Phase 1 recorded a different guard
-                // value than current → group state is inconsistent (task 2146).
-                phase1_reelaborated
-                    .get(&group.guard_cell)
-                    .is_some_and(|p1| Some(p1) != new_val)
+                group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated)
             });
 
             if guard_changed {
                 // Re-evaluate each guarded group based on current guard values
                 for group in new_snapshot.graph.guarded_groups.clone() {
+                    // Cross-phase dedup — see `group_needs_phase3` (tasks 2140 / 2146).
+                    let old_guard_val = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                        .map(|(v, _)| v);
+                    if !group_needs_phase3(&group, &values, old_guard_val, &phase1_reelaborated) {
+                        continue;
+                    }
                     // Site 3: guard cell must be present — eval() has completed and populated all
                     // guard cells into the values map. A missing guard cell here is a logic error.
                     let guard_val = values
                         .get(&group.guard_cell)
                         .cloned()
                         .expect("guard cell must have a value after initial evaluation");
-                    // Cross-phase dedup (tasks 2140 / 2146) — see `phase3_skip_group`.
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
-                    if phase3_skip_group(
-                        &group.guard_cell,
-                        &guard_val,
-                        &phase1_reelaborated,
-                        old_guard_val,
-                    ) {
-                        continue;
-                    }
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
                         &new_snapshot.graph,
@@ -1949,30 +1960,33 @@ impl Engine {
         // cell by this point; a missing cell would be a logic error.
         //
         // `guard_changed` is also true when Phase 1 processed a group with a
-        // guard value that wave2 subsequently changed (flip-then-revert). In
-        // that case the final guard value may match the pre-edit snapshot, but
-        // Phase 1 left the group's member state inconsistent; Phase 3 must
-        // re-elaborate to fix it (task 2146).
+        // guard value that wave2 subsequently changed (flip-then-revert); in
+        // that case `group_needs_phase3` detects the inconsistency regardless
+        // of whether the final guard value matches the pre-edit snapshot
+        // (task 2146).
         {
             let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
-                let new_val = values.get(&group.guard_cell);
-                let old_val = self
+                let old_guard_val = self
                     .eval_state
                     .as_ref()
                     .and_then(|s| s.snapshot.values.get(&group.guard_cell))
                     .map(|(v, _)| v);
-                if new_val != old_val {
-                    return true;
-                }
-                // Phase-1 flip-then-revert: Phase 1 recorded a different guard
-                // value than current → group state is inconsistent (task 2146).
-                phase1_reelaborated
-                    .get(&group.guard_cell)
-                    .is_some_and(|p1| Some(p1) != new_val)
+                group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated)
             });
 
             if guard_changed {
                 for group in new_snapshot.graph.guarded_groups.clone() {
+                    // Cross-phase dedup — see `group_needs_phase3` (tasks 2142 / 2146).
+                    // Phase 3 has no added-member or role-flip exception (those
+                    // are Phase 1 concerns only).
+                    let old_guard_val = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
+                        .map(|(v, _)| v);
+                    if !group_needs_phase3(&group, &values, old_guard_val, &phase1_reelaborated) {
+                        continue;
+                    }
                     // Phase 1 (the dirty-cone-triggered branch above) guarantees
                     // that every guard_cell in structure_controlling has a value
                     // in `values`. But Phase 3 is separately gated on
@@ -1984,22 +1998,6 @@ impl Engine {
                     let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
                         continue;
                     };
-                    // Cross-phase dedup (tasks 2142 / 2146) — see `phase3_skip_group`.
-                    // Phase 3 has no added-member or role-flip exception (those
-                    // are Phase 1 concerns only).
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
-                    if phase3_skip_group(
-                        &group.guard_cell,
-                        &guard_val,
-                        &phase1_reelaborated,
-                        old_guard_val,
-                    ) {
-                        continue;
-                    }
                     self.last_guard_phase_group_evals += 1;
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
