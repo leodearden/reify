@@ -190,10 +190,7 @@ fn compile_entity_decl(
 ///
 /// The `trait_registry` and `template_registry` are rebuilt phase-locally
 /// from `ctx.trait_defs` (plus `prelude` trait defs) and `ctx.templates`.
-pub(crate) fn phase_pending_bound_checks(
-    ctx: &mut CompilationCtx,
-    prelude: &[&CompiledModule],
-) {
+pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
     let template_registry: HashMap<String, &TopologyTemplate> = ctx
         .templates
         .iter()
@@ -213,16 +210,16 @@ pub(crate) fn phase_pending_bound_checks(
             } => {
                 // Resolve type_params from the template registry now that
                 // all structures are compiled.
-                let type_params =
-                    if let Some(target) = template_registry.get(target_name.as_str()) {
-                        if target.type_params.is_empty() {
-                            continue; // target has no type params, nothing to check
-                        }
-                        &target.type_params
-                    } else {
-                        // Target structure not found — skip (may be an external/unknown structure)
-                        continue;
-                    };
+                let type_params = if let Some(target) = template_registry.get(target_name.as_str())
+                {
+                    if target.type_params.is_empty() {
+                        continue; // target has no type params, nothing to check
+                    }
+                    &target.type_params
+                } else {
+                    // Target structure not found — skip (may be an external/unknown structure)
+                    continue;
+                };
 
                 check_type_param_bounds(
                     type_params,

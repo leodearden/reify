@@ -38,7 +38,11 @@ structure S {
     let module = compile_source(source);
     let compiled = get_let_expr(&module, "v");
 
-    let CompiledExprKind::UserFunctionCall { function_name, args } = &compiled.kind else {
+    let CompiledExprKind::UserFunctionCall {
+        function_name,
+        args,
+    } = &compiled.kind
+    else {
         panic!(
             "expected v to compile to UserFunctionCall, got {:?}",
             compiled.kind
@@ -79,7 +83,11 @@ structure S {
     let module = compile_source(source);
     let compiled = get_let_expr(&module, "v");
 
-    let CompiledExprKind::UserFunctionCall { function_name, args } = &compiled.kind else {
+    let CompiledExprKind::UserFunctionCall {
+        function_name,
+        args,
+    } = &compiled.kind
+    else {
         panic!(
             "expected v to compile to UserFunctionCall, got {:?}",
             compiled.kind
@@ -122,10 +130,7 @@ structure S {
     let compiled = get_let_expr(&module, "v");
 
     let CompiledExprKind::Match { discriminant, arms } = &compiled.kind else {
-        panic!(
-            "expected v to compile to Match, got {:?}",
-            compiled.kind
-        );
+        panic!("expected v to compile to Match, got {:?}", compiled.kind);
     };
 
     // Rebuild via the public constructor with the exact same sub-expressions.
@@ -164,10 +169,7 @@ structure S {
     let compiled = get_let_expr(&module, "v");
 
     let CompiledExprKind::Match { discriminant, arms } = &compiled.kind else {
-        panic!(
-            "expected v to compile to Match, got {:?}",
-            compiled.kind
-        );
+        panic!("expected v to compile to Match, got {:?}", compiled.kind);
     };
     assert!(arms.len() >= 2, "expected ≥2 arms, got {}", arms.len());
     assert!(

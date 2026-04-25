@@ -7,7 +7,9 @@
 //! scope.
 
 use reify_compiler::RequirementKind;
-use reify_test_support::{compile_source, compile_source_with_stdlib, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    compile_source, compile_source_with_stdlib, parse_and_compile_with_stdlib,
+};
 use reify_types::{Severity, Type};
 
 /// Structure member: `param m : Material` should resolve to `Type::TraitObject("Material")`.
@@ -79,11 +81,7 @@ fn guarded_param_with_trait_type_resolves_to_trait_object() {
         .find(|t| t.name == "GuardedMaterial")
         .expect("GuardedMaterial template should be compiled");
 
-    assert_eq!(
-        template.guarded_groups.len(),
-        1,
-        "expected 1 guarded group"
-    );
+    assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
     let group = &template.guarded_groups[0];
 
     let m_member = group

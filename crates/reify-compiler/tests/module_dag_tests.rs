@@ -506,7 +506,11 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
     // `<stdlib_root>/units.ri`.
     let stdlib_dir = dir.join("stdlib");
     fs::create_dir_all(&stdlib_dir).unwrap();
-    fs::write(stdlib_dir.join("units.ri"), "pub unit myunit : Length = 1.0").unwrap();
+    fs::write(
+        stdlib_dir.join("units.ri"),
+        "pub unit myunit : Length = 1.0",
+    )
+    .unwrap();
 
     // main.ri: imports std.units then re-declares 'myunit' — stdlib collision.
     fs::write(
@@ -552,8 +556,7 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
     );
     let empty_span = reify_types::SourceSpan::empty(0);
     assert_ne!(
-        dup_diag.labels[0].span,
-        empty_span,
+        dup_diag.labels[0].span, empty_span,
         "first label '{}' must not be SourceSpan::empty(0)",
         dup_diag.labels[0].message
     );
@@ -609,11 +612,14 @@ fn compile_module_prelude_propagates_pub_structure() {
         template.sub_components.len(),
         1,
         "expected 1 sub_component, got {:?}",
-        template.sub_components.iter().map(|s| &s.name).collect::<Vec<_>>()
+        template
+            .sub_components
+            .iter()
+            .map(|s| &s.name)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
-        template.sub_components[0].structure_name,
-        "Part",
+        template.sub_components[0].structure_name, "Part",
         "sub_component structure_name should be 'Part'"
     );
 }
@@ -668,7 +674,11 @@ fn compile_module_multi_import_prelude() {
         template.sub_components.len(),
         2,
         "expected 2 sub_components, got {:?}",
-        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+        template
+            .sub_components
+            .iter()
+            .map(|s| &s.structure_name)
+            .collect::<Vec<_>>()
     );
 
     let structure_names: Vec<&str> = template
@@ -829,7 +839,12 @@ fn compile_project_multi_import_prelude() {
 
     let modules = result.unwrap();
     // Should have 3 modules in topo order: p, q, r
-    assert_eq!(modules.len(), 3, "expected 3 modules (p, q, r), got {}", modules.len());
+    assert_eq!(
+        modules.len(),
+        3,
+        "expected 3 modules (p, q, r), got {}",
+        modules.len()
+    );
 
     // Entry module r is last (topological order: dependencies first)
     let r_module = modules.last().unwrap();
@@ -842,7 +857,11 @@ fn compile_project_multi_import_prelude() {
         template.sub_components.len(),
         2,
         "expected 2 sub_components, got {:?}",
-        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+        template
+            .sub_components
+            .iter()
+            .map(|s| &s.structure_name)
+            .collect::<Vec<_>>()
     );
 
     let structure_names: Vec<&str> = template
@@ -1026,7 +1045,10 @@ fn cycle_error_excludes_non_cycle_ancestors() {
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = ModuleDag::new();
     let result = dag.compile_module("d", &resolver);
-    assert!(result.is_err(), "expected error for cycle a->b->a triggered via d");
+    assert!(
+        result.is_err(),
+        "expected error for cycle a->b->a triggered via d"
+    );
 
     let msg = result
         .unwrap_err()
@@ -1045,8 +1067,7 @@ fn cycle_error_excludes_non_cycle_ancestors() {
     // (b) message is exactly the cycle chain — this positive assertion proves 'd'
     // is absent without fragile per-pattern negative checks.
     assert_eq!(
-        msg,
-        "circular dependency detected: a -> b -> a",
+        msg, "circular dependency detected: a -> b -> a",
         "message should contain exactly the cycle, not non-cycle ancestors"
     );
 }
@@ -1093,7 +1114,10 @@ fn cycle_error_preserves_dfs_traversal_order() {
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = ModuleDag::new();
     let result = dag.compile_module("zebra", &resolver);
-    assert!(result.is_err(), "expected error for cycle zebra->middle->alpha->zebra");
+    assert!(
+        result.is_err(),
+        "expected error for cycle zebra->middle->alpha->zebra"
+    );
 
     let msg = result
         .unwrap_err()
@@ -1105,8 +1129,7 @@ fn cycle_error_preserves_dfs_traversal_order() {
     // DFS traversal order (zebra, middle, alpha) — NOT alphabetical (alpha, middle, zebra).
     // If IndexSet is replaced with HashSet or BTreeSet this assertion will fail.
     assert_eq!(
-        msg,
-        "circular dependency detected: zebra -> middle -> alpha -> zebra",
+        msg, "circular dependency detected: zebra -> middle -> alpha -> zebra",
         "message must reflect DFS insertion order, not alphabetical order"
     );
 }
@@ -1219,7 +1242,8 @@ fn std_module_fallback_adds_transitive_dependencies_to_dag() {
     }
     // The requested module itself must also be in topo_order.
     assert!(
-        dag.topo_order.contains(&"std.materials.mechanical".to_string()),
+        dag.topo_order
+            .contains(&"std.materials.mechanical".to_string()),
         "topo_order must contain \"std.materials.mechanical\""
     );
 }
@@ -1391,6 +1415,97 @@ fn partial_stdlib_overlay_errors_when_embedded_first_then_fs() {
     );
 }
 
+// ── step-1 (task-2076): transitive-embedded overlay via deferred FileSystem commit ──
+
+/// Regression guard for the deferred-commit overlay escape bug in `compile_module`.
+///
+/// Background: when the outer `compile_module("std.foo", &resolver)` finds `foo.ri`
+/// on the filesystem it defers setting `stdlib_mode = Some(FileSystem)` until after
+/// successful compilation. During compilation it recurses into `import std.units`;
+/// since `units.ri` is absent from `stdlib_dir`, that inner call falls back to the
+/// embedded stdlib and commits `stdlib_mode = Some(Embedded)`. When control returns
+/// to the outer call, the deferred `if commit_fs_mode { self.stdlib_mode =
+/// Some(FileSystem); }` unconditionally overwrites `Some(Embedded)` — exactly the
+/// partial-overlay scenario the all-or-nothing invariant is meant to reject.
+///
+/// Setup: stdlib_dir contains `foo.ri` (imports std.units) but NOT `units.ri`.
+/// - `compile_module("std.foo")` → fs succeeds for foo.ri → defers FileSystem commit.
+/// - Recursion into `compile_module("std.units")` → fs fails → embedded fallback →
+///   commits `stdlib_mode = Embedded`.
+/// - On return, deferred commit tries to overwrite Embedded with FileSystem.
+/// - Fixed code must detect the mismatch and return an overlay error.
+///
+/// Before the fix, this test would have failed: the deferred write silently
+/// overwrote `Some(Embedded)` and `compile_module` returned `Ok`. The guarded
+/// write now correctly returns `Err`.
+#[test]
+fn partial_stdlib_overlay_errors_when_outer_fs_and_inner_embedded() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Create a partial stdlib dir: foo.ri present (imports std.units), units.ri absent.
+    let stdlib_dir = dir.join("stdlib");
+    fs::create_dir_all(&stdlib_dir).unwrap();
+    fs::write(
+        stdlib_dir.join("foo.ri"),
+        "import std.units\npub structure Foo { param v: Scalar = 1mm }",
+    )
+    .unwrap();
+    // units.ri intentionally NOT written — std.units must fall back to embedded stdlib.
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_dir);
+    let mut dag = ModuleDag::new();
+
+    // std.foo is found on the filesystem (foo.ri present) but its transitive import
+    // std.units falls back to embedded. This is the partial-overlay scenario.
+    let result = dag.compile_module("std.foo", &resolver);
+    assert!(
+        result.is_err(),
+        "compile_module(\"std.foo\") should fail because foo.ri resolved from the filesystem \
+         but its transitive std.units import was served from the embedded stdlib; \
+         the DAG must not silently mix sources, got: {:?}",
+        result
+    );
+
+    let errors = result.unwrap_err();
+    let msg = errors
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (a) Must mention the overlay / partial mix.
+    assert!(
+        msg.to_lowercase().contains("overlay") || msg.to_lowercase().contains("partial"),
+        "diagnostic must mention 'overlay' or 'partial', got: {}",
+        msg
+    );
+
+    // (b) Must reference the stdlib source (filesystem or embedded).
+    assert!(
+        msg.to_lowercase().contains("filesystem") || msg.to_lowercase().contains("embedded"),
+        "diagnostic must reference 'filesystem' or 'embedded', got: {}",
+        msg
+    );
+
+    // (c) Must name the offending module (mirrors sibling test assertion shape).
+    assert!(
+        msg.contains("std.foo"),
+        "diagnostic must name the offending module 'std.foo', got: {}",
+        msg
+    );
+
+    // (d) Must contain the structural kind marker that only the deferred-commit branch
+    // emits, tying this regression test to the specific bug path it guards rather than
+    // the sibling entry-guard diagnostic (which emits '(fs-over-embedded/entry)').
+    assert!(
+        msg.contains("(fs-over-embedded/transitive)"),
+        "diagnostic must contain the structural kind marker '(fs-over-embedded/transitive)' \
+         to distinguish the deferred-commit branch from the entry-guard branch, got: {}",
+        msg
+    );
+}
+
 // ── step-3 (task-2073): sequential embedded fallbacks don't duplicate in topo_order ──
 
 /// Regression guard for the backward-walk short-circuit in the embedded stdlib
@@ -1458,12 +1573,10 @@ fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
 
     // (a) topo_order must match the full stdlib prefix in order (no duplicates, no gaps).
     assert_eq!(
-        dag.topo_order,
-        expected_paths,
+        dag.topo_order, expected_paths,
         "topo_order must match stdlib prefix in order (no duplicates, no gaps); \
          got: {:?}, expected: {:?}",
-        dag.topo_order,
-        expected_paths
+        dag.topo_order, expected_paths
     );
 
     // (b) Defense-in-depth: no duplicates in topo_order.

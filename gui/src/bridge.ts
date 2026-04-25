@@ -19,6 +19,7 @@ import type {
   DiagnosticInfo,
   EntityTreeNode,
   DefInfo,
+  PersistentViewState,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -462,4 +463,26 @@ export async function onKernelStatus(
   return listen<KernelStatus>('kernel-status', (event) => {
     callback(event.payload);
   });
+}
+
+// ── View sidecar commands ───────────────────────────────────────────
+
+/**
+ * Read the view sidecar file for `riPath` (i.e. `{riPath}.views.json`).
+ *
+ * Returns `null` when the file does not exist (backend returns `null`).
+ * Rejects when the backend returns an error (e.g. malformed JSON, I/O error).
+ */
+export async function readViewSidecar(riPath: string): Promise<PersistentViewState | null> {
+  const result = await invoke<PersistentViewState | null>('read_view_sidecar', { riPath });
+  return result ?? null;
+}
+
+/**
+ * Write the view sidecar file for `riPath` (i.e. `{riPath}.views.json`).
+ *
+ * Rejects when the backend returns an error (e.g. I/O error, serialisation failure).
+ */
+export async function writeViewSidecar(riPath: string, state: PersistentViewState): Promise<void> {
+  await invoke<void>('write_view_sidecar', { riPath, state });
 }

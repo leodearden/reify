@@ -110,3 +110,71 @@ describe('Toast auto-dismiss', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 });
+
+// Toast action buttons — step-23 tests (fail until step-24 extends the component)
+describe('Toast — action buttons (step-23)', () => {
+  it('(a) when actions prop is omitted, no extra action buttons render (only the close button)', () => {
+    render(() => <Toast message="Simple" type="info" onDismiss={vi.fn()} />);
+    const toast = screen.getByTestId('toast');
+    // The only button should be the existing close button (aria-label="Close")
+    const buttons = Array.from(toast.querySelectorAll('button'));
+    const nonClose = buttons.filter((b) => b.getAttribute('aria-label') !== 'Close');
+    expect(nonClose).toHaveLength(0);
+  });
+
+  it('(b) when actions provided, renders buttons with the correct labels', () => {
+    const yesClick = vi.fn();
+    const noClick = vi.fn();
+    const ignoreClick = vi.fn();
+    render(() => (
+      <Toast
+        message="Rebind?"
+        type="info"
+        onDismiss={vi.fn()}
+        actions={[
+          { label: 'Yes', onClick: yesClick },
+          { label: 'No', onClick: noClick },
+          { label: 'Ignore', onClick: ignoreClick },
+        ]}
+      />
+    ));
+    expect(screen.getByText('Yes')).toBeTruthy();
+    expect(screen.getByText('No')).toBeTruthy();
+    expect(screen.getByText('Ignore')).toBeTruthy();
+  });
+
+  it('(c) clicking an action button calls its onClick AND calls onDismiss', () => {
+    const onDismiss = vi.fn();
+    const yesClick = vi.fn();
+    render(() => (
+      <Toast
+        message="Rebind?"
+        type="info"
+        onDismiss={onDismiss}
+        actions={[{ label: 'Yes', onClick: yesClick }]}
+      />
+    ));
+    const yesBtn = screen.getByText('Yes') as HTMLElement;
+    fireEvent.click(yesBtn);
+    expect(yesClick).toHaveBeenCalledTimes(1);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('(d) action buttons are focusable (rendered as <button> elements)', () => {
+    render(() => (
+      <Toast
+        message="Rebind?"
+        type="info"
+        onDismiss={vi.fn()}
+        actions={[
+          { label: 'Yes', onClick: vi.fn() },
+          { label: 'No', onClick: vi.fn() },
+        ]}
+      />
+    ));
+    const yesEl = screen.getByText('Yes');
+    expect(yesEl.tagName.toLowerCase()).toBe('button');
+    const noEl = screen.getByText('No');
+    expect(noEl.tagName.toLowerCase()).toBe('button');
+  });
+});

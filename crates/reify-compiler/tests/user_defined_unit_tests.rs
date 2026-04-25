@@ -96,7 +96,10 @@ fn user_unit_in_let_binding() {
         .find(|c| c.id.member == "w_thou")
         .expect("w_thou value cell not found");
     // Walk default_expr → BinOp → right operand → Scalar si_value + dimension
-    let expr = w_thou.default_expr.as_ref().expect("w_thou has no default_expr");
+    let expr = w_thou
+        .default_expr
+        .as_ref()
+        .expect("w_thou has no default_expr");
     let (op, _left, right) = common::expect_binop(expr);
     assert!(
         matches!(op, reify_types::BinOp::Add),
@@ -217,7 +220,8 @@ fn cross_module_private_unit_not_visible_via_compile_with_prelude() {
     assert!(
         errors
             .iter()
-            .any(|d| d.message.to_lowercase().contains("unknown unit") && d.message.contains("privmil")),
+            .any(|d| d.message.to_lowercase().contains("unknown unit")
+                && d.message.contains("privmil")),
         "error should mention 'unknown unit' and 'privmil'; got: {:?}",
         errors
     );
@@ -240,8 +244,7 @@ fn cross_module_pub_unit_visible_via_module_dag() {
     )
     .unwrap();
 
-    let resolver =
-        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = reify_compiler::module_dag::ModuleDag::new();
     let result = dag.compile_module("user", &resolver);
     assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
@@ -275,8 +278,7 @@ fn cross_module_private_unit_not_visible_via_module_dag() {
     )
     .unwrap();
 
-    let resolver =
-        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = reify_compiler::module_dag::ModuleDag::new();
     // compile_module succeeds (parse is fine), but user module has semantic errors
     let result = dag.compile_module("user", &resolver);
@@ -313,10 +315,8 @@ fn compile_project_entry_sees_imported_pub_unit() {
     )
     .unwrap();
 
-    let resolver =
-        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result =
-        reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
     assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
 
     let modules = result.unwrap();
@@ -349,10 +349,8 @@ fn compile_project_entry_does_not_see_imported_private_unit() {
     )
     .unwrap();
 
-    let resolver =
-        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result =
-        reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
     // Parse succeeds; semantic errors are attached to the module, not returned as Err.
     assert!(
         result.is_ok(),
@@ -405,7 +403,10 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
         .iter()
         .find(|d| d.message.contains("duplicate") && d.message.contains("mil"));
     let dup_diag = dup_diag.unwrap_or_else(|| {
-        panic!("error should mention 'duplicate' and 'mil'; got: {:?}", errors)
+        panic!(
+            "error should mention 'duplicate' and 'mil'; got: {:?}",
+            errors
+        )
     });
 
     // (a) The message must NOT say 'stdlib' — the source module is 'imported_mod', not 'std/*'
@@ -462,10 +463,8 @@ fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
 
     // Module C: compiled with B as prelude, tries to use `mil`.
     // The prelude-seeding loop iterates B.units (empty), so `mil` is not seeded into C.
-    let module_c = compile_with_prelude_helper(
-        "structure S { param w : Length = 5mil }",
-        &[module_b],
-    );
+    let module_c =
+        compile_with_prelude_helper("structure S { param w : Length = 5mil }", &[module_b]);
     let errors = errors_only(&module_c);
     assert_unknown_unit_mil(&errors);
 }
@@ -483,8 +482,7 @@ fn transitive_pub_unit_not_visible_via_module_dag() {
     let dir = test_dir("transitive_pub_unit_module_dag");
     write_transitive_unit_chain(&dir);
 
-    let resolver =
-        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
     let mut dag = reify_compiler::module_dag::ModuleDag::new();
     // compile_module succeeds (no parse errors); semantic errors appear in the module.
     let result = dag.compile_module("c", &resolver);
@@ -512,10 +510,8 @@ fn transitive_pub_unit_not_visible_via_compile_project() {
     let dir = test_dir("transitive_pub_unit_compile_project");
     write_transitive_unit_chain(&dir);
 
-    let resolver =
-        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result =
-        reify_compiler::module_dag::compile_project(&dir.join("c.ri"), &resolver);
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join("c.ri"), &resolver);
     // Parse succeeds; semantic errors are attached to the module, not returned as Err.
     assert!(
         result.is_ok(),

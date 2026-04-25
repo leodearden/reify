@@ -156,15 +156,15 @@ fn compile_module_with_diagnostics(source: &str) -> CompiledModule {
 /// Returns `(left_si_value, right_si_value)`.
 fn extract_binop_scalar_sides(expr: &CompiledExpr) -> (f64, f64) {
     if let CompiledExprKind::BinOp { left, right, .. } = &expr.kind {
-        let left_val =
-            if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &left.kind {
-                *si_value
-            } else {
-                panic!(
-                    "expected Scalar literal for left side of BinOp, got {:?}",
-                    left.kind
-                )
-            };
+        let left_val = if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &left.kind
+        {
+            *si_value
+        } else {
+            panic!(
+                "expected Scalar literal for left side of BinOp, got {:?}",
+                left.kind
+            )
+        };
         let right_val =
             if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &right.kind {
                 *si_value
@@ -176,10 +176,7 @@ fn extract_binop_scalar_sides(expr: &CompiledExpr) -> (f64, f64) {
             };
         (left_val, right_val)
     } else {
-        panic!(
-            "expected BinOp constraint expression, got {:?}",
-            expr.kind
-        )
+        panic!("expected BinOp constraint expression, got {:?}", expr.kind)
     }
 }
 
@@ -323,9 +320,7 @@ purpose check(subject : Structure) {
         !errors.is_empty(),
         "expected an error for unknown unit 'parsec', but got none"
     );
-    let has_unknown_unit = errors
-        .iter()
-        .any(|d| d.message.contains("unknown unit"));
+    let has_unknown_unit = errors.iter().any(|d| d.message.contains("unknown unit"));
     assert!(
         has_unknown_unit,
         "expected 'unknown unit' in error message, got: {:?}",

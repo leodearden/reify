@@ -68,7 +68,10 @@ pub(crate) fn validate_annotations(
                 // Valid on any context — no warning.
             }
             reify_types::TEST_ANNOTATION => {
-                if !matches!(context, "structure" | "occurrence" | "function" | "constraint_def") {
+                if !matches!(
+                    context,
+                    "structure" | "occurrence" | "function" | "constraint_def"
+                ) {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @test is not valid on {context} declarations"
@@ -91,8 +94,7 @@ pub(crate) fn validate_annotations(
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
                     );
-                } else if context == "constraint_def" && !is_valid_optimized(ann)
-                {
+                } else if context == "constraint_def" && !is_valid_optimized(ann) {
                     // @optimized without a string-literal target on a constraint_def
                     // silently routes to the language-level checker, which confuses
                     // users who think they wired up an optimized impl. Warn explicitly.
@@ -152,8 +154,7 @@ pub(crate) fn validate_annotations(
     if context == "constraint_def" {
         let mut seen_valid_optimized = false;
         for ann in annotations {
-            if is_valid_optimized(ann)
-            {
+            if is_valid_optimized(ann) {
                 if seen_valid_optimized {
                     diagnostics.push(
                         Diagnostic::warning(
@@ -173,25 +174,91 @@ pub(crate) fn validate_annotations(
 /// i.e. its name is `"optimized"` and its first argument is a string literal.
 pub(crate) fn is_valid_optimized(ann: &reify_types::Annotation) -> bool {
     ann.name == reify_types::OPTIMIZED_ANNOTATION
-        && matches!(ann.args.first(), Some(reify_types::AnnotationArg::String(_)))
+        && matches!(
+            ann.args.first(),
+            Some(reify_types::AnnotationArg::String(_))
+        )
 }
 
-/// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown names.
+/// Pragmas valid on block-level declarations (structures, occurrences, traits, purposes, etc.).
+pub(crate) const KNOWN_BLOCK_PRAGMAS: &[&str] = &["precision", "solver", "kernel"];
+
+/// Pragmas valid only at module level; not valid on any block-level declaration.
+pub(crate) const MODULE_ONLY_PRAGMAS: &[&str] = &["no_prelude", "version"];
+
+/// Returns `true` if `name` is a known block-level pragma.
+pub(crate) fn is_known_block_pragma(name: &str) -> bool {
+    KNOWN_BLOCK_PRAGMAS.contains(&name)
+}
+
+/// Returns `true` if `name` is a module-only pragma (valid at module level, not on blocks).
+pub(crate) fn is_module_only_pragma(name: &str) -> bool {
+    MODULE_ONLY_PRAGMAS.contains(&name)
+}
+
+/// Returns `true` if `name` is any recognized pragma (block or module-only).
 ///
-/// Known block-level pragmas: `#precision`, `#solver`, `#kernel`.
-/// Unknown pragmas emit a `Severity::Warning` diagnostic.
+/// The module-level pragma set is `KNOWN_BLOCK_PRAGMAS ∪ MODULE_ONLY_PRAGMAS`,
+/// which structurally enforces the subset relation: the block list is always a
+/// subset of the module list by construction rather than by hand-maintenance.
+pub(crate) fn is_known_module_pragma(name: &str) -> bool {
+    is_known_block_pragma(name) || is_module_only_pragma(name)
+}
+
+/// Classification of a pragma name with respect to its validity context.
+enum PragmaKind {
+    /// Valid on block-level declarations (`#precision`, `#solver`, `#kernel`).
+    KnownBlock,
+    /// Valid only at module level; misplaced when found on a block (`#no_prelude`, `#version`).
+    ModuleOnly,
+    /// Not a recognized pragma name.
+    Unknown,
+}
+
+/// Classify a pragma name for context-aware validation.
+fn classify_pragma(name: &str) -> PragmaKind {
+    if is_known_block_pragma(name) {
+        PragmaKind::KnownBlock
+    } else if is_module_only_pragma(name) {
+        PragmaKind::ModuleOnly
+    } else {
+        PragmaKind::Unknown
+    }
+}
+
+/// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown or
+/// misplaced pragma names.
+///
+/// Known block-level pragmas: `#precision`, `#solver`, `#kernel` — no warning.
+/// Module-only pragmas (`#no_prelude`, `#version`) on a block: context-aware "only valid at
+/// module level" warning.
+/// All other pragma names: generic `"unknown pragma #<name>"` warning.
 pub(crate) fn validate_pragmas(
     pragmas: &[reify_syntax::Pragma],
-    _context: &str,
+    context: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    const KNOWN_BLOCK_PRAGMAS: &[&str] = &["precision", "solver", "kernel"];
     for pragma in pragmas {
-        if !KNOWN_BLOCK_PRAGMAS.contains(&pragma.name.as_str()) {
-            diagnostics.push(
-                Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
-                    .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
-            );
+        match classify_pragma(&pragma.name) {
+            PragmaKind::KnownBlock => {} // Valid here — no warning.
+            PragmaKind::ModuleOnly => {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "pragma #{} is only valid at module level, not on {}",
+                        pragma.name, context
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        pragma.span,
+                        "module-only pragma on block",
+                    )),
+                );
+            }
+            PragmaKind::Unknown => {
+                diagnostics.push(
+                    Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
+                        .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
+                );
+            }
         }
     }
 }
@@ -203,12 +270,12 @@ pub(crate) fn validate_pragmas(
 /// Returns `Some(message)` if there is an `@deprecated("message")` annotation with a
 /// `String` first arg, `Some("")` if `@deprecated` has no args, or `None` if there
 /// is no `@deprecated` annotation at all.
-pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Option<String> {
+pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Option<&str> {
     for ann in annotations {
         if ann.name == reify_types::DEPRECATED_ANNOTATION {
             return Some(match ann.args.first() {
-                Some(reify_types::AnnotationArg::String(s)) => s.clone(),
-                _ => String::new(),
+                Some(reify_types::AnnotationArg::String(s)) => s.as_str(),
+                _ => "",
             });
         }
     }
@@ -319,10 +386,8 @@ pub(crate) fn emit_deprecation_warning(
     } else {
         format!("use of deprecated {entity_kind} '{entity_name}': {message}")
     };
-    diagnostics.push(
-        Diagnostic::warning(text)
-            .with_label(DiagnosticLabel::new(span, "deprecated")),
-    );
+    diagnostics
+        .push(Diagnostic::warning(text).with_label(DiagnosticLabel::new(span, "deprecated")));
 }
 
 #[cfg(test)]
@@ -341,7 +406,9 @@ mod tests {
     fn is_valid_optimized_true_for_string_arg() {
         let a = ann(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("kernel::foo".to_string())],
+            vec![reify_types::AnnotationArg::String(
+                "kernel::foo".to_string(),
+            )],
         );
         assert!(is_valid_optimized(&a));
     }
@@ -354,7 +421,10 @@ mod tests {
 
     #[test]
     fn is_valid_optimized_false_for_int_arg() {
-        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![reify_types::AnnotationArg::Int(123)]);
+        let a = ann(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::Int(123)],
+        );
         assert!(!is_valid_optimized(&a));
     }
 
@@ -382,8 +452,10 @@ mod tests {
 
     #[test]
     fn is_valid_optimized_false_for_bool_arg() {
-        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![reify_types::AnnotationArg::Bool(true)]);
+        let a = ann(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::Bool(true)],
+        );
         assert!(!is_valid_optimized(&a));
     }
 }
-

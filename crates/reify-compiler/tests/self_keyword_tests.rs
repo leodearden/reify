@@ -81,7 +81,10 @@ fn test_mentions_word() {
 
     // (4) callers pre-lowercase their messages, so pass lowercased strings;
     //     'self' at start of message
-    assert!(mentions_word(["self is invalid here"].iter().copied(), "self"));
+    assert!(mentions_word(
+        ["self is invalid here"].iter().copied(),
+        "self"
+    ));
 
     // (5) empty iterator → false
     assert!(!mentions_word(std::iter::empty(), "self"));
@@ -97,7 +100,9 @@ fn test_mentions_word() {
 
     // (8) none of the messages mention the word
     assert!(!mentions_word(
-        ["unrelated error", "something else entirely"].iter().copied(),
+        ["unrelated error", "something else entirely"]
+            .iter()
+            .copied(),
         "self"
     ));
 }
@@ -417,7 +422,11 @@ fn self_error_in_fn_body() {
         // The parse error message embeds the source snippet, which includes `self`;
         // verify the error references `self` as a whole word to guard against
         // unrelated syntax regressions being mistaken for a self-rejection.
-        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.to_lowercase()).collect();
+        let msgs: Vec<String> = parsed
+            .errors
+            .iter()
+            .map(|e| e.message.to_lowercase())
+            .collect();
         assert!(
             msgs_mention_self(&msgs),
             "expected a parse error mentioning `self` for `self` in fn body, got: {:?}",
@@ -495,7 +504,11 @@ structure S {
         x_refs
     );
 
-    let x_ty = &x_cell.default_expr.as_ref().expect("x default_expr").result_type;
+    let x_ty = &x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .result_type;
     assert!(
         matches!(x_ty, reify_types::Type::List(_)),
         "self.items should have List type, got: {:?}",
@@ -529,9 +542,7 @@ structure S {
     let has_helpful_msg = errors.iter().any(|d| {
         let msg = &d.message;
         msg.contains("items")
-            && (msg.contains("collection")
-                || msg.contains("indexed")
-                || msg.contains("index"))
+            && (msg.contains("collection") || msg.contains("indexed") || msg.contains("index"))
     });
     assert!(
         has_helpful_msg,
@@ -646,7 +657,10 @@ fn self_dot_param_inside_lambda_captures_entity_param() {
         .iter()
         .find(|vc| vc.id.member == "f")
         .expect("f value cell");
-    let f_expr = f_cell.default_expr.as_ref().expect("f should have default_expr");
+    let f_expr = f_cell
+        .default_expr
+        .as_ref()
+        .expect("f should have default_expr");
 
     match &f_expr.kind {
         reify_types::CompiledExprKind::Lambda { captures, body, .. } => {
@@ -693,7 +707,10 @@ fn bare_self_inside_lambda_captures_entity_ref() {
         .iter()
         .find(|vc| vc.id.member == "f")
         .expect("f value cell");
-    let f_expr = f_cell.default_expr.as_ref().expect("f should have default_expr");
+    let f_expr = f_cell
+        .default_expr
+        .as_ref()
+        .expect("f should have default_expr");
 
     match &f_expr.kind {
         reify_types::CompiledExprKind::Lambda { captures, body, .. } => {
@@ -751,7 +768,11 @@ fn self_inside_lambda_in_fn_body_errors() {
         // The parse error message embeds the source snippet, which includes `self`;
         // verify the error references `self` as a whole word to guard against
         // unrelated syntax regressions being mistaken for a self-rejection.
-        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.to_lowercase()).collect();
+        let msgs: Vec<String> = parsed
+            .errors
+            .iter()
+            .map(|e| e.message.to_lowercase())
+            .collect();
         assert!(
             msgs_mention_self(&msgs),
             "expected a parse error mentioning `self` for `self` inside lambda in fn body, got: {:?}",
@@ -840,8 +861,7 @@ structure S {
         bare_ty
     );
     assert_eq!(
-        self_ty,
-        bare_ty,
+        self_ty, bare_ty,
         "via_self and via_bare should have identical result types"
     );
 }
@@ -1179,9 +1199,7 @@ structure S {
     // (a) an error diagnostic exists — checked above
 
     // (b) error message should contain 'items.count' (correct aggregation recommendation)
-    let has_items_count = errors
-        .iter()
-        .any(|d| d.message.contains("items.count"));
+    let has_items_count = errors.iter().any(|d| d.message.contains("items.count"));
     assert!(
         has_items_count,
         "expected error message containing 'items.count', got: {:?}",
@@ -1189,9 +1207,7 @@ structure S {
     );
 
     // (c) error message should NOT contain 'items[i].count' (misleading per-instance recommendation)
-    let has_indexed = errors
-        .iter()
-        .any(|d| d.message.contains("items[i].count"));
+    let has_indexed = errors.iter().any(|d| d.message.contains("items[i].count"));
     assert!(
         !has_indexed,
         "error message should not recommend 'items[i].count' for aggregation, got: {:?}",
@@ -1256,9 +1272,7 @@ structure S {
     );
 
     // error message should contain 'items.sum' (correct aggregation recommendation)
-    let has_items_sum = errors
-        .iter()
-        .any(|d| d.message.contains("items.sum"));
+    let has_items_sum = errors.iter().any(|d| d.message.contains("items.sum"));
     assert!(
         has_items_sum,
         "expected error message containing 'items.sum', got: {:?}",
@@ -1266,9 +1280,7 @@ structure S {
     );
 
     // error message should NOT contain 'items[i].sum' (misleading per-instance recommendation)
-    let has_indexed = errors
-        .iter()
-        .any(|d| d.message.contains("items[i].sum"));
+    let has_indexed = errors.iter().any(|d| d.message.contains("items[i].sum"));
     assert!(
         !has_indexed,
         "error message should not recommend 'items[i].sum' for aggregation, got: {:?}",
@@ -1331,9 +1343,7 @@ structure S {
         "expected at least one error for `self.items.nonexistent`"
     );
 
-    let has_unknown_member = errors
-        .iter()
-        .any(|d| d.message.contains("unknown member"));
+    let has_unknown_member = errors.iter().any(|d| d.message.contains("unknown member"));
     assert!(
         has_unknown_member,
         "expected 'unknown member' error, got: {:?}",
@@ -1341,9 +1351,7 @@ structure S {
     );
 
     // Should NOT suggest indexed access for a member that doesn't exist
-    let has_indexed = errors
-        .iter()
-        .any(|d| d.message.contains("items[i]"));
+    let has_indexed = errors.iter().any(|d| d.message.contains("items[i]"));
     assert!(
         !has_indexed,
         "should not suggest indexed access for unknown member, got: {:?}",

@@ -248,3 +248,29 @@ fn draft_arg_count_diagnostic_has_span_label() {
         "draft() expects 3 arguments",
     );
 }
+
+#[test]
+fn chamfer_arg_count_diagnostic_has_span_label() {
+    // chamfer() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = chamfer(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "chamfer() expects 2 arguments",
+    );
+}
+
+#[test]
+fn fillet_arg_count_diagnostic_has_span_label() {
+    // fillet() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let f = fillet(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "fillet() expects 2 arguments",
+    );
+}

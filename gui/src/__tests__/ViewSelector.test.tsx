@@ -181,3 +181,48 @@ describe('ViewSelector — modified marker', () => {
     expect(cowRow.querySelector('[data-modified]') ?? cowRow.closest('[data-modified]') ?? menu.querySelector('[data-modified]')).toBeTruthy();
   });
 });
+
+// "Save views" menuitem — step-25 tests (fail until step-26 adds the prop)
+describe('ViewSelector — Save views menuitem (step-25)', () => {
+  it('(a) dropdown footer contains a "Save views" menuitem when onSaveViews prop supplied', () => {
+    const store = makeStore();
+    const onSaveViews = vi.fn();
+    render(() => (
+      <ViewSelector store={store} onOpenManage={vi.fn()} onSaveViews={onSaveViews} />
+    ));
+    // Open the dropdown
+    fireEvent.click(screen.getByRole('button', { name: /default/i }));
+
+    // "Save views" should be present as a menuitem
+    const saveItem = screen.getByRole('menuitem', { name: /save views/i });
+    expect(saveItem).toBeTruthy();
+  });
+
+  it('(b) clicking "Save views" calls onSaveViews and closes the dropdown', () => {
+    const store = makeStore();
+    const onSaveViews = vi.fn();
+    render(() => (
+      <ViewSelector store={store} onOpenManage={vi.fn()} onSaveViews={onSaveViews} />
+    ));
+    fireEvent.click(screen.getByRole('button', { name: /default/i }));
+
+    const saveItem = screen.getByRole('menuitem', { name: /save views/i });
+    fireEvent.click(saveItem);
+
+    expect(onSaveViews).toHaveBeenCalledTimes(1);
+    // Dropdown should be closed (menu not in DOM or not visible)
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('(c) when onSaveViews is omitted, the "Save views" item is not rendered', () => {
+    const store = makeStore();
+    render(() => (
+      <ViewSelector store={store} onOpenManage={vi.fn()} />
+    ));
+    fireEvent.click(screen.getByRole('button', { name: /default/i }));
+
+    // "Save views" must not appear
+    const saveItem = screen.queryByRole('menuitem', { name: /save views/i });
+    expect(saveItem).toBeNull();
+  });
+});

@@ -8,7 +8,7 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
-use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState};
+use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, PersistentViewState};
 use crate::watcher::FileWatcher;
 
 /// Application state shared across all Tauri commands.
@@ -129,6 +129,54 @@ pub fn get_def_preview_impl(
 ) -> Result<GuiState, String> {
     let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
     session.get_def_preview(def_name)
+}
+
+/// Read the view sidecar file for `ri_path`.
+///
+/// The sidecar lives at `{ri_path}.views.json` (literal suffix append, NOT
+/// `Path::with_extension` which would replace the `.ri` extension).
+///
+/// Returns:
+/// - `Ok(None)` when the sidecar file does not exist.
+/// - `Ok(Some(state))` when the file exists and parses successfully.
+/// - `Err(message)` when the file exists but contains malformed JSON.
+pub fn read_view_sidecar_impl(ri_path: &str) -> Result<Option<PersistentViewState>, String> {
+    let sidecar_path = format!("{}.views.json", ri_path);
+    match std::fs::read_to_string(&sidecar_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Error reading {}: {}", sidecar_path, e)),
+        Ok(content) => {
+            let state: PersistentViewState = serde_json::from_str(&content)
+                .map_err(|e| format!("Error parsing {}: {}", sidecar_path, e))?;
+            Ok(Some(state))
+        }
+    }
+}
+
+/// Write `state` as pretty-printed JSON to the view sidecar file for `ri_path`.
+///
+/// The sidecar lives at `{ri_path}.views.json` (literal suffix append).
+///
+/// The write is atomic: the payload is first written to `{sidecar}.tmp` and
+/// then renamed over the final path.  `std::fs::rename` is atomic on POSIX
+/// (same-filesystem) and uses MoveFileEx with MOVEFILE_REPLACE_EXISTING on
+/// Windows.  A crash or power loss mid-write therefore cannot leave the
+/// sidecar truncated or partially written — either the old content survives,
+/// or the new content replaces it.  The `.tmp` file is removed on
+/// serialisation or write errors to avoid leaving debris.
+pub fn write_view_sidecar_impl(ri_path: &str, state: &PersistentViewState) -> Result<(), String> {
+    let sidecar_path = format!("{}.views.json", ri_path);
+    let tmp_path = format!("{}.tmp", sidecar_path);
+    let json =
+        serde_json::to_string_pretty(state).map_err(|e| format!("Error serialising: {}", e))?;
+    std::fs::write(&tmp_path, json).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("Error writing {}: {}", tmp_path, e)
+    })?;
+    std::fs::rename(&tmp_path, &sidecar_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("Error renaming {} -> {}: {}", tmp_path, sidecar_path, e)
+    })
 }
 
 /// Return the innermost definition (structure/occurrence) containing the given

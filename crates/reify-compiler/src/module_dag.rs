@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
 
-use reify_types::Diagnostic;
+use reify_types::{Diagnostic, ModulePathParseError};
 
 use crate::CompiledModule;
 
@@ -107,6 +107,123 @@ pub struct ModuleDag {
     stdlib_mode: Option<StdlibMode>,
 }
 
+/// Build an "invalid module path" [`Diagnostic`] vec.
+///
+/// Returns a singleton `Vec<Diagnostic>` so call sites can use it directly with
+/// `.map_err(|e| diag_invalid_path(path, e))?` where the outer `Result`
+/// error type is `Vec<Diagnostic>`.
+///
+/// The context phrase `"resolving import"` is inlined because both current call
+/// sites use that identical literal (YAGNI: if a future call site needs different
+/// wording, re-introduce the `context_phrase: &str` parameter then).
+fn diag_invalid_path(path: &str, e: ModulePathParseError) -> Vec<Diagnostic> {
+    vec![Diagnostic::error(format!(
+        "invalid module path while resolving import '{}': {}",
+        path, e
+    ))]
+}
+
+/// Identifies which call site triggered a filesystem-over-embedded partial overlay.
+///
+/// Carried by [`OverlayDirection::FsOverEmbedded`] so that the exact diagnostic
+/// wording for each call site lives inside [`partial_overlay_diag`] rather than
+/// being passed in as a free-form `&str` from the call sites.
+#[derive(Debug)]
+enum CommitSite {
+    /// Conflict detected at the entry guard (before any import recursion).
+    Entry,
+    /// Conflict detected after recursion: a transitive import committed Embedded
+    /// mode while the outer module was resolving from the filesystem.
+    Transitive,
+}
+
+/// Direction of a partial stdlib overlay conflict.
+///
+/// Used by [`partial_overlay_diag`] to select the appropriate diagnostic wording.
+/// The two directions warrant different user guidance:
+/// - [`FsOverEmbedded`]: filesystem module arrived after embedded was committed — user
+///   must populate *all* stdlib modules (adding just one won't cure the prior embedded
+///   commit) or remove the directory entirely.
+/// - [`EmbeddedOverFs`]: embedded fallback triggered after filesystem mode was committed
+///   because a module is missing from `stdlib_root` — user can fix by adding *that
+///   specific module*.
+#[derive(Debug)]
+enum OverlayDirection {
+    /// A `std.*` module resolved on the filesystem, but an earlier `std.*` import
+    /// was served from the embedded stdlib.
+    FsOverEmbedded { commit_site: CommitSite },
+    /// A `std.*` module was not found on the filesystem, but an earlier `std.*` import
+    /// was resolved from the filesystem.
+    EmbeddedOverFs,
+}
+
+/// Shared prefix for all partial-stdlib-overlay diagnostics.
+///
+/// Referenced by both match arms in [`partial_overlay_diag`] so the prefix
+/// string cannot drift between arms.
+const OVERLAY_PREFIX: &str = "partial stdlib overlay";
+
+/// Shared suffix for all partial-stdlib-overlay diagnostics.
+///
+/// Referenced by both match arms in [`partial_overlay_diag`] so the remediation
+/// tail cannot drift between arms.
+const OVERLAY_SUFFIX: &str = "or remove that directory to use the embedded stdlib exclusively";
+
+/// Build a "partial stdlib overlay" [`Diagnostic`].
+///
+/// Consolidates three call sites in `compile_module` — the entry guard
+/// (EmbeddedOverFs or FsOverEmbedded when Embedded is already committed) and the
+/// deferred-commit block (FsOverEmbedded when a transitive import committed Embedded
+/// during recursion). Each direction produces distinct remediation guidance; both share
+/// [`OVERLAY_PREFIX`] and [`OVERLAY_SUFFIX`], preventing future wording drift between
+/// sites.
+///
+/// The rendered message embeds a stable, machine-parsable kind marker immediately after
+/// the prefix: `(fs-over-embedded/entry)`, `(fs-over-embedded/transitive)`, or
+/// `(embedded-over-fs)`. The marker is structurally distinct from prose (slash+hyphen
+/// form, parenthesised) so tests and downstream tooling can match it without depending
+/// on natural-language phrasing.
+fn partial_overlay_diag(
+    module_path: &str,
+    direction: OverlayDirection,
+    stdlib_root: &Path,
+) -> Diagnostic {
+    match direction {
+        OverlayDirection::FsOverEmbedded { commit_site } => {
+            let (kind_marker, context) = match commit_site {
+                CommitSite::Entry => (
+                    "fs-over-embedded/entry",
+                    "earlier std.* imports were served from the embedded stdlib",
+                ),
+                CommitSite::Transitive => (
+                    "fs-over-embedded/transitive",
+                    "a transitive std.* import was served from the embedded stdlib",
+                ),
+            };
+            Diagnostic::error(format!(
+                "{} ({}): '{}' resolved on the filesystem but {}; \
+                 either populate all stdlib modules under '{}' {}",
+                OVERLAY_PREFIX,
+                kind_marker,
+                module_path,
+                context,
+                stdlib_root.display(),
+                OVERLAY_SUFFIX,
+            ))
+        }
+        OverlayDirection::EmbeddedOverFs => Diagnostic::error(format!(
+            "{} (embedded-over-fs): '{}' not found on the filesystem under '{}' \
+             but earlier std.* imports were resolved from the filesystem; either \
+             add the missing module to '{}' {}",
+            OVERLAY_PREFIX,
+            module_path,
+            stdlib_root.display(),
+            stdlib_root.display(),
+            OVERLAY_SUFFIX,
+        )),
+    }
+}
+
 impl Default for ModuleDag {
     fn default() -> Self {
         Self::new()
@@ -145,6 +262,16 @@ impl ModuleDag {
     /// fully or remove it to use the embedded stdlib exclusively. This prevents
     /// silent type/trait mismatches that arise when the embedded stdlib modules are
     /// mixed with a partial filesystem overlay.
+    ///
+    /// **One-shot-on-error semantics:**
+    ///
+    /// When `compile_module` returns `Err`, the `ModuleDag` is left in a partially-
+    /// populated state: any modules compiled *before* the error remain in
+    /// `self.modules` and `self.topo_order`, and `stdlib_mode` reflects whatever
+    /// was committed during the failed subtree. Callers should treat a `ModuleDag`
+    /// that has ever returned `Err` as one-shot — discard it and construct a fresh
+    /// `ModuleDag::new()` for subsequent attempts rather than retrying on the same
+    /// instance.
     pub fn compile_module(
         &mut self,
         module_path: &str,
@@ -195,14 +322,11 @@ impl ModuleDag {
                 // All-or-nothing invariant: if a prior std.* was served from the
                 // embedded stdlib, mixing in a filesystem-resolved module is unsafe.
                 if self.stdlib_mode == Some(StdlibMode::Embedded) {
-                    return Err(vec![Diagnostic::error(format!(
-                        "partial stdlib overlay: '{}' resolved on the filesystem but earlier \
-                         std.* imports were served from the embedded stdlib; either populate \
-                         all stdlib modules under '{}' or remove that directory to use the \
-                         embedded stdlib exclusively",
+                    return Err(vec![partial_overlay_diag(
                         module_path,
-                        resolver.stdlib_root.display(),
-                    ))]);
+                        OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Entry },
+                        &resolver.stdlib_root,
+                    )]);
                 }
                 // Defer committing filesystem mode until after successful compile so
                 // that a parse/compile failure does not taint the mode (a failed
@@ -217,21 +341,18 @@ impl ModuleDag {
                 // All-or-nothing invariant: if a prior std.* was served from the
                 // filesystem, falling back to embedded now would mix sources.
                 if self.stdlib_mode == Some(StdlibMode::FileSystem) {
-                    return Err(vec![Diagnostic::error(format!(
-                        "partial stdlib overlay: '{}' not found on the filesystem under '{}' \
-                         but earlier std.* imports were resolved from the filesystem; either \
-                         add the missing module to '{}' or remove that directory to use the \
-                         embedded stdlib exclusively",
+                    return Err(vec![partial_overlay_diag(
                         module_path,
-                        resolver.stdlib_root.display(),
-                        resolver.stdlib_root.display(),
-                    ))]);
+                        OverlayDirection::EmbeddedOverFs,
+                        &resolver.stdlib_root,
+                    )]);
                 }
                 // Consult the embedded stdlib. We commit to Embedded mode only after
                 // confirming the module exists there — an unknown std.* path (e.g. a
                 // typo like "std.unknonwn") must not taint the mode for subsequent
                 // valid imports.
-                let target = reify_types::ModulePath::from_dotted(module_path);
+                let target = reify_types::ModulePath::from_dotted(module_path)
+                    .map_err(|e| diag_invalid_path(module_path, e))?;
                 let stdlib = crate::stdlib_loader::load_stdlib();
                 if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
                     // Commit embedded mode now that we know the module is present.
@@ -282,7 +403,11 @@ impl ModuleDag {
             ))]
         })?;
 
-        let parsed = reify_syntax::parse(&source, reify_types::ModulePath::from_dotted(module_path));
+        let parsed = reify_syntax::parse(
+            &source,
+            reify_types::ModulePath::from_dotted(module_path)
+                .map_err(|e| diag_invalid_path(module_path, e))?,
+        );
 
         if !parsed.errors.is_empty() {
             return Err(parsed
@@ -308,23 +433,21 @@ impl ModuleDag {
                 }
             }
 
-            // Topological ordering guarantees every import was just compiled and inserted.
-            debug_assert!(
-                import_paths.iter().all(|p| self.modules.contains_key(p.as_str())),
-                "all imports must be compiled and in self.modules before prelude collection; \
-                 this invariant is guaranteed by the DFS loop above"
-            );
-
-            // Build prelude slice from the collected import paths.
-            // NB: self.modules is stable for shared borrowing here — no more mutations
-            // until after compile_with_prelude_refs returns.
-            let preludes: Vec<&CompiledModule> = import_paths
-                .iter()
-                .filter_map(|p| self.modules.get(p.as_str()))
-                .collect();
-
-            // Compile this module with prelude context so imported constraint defs are visible.
-            Ok(crate::compile_with_prelude_refs(&parsed, &preludes))
+            // Block-scope the shared borrows of self.modules so they are
+            // dropped before the later self.modules.insert call.
+            let compiled = {
+                // Topological ordering guarantees every import was just compiled and inserted.
+                // Use .map().expect() so a violation is loud in both debug and release builds.
+                let preludes: Vec<&CompiledModule> = import_paths
+                    .iter()
+                    .map(|p| {
+                        self.modules.get(p.as_str())
+                            .expect("invariant: import compiled before prelude collection")
+                    })
+                    .collect();
+                crate::compile_with_prelude_refs(&parsed, &preludes)
+            };
+            Ok(compiled)
         })();
 
         // Always remove from in-progress, whether the inner block succeeded or failed.
@@ -338,8 +461,22 @@ impl ModuleDag {
         // Commit filesystem mode now that the module has compiled successfully.
         // Deferred from the Ok-and-std match arm above so that a parse/compile
         // failure does not taint stdlib_mode (no std.* module was actually inserted
-        // into self.modules on a failed compile).
+        // into self.modules on a failed compile). Also reject the case where a
+        // transitive std.* import committed Embedded mode during recursion;
+        // overwriting would silently mix sources.
         if commit_fs_mode {
+            // During import recursion, a transitive std.* import may have fallen
+            // back to the embedded stdlib (because it was missing from stdlib_root)
+            // and committed Embedded mode. Overwriting with FileSystem here would
+            // silently mix stdlib sources — exactly the partial-overlay scenario
+            // the all-or-nothing invariant exists to reject.
+            if self.stdlib_mode == Some(StdlibMode::Embedded) {
+                return Err(vec![partial_overlay_diag(
+                    module_path,
+                    OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Transitive },
+                    &resolver.stdlib_root,
+                )]);
+            }
             self.stdlib_mode = Some(StdlibMode::FileSystem);
         }
 
@@ -348,6 +485,85 @@ impl ModuleDag {
         self.modules.insert(module_path.to_string(), compiled);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[track_caller]
+    fn assert_fs_over_embedded(diag: &Diagnostic, expected_marker: &str, forbidden_marker: &str) {
+        assert!(diag.message.contains("std.foo"));
+        assert!(diag.message.contains("/tmp/stdlib"));
+        assert!(diag.message.contains("resolved on the filesystem"));
+        assert!(diag.message.contains("embedded stdlib"));
+        assert!(
+            diag.message.contains(expected_marker),
+            "diagnostic must contain the structural marker '{}', got: {}",
+            expected_marker,
+            diag.message
+        );
+        assert!(
+            !diag.message.contains(forbidden_marker),
+            "diagnostic must NOT contain the forbidden marker '{}', got: {}",
+            forbidden_marker,
+            diag.message
+        );
+    }
+
+    #[test]
+    fn partial_overlay_diag_fs_over_embedded_format() {
+        let stdlib_root = std::path::PathBuf::from("/tmp/stdlib");
+
+        // Entry variant
+        let entry_diag = partial_overlay_diag(
+            "std.foo",
+            OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Entry },
+            &stdlib_root,
+        );
+        assert_fs_over_embedded(&entry_diag, "(fs-over-embedded/entry)", "(fs-over-embedded/transitive)");
+
+        // Transitive variant
+        let transitive_diag = partial_overlay_diag(
+            "std.foo",
+            OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Transitive },
+            &stdlib_root,
+        );
+        assert_fs_over_embedded(&transitive_diag, "(fs-over-embedded/transitive)", "(fs-over-embedded/entry)");
+    }
+
+    #[test]
+    fn partial_overlay_diag_embedded_over_fs_format() {
+        let stdlib_root = std::path::PathBuf::from("/tmp/stdlib");
+        let diag = partial_overlay_diag(
+            "std.bar",
+            OverlayDirection::EmbeddedOverFs,
+            &stdlib_root,
+        );
+        assert!(diag.message.contains("std.bar"));
+        assert!(diag.message.contains("/tmp/stdlib"));
+        assert!(diag.message.contains("not found on the filesystem"));
+        assert!(diag.message.contains("resolved from the filesystem"));
+        // Structural kind marker assertion
+        assert!(
+            diag.message.contains("(embedded-over-fs)"),
+            "embedded-over-fs diagnostic must contain the structural marker '(embedded-over-fs)', got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diag_invalid_path_formats_message() {
+        use reify_types::Severity;
+        // Calls the 2-arg form; "resolving import" is now inlined into the format string.
+        let diags = diag_invalid_path("some.path", ModulePathParseError::Empty);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(
+            diags[0].message,
+            "invalid module path while resolving import 'some.path': module path must not be empty",
+        );
     }
 }
 
@@ -397,18 +613,23 @@ pub fn compile_project(
     // Block-scope the preludes so the shared borrows of dag.modules are
     // dropped before the mutable borrow in dag.modules.insert below.
     let compiled_entry = {
-        // Inline the same prelude-collection pattern used by compile_module:
-        // iterate import declarations once, filter_map to look up compiled modules.
-        // All imports were recursively compiled above, so every lookup succeeds.
+        // Collect only Import declarations, then look up each compiled module.
+        // All imports were recursively compiled above, so every lookup is infallible.
+        // Splitting the filter from the lookup lets .expect() make any violation
+        // loud in both debug and release builds.
         let preludes: Vec<&CompiledModule> = parsed
             .declarations
             .iter()
             .filter_map(|d| {
                 if let reify_syntax::Declaration::Import(import) = d {
-                    dag.modules.get(&import.path)
+                    Some(import)
                 } else {
                     None
                 }
+            })
+            .map(|import| {
+                dag.modules.get(&import.path)
+                    .expect("invariant: import compiled before entry prelude collection")
             })
             .collect();
         crate::compile_with_prelude_refs(&parsed, &preludes)

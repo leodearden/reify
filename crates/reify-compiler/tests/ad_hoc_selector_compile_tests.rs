@@ -23,9 +23,10 @@ structure S {
         "expected compile error for unresolved 'port', but got none"
     );
     // The old stub message should no longer appear
-    let has_old_stub = errors
-        .iter()
-        .any(|d| d.message.contains("ad-hoc selector (@) is not yet supported"));
+    let has_old_stub = errors.iter().any(|d| {
+        d.message
+            .contains("ad-hoc selector (@) is not yet supported")
+    });
     assert!(
         !has_old_stub,
         "old stub error 'not yet supported' should no longer be emitted"
@@ -173,7 +174,11 @@ structure def S {
         errors
     );
     let template = &module.templates[0];
-    assert_eq!(template.connections.len(), 1, "expected exactly 1 connection");
+    assert_eq!(
+        template.connections.len(),
+        1,
+        "expected exactly 1 connection"
+    );
     let conn = &template.connections[0];
     assert!(
         conn.frame_constraint.is_some(),

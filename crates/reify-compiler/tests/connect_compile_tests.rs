@@ -2,7 +2,9 @@
 //!
 //! Tests for compiling connect and chain declarations into CompiledConnection entries.
 
-use reify_test_support::{assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source};
+use reify_test_support::{
+    assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source,
+};
 use reify_types::*;
 
 // ── Step 13: compile_connect_generates_connection ────────────────────
@@ -1019,13 +1021,11 @@ structure def S {
         ("length".to_string(), "length".to_string()),
     ];
     assert_eq!(
-        template.connections[0].port_mappings,
-        expected,
+        template.connections[0].port_mappings, expected,
         "first desugared connection (a->b) should have auto-mappings sorted alphabetically"
     );
     assert_eq!(
-        template.connections[1].port_mappings,
-        expected,
+        template.connections[1].port_mappings, expected,
         "second desugared connection (b->c) should have auto-mappings sorted alphabetically"
     );
 }
@@ -1623,7 +1623,11 @@ structure def S {
 "#;
     let (_template, diagnostics) = compile_first_template(source);
 
-    assert_has_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_has_diagnostic(
+        &diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
     assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
@@ -1650,7 +1654,11 @@ structure def S {
 "#;
     let (_template, diagnostics) = compile_first_template(source);
 
-    assert_has_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_has_diagnostic(
+        &diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
     assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
@@ -1677,7 +1685,11 @@ structure def S {
 "#;
     let (_template, diagnostics) = compile_first_template(source);
 
-    assert_has_diagnostic(&diagnostics, Severity::Error, "bidirectional connect requires both ports to be bidi");
+    assert_has_diagnostic(
+        &diagnostics,
+        Severity::Error,
+        "bidirectional connect requires both ports to be bidi",
+    );
     assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
@@ -1773,13 +1785,11 @@ structure def Assembly {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     assert_eq!(asm.connections.len(), 1, "expected 1 connection");
     assert_eq!(
-        asm.connections[0].left_port,
-        "motor.shaft",
+        asm.connections[0].left_port, "motor.shaft",
         "expected dotted left_port"
     );
     assert_eq!(
-        asm.connections[0].right_port,
-        "gear.input",
+        asm.connections[0].right_port, "gear.input",
         "expected dotted right_port"
     );
     // Dotted ports: no undefined-port error, no auto-match, empty port_mappings
@@ -1831,13 +1841,11 @@ structure def Coupler {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     assert_eq!(coupler.connections.len(), 1, "expected 1 connection");
     assert_eq!(
-        coupler.connections[0].left_port,
-        "a",
+        coupler.connections[0].left_port, "a",
         "expected bare left_port"
     );
     assert_eq!(
-        coupler.connections[0].right_port,
-        "motor.shaft",
+        coupler.connections[0].right_port, "motor.shaft",
         "expected dotted right_port"
     );
     // Mixed bare+dotted: no auto-match runs, so port_mappings is empty
@@ -1909,7 +1917,11 @@ structure def S {
 "#;
     let (_template, diagnostics) = compile_first_template(source);
 
-    assert_no_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_no_diagnostic(
+        &diagnostics,
+        Severity::Error,
+        "incompatible port directions",
+    );
     assert_has_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 

@@ -48,7 +48,6 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
     }
 }
 
-
 /// Substitute constraint parameter references in an AST expression.
 ///
 /// Recursively walks `expr` and replaces every `ExprKind::Ident(name)` where
@@ -318,7 +317,8 @@ pub(crate) fn compile_entity(
                         Some(t) => t,
                         None => {
                             // Check if it's an enum type defined in the same module or prelude
-                            if let reify_syntax::TypeExprKind::Named { name, type_args } = &type_expr.kind
+                            if let reify_syntax::TypeExprKind::Named { name, type_args } =
+                                &type_expr.kind
                                 && let Some(t) = resolve_enum_type(name, enum_defs)
                             {
                                 // Reify enums are non-parametric. Emit a user-facing diagnostic
@@ -329,22 +329,22 @@ pub(crate) fn compile_entity(
                                             "enum `{}` does not accept type arguments",
                                             name
                                         ))
-                                        .with_label(DiagnosticLabel::new(
-                                            type_expr.span,
-                                            "enum types are not generic",
-                                        )),
+                                        .with_label(
+                                            DiagnosticLabel::new(
+                                                type_expr.span,
+                                                "enum types are not generic",
+                                            ),
+                                        ),
                                     );
                                 }
                                 t
                             } else {
                                 diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "unresolved type: {}",
-                                        type_expr
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(type_expr.span, "unknown type name"),
-                                    ),
+                                    Diagnostic::error(format!("unresolved type: {}", type_expr))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "unknown type name",
+                                        )),
                                 );
                                 Type::Real // fallback
                             }
@@ -358,7 +358,12 @@ pub(crate) fn compile_entity(
                 // symmetrically to geometry lets: register as Type::Geometry,
                 // mark scope as having geometry, and track in known_geometry_lets
                 // so subsequent members can reference this param as a geometry source.
-                if is_solid_geometry_param(&ty, param.default.as_ref(), functions, &known_geometry_lets) {
+                if is_solid_geometry_param(
+                    &ty,
+                    param.default.as_ref(),
+                    functions,
+                    &known_geometry_lets,
+                ) {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -382,8 +387,26 @@ pub(crate) fn compile_entity(
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 // `known_geometry_lets` is intentionally shared across both branches
                 // (consistent with the same pattern in register_guarded_names/guards.rs).
-                register_guarded_names(&g.members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, trait_names, &mut known_geometry_lets);
-                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, trait_names, &mut known_geometry_lets);
+                register_guarded_names(
+                    &g.members,
+                    &mut scope,
+                    functions,
+                    diagnostics,
+                    &type_param_names,
+                    alias_registry,
+                    trait_names,
+                    &mut known_geometry_lets,
+                );
+                register_guarded_names(
+                    &g.else_members,
+                    &mut scope,
+                    functions,
+                    diagnostics,
+                    &type_param_names,
+                    alias_registry,
+                    trait_names,
+                    &mut known_geometry_lets,
+                );
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
@@ -407,16 +430,22 @@ pub(crate) fn compile_entity(
                         reify_syntax::MemberDecl::Param(param) => {
                             let composite_name = format!("{}.{}", port_decl.name, param.name);
                             let ty = if let Some(type_expr) = &param.type_expr {
-                                resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics, trait_names).unwrap_or_else(|| {
+                                resolve_type_expr_with_aliases(
+                                    type_expr,
+                                    &type_param_names,
+                                    alias_registry,
+                                    diagnostics,
+                                    trait_names,
+                                )
+                                .unwrap_or_else(|| {
                                     diagnostics.push(
                                         Diagnostic::error(format!(
                                             "unresolved type name '{}' in port parameter",
                                             type_expr
                                         ))
-                                        .with_label(DiagnosticLabel::new(
-                                            type_expr.span,
-                                            "unknown type",
-                                        )),
+                                        .with_label(
+                                            DiagnosticLabel::new(type_expr.span, "unknown type"),
+                                        ),
                                     );
                                     Type::Real
                                 })
@@ -448,7 +477,7 @@ pub(crate) fn compile_entity(
                         emit_deprecation_warning(
                             "structure",
                             &sub.structure_name,
-                            &msg,
+                            msg,
                             sub.span,
                             diagnostics,
                         );
@@ -516,27 +545,27 @@ pub(crate) fn compile_entity(
             diagnostics,
         );
 
-        // Deprecation check: warn for each trait bound that references a @deprecated trait.
+        // Trait-bound checks: deprecation warning and parameterized type-argument deferral.
+        // One registry lookup per bound handles both checks.
         for trait_bound in structure.trait_bounds {
-            if let Some(compiled_trait) = trait_registry.get(&trait_bound.name)
-                && let Some(msg) = deprecation_message(&compiled_trait.annotations)
+            let compiled_trait = trait_registry.get(&trait_bound.name);
+            // Deprecation check: warn if the referenced trait is @deprecated.
+            if let Some(ct) = compiled_trait
+                && let Some(msg) = deprecation_message(&ct.annotations)
             {
                 emit_deprecation_warning(
                     "trait",
                     &trait_bound.name,
-                    &msg,
+                    msg,
                     trait_bound.span,
                     diagnostics,
                 );
             }
-        }
-
-        // Defer type argument checking on parameterized trait bounds (e.g., Container<Bolt>)
-        // to the post-compilation pass so forward references are resolved correctly.
-        for trait_bound in structure.trait_bounds {
+            // Defer type argument checking on parameterized trait bounds (e.g., Container<Bolt>)
+            // to the post-compilation pass so forward references are resolved correctly.
             if !trait_bound.type_args.is_empty()
-                && let Some(compiled_trait) = trait_registry.get(&trait_bound.name)
-                && !compiled_trait.type_params.is_empty()
+                && let Some(ct) = compiled_trait
+                && !ct.type_params.is_empty()
             {
                 let resolved_args: Vec<Type> = trait_bound
                     .type_args
@@ -568,7 +597,7 @@ pub(crate) fn compile_entity(
                 // TraitConformance: type_params are known now from the compiled
                 // trait, so they're carried directly in the enum variant.
                 pending_bound_checks.push(PendingBoundCheck::TraitConformance {
-                    type_params: compiled_trait.type_params.clone(),
+                    type_params: ct.type_params.clone(),
                     type_args: resolved_args,
                     target_name: trait_bound.name.clone(),
                     span: trait_bound.span,
@@ -607,18 +636,21 @@ pub(crate) fn compile_entity(
                 // Solid-typed params with a geometry-call default are lowered as
                 // realizations (third pass), not as scalar ValueCellDecls.
                 // Symmetric with the geometry-let early-continue in the Let branch.
-                if is_solid_geometry_param(&cell_type, param.default.as_ref(), functions, &known_geometry_lets) {
+                if is_solid_geometry_param(
+                    &cell_type,
+                    param.default.as_ref(),
+                    functions,
+                    &known_geometry_lets,
+                ) {
                     continue;
                 }
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
                 // Lower and validate annotations on this param
-                let lowered_annotations =
-                    lower_annotations(&param.annotations, diagnostics);
+                let lowered_annotations = lower_annotations(&param.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "param", diagnostics);
-                let solver_hints =
-                    extract_solver_hints(&lowered_annotations, diagnostics);
+                let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
 
                 let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
@@ -695,11 +727,9 @@ pub(crate) fn compile_entity(
                 };
 
                 // Lower and validate annotations on this let
-                let lowered_annotations =
-                    lower_annotations(&let_decl.annotations, diagnostics);
+                let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "let", diagnostics);
-                let solver_hints =
-                    extract_solver_hints(&lowered_annotations, diagnostics);
+                let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
 
                 let decl = ValueCellDecl {
                     id,
@@ -1018,8 +1048,13 @@ pub(crate) fn compile_entity(
                                 }
                             } else {
                                 let default_expr = param.default.as_ref().map(|expr| {
-                                    let mut compiled =
-                                        compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                                    let mut compiled = compile_expr(
+                                        expr,
+                                        &scope,
+                                        enum_defs,
+                                        functions,
+                                        diagnostics,
+                                    );
                                     fixup_option_none_for_param(&mut compiled, &cell_type);
                                     compiled
                                 });
@@ -1341,7 +1376,7 @@ pub(crate) fn compile_entity(
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(let_decl.name.clone()),
                         operations: ops,
-                        span: SourceSpan::new(0, 0),
+                        span: let_decl.span,
                     });
                     realization_index += 1;
                 }
@@ -1367,7 +1402,7 @@ pub(crate) fn compile_entity(
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(param.name.clone()),
                         operations: ops,
-                        span: SourceSpan::new(0, 0),
+                        span: param.span,
                     });
                     realization_index += 1;
                 }
@@ -1710,10 +1745,7 @@ pub(crate) fn compile_entity(
         }
     }
 
-    let context = match entity_kind {
-        EntityKind::Structure => "structure",
-        EntityKind::Occurrence => "occurrence",
-    };
+    let context = entity_kind.as_label();
     let annotations = lower_annotations(structure.annotations, diagnostics);
     validate_annotations(&annotations, context, diagnostics);
     validate_pragmas(structure.pragmas, context, diagnostics);
@@ -1810,9 +1842,7 @@ fn collect_geometry_exprs<'a>(
             {
                 out.insert(let_decl.name.as_str(), &let_decl.value);
             }
-            reify_syntax::MemberDecl::Param(param)
-                if known.contains(param.name.as_str()) =>
-            {
+            reify_syntax::MemberDecl::Param(param) if known.contains(param.name.as_str()) => {
                 if let Some(e) = &param.default {
                     out.insert(param.name.as_str(), e);
                 }
@@ -1883,7 +1913,7 @@ fn emit_guarded_geometry_realizations(
                         id: RealizationNodeId::new(deps.entity_name, *sink.realization_index),
                         name: Some(param.name.clone()),
                         operations: ops,
-                        span: SourceSpan::new(0, 0),
+                        span: param.span,
                     });
                     *sink.realization_index += 1;
                 }
@@ -2087,4 +2117,3 @@ pub(crate) fn fixup_option_none_for_let(
         *compiled_expr = CompiledExpr::option_none(resolved);
     }
 }
-

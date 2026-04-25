@@ -53,7 +53,7 @@ pub(crate) struct CompilationCtx {
     pub(crate) unit_registry: UnitRegistry,
     pub(crate) alias_registry: TypeAliasRegistry,
     /// Enum defs available for resolution: prelude enum_defs chained with
-    /// module-local `enum_defs`. Populated by `enums_phase::build_resolution_enums`.
+    /// module-local `enum_defs`. Populated by `enums_phase::build_resolution_enums_from_cache`.
     pub(crate) resolution_enums: Vec<reify_types::EnumDef>,
     /// Function table available for resolution: user functions merged with
     /// prelude functions via [`crate::merge_prelude_functions`]. Populated by
@@ -238,6 +238,45 @@ mod tests {
             "duplicate span should return false"
         );
         assert_eq!(ctx.diagnostics.len(), 1, "exactly one diagnostic on duplicate");
+
+        // Anchor the wire format of the duplicate diagnostic so a silent
+        // regression (e.g. swapping label order, dropping "here", changing the
+        // message template) is caught at the unit level rather than only via
+        // distant integration tests.
+        let diag = &ctx.diagnostics[0];
+
+        // 1. Top-level message contains the stable substring.
+        assert!(
+            diag.message.contains("duplicate entity definition 'Widget'"),
+            "message should contain the stable duplicate-diagnostic substring, got: {:?}",
+            diag.message,
+        );
+
+        // 2. Exactly two labels (duplicate site + first-seen site).
+        assert_eq!(diag.labels.len(), 2, "duplicate diagnostic must have exactly two labels");
+
+        // 3. labels[0] = duplicate site (span_b, "structure defined here").
+        assert_eq!(
+            diag.labels[0].span, span_b,
+            "labels[0] should point to the duplicate site (span_b)"
+        );
+        // Exact-match on label messages: these are the stable wire-format strings
+        // previously duplicated verbatim across four pre_pass branches and consumed
+        // by diagnostic renderers / IDE tooling — cosmetic renames are breaking changes.
+        assert_eq!(
+            diag.labels[0].message, "structure defined here",
+            "labels[0] message should be '{{kind}} defined here'"
+        );
+
+        // 4. labels[1] = first-seen site (span_a, "first defined as structure here").
+        assert_eq!(
+            diag.labels[1].span, span_a,
+            "labels[1] should point to the first-seen site (span_a)"
+        );
+        assert_eq!(
+            diag.labels[1].message, "first defined as structure here",
+            "labels[1] message should be 'first defined as {{first_kind}} here'"
+        );
     }
 
     /// `CompilationCtx::new()` produces genuinely zero-state: every owned Vec

@@ -1,4 +1,27 @@
-// Split from lib.rs (task 2032) — edit methods.
+//! Edit methods for the Reify evaluation engine (split from lib.rs, task 2032).
+//!
+//! # Canonical Auto-cell lifecycle rule
+//!
+//! **Auto cell lifecycle is owned by the constraint solver, not by guard
+//! activation/deactivation.**
+//!
+//! Inactive-branch Auto cells retain their solver-resolved value across guard
+//! transitions in BOTH of the following code paths:
+//!
+//! * **`Engine::eval` — post-solver guard re-evaluation** (`engine_eval.rs`):
+//!   the inactive-branch `Value::Undef` write is gated with
+//!   `if !cell.kind.is_auto()`, so Auto cells on the inactive side keep the
+//!   value and determinacy that the solver wrote.
+//!
+//! * **`Engine::edit_param` — Phase 1 guard re-elaboration and post-wave2
+//!   cleanup** (this file): the helper [`deactivate_if_not_auto`] writes
+//!   `Undef / Undetermined` for non-Auto cells and skips Auto cells entirely.
+//!
+//! This was originally asymmetric (task 2143): the post-solver pass in
+//! `engine_eval.rs` used to overwrite inactive-branch Auto cells with
+//! `(Undef, Auto)`, destroying solver work and causing `eval(guard=T)` to
+//! diverge from `eval(guard=¬T) → edit_param(guard, T)` for the same final
+//! configuration.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -25,6 +48,9 @@ use crate::{
 /// `Auto` cell, whose lifecycle is owned by the constraint solver rather than
 /// guard activation/deactivation. Missing cells are treated as non-Auto
 /// (i.e. they get deactivated), preserving the prior `is_some_and` semantics.
+///
+/// See the [module-level doc](self) for the canonical Auto-cell lifecycle rule
+/// shared with `engine_eval.rs`'s post-solver guard re-evaluation pass.
 pub(crate) fn deactivate_if_not_auto(
     graph: &EvaluationGraph,
     id: &ValueCellId,
@@ -85,44 +111,73 @@ fn reelaborate_guarded_group(
     }
 }
 
-/// Re-deactivate inactive-branch members for every guarded group that Phase 1
-/// re-elaborated during the current edit call.
+/// Re-deactivate inactive-branch members for **all** guarded groups after wave2.
 ///
-/// After wave2, the constraint solver may have re-evaluated inactive-branch
-/// members (whose `default_expr` reads a resolved auto param) that Phase 1
-/// previously deactivated (`Undef`). This cleanup restores Phase 1's
-/// deactivation state so that Phase 3's `phase1_reelaborated` skip (when the
-/// guard value is unchanged since Phase 1) yields a correct final result.
+/// ## Why all groups, not just `phase1_reelaborated` (task 2144)
 ///
-/// `phase1_reelaborated` maps each re-elaborated guard_cell to the guard value
-/// Phase 1 recorded (task 2146). The value is NOT used here — this helper only
-/// re-deactivates the current-inactive branch using the *current* guard value,
-/// which may already differ from the Phase-1 recorded value if wave2 has
-/// flipped the guard. Phase 3's flip-detection (comparing the recorded value
-/// against the current guard value) handles that case separately.
+/// Wave2 re-evaluates every cell in the dirty cone of resolved auto-param IDs.
+/// An inactive-branch member whose `default_expr` reads a resolved auto param
+/// is in that dirty cone regardless of whether its *guard* was in Phase 1's
+/// dirty-guard trigger.  Three categories of groups may be affected:
 ///
-/// Called from both `edit_param` post-wave2 (task 2140) and `edit_source`
-/// post-wave2 (task 2142). Does nothing when `phase1_reelaborated` is empty.
-/// By taking `graph` and `snapshot_values` as separate parameters the caller
-/// can use field-level borrow splitting — no `.clone()` of `guarded_groups`
-/// is required at either call site.
-fn reapply_phase1_deactivations(
+/// (a) Groups Phase 1 **re-elaborated** — guard flipped, Phase 1 deactivated the
+///     inactive branch, wave2 then overwrote it.  Previously covered; now
+///     covered as a natural subset of "all groups".
+///
+/// (b) Groups Phase 1 **skipped via per-group unchanged-guard short-circuit** —
+///     guard is in Phase 1's iteration but its value is unchanged, so the group
+///     takes `continue` at line 593 without entering `phase1_reelaborated`.
+///     Wave2 can still overwrite the inactive-branch member.  Previously *not*
+///     covered — this was the task 2144 bug.
+///
+/// (c) Groups **outside any dirty-guard trigger** — `has_dirty_guards` was false
+///     and Phase 1 never ran at all.  The pre-edit guard value seeded from
+///     `new_snapshot.values` at edit-start is still valid in `values`.
+///
+/// The cleanup is idempotent: `deactivate_if_not_auto` writes `Undef` over
+/// `Undef` for groups wave2 did not touch, and Auto cells are always skipped.
+///
+/// ## Guard-value source
+///
+/// Phase 1 writes every group's current guard value into `values` at line 589
+/// even when it takes the per-group unchanged-guard short-circuit (line 593-595).
+/// For groups outside Phase 1's dirty-guard trigger, `values` holds the pre-edit
+/// guard value seeded from `new_snapshot.values` at edit-start (line 432-437),
+/// which is non-empty for every guard cell that `eval()` has populated.
+/// A `debug_assert!` verifies that the guard cell is present in `values`; a
+/// missing entry indicates a real invariant violation (the cell was neither
+/// seeded by Phase 1 nor by the edit-start snapshot pass) and should be caught
+/// early in debug builds.  In release builds the `unwrap_or(Value::Undef)`
+/// fallback mirrors how Phase 1 itself handles a missing guard node (line 564),
+/// treating both branches as inactive rather than panicking.
+///
+/// ## Note on `phase1_reelaborated`
+///
+/// This helper no longer takes `phase1_reelaborated` as a parameter — the set
+/// was only used to gate which groups to iterate, and that gate is now removed.
+/// Phase 3's cross-phase dedup (`phase1_reelaborated.contains(...)` at lines
+/// 833 / 1892) is unaffected; those sets remain in the caller.
+///
+/// Called from both `edit_param` post-wave2 and `edit_source` post-wave2.
+/// Field-level borrow splitting still applies: `graph` and `snapshot_values`
+/// are passed separately so no `.clone()` of `guarded_groups` is required.
+fn reapply_guard_deactivations_post_wave2(
     graph: &EvaluationGraph,
-    phase1_reelaborated: &HashMap<ValueCellId, Value>,
     values: &mut ValueMap,
     snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
 ) {
-    if phase1_reelaborated.is_empty() {
-        return;
-    }
     for group in &graph.guarded_groups {
-        if !phase1_reelaborated.contains_key(&group.guard_cell) {
-            continue;
-        }
+        debug_assert!(
+            values.contains(&group.guard_cell),
+            "guard cell {:?} has no value in `values` before post-wave2 cleanup — \
+             this indicates an invariant violation: every guard cell must be seeded \
+             either by Phase 1 or by the edit-start snapshot-to-values pass",
+            group.guard_cell
+        );
         let guard_val = values
             .get(&group.guard_cell)
             .cloned()
-            .expect("guard cell must have a value after Phase 1");
+            .unwrap_or(Value::Undef);
         let is_true = matches!(&guard_val, Value::Bool(true));
         let is_false = matches!(&guard_val, Value::Bool(false));
         for (cells, is_active) in [(&group.members, is_true), (&group.else_members, is_false)] {
@@ -806,13 +861,14 @@ impl Engine {
                     }
                 }
 
-                // Post-wave2 cleanup (task 2140): wave2 can re-evaluate
-                // inactive-branch members Phase 1 deactivated; restore
-                // those deactivations so Phase 3's phase1_reelaborated
-                // skip stays correct.  See `reapply_phase1_deactivations`.
-                reapply_phase1_deactivations(
+                // Post-wave2 cleanup (tasks 2140, 2144): wave2 can re-evaluate
+                // inactive-branch members of ANY guarded group — including groups
+                // Phase 1 skipped via the per-group unchanged-guard short-circuit
+                // (task 2144) and groups entirely outside the dirty-guard trigger.
+                // Re-deactivate all guarded groups (idempotent for groups wave2
+                // did not touch).  See `reapply_guard_deactivations_post_wave2`.
+                reapply_guard_deactivations_post_wave2(
                     &new_snapshot.graph,
-                    &phase1_reelaborated,
                     &mut values,
                     &mut new_snapshot.values,
                 );
@@ -1868,16 +1924,17 @@ impl Engine {
                     }
                 }
 
-                // Post-wave2 cleanup (task 2142): wave2 can re-evaluate
-                // inactive-branch members Phase 1 deactivated; restore
-                // those deactivations so Phase 3's phase1_reelaborated
-                // skip stays correct.  See `reapply_phase1_deactivations`.
+                // Post-wave2 cleanup (tasks 2142, 2144): wave2 can re-evaluate
+                // inactive-branch members of ANY guarded group — including groups
+                // Phase 1 skipped via the per-group unchanged-guard short-circuit
+                // (task 2144) and groups entirely outside the dirty-guard trigger.
+                // Re-deactivate all guarded groups (idempotent for groups wave2
+                // did not touch).  See `reapply_guard_deactivations_post_wave2`.
                 // edit_source's wave2 uses local new_reverse_index /
                 // new_trace_map / new_demand (not self.eval_state), so
                 // the call lives directly inside `if !all_resolved_ids…`.
-                reapply_phase1_deactivations(
+                reapply_guard_deactivations_post_wave2(
                     &new_snapshot.graph,
-                    &phase1_reelaborated,
                     &mut values,
                     &mut new_snapshot.values,
                 );
@@ -2014,6 +2071,61 @@ impl Engine {
         // If any structure_controlling count cell's value changed vs. the
         // pre-edit snapshot, add/remove instances to match the new count.
         {
+            // Task 2086: Invalidate cache entries for scoped cells of entirely-removed
+            // collection_subs. Phase 4's main loop below iterates only NEW
+            // collection_subs, so a sub present in eval_state.snapshot.graph.collection_subs
+            // but absent from new_snapshot.graph.collection_subs never has its scoped
+            // cells visited. This sweep is defense-in-depth alongside Step (9)'s
+            // diff_value_cells.removed invalidations — symmetric with Fix 1 above, it
+            // keeps all collection-scoped cache hygiene concentrated in Phase 4.
+            let scoped_ids_to_invalidate: Vec<ValueCellId> = {
+                if let Some(eval_state_ref) = self.eval_state.as_ref() {
+                    let old_subs = &eval_state_ref.snapshot.graph.collection_subs;
+                    let old_snapshot_values = &eval_state_ref.snapshot.values;
+                    let new_sub_keys: HashSet<(String, String)> = new_snapshot
+                        .graph
+                        .collection_subs
+                        .iter()
+                        .map(|s| (s.parent_entity.clone(), s.sub_name.clone()))
+                        .collect();
+                    let mut ids = Vec::new();
+                    for old_sub in old_subs {
+                        if new_sub_keys
+                            .contains(&(old_sub.parent_entity.clone(), old_sub.sub_name.clone()))
+                        {
+                            continue;
+                        }
+                        // Silent-zero for non-Int/non-Undef values is intentional:
+                        // this sub is *being removed* so emitting a warning about a
+                        // now-gone count cell would be noisy. `resolve_count` below
+                        // emits diagnostics only for *surviving* subs where an
+                        // unexpected count type would actually affect the result.
+                        let old_count = old_snapshot_values
+                            .get(&old_sub.count_cell)
+                            .map(|(v, _)| match v {
+                                Value::Int(n) => *n,
+                                _ => 0,
+                            })
+                            .unwrap_or(0);
+                        for i in 0..old_count {
+                            let scoped_entity = format!(
+                                "{}.{}[{}]",
+                                old_sub.parent_entity, old_sub.sub_name, i
+                            );
+                            for (member, _, _, _) in &old_sub.child_value_cells {
+                                ids.push(ValueCellId::new(&scoped_entity, member));
+                            }
+                        }
+                    }
+                    ids
+                } else {
+                    Vec::new()
+                }
+            };
+            for scoped_id in scoped_ids_to_invalidate {
+                self.cache.invalidate(&NodeId::Value(scoped_id));
+            }
+
             let collection_subs = new_snapshot.graph.collection_subs.clone();
             for col_sub in &collection_subs {
                 let new_count_val = values
@@ -2059,6 +2171,11 @@ impl Engine {
                         new_snapshot.graph.value_cells.remove(&scoped_id);
                         new_snapshot.values.remove(&scoped_id);
                         values.remove(&scoped_id);
+                        // Task 2086: invalidate cache so a subsequent edit that
+                        // re-adds a scoped cell at the same index evaluates freshly
+                        // instead of returning a stale CachedResult from a prior
+                        // incarnation.
+                        self.cache.invalidate(&NodeId::Value(scoped_id));
                     }
                 }
 

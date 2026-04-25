@@ -1,5 +1,33 @@
 use std::fmt;
 
+/// Error returned by [`ModulePath::from_dotted`] when the input is invalid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModulePathParseError {
+    /// The input string was empty.
+    Empty,
+    /// The input contained an empty segment (e.g. `"a..b"`, `".leading"`, or `"trailing."`).
+    EmptySegment { input: String },
+}
+
+impl fmt::Display for ModulePathParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModulePathParseError::Empty => {
+                write!(f, "module path must not be empty")
+            }
+            ModulePathParseError::EmptySegment { input } => {
+                write!(
+                    f,
+                    "module path must not contain empty segments (e.g. 'a..b'), got: '{}'",
+                    input
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ModulePathParseError {}
+
 /// Path to a module in the project (e.g., "bracket" or "lib/fasteners/bolt").
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModulePath(pub Vec<String>);
@@ -20,21 +48,23 @@ impl ModulePath {
     /// - `"a.b.c"` → `["a", "b", "c"]`
     /// - `"foo"` → `["foo"]`
     ///
-    /// # Panics (debug builds only)
+    /// # Errors
     ///
-    /// Panics if `dotted` is empty or contains empty segments (e.g. `"a..b"`).
-    /// In release builds these inputs are silently accepted per `str::split`
-    /// semantics, but the resulting paths (`[""]` or `["a", "", "b"]`) are
-    /// semantically meaningless. Add a `debug_assert` at call sites that accept
-    /// user-provided strings to surface misuse during development.
-    pub fn from_dotted(dotted: &str) -> Self {
-        debug_assert!(!dotted.is_empty(), "from_dotted: dotted path must not be empty");
-        debug_assert!(
-            !dotted.split('.').any(str::is_empty),
-            "from_dotted: path must not contain empty segments (e.g. 'a..b'), got: '{}'",
-            dotted
-        );
-        Self::new(dotted.split('.').map(String::from).collect())
+    /// Returns [`ModulePathParseError::Empty`] if `dotted` is an empty string.
+    ///
+    /// Returns [`ModulePathParseError::EmptySegment`] if `dotted` contains any
+    /// empty segment, i.e. it starts or ends with a dot, or contains two
+    /// consecutive dots (e.g. `"a..b"`, `".leading"`, `"trailing."`).
+    pub fn from_dotted(dotted: &str) -> Result<Self, ModulePathParseError> {
+        if dotted.is_empty() {
+            return Err(ModulePathParseError::Empty);
+        }
+        if dotted.split('.').any(str::is_empty) {
+            return Err(ModulePathParseError::EmptySegment {
+                input: dotted.to_string(),
+            });
+        }
+        Ok(Self::new(dotted.split('.').map(String::from).collect()))
     }
 }
 
@@ -333,13 +363,13 @@ mod tests {
 
     #[test]
     fn from_dotted_two_segments() {
-        let path = ModulePath::from_dotted("std.units");
+        let path = ModulePath::from_dotted("std.units").unwrap();
         assert_eq!(path.0, vec!["std".to_string(), "units".to_string()]);
     }
 
     #[test]
     fn from_dotted_three_segments() {
-        let path = ModulePath::from_dotted("a.b.c");
+        let path = ModulePath::from_dotted("a.b.c").unwrap();
         assert_eq!(
             path.0,
             vec!["a".to_string(), "b".to_string(), "c".to_string()]
@@ -348,8 +378,47 @@ mod tests {
 
     #[test]
     fn from_dotted_single_segment() {
-        let path = ModulePath::from_dotted("foo");
+        let path = ModulePath::from_dotted("foo").unwrap();
         assert_eq!(path.0, vec!["foo".to_string()]);
+    }
+
+    #[test]
+    fn from_dotted_empty_string_returns_err() {
+        let result = ModulePath::from_dotted("");
+        assert_eq!(result, Err(ModulePathParseError::Empty));
+    }
+
+    #[test]
+    fn from_dotted_double_dot_returns_empty_segment_err() {
+        let result = ModulePath::from_dotted("a..b");
+        assert_eq!(
+            result,
+            Err(ModulePathParseError::EmptySegment {
+                input: "a..b".into()
+            })
+        );
+    }
+
+    #[test]
+    fn from_dotted_leading_dot_returns_empty_segment_err() {
+        let result = ModulePath::from_dotted(".leading");
+        assert_eq!(
+            result,
+            Err(ModulePathParseError::EmptySegment {
+                input: ".leading".into()
+            })
+        );
+    }
+
+    #[test]
+    fn from_dotted_trailing_dot_returns_empty_segment_err() {
+        let result = ModulePath::from_dotted("trailing.");
+        assert_eq!(
+            result,
+            Err(ModulePathParseError::EmptySegment {
+                input: "trailing.".into()
+            })
+        );
     }
 
     #[test]

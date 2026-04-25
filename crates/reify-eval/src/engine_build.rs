@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use reify_compiler::CompiledModule;
 use reify_types::{
-    CompiledFunction, Diagnostic, ExportFormat, GeometryHandleId, GeometryKernel, Mesh, ValueMap,
+    CompiledFunction, Diagnostic, DiagnosticLabel, ExportFormat, GeometryHandleId, GeometryKernel,
+    Mesh, SourceSpan, ValueMap,
 };
 
 use crate::geometry_ops::compile_geometry_op;
@@ -61,6 +62,7 @@ impl Engine {
                         &mut diagnostics,
                         &mut named_steps,
                         realization.name.as_deref(),
+                        realization.span,
                     );
                 }
             }
@@ -129,6 +131,7 @@ impl Engine {
                         &mut diagnostics,
                         &mut named_steps,
                         realization.name.as_deref(),
+                        realization.span,
                     );
                 }
             }
@@ -240,6 +243,7 @@ impl Engine {
                     diagnostics,
                     &mut named_steps,
                     realization.name.as_deref(),
+                    realization.span,
                 );
 
                 // Tessellate this realization's final handle (if any new handles were produced)
@@ -297,6 +301,7 @@ impl Engine {
         diagnostics: &mut Vec<Diagnostic>,
         named_steps: &mut HashMap<String, GeometryHandleId>,
         realization_name: Option<&str>,
+        realization_span: SourceSpan,
     ) {
         let handle_start = step_handles.len();
         let mut had_failure = false;
@@ -316,15 +321,25 @@ impl Engine {
                         step_handles.push(handle.id);
                     }
                     Err(e) => {
-                        diagnostics.push(Diagnostic::error(format!("geometry error: {}", e)));
+                        diagnostics.push(
+                            Diagnostic::error(format!("geometry error: {}", e)).with_label(
+                                DiagnosticLabel::new(realization_span, "in this realization"),
+                            ),
+                        );
                         break;
                     }
                 },
                 Err(err) => {
-                    diagnostics.push(Diagnostic::error(format!(
-                        "failed to compile geometry operation: {}",
-                        err
-                    )));
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "failed to compile geometry operation: {}",
+                            err
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            realization_span,
+                            "in this realization",
+                        )),
+                    );
                     step_handles.push(GeometryHandleId::INVALID);
                     had_failure = true;
                 }
@@ -435,6 +450,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
@@ -478,6 +494,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         assert_eq!(
@@ -539,6 +556,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         assert!(
@@ -611,6 +629,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -675,6 +694,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             None,
+            SourceSpan::new(0, 0),
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
@@ -740,6 +760,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
 
         assert!(diagnostics.is_empty(), "expected no diagnostics");
@@ -793,6 +814,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("bad"),
+            SourceSpan::new(0, 0),
         );
 
         assert!(
@@ -857,6 +879,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
@@ -873,6 +896,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
         let h2 = named_steps["body"];
 
@@ -962,6 +986,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
         let h1 = named_steps["body"];
         assert!(diagnostics.is_empty(), "first realization must succeed cleanly");
@@ -977,6 +1002,7 @@ mod tests {
             &mut diagnostics,
             &mut named_steps,
             Some("body"),
+            SourceSpan::new(0, 0),
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
@@ -991,6 +1017,159 @@ mod tests {
         assert!(
             !diagnostics.is_empty(),
             "expected a diagnostic from the failed second realization"
+        );
+    }
+
+    // ── span-label threading tests ─────────────────────────────────────────────
+
+    /// Pins that the compile-failure Error diagnostic emitted by
+    /// `execute_realization_ops` carries a `DiagnosticLabel` whose span
+    /// equals the supplied `realization_span`.
+    ///
+    /// Uses an OOB `GeomRef::Step(99)` to force the compile-failure path
+    /// (same trigger as `execute_realization_ops_compile_failure_diagnostic_includes_specific_reason`).
+    /// Passes a distinct non-zero span `SourceSpan::new(100, 150)` so the
+    /// assertion cannot collide with a sentinel value.
+    ///
+    /// This test fails to compile until step-6 adds the `realization_span:
+    /// SourceSpan` parameter to `execute_realization_ops`.
+    #[test]
+    fn execute_realization_ops_compile_failure_diagnostic_has_realization_span_label() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{Severity, SourceSpan};
+
+        // Step(99) is out-of-bounds when step_handles is empty →
+        // compile_geometry_op returns Err("unresolvable GeomRef::Step(99) …")
+        let ops = vec![CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(99),
+            right: GeomRef::Step(99),
+        }];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let realization_span = SourceSpan::new(100, 150);
+
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+            &mut named_steps,
+            None,
+            realization_span,
+        );
+
+        // Find the compile-failure Error diagnostic.
+        let compile_err_diag = diagnostics
+            .iter()
+            .find(|d| {
+                d.message.contains("failed to compile geometry operation")
+                    && matches!(d.severity, Severity::Error)
+            })
+            .expect("expected an Error diagnostic with 'failed to compile geometry operation'");
+
+        assert_eq!(
+            compile_err_diag.labels.len(),
+            1,
+            "compile-failure diagnostic should carry exactly 1 DiagnosticLabel, \
+             got {}: {:?}",
+            compile_err_diag.labels.len(),
+            compile_err_diag.labels
+        );
+        assert_eq!(
+            compile_err_diag.labels[0].span,
+            realization_span,
+            "compile-failure label span should equal the supplied realization_span \
+             {:?}, got {:?}",
+            realization_span,
+            compile_err_diag.labels[0].span
+        );
+    }
+
+    /// Pins that the kernel-error Error diagnostic emitted by
+    /// `execute_realization_ops` carries a `DiagnosticLabel` whose span
+    /// equals the supplied `realization_span`.
+    ///
+    /// Uses `FailingMockGeometryKernel` (ops compile but kernel.execute returns Err)
+    /// so we exercise the kernel-error path.  Passes a distinct non-zero span
+    /// `SourceSpan::new(200, 250)`.
+    ///
+    /// After step-6, this test FAILS because step-6 only attaches the label to
+    /// the compile-failure path.  Step-8 will attach it to the kernel-error path
+    /// and make this test pass.
+    #[test]
+    fn execute_realization_ops_kernel_error_diagnostic_has_realization_span_label() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::FailingMockGeometryKernel;
+        use reify_types::{CompiledExpr, Severity, SourceSpan, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let mut kernel = FailingMockGeometryKernel;
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let realization_span = SourceSpan::new(200, 250);
+
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+            &mut named_steps,
+            None,
+            realization_span,
+        );
+
+        // Find the kernel-error Error diagnostic.
+        let kernel_err_diag = diagnostics
+            .iter()
+            .find(|d| {
+                d.message.contains("geometry error")
+                    && matches!(d.severity, Severity::Error)
+            })
+            .expect("expected an Error diagnostic with 'geometry error'");
+
+        assert_eq!(
+            kernel_err_diag.labels.len(),
+            1,
+            "kernel-error diagnostic should carry exactly 1 DiagnosticLabel, \
+             got {}: {:?}",
+            kernel_err_diag.labels.len(),
+            kernel_err_diag.labels
+        );
+        assert_eq!(
+            kernel_err_diag.labels[0].span,
+            realization_span,
+            "kernel-error label span should equal the supplied realization_span \
+             {:?}, got {:?}",
+            realization_span,
+            kernel_err_diag.labels[0].span
         );
     }
 }

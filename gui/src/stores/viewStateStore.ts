@@ -1,5 +1,5 @@
 import { createStore, produce } from 'solid-js/store';
-import type { EntityTreeNode, ExplicitVisibility, VisibilityState } from '../types';
+import type { EntityTreeNode, ExplicitVisibility, PersistentViewState, VisibilityState } from '../types';
 import {
   generateDefaultView,
   generateAllGeometryView,
@@ -106,19 +106,11 @@ export function createViewStateStore() {
 
   function setTree(nodes: EntityTreeNode[]): void {
     rebuildTreeMaps(nodes);
-    // Prune explicit overrides for paths that no longer exist in the tree.
-    // Stale entries can accumulate when nodes are deleted or renamed upstream,
-    // causing hasOverride / getEffectiveVisibility to return stale values for
-    // removed paths, and re-introduced paths would silently inherit old state.
-    setState(
-      produce((s) => {
-        for (const path of Object.keys(s.explicit)) {
-          if (!nodeByPath.has(path)) {
-            delete s.explicit[path];
-          }
-        }
-      }),
-    );
+    // Stale explicit entries (paths no longer in the tree) are intentionally
+    // preserved so that undo / branch-switch can restore them automatically.
+    // PRD §8.2: "stale entries must survive tree changes".
+    // The explicit map may contain entries for absent paths; callers that need
+    // to enumerate live paths should filter by nodeByPath (see getStalePaths).
   }
 
   // ---------------------------------------------------------------------------
@@ -663,25 +655,18 @@ export function createViewStateStore() {
         s.explicit = { ...target.visibility };
 
       } else if (activeId.startsWith('user:')) {
-        // Active is a user view. Keep entries for paths still in the tree;
-        // remove entries for paths that are no longer in the tree;
-        // leave new paths unset so defaultRuleFor applies via walk-up.
-        // NOTE: this is the only branch that preserves s.explicit rather than
-        // replacing it wholesale, so stale-path pruning is only needed here.
+        // Active is a user view.  Stale explicit entries (for paths absent
+        // from the new tree) are intentionally preserved — PRD §8.2 requires
+        // that undo / branch-switch can restore them automatically when the path
+        // returns.  New paths are left unset so defaultRuleFor applies via the
+        // walk-up algorithm.
         const userView = s.views[activeId];
         if (!userView) {
           // User view was somehow deleted — fall back to default.
           s.activeViewId = 'auto:default';
           s.explicit = { ...freshDefault.visibility };
-        } else {
-          // Prune explicit entries for paths no longer in tree.
-          for (const path of Object.keys(s.explicit)) {
-            if (!treePathSet.has(path)) {
-              delete s.explicit[path];
-            }
-          }
-          // Do NOT add entries for new paths — leave them unset.
         }
+        // Do NOT add or remove entries — leave s.explicit as-is.
 
       } else {
         // Unknown active view — fall back to default.
@@ -692,11 +677,31 @@ export function createViewStateStore() {
       // ------------------------------------------------------------------
       // 3. Mirror user-view if applicable.
       //    Runs after reconcile so that a user view's stored visibility stays
-      //    in sync with the (possibly pruned) explicit map after a tree change.
+      //    in sync with the explicit map after a tree change (including any
+      //    stale entries preserved from prior tree states).
       //    Early-returns for auto:* and unknown active views.
       // ------------------------------------------------------------------
       mirrorExplicitToActiveUserView(s);
     }));
+  }
+
+  /**
+   * Returns all paths present in `state.explicit` that are absent from the
+   * current tree (i.e. paths whose entity has been removed or renamed since
+   * the last `regenerateAutoViews` / `setTree` call).
+   *
+   * PRD §8.2: stale entries are intentionally preserved so that undo /
+   * branch-switch can restore them automatically when the path returns.
+   * This accessor lets callers enumerate those entries for display or
+   * fuzzy-rebind logic.
+   */
+  function getStalePaths(): string[] {
+    // When no tree has been loaded yet, there are no "stale" paths — every
+    // explicit entry is simply a pre-tree seed and should not be treated as
+    // stale.  A path is only stale when a tree was previously loaded and the
+    // path is now absent from it.
+    if (nodeByPath.size === 0) return [];
+    return Object.keys(state.explicit).filter((p) => !nodeByPath.has(p));
   }
 
   function hasOverride(path: string): boolean {
@@ -744,6 +749,67 @@ export function createViewStateStore() {
     return [...autoIds, ...state.userViewOrder];
   }
 
+  // ---------------------------------------------------------------------------
+  // Persistence helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Apply a previously-serialized view state (from localStorage or sidecar) to
+   * the store WITHOUT touching auto:* views (those are regenerated separately
+   * from the entity tree).
+   *
+   * - Drops any entry in `persisted.userViews` whose `id` starts with `auto:`
+   *   (defensive: they may be present in old snapshots).
+   * - Seeds each remaining user view into `state.views` via `produce`.
+   * - Appends each new id to `state.userViewOrder` (deduplicating against any
+   *   already-present ids).
+   * - Sets `state.activeViewId` to `persisted.activeViewId`.
+   * - Replaces `state.explicit` with `persisted.explicit` so that
+   *   `getEffectiveVisibility` immediately reflects the persisted overrides.
+   *
+   * Intended to be called BEFORE `regenerateAutoViews` on file open.
+   *
+   * Viewport cameras and timestamp are handled by the App.tsx layer and are
+   * NOT included in this signature (see `Omit<PersistentViewState, …>`).
+   */
+  function applyPersistedState(
+    persisted: Omit<PersistentViewState, 'viewportCameras' | 'timestamp'>,
+  ): void {
+    const userViewsToSeed = persisted.userViews.filter((v) => !v.id.startsWith('auto:'));
+    setState(
+      produce((s) => {
+        for (const view of userViewsToSeed) {
+          s.views[view.id] = { ...view };
+          if (!s.userViewOrder.includes(view.id)) {
+            s.userViewOrder.push(view.id);
+          }
+        }
+        s.activeViewId = persisted.activeViewId;
+        s.explicit = { ...persisted.explicit } as Record<string, ExplicitVisibility>;
+      }),
+    );
+  }
+
+  /**
+   * Serialize the current view state to a `PersistentViewState` shape suitable
+   * for writing to localStorage or the sidecar file.
+   *
+   * - Only user views (id not starting with `auto:`) are included in
+   *   `userViews`; auto views are regenerated on load and must not be persisted.
+   * - `version` is stamped as `"1"`.
+   * - `viewportCameras` and `timestamp` are intentionally omitted — the
+   *   App.tsx layer composes these fields before writing.
+   */
+  function serializePersistedState(): Omit<PersistentViewState, 'viewportCameras' | 'timestamp'> {
+    const userViews = Object.values(state.views).filter((v) => !v.auto);
+    return {
+      version: '1',
+      activeViewId: state.activeViewId,
+      userViews: userViews.map((v) => ({ ...v })),
+      explicit: { ...state.explicit } as Record<string, VisibilityState>,
+    };
+  }
+
   return {
     state,
     // Tree
@@ -753,6 +819,7 @@ export function createViewStateStore() {
     getAllEffective,
     hasOverride,
     getOrderedViewIds,
+    getStalePaths,
     // Mutations
     setVisibility,
     setVisibilityWithoutCascade,
@@ -769,6 +836,9 @@ export function createViewStateStore() {
     deleteView,
     duplicateView,
     reorderUserViews,
+    // Persistence
+    applyPersistedState,
+    serializePersistedState,
   };
 }
 

@@ -130,16 +130,18 @@ pub(crate) fn resolve_field_type_name(
     // Field types do not currently resolve trait names into TraitObject; pass
     // an empty trait-name set so behavior is unchanged for fields.
     let empty_traits: HashSet<String> = HashSet::new();
-    resolve_type_with_aliases(name, &empty_params, alias_registry, &empty_traits).unwrap_or_else(|| {
-        diagnostics.push(
-            Diagnostic::warning(format!(
-                "unresolved field type '{}', treating as structure reference",
-                name
-            ))
-            .with_label(DiagnosticLabel::new(span, "unknown type name")),
-        );
-        Type::StructureRef(name.to_string())
-    })
+    resolve_type_with_aliases(name, &empty_params, alias_registry, &empty_traits).unwrap_or_else(
+        || {
+            diagnostics.push(
+                Diagnostic::warning(format!(
+                    "unresolved field type '{}', treating as structure reference",
+                    name
+                ))
+                .with_label(DiagnosticLabel::new(span, "unknown type name")),
+            );
+            Type::StructureRef(name.to_string())
+        },
+    )
 }
 
 /// Compile a field declaration into a CompiledField.
@@ -181,11 +183,14 @@ pub(crate) fn compile_field(
         ),
         reify_syntax::TypeExprKind::DimensionalOp { .. } => {
             diagnostics.push(
-                Diagnostic::error(format!("unresolved field type: {}", field_def.codomain_type))
-                    .with_label(DiagnosticLabel::new(
-                        field_def.codomain_type.span,
-                        "unexpected dimensional expression",
-                    )),
+                Diagnostic::error(format!(
+                    "unresolved field type: {}",
+                    field_def.codomain_type
+                ))
+                .with_label(DiagnosticLabel::new(
+                    field_def.codomain_type.span,
+                    "unexpected dimensional expression",
+                )),
             );
             Type::Real
         }
@@ -303,3 +308,130 @@ pub(crate) fn check_field_composition_types(
     diagnostics.extend(errors);
 }
 
+#[cfg(test)]
+mod tests {
+    //! Unit tests for `check_field_composition_types` wiring direction.
+    //!
+    //! `check_field_composition_types` is `pub(crate)` so these tests must live
+    //! inside the crate. They pin the producer→consumer direction (inner.codomain
+    //! as FROM, outer.domain as TO) that a future refactor could silently reverse.
+    //!
+    //! Covers suggestion #16 (field-composition portion) from task 231.
+    use super::*;
+
+    /// Build a minimal `CompiledField` for testing.
+    /// Only `name`, `domain_type`, and `codomain_type` are semantically relevant
+    /// to `check_field_composition_types`; `source` is always `Imported`.
+    fn make_field(name: &str, domain_type: Type, codomain_type: Type) -> CompiledField {
+        CompiledField {
+            name: name.to_string(),
+            is_pub: false,
+            domain_type,
+            codomain_type,
+            source: CompiledFieldSource::Imported,
+            content_hash: ContentHash(0),
+            annotations: vec![],
+        }
+    }
+
+    /// Build a composed expression representing `outer_name(inner_name(dummy_literal))`.
+    ///
+    /// The dummy literal is typed `Real` to match the `domain_type` of the inner
+    /// field (`Type::Real`) in all current test cases. `check_field_composition_types`
+    /// only validates inter-function wiring (inner.codomain → outer.domain) and does
+    /// not check argument types against the inner field's domain, so the dummy type
+    /// currently has no effect on test outcomes. It is kept consistent with the inner
+    /// domain to avoid spurious failures if argument-type checking is added later.
+    fn make_composition_expr(outer_name: &str, inner_name: &str) -> CompiledExpr {
+        let dummy = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+        let inner_call = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: inner_name.to_string(),
+                    qualified_name: inner_name.to_string(),
+                },
+                args: vec![dummy],
+            },
+            result_type: Type::Real,
+            content_hash: ContentHash(0),
+        };
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: outer_name.to_string(),
+                    qualified_name: outer_name.to_string(),
+                },
+                args: vec![inner_call],
+            },
+            result_type: Type::Real,
+            content_hash: ContentHash(0),
+        }
+    }
+
+    /// inner codomain = Vector<3,Real>, outer domain = Tensor<1,3,Real>.
+    /// Rule 1a applies (Vector<N,Q> → Tensor<1,N,Q>): zero diagnostics.
+    /// Pins the producer→consumer wiring: inner.codomain is checked as FROM,
+    /// outer.domain as TO.
+    #[test]
+    fn field_composition_allows_vector_to_tensor1() {
+        let inner = make_field("inner", Type::Real, Type::vec3(Type::Real));
+        let outer = make_field("outer", Type::tensor(1, 3, Type::Real), Type::Real);
+        let expr = make_composition_expr("outer", "inner");
+        let mut registry = HashMap::new();
+        registry.insert("inner", &inner);
+        registry.insert("outer", &outer);
+        let mut diagnostics = Vec::new();
+        check_field_composition_types(&expr, &registry, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "Vector<3,Real>→Tensor<1,3,Real> composition should produce zero diagnostics (Rule 1a)"
+        );
+    }
+
+    /// inner codomain = Matrix<3,3,Real>, outer domain = Tensor<2,3,Real>.
+    /// Rule 3 is one-way (Tensor<2>→Matrix, NOT Matrix→Tensor<2>): one diagnostic.
+    #[test]
+    fn field_composition_rejects_matrix_to_tensor2() {
+        let inner = make_field("inner", Type::Real, Type::matrix(3, 3, Type::Real));
+        let outer = make_field("outer", Type::tensor(2, 3, Type::Real), Type::Real);
+        let expr = make_composition_expr("outer", "inner");
+        let mut registry = HashMap::new();
+        registry.insert("inner", &inner);
+        registry.insert("outer", &outer);
+        let mut diagnostics = Vec::new();
+        check_field_composition_types(&expr, &registry, &mut diagnostics);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Matrix<3,3,Real>→Tensor<2,3,Real> should produce one diagnostic (Rule 3 is one-way)"
+        );
+        assert!(
+            diagnostics[0].message.contains("codomain of 'inner'"),
+            "Expected \"codomain of 'inner'\" (producer wiring) in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("domain of 'outer'"),
+            "Expected \"domain of 'outer'\" (consumer wiring) in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// inner codomain = Tensor<2,3,Real>, outer domain = Matrix<3,3,Real>.
+    /// Rule 3 applies (Tensor<2,N,Q> → Matrix<N,N,Q>): zero diagnostics.
+    #[test]
+    fn field_composition_allows_tensor2_to_matrix() {
+        let inner = make_field("inner", Type::Real, Type::tensor(2, 3, Type::Real));
+        let outer = make_field("outer", Type::matrix(3, 3, Type::Real), Type::Real);
+        let expr = make_composition_expr("outer", "inner");
+        let mut registry = HashMap::new();
+        registry.insert("inner", &inner);
+        registry.insert("outer", &outer);
+        let mut diagnostics = Vec::new();
+        check_field_composition_types(&expr, &registry, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "Tensor<2,3,Real>→Matrix<3,3,Real> composition should produce zero diagnostics (Rule 3)"
+        );
+    }
+}

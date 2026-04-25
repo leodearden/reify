@@ -260,13 +260,19 @@ fn structure_param_resolves_without_ice() {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    let has_ice = errors
+        .iter()
+        .any(|d| d.message.contains("internal compiler error"));
     assert!(
         !has_ice,
         "expected no ICE diagnostic on valid structure param, got: {:?}",
         errors
     );
-    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors at all, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -286,13 +292,19 @@ fn port_member_resolves_without_ice() {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    let has_ice = errors
+        .iter()
+        .any(|d| d.message.contains("internal compiler error"));
     assert!(
         !has_ice,
         "expected no ICE diagnostic on valid port member, got: {:?}",
         errors
     );
-    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors at all, got: {:?}",
+        errors
+    );
 }
 
 // ── task-823 step-7: guards.rs ICE path — green path (no ICE on valid code) ──
@@ -314,13 +326,19 @@ fn guarded_param_resolves_without_ice() {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    let has_ice = errors
+        .iter()
+        .any(|d| d.message.contains("internal compiler error"));
     assert!(
         !has_ice,
         "expected no ICE diagnostic on valid guarded param, got: {:?}",
         errors
     );
-    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors at all, got: {:?}",
+        errors
+    );
 }
 
 // ── task-823 step-1: port param unknown type name emits diagnostic ──────
@@ -343,9 +361,9 @@ fn port_param_unknown_type_name_emits_error() {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let has_type_error = errors.iter().any(|d| {
-        d.message.contains("Nonexistent") || d.message.contains("unresolved type name")
-    });
+    let has_type_error = errors
+        .iter()
+        .any(|d| d.message.contains("Nonexistent") || d.message.contains("unresolved type name"));
     assert!(
         has_type_error,
         "expected diagnostic about unknown type 'Nonexistent' in port param, got: {:?}",
@@ -459,13 +477,19 @@ fn range_valid_compiles_without_ice() {
     "#;
     let module = compile_source(source);
     let errors = errors_only(&module);
-    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    let has_ice = errors
+        .iter()
+        .any(|d| d.message.contains("internal compiler error"));
     assert!(
         !has_ice,
         "expected no ICE diagnostic on valid range, got: {:?}",
         errors
     );
-    assert!(errors.is_empty(), "expected no errors on valid range, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors on valid range, got: {:?}",
+        errors
+    );
 }
 
 /// Zero-arg stdlib function call emits a type-inference warning.
@@ -532,7 +556,9 @@ fn stdlib_fn_single_arg_no_zero_arg_warning() {
 
     let warnings = warnings_only(&module);
     assert!(
-        warnings.iter().all(|d| !d.message.contains("zero-arg function")),
+        warnings
+            .iter()
+            .all(|d| !d.message.contains("zero-arg function")),
         "single-arg call should not emit a zero-arg warning, got: {:?}",
         warnings
     );
@@ -566,7 +592,9 @@ fn sub_member_type_resolves_without_ice() {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    let has_ice = errors
+        .iter()
+        .any(|d| d.message.contains("internal compiler error"));
     assert!(
         !has_ice,
         "expected no ICE diagnostic on valid sub-member access, got: {:?}",
@@ -609,7 +637,9 @@ fn non_collection_sub_member_type_resolves_without_ice() {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    let has_ice = errors
+        .iter()
+        .any(|d| d.message.contains("internal compiler error"));
     assert!(
         !has_ice,
         "expected no ICE diagnostic on non-collection sub-member access, got: {:?}",

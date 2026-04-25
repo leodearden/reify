@@ -5,6 +5,7 @@ import { createRoot, createComputed } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { ViewStateStore } from '../stores';
+import type { PersistentViewState } from '../types';
 import { makeNode, makeTree, makeTreeWithTwoSubtrees, makeTreeWithGeometryA } from './test-utils';
 
 describe('viewStateStore — default rules', () => {
@@ -797,8 +798,14 @@ describe('viewStateStore — regenerateAutoViews — active view reconciliation'
   });
 });
 
-describe('viewStateStore — setTree pruning', () => {
-  it('stale explicit entries for removed paths are pruned when setTree is called', () => {
+describe('viewStateStore — setTree stale-entry preservation', () => {
+  // NOTE: Prior to step-18 (task 1749) this describe block was titled
+  // "setTree pruning" and asserted that stale explicit entries were deleted on
+  // tree change.  Step-18 removed that pruning loop per PRD §8.2: stale
+  // entries must survive for undo/branch-switch restoration.  Tests updated
+  // accordingly.
+
+  it('stale explicit entries for removed paths are PRESERVED when setTree is called', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
       const nodeA = makeNode({ entity_path: 'Root.A' });
@@ -811,10 +818,10 @@ describe('viewStateStore — setTree pruning', () => {
       expect(store.state.explicit['Root.A']).toBe('hidden');
       expect(store.state.explicit['Root.B']).toBe('ghost');
 
-      // Replace tree with only B — A is removed.
+      // Replace tree with only B — A becomes stale.
       store.setTree([nodeB]);
-      // Stale entry for Root.A must be pruned.
-      expect(store.state.explicit['Root.A']).toBeUndefined();
+      // Stale entry for Root.A must be preserved (PRD §8.2).
+      expect(store.state.explicit['Root.A']).toBe('hidden');
       // Root.B's explicit is preserved since it still exists.
       expect(store.state.explicit['Root.B']).toBe('ghost');
 
@@ -822,7 +829,7 @@ describe('viewStateStore — setTree pruning', () => {
     });
   });
 
-  it('re-introducing a previously-removed path does not inherit old explicit state', () => {
+  it('re-introducing a previously-removed path re-surfaces its prior explicit state', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
       const nodeA = makeNode({ entity_path: 'Root.A' });
@@ -831,13 +838,13 @@ describe('viewStateStore — setTree pruning', () => {
       store.setTree([nodeA, nodeB]);
       store.setVisibility('Root.A', 'hidden', false);
 
-      // Remove A, then re-introduce it.
+      // Remove A (becomes stale), then re-introduce it.
       store.setTree([nodeB]);
       store.setTree([nodeA, nodeB]);
 
-      // Re-introduced A should have no explicit state (fresh inherit).
-      expect(store.state.explicit['Root.A']).toBeUndefined();
-      expect(store.getEffectiveVisibility('Root.A')).toBe('show');
+      // Re-introduced A should inherit its prior explicit state (PRD §8.2).
+      expect(store.state.explicit['Root.A']).toBe('hidden');
+      expect(store.getEffectiveVisibility('Root.A')).toBe('hidden');
 
       dispose();
     });
@@ -2268,6 +2275,309 @@ describe('viewStateStore — switchView', () => {
       const result = store.switchView(id);
       expect(result).toBe(true);
       expect(store.state.activeViewId).toBe(id);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale path preservation — step-17 tests (fail until step-18 removes prunes)
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — stale path preservation (step-17)', () => {
+  /** Build a single-root tree with an optional child path. */
+  function treeWith(child?: string) {
+    if (!child) return [makeNode({ entity_path: 'Root', kind: 'structure' })];
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [makeNode({ entity_path: child, kind: 'occurrence' })],
+      }),
+    ];
+  }
+
+  it('(a) regenerateAutoViews with a tree omitting the path preserves explicit entry and user-view visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      // Generate auto views with the path present
+      store.regenerateAutoViews(treeWith('Root.moving_part'));
+
+      // Switch to a user view so the explicit map is preserved across regen
+      const viewId = store.createView('My View');
+      store.switchView(viewId);
+
+      // Record an explicit override on the path
+      store.setVisibility('Root.moving_part', 'hidden', false);
+      expect(store.state.explicit['Root.moving_part']).toBe('hidden');
+      expect(store.state.views[viewId].visibility['Root.moving_part']).toBe('hidden');
+
+      // Regenerate with a tree that omits the path
+      store.regenerateAutoViews(treeWith());
+
+      // After step-18: stale entry must survive (currently FAILS — it's pruned)
+      expect(store.state.explicit['Root.moving_part']).toBe('hidden');
+      expect(store.state.views[viewId].visibility['Root.moving_part']).toBe('hidden');
+
+      dispose();
+    });
+  });
+
+  it('(b) regenerateAutoViews again with the path restored re-surfaces the persisted visibility', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      store.regenerateAutoViews(treeWith('Root.moving_part'));
+      const viewId = store.createView('My View');
+      store.switchView(viewId);
+      store.setVisibility('Root.moving_part', 'hidden', false);
+
+      // Remove the path from the tree
+      store.regenerateAutoViews(treeWith());
+
+      // Restore the path — the 'hidden' visibility should re-surface
+      store.regenerateAutoViews(treeWith('Root.moving_part'));
+
+      // After step-18: getEffectiveVisibility should return 'hidden' (preserved value)
+      expect(store.getEffectiveVisibility('Root.moving_part')).toBe('hidden');
+
+      dispose();
+    });
+  });
+
+  it('(c) setTree alone preserves explicit entry for a path no longer in the new tree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      // Set the tree with the path — then add an explicit override
+      store.setTree(treeWith('Root.moving_part'));
+      store.setVisibility('Root.moving_part', 'hidden', false);
+      expect(store.state.explicit['Root.moving_part']).toBe('hidden');
+
+      // Replace tree WITHOUT the path — currently prunes the entry
+      store.setTree(treeWith());
+
+      // After step-18: entry must survive
+      expect(store.state.explicit['Root.moving_part']).toBe('hidden');
+
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getStalePaths — step-19 tests (fail until step-20 adds the accessor)
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — getStalePaths (step-19)', () => {
+  function treeWith(child?: string) {
+    if (!child) return [makeNode({ entity_path: 'Root', kind: 'structure' })];
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [makeNode({ entity_path: child, kind: 'occurrence' })],
+      }),
+    ];
+  }
+
+  it('(a) returns paths present in state.explicit but absent from the current tree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      store.setTree(treeWith('Root.going_away'));
+      store.setVisibility('Root.going_away', 'hidden', false);
+
+      // Remove the path
+      store.setTree(treeWith());
+
+      // getStalePaths should report it
+      expect((store as any).getStalePaths()).toContain('Root.going_away');
+
+      dispose();
+    });
+  });
+
+  it('(b) returns [] when the tree is empty (no nodeByPath entries)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // No setTree call → nodeByPath is empty
+      store.setVisibility('Some.path', 'hidden', false);
+
+      expect((store as any).getStalePaths()).toEqual([]);
+
+      dispose();
+    });
+  });
+
+  it('(c) does not include paths that are currently in the tree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      store.setTree(treeWith('Root.present'));
+      store.setVisibility('Root.present', 'hidden', false);
+
+      const stale = (store as any).getStalePaths() as string[];
+      expect(stale).not.toContain('Root.present');
+
+      dispose();
+    });
+  });
+
+  it('(d) stale path disappears from results when the tree re-includes it', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      store.setTree(treeWith('Root.movable'));
+      store.setVisibility('Root.movable', 'ghost', false);
+
+      // Path leaves tree → becomes stale
+      store.setTree(treeWith());
+      expect((store as any).getStalePaths()).toContain('Root.movable');
+
+      // Path returns → no longer stale
+      store.setTree(treeWith('Root.movable'));
+      expect((store as any).getStalePaths()).not.toContain('Root.movable');
+
+      dispose();
+    });
+  });
+});
+
+// applyPersistedState / serializePersistedState — step-21 tests (fail until step-22 adds the methods)
+describe('viewStateStore — applyPersistedState / serializePersistedState (step-21)', () => {
+  /** Helper: a minimal valid persisted state with one user view. */
+  function makePersistedState(
+    overrides: Partial<Omit<PersistentViewState, 'viewportCameras' | 'timestamp'>> = {},
+  ): Omit<PersistentViewState, 'viewportCameras' | 'timestamp'> {
+    const userView: ViewDefinition = {
+      id: 'user:saved-abc',
+      name: 'My Saved View',
+      auto: false,
+      modified: false,
+      visibility: { 'Root.geo': 'show', 'Root.strut': 'hidden' },
+    };
+    return {
+      version: '1',
+      activeViewId: 'user:saved-abc',
+      userViews: [userView],
+      explicit: { 'Root.geo': 'show', 'Root.strut': 'hidden' },
+      ...overrides,
+    };
+  }
+
+  it('(a) apply seeds userViews into state.views without clobbering auto views', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // Prime auto views first
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root', kind: 'structure' })]);
+      expect(store.state.views['auto:default']).toBeTruthy();
+
+      const persisted = makePersistedState();
+      (store as any).applyPersistedState(persisted);
+
+      // User view was seeded
+      expect(store.state.views['user:saved-abc']).toBeTruthy();
+      expect(store.state.views['user:saved-abc'].name).toBe('My Saved View');
+      // Auto view is still present
+      expect(store.state.views['auto:default']).toBeTruthy();
+
+      dispose();
+    });
+  });
+
+  it('(b) apply sets activeViewId and restores explicit map from the persisted user view', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      const persisted = makePersistedState();
+      (store as any).applyPersistedState(persisted);
+
+      expect(store.state.activeViewId).toBe('user:saved-abc');
+      expect(store.state.explicit['Root.geo']).toBe('show');
+      expect(store.state.explicit['Root.strut']).toBe('hidden');
+
+      dispose();
+    });
+  });
+
+  it('(c) apply ignores persisted entries whose id starts with "auto:" (auto views regenerated separately)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      const autoView: ViewDefinition = {
+        id: 'auto:default',
+        name: 'Default',
+        auto: true,
+        modified: false,
+        visibility: {},
+      };
+      const persisted = makePersistedState({
+        userViews: [
+          // Mix of auto: (should be ignored) and user: (should be seeded)
+          autoView,
+          {
+            id: 'user:legitimate',
+            name: 'Legit',
+            auto: false,
+            modified: false,
+            visibility: {},
+          },
+        ],
+        activeViewId: 'user:legitimate',
+        explicit: {},
+      });
+
+      (store as any).applyPersistedState(persisted);
+
+      // auto:default from the persisted list must NOT overwrite real auto views
+      // (the store started with no auto views here; if we did seed it would have
+      //  auto: false overrides which is wrong — we simply must not seed it at all)
+      expect(store.state.views['user:legitimate']).toBeTruthy();
+      // The store should NOT have seeded the persisted autoView as a view at all
+      // (it may or may not exist from regenerateAutoViews, but the persisted one
+      //  should be dropped — we check name to distinguish)
+      const maybeAuto = store.state.views['auto:default'];
+      if (maybeAuto) {
+        // It was there before (shouldn't be here in this test), or was seeded legitimately —
+        // the key point is the persisted auto view (with auto:true, name="Default") was not
+        // applied incorrectly. Since we didn't call regenerateAutoViews, any auto:default
+        // present must have come from the persisted list — which is the bug. Verify it didn't.
+        expect(maybeAuto).toBeUndefined();
+      }
+
+      dispose();
+    });
+  });
+
+  it('(d) serialize returns only user views (filters auto), activeViewId, explicit snapshot, and version "1"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+
+      // Prime with auto views + a user view
+      store.regenerateAutoViews([makeNode({ entity_path: 'Root', kind: 'structure' })]);
+      const userId = store.createView('Manual');
+      store.switchView(userId);
+      store.setVisibility('Root', 'ghost', false);
+
+      const serialized: Omit<PersistentViewState, 'viewportCameras' | 'timestamp'> =
+        (store as any).serializePersistedState();
+
+      expect(serialized.version).toBe('1');
+      expect(serialized.activeViewId).toBe(userId);
+
+      // Only user views in userViews — no auto:*
+      expect(serialized.userViews.every((v: ViewDefinition) => !v.id.startsWith('auto:'))).toBe(true);
+      expect(serialized.userViews.some((v: ViewDefinition) => v.id === userId)).toBe(true);
+
+      // explicit snapshot captured
+      expect(serialized.explicit['Root']).toBe('ghost');
+
+      // No viewportCameras or timestamp (those are composed at App.tsx layer)
+      expect('viewportCameras' in serialized).toBe(false);
+      expect('timestamp' in serialized).toBe(false);
+
       dispose();
     });
   });

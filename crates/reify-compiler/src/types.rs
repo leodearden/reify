@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_types::{
-    CompiledExpr, ContentHash, ConstraintDomain, ConstraintNodeId, DimensionVector,
+    CompiledExpr, ConstraintDomain, ConstraintNodeId, ContentHash, DimensionVector,
     OptimizationObjective, RealizationNodeId, SourceSpan, Type, ValueCellId,
 };
 
@@ -222,12 +222,23 @@ pub enum EntityKind {
     Occurrence,
 }
 
+impl EntityKind {
+    /// Returns the canonical string label for this variant as a `&'static str`.
+    ///
+    /// This is the single source of truth for the `"structure"` / `"occurrence"`
+    /// literals used across the compiler and GUI. The `Display` impl delegates
+    /// here so `as_label()` and `to_string()` can never diverge.
+    pub const fn as_label(&self) -> &'static str {
+        match self {
+            EntityKind::Structure => "structure",
+            EntityKind::Occurrence => "occurrence",
+        }
+    }
+}
+
 impl std::fmt::Display for EntityKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EntityKind::Structure => f.write_str("structure"),
-            EntityKind::Occurrence => f.write_str("occurrence"),
-        }
+        f.write_str(self.as_label())
     }
 }
 
@@ -302,7 +313,10 @@ impl TopologyTemplate {
 /// Returns `Some(&template)` for the first match, or `None` if no template has
 /// the given name.  All callers keep their own error-handling (diagnostic
 /// emission, silent skip, or test panic) — this utility is policy-neutral.
-pub fn find_template<'a>(templates: &'a [TopologyTemplate], name: &str) -> Option<&'a TopologyTemplate> {
+pub fn find_template<'a>(
+    templates: &'a [TopologyTemplate],
+    name: &str,
+) -> Option<&'a TopologyTemplate> {
     templates.iter().find(|t| t.name == name)
 }
 
@@ -408,7 +422,9 @@ pub enum ValueCellKind {
     Let,
     /// Solver-determined parameter: starts as Undef, value provided by constraint solver.
     /// `free`: when true this is an `auto(free)` parameter that skips uniqueness verification.
-    Auto { free: bool },
+    Auto {
+        free: bool,
+    },
 }
 
 impl ValueCellKind {
@@ -463,10 +479,18 @@ pub struct CompiledConstraint {
 #[derive(Debug, Clone)]
 pub struct RealizationDecl {
     pub id: RealizationNodeId,
-    /// The user-facing let-binding name for this realization (e.g. `"body"`
-    /// for `let body = cylinder(r, h)`).  `None` for anonymous realizations
-    /// that have no direct let-binding (e.g. intermediate guarded-group
-    /// params without a user-visible name).
+    /// The user-facing name for this realization.
+    ///
+    /// The compiler always emits `Some(name)` for every `RealizationDecl` it
+    /// produces.  `name` is either the let-binding name (`let body =
+    /// cylinder(r, h)` → `"body"`) or the Solid-typed param name (`param body:
+    /// Solid = ...` → `"body"`), including guarded-group Solid params handled
+    /// by `emit_guarded_geometry_realizations`.
+    ///
+    /// `None` only arises from the
+    /// `TopologyTemplateBuilder::realization(...)` test-support helper in
+    /// `crates/reify-test-support/src/builders/topology.rs`.  Tests that need
+    /// a user-visible name use `realization_named(...)` instead.
     pub name: Option<String>,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
@@ -519,6 +543,7 @@ pub enum CompiledGeometryOp {
 
 /// Primitive geometry kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum PrimitiveKind {
     Box,
     Cylinder,
@@ -541,6 +566,7 @@ impl std::fmt::Display for PrimitiveKind {
 
 /// Boolean geometry operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum BooleanOp {
     Union,
     Difference,
@@ -559,6 +585,7 @@ impl std::fmt::Display for BooleanOp {
 
 /// Modification operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum ModifyKind {
     Fillet,
     Chamfer,
@@ -581,6 +608,7 @@ impl std::fmt::Display for ModifyKind {
 
 /// Transform operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum TransformKind {
     Translate,
     Rotate,
@@ -601,6 +629,7 @@ impl std::fmt::Display for TransformKind {
 
 /// Pattern operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum PatternKind {
     Linear,
     Circular,
@@ -623,6 +652,7 @@ impl std::fmt::Display for PatternKind {
 
 /// Sweep operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum SweepKind {
     Loft,
     Extrude,
@@ -657,6 +687,7 @@ impl std::fmt::Display for SweepKind {
 
 /// Curve construction operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(strum_macros::EnumIter))]
 pub enum CurveKind {
     LineSegment,
     Arc,
@@ -772,92 +803,111 @@ mod kind_display_tests {
     //! These strings are a user-facing contract — they appear in
     //! compiler diagnostics and are asserted on by `geometry_ops` /
     //! `geometry_error_handling` tests (`diagnostics[0].message.contains("box")`
-    //! etc). Each test is table-driven so adding a variant is a one-line
-    //! row addition; the repetition of per-variant `assert_eq!` lines was
-    //! flagged as low-ROI in review.
+    //! etc). Each test iterates ALL variants via `strum::IntoEnumIterator`
+    //! and compares `format!("{}", kind)` against an exhaustive `match`,
+    //! giving two independent compile-time guards: the `impl Display` match
+    //! arm list and the test's expected-string match arm list both fire a
+    //! Rust exhaustiveness error if a new variant is added without updating
+    //! both sides.
     use super::*;
+    use strum::IntoEnumIterator;
 
-    fn check<T: std::fmt::Display>(cases: &[(T, &str)]) {
-        for (variant, expected) in cases {
-            assert_eq!(format!("{}", variant), *expected);
+    #[test]
+    fn primitive_kind_display() {
+        for kind in PrimitiveKind::iter() {
+            let expected = match kind {
+                PrimitiveKind::Box => "box",
+                PrimitiveKind::Cylinder => "cylinder",
+                PrimitiveKind::Sphere => "sphere",
+                PrimitiveKind::Tube => "tube",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
         }
     }
 
     #[test]
-    fn primitive_kind_display() {
-        check(&[
-            (PrimitiveKind::Box, "box"),
-            (PrimitiveKind::Cylinder, "cylinder"),
-            (PrimitiveKind::Sphere, "sphere"),
-            (PrimitiveKind::Tube, "tube"),
-        ]);
+    fn boolean_op_display() {
+        for kind in BooleanOp::iter() {
+            let expected = match kind {
+                BooleanOp::Union => "union",
+                BooleanOp::Difference => "difference",
+                BooleanOp::Intersection => "intersection",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn modify_kind_display() {
-        check(&[
-            (ModifyKind::Fillet, "fillet"),
-            (ModifyKind::Chamfer, "chamfer"),
-            (ModifyKind::Shell, "shell"),
-            (ModifyKind::Draft, "draft"),
-            (ModifyKind::Thicken, "thicken"),
-        ]);
-    }
-
-    #[test]
-    fn boolean_op_display() {
-        check(&[
-            (BooleanOp::Union, "union"),
-            (BooleanOp::Difference, "difference"),
-            (BooleanOp::Intersection, "intersection"),
-        ]);
+        for kind in ModifyKind::iter() {
+            let expected = match kind {
+                ModifyKind::Fillet => "fillet",
+                ModifyKind::Chamfer => "chamfer",
+                ModifyKind::Shell => "shell",
+                ModifyKind::Draft => "draft",
+                ModifyKind::Thicken => "thicken",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn transform_kind_display() {
-        check(&[
-            (TransformKind::Translate, "translate"),
-            (TransformKind::Rotate, "rotate"),
-            (TransformKind::Scale, "scale"),
-            (TransformKind::RotateAround, "rotate_around"),
-        ]);
+        for kind in TransformKind::iter() {
+            let expected = match kind {
+                TransformKind::Translate => "translate",
+                TransformKind::Rotate => "rotate",
+                TransformKind::Scale => "scale",
+                TransformKind::RotateAround => "rotate_around",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn pattern_kind_display() {
-        check(&[
-            (PatternKind::Linear, "linear"),
-            (PatternKind::Circular, "circular"),
-            (PatternKind::Mirror, "mirror"),
-            (PatternKind::Linear2D, "linear_2d"),
-            (PatternKind::Arbitrary, "arbitrary"),
-        ]);
+        for kind in PatternKind::iter() {
+            let expected = match kind {
+                PatternKind::Linear => "linear",
+                PatternKind::Circular => "circular",
+                PatternKind::Mirror => "mirror",
+                PatternKind::Linear2D => "linear_2d",
+                PatternKind::Arbitrary => "arbitrary",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn sweep_kind_display() {
-        check(&[
-            (SweepKind::Loft, "loft"),
-            (SweepKind::Extrude, "extrude"),
-            (SweepKind::Revolve, "revolve"),
-            (SweepKind::Sweep, "sweep"),
-            (SweepKind::ExtrudeSymmetric, "extrude_symmetric"),
-            (SweepKind::SweepGuided, "sweep_guided"),
-            (SweepKind::LoftGuided, "loft_guided"),
-            (SweepKind::Pipe, "pipe"),
-        ]);
+        for kind in SweepKind::iter() {
+            let expected = match kind {
+                SweepKind::Loft => "loft",
+                SweepKind::Extrude => "extrude",
+                SweepKind::Revolve => "revolve",
+                SweepKind::Sweep => "sweep",
+                SweepKind::ExtrudeSymmetric => "extrude_symmetric",
+                SweepKind::SweepGuided => "sweep_guided",
+                SweepKind::LoftGuided => "loft_guided",
+                SweepKind::Pipe => "pipe",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 
     #[test]
     fn curve_kind_display() {
-        check(&[
-            (CurveKind::LineSegment, "line_segment"),
-            (CurveKind::Arc, "arc"),
-            (CurveKind::Helix, "helix"),
-            (CurveKind::InterpCurve, "interp_curve"),
-            (CurveKind::BezierCurve, "bezier_curve"),
-            (CurveKind::NurbsCurve, "nurbs_curve"),
-        ]);
+        for kind in CurveKind::iter() {
+            let expected = match kind {
+                CurveKind::LineSegment => "line_segment",
+                CurveKind::Arc => "arc",
+                CurveKind::Helix => "helix",
+                CurveKind::InterpCurve => "interp_curve",
+                CurveKind::BezierCurve => "bezier_curve",
+                CurveKind::NurbsCurve => "nurbs_curve",
+            };
+            assert_eq!(format!("{}", kind), expected, "Display mismatch for {:?}", kind);
+        }
     }
 }
 
@@ -873,4 +923,3 @@ mod find_template_tests {
         assert!(find_template(&[], "absent").is_none());
     }
 }
-

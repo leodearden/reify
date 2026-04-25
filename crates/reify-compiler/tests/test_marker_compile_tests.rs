@@ -19,9 +19,12 @@ fn annotation_warnings<'a>(
 }
 
 fn parse_first_constraint_def(source: &str) -> reify_syntax::ConstraintDef {
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     parsed
         .declarations
         .into_iter()
@@ -40,7 +43,11 @@ fn parse_first_constraint_def(source: &str) -> reify_syntax::ConstraintDef {
 #[test]
 fn template_marked_is_test_when_test_annotation_present() {
     let module = compile_source("@test structure S { param x : Real }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert!(
         module.templates[0].is_test(),
@@ -53,7 +60,11 @@ fn template_marked_is_test_when_test_annotation_present() {
 #[test]
 fn template_not_marked_is_test_when_no_annotation() {
     let module = compile_source("structure S { param x : Real }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert!(
         !module.templates[0].is_test(),
@@ -64,7 +75,11 @@ fn template_not_marked_is_test_when_no_annotation() {
 #[test]
 fn occurrence_marked_is_test_when_test_annotation_present() {
     let module = compile_source("@test occurrence Heat { param temp : Real }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert_eq!(
         module.templates[0].entity_kind,
@@ -81,28 +96,33 @@ fn occurrence_marked_is_test_when_test_annotation_present() {
 
 #[test]
 fn constraint_def_is_test_returns_true_when_test_annotation() {
-    let def = parse_first_constraint_def(
-        "@test constraint def MinWall { param x : Length\n x > 0 }",
+    let def =
+        parse_first_constraint_def("@test constraint def MinWall { param x : Length\n x > 0 }");
+    assert!(
+        def.is_test(),
+        "expected is_test() == true for @test constraint def"
     );
-    assert!(def.is_test(), "expected is_test() == true for @test constraint def");
 }
 
 #[test]
 fn constraint_def_is_test_returns_false_without_annotation() {
-    let def = parse_first_constraint_def(
-        "constraint def MinWall { param x : Length\n x > 0 }",
+    let def = parse_first_constraint_def("constraint def MinWall { param x : Length\n x > 0 }");
+    assert!(
+        !def.is_test(),
+        "expected is_test() == false for unannotated constraint def"
     );
-    assert!(!def.is_test(), "expected is_test() == false for unannotated constraint def");
 }
 
 // ── Step 7: validate_annotations called for constraint defs ──────────────────
 
 #[test]
 fn unknown_annotation_on_constraint_def_emits_warning() {
-    let module = compile_source(
-        "@unknownfoo constraint def C { param x : Length\n x > 0 }",
+    let module = compile_source("@unknownfoo constraint def C { param x : Length\n x > 0 }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let warns = annotation_warnings(&module, "unknown annotation");
     assert!(
         !warns.is_empty(),
@@ -120,10 +140,12 @@ fn unknown_annotation_on_constraint_def_emits_warning() {
 
 #[test]
 fn unknown_pragma_on_constraint_def_emits_warning() {
-    let module = compile_source(
-        "constraint def C { #unknownfoo\n param x : Length\n x > 0 }",
+    let module = compile_source("constraint def C { #unknownfoo\n param x : Length\n x > 0 }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let warns = annotation_warnings(&module, "unknown pragma");
     assert!(
         !warns.is_empty(),
@@ -142,7 +164,11 @@ fn unknown_pragma_on_constraint_def_emits_warning() {
 #[test]
 fn test_annotation_on_constraint_def_emits_no_invalid_context_warning() {
     let module = compile_source("@test constraint def C { param x : Length\n x > 0 }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let bad_warns: Vec<_> = warnings_only(&module)
         .into_iter()
         .filter(|d| d.message.contains("@test is not valid"))
@@ -158,10 +184,13 @@ fn test_annotation_on_constraint_def_emits_no_invalid_context_warning() {
 
 #[test]
 fn test_annotation_on_field_still_warns_invalid_context() {
-    let module = compile_source(
-        "@test field def f : Point3 -> Real { source = analytical { |p| 0.0 } }",
+    let module =
+        compile_source("@test field def f : Point3 -> Real { source = analytical { |p| 0.0 } }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let bad_warns: Vec<_> = warnings_only(&module)
         .into_iter()
         .filter(|d| d.message.contains("@test is not valid"))
@@ -187,10 +216,19 @@ fn compiled_module_test_templates_returns_only_marked() {
         @test occurrence H { param z : Real }
     "#;
     let module = compile_source(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let test_tmpls: Vec<_> = module.test_templates().collect();
-    assert_eq!(test_tmpls.len(), 2, "expected 2 test templates, got {:?}", test_tmpls.iter().map(|t| &t.name).collect::<Vec<_>>());
+    assert_eq!(
+        test_tmpls.len(),
+        2,
+        "expected 2 test templates, got {:?}",
+        test_tmpls.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
     let test_names: std::collections::HashSet<&str> =
         test_tmpls.iter().map(|t| t.name.as_str()).collect();
     assert!(test_names.contains("A"), "expected A in test_templates");
@@ -218,7 +256,11 @@ fn filter_helpers_return_iterators() {
         fn normal() -> Real { 2.0 }
     "#;
     let module = compile_source(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     // These calls use iterator chaining (.map, .count, .any) directly on the
     // return value — this only compiles if the return type is an iterator,
@@ -229,7 +271,10 @@ fn filter_helpers_return_iterators() {
     let has_b = module.non_test_templates().any(|t| t.name == "B");
     assert!(has_b);
 
-    let test_cd_names: Vec<&str> = module.test_constraint_defs().map(|d| d.name.as_str()).collect();
+    let test_cd_names: Vec<&str> = module
+        .test_constraint_defs()
+        .map(|d| d.name.as_str())
+        .collect();
     assert_eq!(test_cd_names, vec!["TC"]);
 
     let non_test_cd_count = module.non_test_constraint_defs().count();
@@ -256,7 +301,11 @@ fn compiled_module_test_constraint_defs_returns_only_marked() {
         }
     "#;
     let module = compile_source(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let test_defs: Vec<_> = module.test_constraint_defs().collect();
     assert_eq!(test_defs.len(), 1, "expected 1 test constraint def");
@@ -271,10 +320,12 @@ fn compiled_module_test_constraint_defs_returns_only_marked() {
 
 #[test]
 fn multiple_annotations_with_test_marks_template() {
-    let module = compile_source(
-        r#"@test @deprecated("old") structure S { param x : Real }"#,
+    let module = compile_source(r#"@test @deprecated("old") structure S { param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let template = &module.templates[0];
 
     assert!(template.is_test(), "expected is_test() == true");
@@ -324,13 +375,23 @@ fn topology_template_is_test_method_matches_annotation() {
         structure NormalS { param y : Real }
     "#;
     let module = compile_source(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let test_tmpl = find_template(&module.templates, "TestS").unwrap();
     let normal_tmpl = find_template(&module.templates, "NormalS").unwrap();
 
-    assert!(test_tmpl.is_test(), "expected is_test() == true for @test structure");
-    assert!(!normal_tmpl.is_test(), "expected is_test() == false for normal structure");
+    assert!(
+        test_tmpl.is_test(),
+        "expected is_test() == true for @test structure"
+    );
+    assert!(
+        !normal_tmpl.is_test(),
+        "expected is_test() == false for normal structure"
+    );
 }
 
 // ── CompiledFunction::is_test() ─────────────────────────────────────────────
@@ -342,13 +403,31 @@ fn compiled_function_is_test_returns_correct_values() {
         fn normal() -> Real { 2.0 }
     "#;
     let module = compile_source(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
-    let tested_fn = module.functions.iter().find(|f| f.name == "tested").unwrap();
-    let normal_fn = module.functions.iter().find(|f| f.name == "normal").unwrap();
+    let tested_fn = module
+        .functions
+        .iter()
+        .find(|f| f.name == "tested")
+        .unwrap();
+    let normal_fn = module
+        .functions
+        .iter()
+        .find(|f| f.name == "normal")
+        .unwrap();
 
-    assert!(tested_fn.is_test(), "expected is_test() == true for @test fn");
-    assert!(!normal_fn.is_test(), "expected is_test() == false for normal fn");
+    assert!(
+        tested_fn.is_test(),
+        "expected is_test() == true for @test fn"
+    );
+    assert!(
+        !normal_fn.is_test(),
+        "expected is_test() == false for normal fn"
+    );
 }
 
 // ── CompiledModule::test_functions() / non_test_functions() ──────────────────
@@ -360,7 +439,11 @@ fn compiled_module_function_filter_helpers() {
         fn normal() -> Real { 2.0 }
     "#;
     let module = compile_source(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     assert_eq!(module.test_functions().count(), 1);
     assert!(module.test_functions().any(|f| f.name == "tested"));

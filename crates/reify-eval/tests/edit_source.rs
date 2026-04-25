@@ -1000,6 +1000,90 @@ fn edit_source_role_flipped_guard_member_matches_cold_eval() {
     );
 }
 
+/// When an existing `let` **moves between branches** of a `where … else` group
+/// without changing its id or expression text, `diff_value_cells` classifies
+/// it as neither `changed` (same `content_hash`) nor `added` (still present).
+/// The Phase 1 trigger therefore does not fire, leaving the old branch value
+/// from before the edit intact — incremental diverges from cold eval.
+///
+/// Symmetric counterpart to `edit_source_role_flipped_guard_member_matches_cold_eval`
+/// (task 2084): exercises the **inactive → active** direction.
+///
+/// Scenario: `use_thick = true` (members branch is active).
+/// - Module A: `moving` is in the **inactive** else branch  → cold eval gives Undef.
+/// - Module B: `moving` moves to the **active** where branch  → cold eval gives Determined (15mm).
+///
+/// Before the fix (task 2084): incremental keeps the old Undef value
+/// (Phase 1 never fires). After the fix: `has_role_flipped_guard_member` fires
+/// Phase 1, which re-elaborates the now-active branch and writes a Determined
+/// value for `moving`, matching cold eval.
+///
+/// Task 2091 — symmetric role-flip direction (inactive → active).
+#[test]
+fn edit_source_role_flipped_guard_member_inactive_to_active_matches_cold_eval() {
+    // Module A: `moving` is on the inactive (else) branch.
+    let module_a_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let active_only = thickness * 2.0
+    } else {
+        let moving = thickness * 3.0
+        let inactive_only = thickness
+    }
+}"#;
+    // Module B: `moving` (same id, same expr → same content_hash) relocates
+    // to the active where-branch. `active_only` / `inactive_only` stay put.
+    let module_b_src = r#"structure Bracket {
+    param thickness: Scalar = 5mm
+    param use_thick: Bool = true
+
+    where use_thick {
+        let moving = thickness * 3.0
+        let active_only = thickness * 2.0
+    } else {
+        let inactive_only = thickness
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let moving_id = ValueCellId::new("Bracket", "moving");
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // Cross-check: whatever cold eval says about the role-flipped cell,
+    // incremental edit_source must match.
+    let incr_val = incr.values.get(&moving_id);
+    let cold_val = cold_result.values.get(&moving_id);
+    assert_eq!(
+        incr_val, cold_val,
+        "role-flipped guard member (inactive→active) diverges from cold eval: \
+         incremental={:?}, cold={:?}",
+        incr_val, cold_val
+    );
+    // Positive lock: with `use_thick = true`, `moving` moved from the inactive
+    // else branch to the active where branch, so cold eval must activate it to a
+    // Determined value of 15mm (0.015 m = 5mm × 3.0). Uses epsilon comparison
+    // because 0.005 * 3.0 is not bit-exactly 0.015 in IEEE 754. If this
+    // assertion fails, cold eval itself regressed — both the relative check
+    // above and this anchor are needed so a "both wrong" regression does not
+    // slip through.
+    assert!(
+        matches!(cold_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.015).abs() < 1e-10),
+        "cold eval should activate where-branch member to Determined 15mm (0.015 m), got {:?}",
+        cold_val
+    );
+}
+
 // ── Coverage gap 1: Phase 4 collection count re-elaboration ──────────────────
 
 /// Incrementally changing a collection-count param from 4 → 6 must re-elaborate
@@ -1083,6 +1167,192 @@ structure S {
             "__list_bolts__diameter should be a Value::List with 6 entries, got {:?}",
             other
         ),
+    }
+}
+
+// ── Task 2086: Phase 4 cache invalidation for shrunk+regrown collection ────────
+
+/// Regression test: after `eval(n=4)` → `edit_source(n=2)` → `edit_source(n=4)`,
+/// cache entries for `S.bolts[i].diameter` must be either absent (invalidated and
+/// not repopulated by Phase 4's create loop) or fresh (basis_version ==
+/// current snapshot version).  Without Fix 1, Phase 4's remove loop never calls
+/// `self.cache.invalidate` for the scoped cells it evicts from the graph, so
+/// `bolts[0].diameter` and `bolts[1].diameter` survive at the stale V_A version.
+#[test]
+fn edit_source_phase4_invalidates_cache_for_shrunk_and_regrown_collection_instance() {
+    // Module A: n=4 (initial state — populates cache at V_A)
+    let module_a_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    // Module B: n=2 (shrink — Phase 4 remove-loop evicts bolts[0..3], create-loop
+    // re-inserts bolts[0..1]; without the fix, cache still holds stale V_A entries)
+    let module_b_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 2
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    // Module C: n=4 again (re-grow — same pattern, bolts[2..3] come back as `added`
+    // and are refreshed; bolts[0..1] are unchanged by source diff but re-removed
+    // and re-created by Phase 4; without the fix their cache entries are V_A stale)
+    let module_c_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+    let module_c = parse_and_compile(module_c_src);
+
+    let mut engine = fresh_engine();
+    engine.eval(&module_a);
+
+    // Confirm pre-edit state: all 4 bolt instances must already be in the cache
+    // at V_A.  This proves the pre-edit state matters so that the post-edit
+    // None-or-fresh assertion below is meaningful rather than trivially satisfied
+    // by a cache that was never populated.
+    let v_a = engine.snapshot().expect("snapshot after eval(A)").version;
+    for i in 0..4_usize {
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
+        let entry = engine
+            .cache_store()
+            .get(&bolt_node)
+            .unwrap_or_else(|| panic!("S.bolts[{}].diameter must be in cache after eval(A)", i));
+        assert_eq!(
+            entry.basis_version,
+            v_a,
+            "S.bolts[{}].diameter must be at V_A before any edits",
+            i
+        );
+    }
+
+    engine
+        .edit_source(&module_b)
+        .expect("edit_source to B (shrink n=4→2) must succeed");
+    engine
+        .edit_source(&module_c)
+        .expect("edit_source to C (re-grow n=2→4) must succeed");
+
+    let current_version = engine
+        .snapshot()
+        .expect("snapshot must be present after two edit_source calls")
+        .version;
+
+    // Every cache entry for S.bolts[i].diameter must be either absent (properly
+    // invalidated by Phase 4's remove loop and not re-populated by the create
+    // loop) or fresh at the current version.  A Some(entry) with a prior version
+    // is a stale cache artifact from V_A — the bug this test pins.
+    for i in 0..4_usize {
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
+        if let Some(entry) = engine.cache_store().get(&bolt_node) {
+            assert_eq!(
+                entry.basis_version,
+                current_version,
+                "S.bolts[{}].diameter cache entry must be fresh after grow→shrink→re-grow; \
+                 got basis_version {:?}, expected {:?}",
+                i,
+                entry.basis_version,
+                current_version
+            );
+        }
+        // None is acceptable — Phase 4's create loop does not call
+        // cache.record_evaluation, so invalidated entries remain absent.
+    }
+}
+
+// ── Task 2086 amendment: Fix 2 direct coverage (entirely-removed sub) ─────────
+
+/// Regression test for Fix 2: `edit_source(B)` where Module B *entirely removes*
+/// the `sub bolts : List<Bolt>` declaration must invalidate cache entries for
+/// `S.bolts[i].diameter` that were established by `eval(A)`.
+///
+/// This exercises the entirely-removed-collection_sub sweep at the top of Phase 4.
+/// Phase 4's main loop iterates only NEW `collection_subs`, so a sub absent from
+/// `new_snapshot.graph.collection_subs` is never visited by the main loop.  Fix 2's
+/// sweep catches it by diffing `eval_state.snapshot.graph.collection_subs` against
+/// `new_snapshot.graph.collection_subs` and collecting scoped-cell IDs to invalidate.
+///
+/// Note: Step (9)'s `diff_value_cells.removed` also invalidates these cells in the
+/// normal flow, so this test validates the *behavior* (no stale entries) rather than
+/// isolating Fix 2 as the sole mechanism.  The value is code coverage: it exercises
+/// the `!new_sub_keys.contains(...)` branch, the `old_count` lookup against
+/// `old_snapshot_values`, and the IDs-collection/invalidation loop.
+#[test]
+fn edit_source_phase4_invalidates_cache_for_entirely_removed_collection_sub() {
+    // Module A: S has a 4-instance bolt sub with cache entries at V_A.
+    let module_a_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}
+"#;
+    // Module B: `sub bolts` is entirely removed.  `new_snapshot.graph.collection_subs`
+    // will have no entry for bolts, so Phase 4's main loop skips it entirely.
+    // Fix 2's sweep must collect and invalidate the 4 scoped cache entries.
+    let module_b_src = r#"
+structure Bolt { param diameter : Scalar = 10mm }
+structure S { param n : Int = 4 }
+"#;
+
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    let mut engine = fresh_engine();
+    engine.eval(&module_a);
+
+    // Pre-edit: confirm all 4 bolt cache entries are present at V_A so the
+    // post-edit assertion is meaningful (not trivially satisfied by an empty cache).
+    let v_a = engine.snapshot().expect("snapshot after eval(A)").version;
+    for i in 0..4_usize {
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
+        let entry = engine
+            .cache_store()
+            .get(&bolt_node)
+            .unwrap_or_else(|| panic!("S.bolts[{}].diameter must be in cache after eval(A)", i));
+        assert_eq!(
+            entry.basis_version,
+            v_a,
+            "S.bolts[{}].diameter must be at V_A before the edit",
+            i
+        );
+    }
+
+    engine
+        .edit_source(&module_b)
+        .expect("edit_source to B (remove sub bolts entirely) must succeed");
+
+    // Post-edit: no stale V_A entries may survive — either None (invalidated and
+    // not repopulated) or Some(fresh) at the new version.
+    let current_version = engine
+        .snapshot()
+        .expect("snapshot after edit_source")
+        .version;
+    for i in 0..4_usize {
+        let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
+        if let Some(entry) = engine.cache_store().get(&bolt_node) {
+            assert_eq!(
+                entry.basis_version,
+                current_version,
+                "S.bolts[{}].diameter cache entry must be absent or fresh after sub removal; \
+                 got stale basis_version {:?}, expected {:?}",
+                i,
+                entry.basis_version,
+                current_version
+            );
+        }
     }
 }
 
@@ -2023,6 +2293,379 @@ fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
     );
 }
 
+// ── Phase 1-only perf locks: guard body fires, per-group skip suppresses all ───
+
+/// Phase 1 fires (guard cell content_hash changed) but every per-group skip
+/// applies (guard VALUE unchanged for all groups), so no group is
+/// re-elaborated. Phase 3 never iterates (no guard value changed). Overall
+/// `last_guard_phase_group_evals()` == 0.
+///
+/// Scenario: 10 groups `where uN { let xN = 1mm }` with all `uN: Bool = true`.
+/// Module B rewrites group 3's condition from `where u3` to `where u3 && true`.
+/// The guard cell `__guard_3`'s content_hash changes (expression text differs)
+/// → `has_dirty_guards` fires Phase 1 (structure_controlling contains __guard_3
+/// because guard cells are unconditionally added to structure_controlling at
+/// compile time). Guard VALUE stays `true` for every
+/// group (`u3 && true` == `u3` == true when u3=true). Phase 1's per-group skip
+/// fires for all 10 groups (old_val == new_val == true, no added, no role-flip).
+/// Counter == 0. Phase 3's `guard_changed` outer gate is false (no group's
+/// value changed) → Phase 3 never iterates.
+///
+/// Regression classes caught:
+/// (i)  Dropping `old_guard_val == Some(&guard_val)` from the Phase 1 per-group
+///      skip: counter rises to 1 (group 3 re-processed despite unchanged value;
+///      expression-text-only edits over-fire Phase 1).
+/// (ii) Dropping the `guard_changed` outer gate from Phase 3: counter rises to
+///      10 (all groups re-processed by Phase 3 on every guard-cell edit even
+///      with no value change).
+///
+/// Task 2138 — Phase-1-only perf lock (T1).
+#[test]
+fn edit_source_phase1_fires_but_skips_when_guard_expr_text_changes_value_unchanged() {
+    // Module A: 10 groups, each with a trivial `uN` guard expression.
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    param u2: Bool = true
+    param u3: Bool = true
+    param u4: Bool = true
+    param u5: Bool = true
+    param u6: Bool = true
+    param u7: Bool = true
+    param u8: Bool = true
+    param u9: Bool = true
+    where u0 { let x0 = 1mm }
+    where u1 { let x1 = 1mm }
+    where u2 { let x2 = 1mm }
+    where u3 { let x3 = 1mm }
+    where u4 { let x4 = 1mm }
+    where u5 { let x5 = 1mm }
+    where u6 { let x6 = 1mm }
+    where u7 { let x7 = 1mm }
+    where u8 { let x8 = 1mm }
+    where u9 { let x9 = 1mm }
+}"#;
+    // Module B: identical except group 3's guard is `u3 && true` instead of
+    // `u3`. Expression text differs → content_hash of __guard_3 changes →
+    // has_dirty_guards fires Phase 1. But `u3 && true` evaluates to the same
+    // Bool(true) as plain `u3` when u3=true → per-group skip applies for all
+    // 10 groups → no group is re-elaborated.
+    let module_b_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    param u2: Bool = true
+    param u3: Bool = true
+    param u4: Bool = true
+    param u5: Bool = true
+    param u6: Bool = true
+    param u7: Bool = true
+    param u8: Bool = true
+    param u9: Bool = true
+    where u0 { let x0 = 1mm }
+    where u1 { let x1 = 1mm }
+    where u2 { let x2 = 1mm }
+    where u3 && true { let x3 = 1mm }
+    where u4 { let x4 = 1mm }
+    where u5 { let x5 = 1mm }
+    where u6 { let x6 = 1mm }
+    where u7 { let x7 = 1mm }
+    where u8 { let x8 = 1mm }
+    where u9 { let x9 = 1mm }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchor: x3 must stay ≈1mm since the guard `u3 && true`
+    // evaluates to true when u3=true. Prevents a "both wrong" false pass on
+    // the counter assertion below.
+    let x3_id = ValueCellId::new("S", "x3");
+    assert!(
+        matches!(
+            incr.values.get(&x3_id),
+            Some(Value::Scalar { si_value, .. }) if (*si_value - 0.001).abs() < 1e-12
+        ),
+        "x3 must stay active (≈1mm) when guard `u3 && true` is true with u3=true; \
+         got {:?}",
+        incr.values.get(&x3_id)
+    );
+
+    // (c) Performance lock: counter == 0.
+    // has_dirty_guards fires Phase 1 (__guard_3's content_hash changed). But
+    // all 10 groups' guard VALUES are unchanged (true → true), so the
+    // per-group skip (`old_guard_val == Some(&guard_val)`) suppresses all 10.
+    // Phase 3's outer `guard_changed` gate is false → Phase 3 never iterates.
+    // Expected: 0 group iterations in total.
+    //
+    // Regression catches:
+    // == 1  → per-group skip regressed for expression-text-only changes
+    //          (old_guard_val == Some(&guard_val) arm dropped; group 3
+    //          re-processed despite unchanged value).
+    // == 10 → per-group skip completely absent (all groups re-processed).
+    // > 0 via Phase 3 → guard_changed outer gate regressed.
+    let counter = incremental.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 0,
+        "expected 0 non-skipped guard-phase group iterations \
+         (Phase 1 enters body via has_dirty_guards but per-group skip suppresses \
+          all 10 groups since guard values are unchanged; \
+          Phase 3 outer gate never fires since no guard value changed); \
+         got {} — \
+         if 1, per-group skip regressed for expression-text-only changes \
+           (old_guard_val == Some(&guard_val) arm of the Phase 1 per-group skip dropped); \
+         if 10, per-group skip completely missing; \
+         if > 0 from Phase 3, guard_changed outer gate regressed",
+        counter
+    );
+}
+
+// ── has_added_in_group forces non-skip: counter == 1 ────────────────────────
+
+/// `has_added_in_group` forces Phase 1 re-elaboration for the affected group
+/// even when the guard VALUE is unchanged. Phase 3 does not fire (no guard
+/// value change). Overall `last_guard_phase_group_evals()` == 1.
+///
+/// Scenario: Module A has a single group `where u { let a = 1mm }` with
+/// `u: Bool = true`. Module B adds a second member `let b = 2mm`. Cell `b` is
+/// in `added`. `has_added_guard_member` is true → `has_dirty_guards` fires.
+/// Guard VALUE unchanged (still true). For group 0: old_val == new_val == true,
+/// BUT `has_added_in_group` is true (b ∈ group.members ∩ added) → the
+/// has_added_in_group arm of the Phase 1 per-group skip fails → group 0 is re-elaborated → counter
+/// increments to 1. Phase 3: `guard_changed` false (value unchanged) → Phase 3
+/// never iterates.
+///
+/// Regression catch: dropping `has_added_in_group` from the Phase 1 per-group
+/// skip condition would reduce counter to 0, meaning an added `let` on
+/// the inactive branch would silently retain a Determined value instead of
+/// being deactivated. The existing correctness test
+/// `edit_source_added_inactive_branch_member_matches_cold_eval` locks the
+/// VALUE, but this perf lock pins the clause that triggers re-elaboration.
+///
+/// Locks: the `has_added_in_group` detection logic and the
+/// has_added_in_group arm of the Phase 1 per-group skip condition.
+///
+/// Task 2138 — has_added_in_group forces non-skip perf lock (T2).
+#[test]
+fn edit_source_added_member_in_unchanged_guard_group_forces_non_skip() {
+    // Module A: single guarded group with one member.
+    let module_a_src = r#"structure S {
+    param u: Bool = true
+    where u {
+        let a = 1mm
+    }
+}"#;
+    // Module B: adds a second member `b` to the same group.
+    // Cell `b` is in `added`; `has_added_in_group` becomes true for group 0.
+    // Guard value (u=true) is unchanged.
+    let module_b_src = r#"structure S {
+    param u: Bool = true
+    where u {
+        let a = 1mm
+        let b = 2mm
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchor: `b` must evaluate to ≈2mm on the active branch
+    // (u=true → members branch active; b's default_expr = 2mm is evaluated).
+    // Prevents a "both wrong" false pass on the counter assertion.
+    let b_id = ValueCellId::new("S", "b");
+    assert!(
+        matches!(
+            incr.values.get(&b_id),
+            Some(Value::Scalar { si_value, .. }) if (*si_value - 0.002).abs() < 1e-12
+        ),
+        "added member `b` on the active branch must evaluate to ≈2mm; \
+         got {:?}",
+        incr.values.get(&b_id)
+    );
+
+    // (c) Performance lock: counter == 1.
+    // `has_added_in_group` is true (b ∈ group.members ∩ added) → the
+    // has_added_in_group arm of the Phase 1 per-group skip is suppressed even though the
+    // guard value is unchanged → group 0 is re-elaborated in Phase 1 →
+    // counter increments to 1. Phase 3's outer `guard_changed` gate is false
+    // (guard value did not change) → Phase 3 never iterates.
+    //
+    // Regression catches:
+    // == 0 → `has_added_in_group` dropped from the Phase 1 per-group skip
+    //         condition; added lets on inactive branches would silently retain
+    //         Determined values instead of being deactivated.
+    // > 1  → Phase 3 guard_changed gate fired spuriously despite unchanged value.
+    let counter = incremental.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 1,
+        "expected exactly 1 non-skipped guard-phase group iteration \
+         (Phase 1 re-elaborates group 0 because has_added_in_group=true, \
+          despite guard value being unchanged; Phase 3 does not fire); \
+         got {} — \
+         if 0, has_added_in_group arm of the Phase 1 per-group skip condition was \
+           dropped (added member on inactive branch would \
+           silently retain a Determined value); \
+         if > 1, Phase 3 guard_changed gate regressed",
+        counter
+    );
+}
+
+// ── has_role_flipped_guard_member forces non-skip: counter == 1 ──────────────
+
+/// `has_role_flipped_guard_member` forces Phase 1 re-elaboration for the
+/// affected group even when the guard VALUE is unchanged. Phase 3 does not
+/// fire (no guard value change). Overall `last_guard_phase_group_evals()` == 1.
+///
+/// Scenario: Module A: `where u { let x = 1mm } else { let y = 2mm }` with
+/// `u: Bool = true`. Module B swaps branches: `where u { let y = 2mm } else
+/// { let x = 1mm }`. `u` unchanged (true); `x` retains its ValueCellId (S.x)
+/// with unchanged default_expr → not `changed` (the change classifier operates
+/// per-cell-id; x's expression text did not change). `y` likewise retains its
+/// id (S.y) with unchanged default_expr → not `changed`. Neither is in `added`.
+/// The `build_old_role_map` helper and the has_role_flipped_guard_member probe
+/// are therefore the ONLY signal driving `has_dirty_guards`:
+/// `has_role_flipped_guard_member` true → `has_dirty_guards` fires. Guard VALUE
+/// unchanged (still true). For group 0: old == new == true,
+/// `has_added_in_group` false, BUT `has_role_flipped_guard_member` true → the
+/// has_role_flipped_guard_member arm of the Phase 1 per-group skip fails →
+/// process → counter == 1. Phase 3: `guard_changed` false → never iterates.
+///
+/// Note: if the change classifier is ever updated to classify a cell's move
+/// between `members` and `else_members` as `changed`, the role-flip probe
+/// would no longer be the sole signal driving `has_dirty_guards`. Adjust this
+/// test (update the rationale and, if needed, the expected counter) rather
+/// than silently accepting a passing test whose stated reasons are wrong.
+///
+/// Assert values match cold eval: x=Undef, y=≈2mm (guard=true; x now on else
+/// branch, y now on active branch).
+///
+/// Regression catch: dropping `has_role_flipped_guard_member` from the Phase 1
+/// skip guard (has_role_flipped_guard_member arm of the Phase 1 per-group skip)
+/// reduces counter to 0 — the guard loop skips
+/// the group entirely and role-flipped members retain their old-branch values
+/// (e.g. x remains Determined=1mm instead of deactivating to Undef).
+///
+/// Task 2138 — has_role_flipped_guard_member forces non-skip perf lock (T3).
+#[test]
+fn edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip() {
+    // Module A: x on active (where) branch, y on else branch.
+    // With u=true: x=1mm (active), y=Undef (inactive).
+    let module_a_src = r#"structure S {
+    param u: Bool = true
+    where u {
+        let x = 1mm
+    } else {
+        let y = 2mm
+    }
+}"#;
+    // Module B: branches swapped. x retains its id (S.x) with unchanged
+    // default_expr → not `changed`. y retains its id (S.y) with unchanged
+    // default_expr → not `changed`. Neither is `added`. The role-flip probe
+    // (`build_old_role_map` + `has_role_flipped_guard_member`) is therefore
+    // the only signal driving has_dirty_guards. Role-flip detected:
+    // x moved members→else, y moved else→members.
+    // With u=true: y now active (2mm), x now inactive (Undef).
+    let module_b_src = r#"structure S {
+    param u: Bool = true
+    where u {
+        let y = 2mm
+    } else {
+        let x = 1mm
+    }
+}"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // Incremental: eval(A) then edit_source(B).
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // Cold baseline: fresh eval(B).
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) Cross-check: incremental and cold must agree on all cells.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    // (b) Positive anchors (both needed to prevent "both wrong" false pass):
+    //   - x is now on the else (inactive) branch → must be Undef.
+    //   - y is now on the active branch → must be ≈2mm.
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    assert!(
+        matches!(incr.values.get(&x_id), Some(Value::Undef)),
+        "x must deactivate to Undef after role-flip (x moved to inactive else \
+         branch with u=true); got {:?}",
+        incr.values.get(&x_id)
+    );
+    assert!(
+        matches!(
+            incr.values.get(&y_id),
+            Some(Value::Scalar { si_value, .. }) if (*si_value - 0.002).abs() < 1e-12
+        ),
+        "y must activate to ≈2mm after role-flip (y moved to active members \
+         branch with u=true); got {:?}",
+        incr.values.get(&y_id)
+    );
+
+    // (c) Performance lock: counter == 1.
+    // `has_role_flipped_guard_member` is true → the has_role_flipped_guard_member
+    // arm of the Phase 1 per-group skip is suppressed even though the guard
+    // value is unchanged → group 0 is re-elaborated in Phase 1 → counter == 1.
+    // Phase 3's outer `guard_changed` gate is false (guard value did not
+    // change) → Phase 3 never iterates.
+    //
+    // Locks: `build_old_role_map` detection helper and the
+    // has_role_flipped_guard_member probe; the has_role_flipped_guard_member
+    // arm of the Phase 1 per-group skip condition.
+    //
+    // Regression catches:
+    // == 0 → `has_role_flipped_guard_member` dropped from skip clause
+    //         (role-flipped members retain old-branch values; e.g. x remains
+    //         Determined=1mm instead of deactivating to Undef).
+    // > 1  → Phase 3 guard_changed gate fired spuriously despite unchanged value.
+    let counter = incremental.last_guard_phase_group_evals();
+    assert_eq!(
+        counter, 1,
+        "expected exactly 1 non-skipped guard-phase group iteration \
+         (Phase 1 re-elaborates group 0 because has_role_flipped_guard_member=true, \
+          despite guard value being unchanged; Phase 3 does not fire); \
+         got {} — \
+         if 0, has_role_flipped_guard_member arm of the Phase 1 per-group skip \
+           was dropped (role-flipped members would retain old-branch values); \
+         if > 1, Phase 3 guard_changed gate regressed",
+        counter
+    );
+}
+
 // ── Wave2 interaction: inactive members must stay Undef after cleanup ─────────
 
 /// Regression guard for the post-wave2 cleanup (task 2142):
@@ -2187,6 +2830,7 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
     );
 }
 
+<<<<<<< HEAD
 // ── Wave2 guard flip: else_members must be activated when guard flips post-wave2 ──
 
 /// Regression guard for the cross-phase dedup guard-flip bug (task 2146).
@@ -2239,15 +2883,106 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
 /// Task 2146 — cross-phase dedup guard-flip fix.
 #[test]
 fn edit_source_wave2_guard_flip_activates_else_members() {
+=======
+// ── Role-flip + wave2 + Phase 3 dedup interaction ────────────────────────────
+
+/// Regression guard for the interaction between the role-flip trigger, the
+/// post-wave2 cleanup, and the Phase 3 cross-phase dedup (task 2147).
+///
+/// Coverage gap closed: existing tests cover only one trigger at a time.
+/// `edit_source_wave2_does_not_corrupt_inactive_members` (task 2142) exercises
+/// guard-value-change + wave2 + cleanup, but NOT the role-flip trigger.
+/// `edit_source_role_flipped_guard_member_matches_cold_eval` (task 2084)
+/// exercises role-flip, but predates the dedup and has no auto param → no wave2.
+/// This test exercises role-flip + wave2 + Phase 3 dedup in one scenario,
+/// per the esc-2142-102 reviewer's suggestion.
+///
+/// Test design — two-group structure:
+///   Group 1 exercises the role-flip trigger (guard value unchanged, m moved).
+///   Group 2 exercises a guard-value flip (true → false), which is needed to
+///   open Phase 3's outer `guard_changed` gate, putting the dedup lookup on the
+///   hot path.  Without group 2, Phase 3 would never iterate at all, so the
+///   dedup skip (`if phase1_reelaborated.contains(&group.guard_cell)`) could
+///   silently regress without the counter catching it.
+///
+/// Module A:
+///   - param x = 10mm, param u = true
+///   - auto depth; constraint depth == 10mm (solver placeholder)
+///   - Group 1: guard (x > 5mm), members = [m = depth], else = []
+///   - Group 2: guard u,          members = [n = 1mm],  else = []
+///
+/// Module B:
+///   - param x = 10mm (UNCHANGED — group 1 guard value stays true)
+///   - param u = false (CHANGED — group 2 guard value flips true → false)
+///   - auto depth; constraint depth == 20mm (literal differs → content_hash
+///     differs → constraint in changed_constraints → spliced into dirty_cone →
+///     solver runs → depth = 20mm → wave2 re-evaluates m)
+///   - Group 1: guard (x > 5mm), members = [],   else = [m = depth]
+///     (m ROLE-FLIPPED; same id + same default_expr → same content_hash →
+///      diff_value_cells does NOT classify m as changed or added)
+///   - Group 2: guard u, members = [n = 1mm], else = []
+///     (structure unchanged; only the input value of guard u flips)
+///
+/// Expected execution trace under current code:
+///   1. eval(A):   depth=10mm, m=10mm (active), n=1mm (active).
+///   2. edit_source(B):
+///      Phase 1: has_role_flipped_guard_member=true, has_dirty_guards=true.
+///        Group 1: old_guard=true, new_guard=true; no added-in-group; BUT
+///                 global has_role_flipped_guard_member=true → skip fails →
+///                 process. Counter=1. phase1_reelaborated += guard_1.
+///                 Else_members=[m] deactivated (guard=true → else inactive).
+///                 m = Undef.
+///        Group 2: old_guard=true, new_guard=false → skip fails → process.
+///                 Counter=2. phase1_reelaborated += guard_2.
+///                 Members=[n] deactivated (guard=false). n = Undef.
+///      Phase 2 (solver): constraint dirty → solver returns depth=20mm.
+///      Wave2: m reads depth=20mm → m=20mm (OVERWRITES Undef). ← bug trigger.
+///      reapply_phase1_deactivations (fix):
+///        Group 1: guard=true, else_members=[m] inactive → m = Undef (restored).
+///        Group 2: guard=false, members=[n] inactive → n=Undef (no-op).
+///      Phase 3: guard_changed fires (group 2 guard changed). Iterate all groups:
+///        Group 1: phase1_reelaborated contains guard_1 → DEDUP SKIP.
+///        Group 2: phase1_reelaborated contains guard_2 → DEDUP SKIP.
+///      Final: m=Undef, n=Undef, counter=2.
+///
+/// Assertions:
+///   (a) m = Undef — pins post-wave2 cleanup running for the role-flipped
+///       group. If m is a concrete value (e.g. 20mm), wave2 corrupted the
+///       inactive member AND either: phase1_reelaborated.insert at line 1590
+///       was moved before the Phase 1 skip (so role-flip groups are no longer
+///       tracked), OR reapply_phase1_deactivations was removed from the
+///       edit_source wave2 tail.
+///   (b) n = Undef — sanity lock on group 2's guard flip. Guards against a
+///       "both incremental and cold are wrong" false pass on assertion (a).
+///   (c) last_guard_phase_group_evals() == 2 — Phase 1 processes both groups
+///       (counter=2); Phase 3 dedup skips both (no Phase 3 increment). If the
+///       counter is 3, the dedup consultation (phase1_reelaborated.contains in
+///       Phase 3) regressed for role-flipped groups. If ≥4, the per-group skip
+///       logic regressed. If <2, the Phase 1 counter increment was dropped.
+///
+/// `auto` params are not expressible in reify source grammar (confirmed
+/// 2026-04-22), so this test uses `TopologyTemplateBuilder` +
+/// `CompiledModuleBuilder` + `SequencedMockConstraintSolver`.
+///
+/// Task 2147 — role-flip/added-member interaction with edit_source cross-phase dedup.
+/// Responds to esc-2142-102 (reviewer_comprehensive) post-merge coverage gap.
+#[test]
+fn edit_source_role_flip_wave2_and_phase3_dedup() {
+>>>>>>> main
     use std::collections::HashMap;
     use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
     use reify_test_support::{
         CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
+<<<<<<< HEAD
         TopologyTemplateBuilder, and, ge, gt, literal, mm, value_ref,
+=======
+        TopologyTemplateBuilder, eq, gt, literal, mm, value_ref, value_ref_typed,
+>>>>>>> main
     };
     use reify_types::{ModulePath, SolveResult, SourceSpan, Type};
 
     let depth_id = ValueCellId::new("S", "depth");
+<<<<<<< HEAD
     let guard_id = ValueCellId::new("S", "__guard_0");
     let m_id = ValueCellId::new("S", "m");
     let n_id = ValueCellId::new("S", "n");
@@ -2261,28 +2996,58 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
 
     // Member m: literal 99mm. Does NOT read depth — wave2 won't overwrite it.
     // Active when guard=true.
+=======
+    let guard_1_id = ValueCellId::new("S", "__guard_0");
+    let guard_2_id = ValueCellId::new("S", "__guard_1");
+    let m_id = ValueCellId::new("S", "m");
+    let n_id = ValueCellId::new("S", "n");
+
+    // Guard 1 expression: x > 5mm (Length comparison → Bool).
+    // References x (param), so guard_1 is in dirty_cone(x).
+    let guard_1_expr = gt(value_ref("S", "x"), literal(mm(5.0)));
+    // Guard 2 expression: u (Bool param reference).
+    // When u changes default_expr, u is in dirty_cone, pulling guard_2 in too.
+    let guard_2_expr = value_ref_typed("S", "u", Type::Bool);
+
+    // Member m: let m = depth (reads auto param; role-flipped between A and B).
+    // Same id + same default_expr in both modules → same content_hash →
+    // diff_value_cells treats m as neither changed nor added.
+>>>>>>> main
     let m_decl = ValueCellDecl {
         id: m_id.clone(),
         kind: ValueCellKind::Let,
         visibility: Visibility::Private,
         cell_type: Type::length(),
+<<<<<<< HEAD
         default_expr: Some(literal(mm(99.0))),
+=======
+        default_expr: Some(value_ref("S", "depth")),
+>>>>>>> main
         solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
+<<<<<<< HEAD
     // Else_member n: literal 42mm. Does NOT read depth — wave2 won't overwrite it.
     // Active when guard=false.
+=======
+    // Member n: let n = 1mm (literal; does NOT read depth → wave2 won't touch it).
+>>>>>>> main
     let n_decl = ValueCellDecl {
         id: n_id.clone(),
         kind: ValueCellKind::Let,
         visibility: Visibility::Private,
         cell_type: Type::length(),
+<<<<<<< HEAD
         default_expr: Some(literal(mm(42.0))),
+=======
+        default_expr: Some(literal(mm(1.0))),
+>>>>>>> main
         solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
+<<<<<<< HEAD
     // Module A: x=-1mm → guard = (-1>0)&&(depth>5) = false regardless of depth.
     // n=42mm (else_members active), m=Undef (members inactive).
     let template_a = TopologyTemplateBuilder::new("S")
@@ -2304,19 +3069,77 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
             vec![n_decl.clone()], // else_members: active when guard=false
             vec![],               // else_constraints
         )
+=======
+    // Module A:
+    //   x=10mm (guard_1: x>5mm = true → members=[m] active),
+    //   u=true  (guard_2: u      = true → members=[n] active),
+    //   constraint depth==10mm (solver placeholder; literal will change in B).
+    let template_a = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(literal(mm(10.0))))
+        .param(
+            "S",
+            "u",
+            Type::Bool,
+            Some(literal(Value::Bool(true))),
+        )
+        .auto_param("S", "depth", Type::length())
+        .constraint(
+            "S",
+            0,
+            Some("depth_eq"),
+            eq(value_ref("S", "depth"), literal(mm(10.0))),
+        )
+        // Group 1: guard (x>5mm), m on members branch.
+        .guarded_group(
+            guard_1_expr.clone(),
+            guard_1_id.clone(),
+            vec![m_decl.clone()], // members (active when guard=true)
+            vec![],               // constraints
+            vec![],               // else_members
+            vec![],               // else_constraints
+        )
+        // Group 2: guard u, n on members branch.
+        .guarded_group(
+            guard_2_expr.clone(),
+            guard_2_id.clone(),
+            vec![n_decl.clone()], // members (active when guard=true)
+            vec![],
+            vec![],
+            vec![],
+        )
+>>>>>>> main
         .build();
     let module_a = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template_a)
         .build();
 
+<<<<<<< HEAD
     // Module B: x=1mm. Solver will return depth=3mm for the edit_source call.
     // After fix: guard = (1>0)&&(3>5) = false → m=Undef, n=42mm.
     let template_b = TopologyTemplateBuilder::new("S")
         .param("S", "x", Type::length(), Some(literal(mm(1.0))))
+=======
+    // Module B:
+    //   x=10mm UNCHANGED  (guard_1: x>5mm = true, value unchanged → role-flip only)
+    //   u=false CHANGED   (guard_2: u     = false → n deactivates)
+    //   constraint depth==20mm (literal changed → content_hash differs →
+    //     constraint in changed_constraints → dirty_cone → solver runs → wave2)
+    //   Group 1: m ROLE-FLIPPED to else_members (same id + default_expr → same content_hash).
+    //   Group 2: structure unchanged; only u's default_expr changed.
+    let template_b = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(literal(mm(10.0)))) // unchanged
+        .param(
+            "S",
+            "u",
+            Type::Bool,
+            Some(literal(Value::Bool(false))), // flipped
+        )
+>>>>>>> main
         .auto_param("S", "depth", Type::length())
         .constraint(
             "S",
             0,
+<<<<<<< HEAD
             Some("depth_ge_x"),
             ge(value_ref("S", "depth"), value_ref("S", "x")),
         )
@@ -2326,6 +3149,27 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
             vec![m_decl.clone()],
             vec![],
             vec![n_decl.clone()],
+=======
+            Some("depth_eq"),
+            eq(value_ref("S", "depth"), literal(mm(20.0))), // expr text changed
+        )
+        // Group 1: guard unchanged; m moved to else_members (role-flip).
+        .guarded_group(
+            guard_1_expr,
+            guard_1_id.clone(),
+            vec![],               // members empty in B
+            vec![],
+            vec![m_decl],         // m ROLE-FLIPPED to else (inactive when guard=true)
+            vec![],
+        )
+        // Group 2: structure unchanged; guard value will flip due to u=false.
+        .guarded_group(
+            guard_2_expr,
+            guard_2_id.clone(),
+            vec![n_decl],
+            vec![],
+            vec![],
+>>>>>>> main
             vec![],
         )
         .build();
@@ -2334,6 +3178,7 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
         .build();
 
     // Sequenced solver:
+<<<<<<< HEAD
     //   first call (eval A)       → depth=8mm (stale in Phase 1: 8>5=true → guard flips)
     //   second call (edit_source) → depth=3mm (wave2 re-eval: 3>5=false → guard flips back)
     let mut solved1 = HashMap::new();
@@ -2347,6 +3192,21 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
         },
         SolveResult::Solved {
             values: solved2,
+=======
+    //   Call 1 (eval A):        depth = 10mm
+    //   Call 2 (edit_source B): depth = 20mm  (drives wave2 overwrite of m)
+    let mut solved_a = HashMap::new();
+    solved_a.insert(depth_id.clone(), mm(10.0));
+    let mut solved_b = HashMap::new();
+    solved_b.insert(depth_id.clone(), mm(20.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: solved_a,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved_b,
+>>>>>>> main
             unique: true,
         },
     ]);
@@ -2354,6 +3214,7 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
+<<<<<<< HEAD
     // Initial eval(A): x=-1mm, guard=false, solver→depth=8mm.
     // m=Undef (members inactive), n=42mm (else_members active).
     let initial = engine.eval(&module_a);
@@ -2379,10 +3240,37 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
     //   reapply: m deactivated (Undef). n skipped (else_members; active branch).
     //   Phase 3 (OLD): guard_cell in phase1_reelaborated → skip → n stays Undef.  BUG.
     //   Phase 3 (FIXED): recorded Bool(true) ≠ current Bool(false) → n=42mm.  FIX.
+=======
+    // Initial eval(A): x=10mm, guard_1=true, solver→depth=10mm, m=10mm, n=1mm.
+    let initial = engine.eval(&module_a);
+
+    // (d) Sanity anchor: m must be a concrete 10mm value in eval(A).
+    // If this fails, the Undef observed after edit_source(B) could be from an
+    // incorrect initial state rather than the incremental edit.
+    assert!(
+        matches!(initial.values.get(&m_id), Some(Value::Scalar { si_value, .. }) if (*si_value - 0.010).abs() < 1e-10),
+        "initial eval: m should be 10mm (= depth) when guard_1 is true; \
+         if m is Undef or wrong, the eval(A) setup is incorrect and the \
+         post-edit Undef check would be a false pass. Got {:?}",
+        initial.values.get(&m_id),
+    );
+
+    // edit_source(B):
+    //   Phase 1 triggers: has_role_flipped_guard_member=true (m moved A→else);
+    //                     has_dirty_guards=true (u changed → guard_2 in dirty_cone).
+    //   Group 1 processed (role-flip defeats per-group skip). m deactivated → Undef.
+    //   Group 2 processed (guard value true→false). n deactivated → Undef.
+    //   Solver: constraint depth==20mm differs → runs → depth=20mm.
+    //   Wave2: m reads depth → m=20mm (overwrites Undef). ← bug trigger.
+    //   reapply_phase1_deactivations: group 1 (guard=true, else=[m]) → m=Undef.
+    //                                  group 2 (guard=false, members=[n]) → n=Undef.
+    //   Phase 3: guard_changed fires (group 2). Both groups dedup-skipped.
+>>>>>>> main
     let edited = engine
         .edit_source(&module_b)
         .expect("edit_source must succeed");
 
+<<<<<<< HEAD
     // (a) m must be Undef: guard is false → members branch inactive.
     assert!(
         matches!(edited.values.get(&m_id), Some(Value::Undef)),
@@ -2425,5 +3313,55 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
         edited.values.get(&n_id),
         cold.values.get(&n_id),
         "n: incremental edit_source result must match cold eval of module_b",
+=======
+    // (a) m must be Undef: guard_1=true but m is on the now-inactive else branch.
+    // If m is a concrete value (e.g. 20mm), wave2 corrupted the inactive member
+    // AND the post-wave2 cleanup failed for the role-flipped group — either
+    // phase1_reelaborated.insert (engine_edit.rs:1590) was moved before the Phase 1
+    // skip (role-flip groups no longer tracked), or reapply_phase1_deactivations
+    // was removed from the edit_source wave2 tail.
+    assert!(
+        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        "m must be Undef after edit_source(B): guard_1=true so else_members=[m] \
+         is inactive. If m is a concrete value (e.g. 20mm), wave2 corrupted the \
+         inactive member and the post-wave2 cleanup is missing or broken for \
+         role-flipped groups. Got {:?}",
+        edited.values.get(&m_id),
+    );
+
+    // (b) n must be Undef: guard_2 flipped true→false so members=[n] is inactive.
+    // Sanity lock — rules out a "both incremental and cold are wrong" false pass
+    // on assertion (a). If this fails independently, group 2's guard flip did
+    // not deactivate n, indicating a regression in Phase 1's basic deactivation
+    // path (not specific to role-flip or wave2).
+    assert!(
+        matches!(edited.values.get(&n_id), Some(Value::Undef)),
+        "n must be Undef after edit_source(B): guard_2 flipped false so \
+         members=[n] is inactive. Got {:?}",
+        edited.values.get(&n_id),
+    );
+
+    // (c) Performance / dedup lock: counter must be exactly 2.
+    // Phase 1 processes both groups (counter=2: group 1 via role-flip, group 2
+    // via guard-value change). Phase 3's outer guard_changed gate fires (group 2
+    // guard changed), but the dedup check (phase1_reelaborated.contains) skips
+    // both groups → no Phase 3 increment.
+    // If counter==3: Phase 3 dedup is broken for role-flipped groups (group 2
+    //   would be re-processed by Phase 3's per-group path since old≠new guard).
+    // If counter>=4: per-group skip logic in Phase 3 regressed.
+    // If counter<2: Phase 1 counter increment missing for role-flip or guard-flip path.
+    let counter = engine.last_guard_phase_group_evals();
+    assert_eq!(
+        counter,
+        2,
+        "expected exactly 2 non-skipped guard-phase group iterations \
+         (Phase 1: group 1 via role-flip, group 2 via guard-value change; \
+          Phase 3: both groups dedup-skipped via phase1_reelaborated); \
+         got {} — if 3, Phase 3 dedup consultation regressed for the \
+         role-flipped group (phase1_reelaborated not consulted or not populated \
+         for role-flip triggers); if >=4, per-group skip in Phase 3 regressed; \
+         if <2, Phase 1 counter increment dropped for one of the trigger paths",
+        counter,
+>>>>>>> main
     );
 }

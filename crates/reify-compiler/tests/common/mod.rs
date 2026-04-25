@@ -31,11 +31,7 @@ pub fn compile_with_stdlib_helper(source: &str) -> reify_compiler::CompiledModul
 /// directory (e.g. one built inside the test's temp dir).  Panics if
 /// `compile_project` returns `Err` or yields no modules.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn compile_errors_with_stdlib(
-    dir: &Path,
-    entry: &str,
-    stdlib: &Path,
-) -> Vec<Diagnostic> {
+pub fn compile_errors_with_stdlib(dir: &Path, entry: &str, stdlib: &Path) -> Vec<Diagnostic> {
     let resolver = ModuleResolver::new(dir, stdlib);
     let result = reify_compiler::module_dag::compile_project(&dir.join(entry), &resolver);
     let modules = result.expect("compile_project should return Ok even with diagnostics");
@@ -75,8 +71,7 @@ pub fn assert_prelude_collision_labels(diag: &Diagnostic) {
     );
     let empty_span = SourceSpan::empty(0);
     assert_ne!(
-        diag.labels[0].span,
-        empty_span,
+        diag.labels[0].span, empty_span,
         "first label '{}' must not be SourceSpan::empty(0)",
         diag.labels[0].message
     );
@@ -110,9 +105,10 @@ pub const UNIT_EPSILON: f64 = 1e-9;
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
 pub fn expect_scalar(expr: &reify_types::CompiledExpr) -> (f64, reify_types::DimensionVector) {
     match &expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, dimension }) => {
-            (*si_value, *dimension)
-        }
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        }) => (*si_value, *dimension),
         other => panic!(
             "expected CompiledExprKind::Literal(Value::Scalar {{ .. }}), got {:?}",
             other
@@ -127,12 +123,15 @@ pub fn expect_scalar(expr: &reify_types::CompiledExpr) -> (f64, reify_types::Dim
 /// `if let` / `else panic!` pattern that previously appeared at every
 /// BinOp-assertion site.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn expect_binop(expr: &reify_types::CompiledExpr) -> (&reify_types::BinOp, &reify_types::CompiledExpr, &reify_types::CompiledExpr) {
+pub fn expect_binop(
+    expr: &reify_types::CompiledExpr,
+) -> (
+    &reify_types::BinOp,
+    &reify_types::CompiledExpr,
+    &reify_types::CompiledExpr,
+) {
     match &expr.kind {
         reify_types::CompiledExprKind::BinOp { op, left, right } => (op, left, right),
-        other => panic!(
-            "expected CompiledExprKind::BinOp {{ .. }}, got {:?}",
-            other
-        ),
+        other => panic!("expected CompiledExprKind::BinOp {{ .. }}, got {:?}", other),
     }
 }

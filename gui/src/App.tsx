@@ -1,4 +1,4 @@
-import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect, createMemo, Show, For, untrack, batch } from 'solid-js';
 import { DualViewport } from './viewport';
 import { Editor } from './editor/Editor';
 import { FileTabs } from './editor/FileTabs';
@@ -24,7 +24,7 @@ import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
-import { createViewportStore } from './stores/viewportStore';
+import { createViewportStore, type CameraState } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
 import {
@@ -58,11 +58,15 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, EntityTreeNode } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
+import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
+import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
+import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
+import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -98,6 +102,101 @@ const App: Component = () => {
   const viewportStore = createViewportStore();
   const defPreviewStore = createDefPreviewStore();
 
+  // Track the currently-open file path so the debounced save effect can key off it.
+  const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
+
+  // Fuzzy-rebind toast bookkeeping (see the rebind effect block below).
+  //
+  // `rebindShownPairs` tracks stale→candidate pairs currently represented by
+  // a visible toast. Without this, every re-evaluation that still shows the
+  // same stale path enqueues another identical toast, which reviewers flagged
+  // as a growing stack when users do not promptly respond.
+  //
+  // `rebindToastPairs` maps toast-id → pairKey so `handleDismissToast` can
+  // clear the pair from `rebindShownPairs` regardless of how the toast was
+  // dismissed (button click, close-X, or auto-dismiss timeout).
+  //
+  // Both live at App scope so `handleDismissToast` (declared further below)
+  // can see them.
+  const rebindShownPairs = new Set<string>();
+  const rebindToastPairs = new Map<string, string>();
+
+  /**
+   * Load view state for a given file path.
+   * Priority: sidecar (.ri.views.json) > localStorage > null (defaults).
+   * Stops at the first non-null valid layer (PRD §8.1 design decision).
+   */
+  async function loadPersistedViews(path: string): Promise<PersistentViewState | null> {
+    const sidecar = await loadSidecar(path);
+    if (sidecar !== null) return sidecar;
+    return loadViewPersistence(path);
+  }
+
+  // Debounced persistence of view state to localStorage.
+  //
+  // A single `DebouncedSaver` is retained across view-state mutations for the
+  // same path so that rapid changes coalesce into one write 500ms after the
+  // last mutation (PRD §8.1 design decision).
+  //
+  // Lifecycle:
+  // - File open / file switch → flush the outgoing saver (if any), then
+  //   create a fresh saver for the new path.  Flushing on switch is required
+  //   so the last mutation made to the outgoing file is not lost when the
+  //   user switches files within the debounce window.
+  // - Component unmount → flush any pending write in onCleanup.
+  //
+  // The effect re-runs on every change to `viewStateStore.state` or
+  // `viewportStore.state`; those re-runs only reschedule on the existing
+  // saver (they do NOT recreate it), which preserves the debounce window.
+  {
+    let activeSaver: DebouncedSaver | null = null;
+    let activePath: string | null = null;
+
+    createEffect(() => {
+      const path = currentFilePath();
+
+      // Path transition: flush pending writes for the old path, then swap
+      // the saver.  Comparing `path !== activePath` ensures unrelated
+      // view-state changes reuse the current saver.
+      if (path !== activePath) {
+        activeSaver?.flush();
+        activeSaver = path !== null ? createDebouncedSaver(500) : null;
+        activePath = path;
+      }
+
+      if (!path || !activeSaver) return;
+
+      // Reactive subscriptions come from the property reads below:
+      // `Object.entries(viewportStore.state.viewports)` subscribes to
+      // viewport-store mutations, and `viewStateStore.serializePersistedState()`
+      // walks active-view / user-views / explicit overrides inside the store
+      // which subscribes to view-state mutations.  (Reading just the root
+      // `.state` property does NOT track nested mutations in Solid stores —
+      // only property access does.)
+      const viewportCameras: Record<string, CameraState> = {};
+      for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
+        if (vp.camera) viewportCameras[id] = vp.camera;
+      }
+
+      const composed: PersistentViewState = {
+        ...viewStateStore.serializePersistedState(),
+        viewportCameras,
+        timestamp: new Date().toISOString(),
+      };
+
+      activeSaver.schedule(path, composed);
+    });
+
+    onCleanup(() => {
+      // Component unmount: persist any still-pending mutation rather than
+      // dropping it (the previous cancel()-on-cleanup silently lost writes
+      // when unmount/file-switch raced the 500ms timer).
+      activeSaver?.flush();
+      activeSaver = null;
+      activePath = null;
+    });
+  }
+
   // Activation hook: watches editor cursor → debounces 200ms → loads def preview
   const defPreviewActivation = createDefPreviewActivation({
     editorStore,
@@ -132,6 +231,82 @@ const App: Component = () => {
     viewStateStore.regenerateAutoViews(entityTree());
     setTreeGeneration((v) => v + 1);
   });
+
+  // Fuzzy-rebind notification: after each tree update, check for stale paths
+  // that have a single unambiguous suffix-match candidate and surface a
+  // non-blocking toast with [Yes][No][Ignore] actions.
+  // Per PRD §8.5: never auto-applies — user must confirm explicitly.
+  {
+    // Session-scoped set of ignored stale→candidate pairs.
+    // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [No]/[Ignore].
+    const ignoredPairs = new Set<string>();
+
+    createEffect(() => {
+      void treeGeneration(); // re-run after each tree update
+      const tree = untrack(() => entityTree());
+      const stalePaths = untrack(() => viewStateStore.getStalePaths());
+
+      for (const stalePath of stalePaths) {
+        const candidate = findFuzzyCandidate(stalePath, null, tree);
+        if (!candidate) continue;
+
+        const pairKey = `${stalePath}→${candidate.path}`;
+        if (ignoredPairs.has(pairKey)) continue;
+        // Reviewer fix: skip when an outstanding toast already represents
+        // this pair.  Without this guard, any subsequent tree update that
+        // leaves the stale path stale (e.g. an unrelated edit) enqueues a
+        // duplicate toast, producing a growing stack for users who do not
+        // respond immediately.
+        if (rebindShownPairs.has(pairKey)) continue;
+
+        // Snapshot the stale path's explicit visibility before the closure captures it.
+        const staleVisibility = untrack(() => viewStateStore.state.explicit[stalePath]);
+
+        const candidatePath = candidate.path;
+        rebindShownPairs.add(pairKey);
+        const toastId = showToast(
+          `"${stalePath}" may have been renamed to "${candidatePath}". Rebind?`,
+          'info',
+          [
+            {
+              label: 'Yes',
+              onClick: () => {
+                // Transfer the stale path's visibility to the new path.
+                if (staleVisibility) {
+                  viewStateStore.setVisibility(candidatePath, staleVisibility);
+                }
+                // Remove the stale explicit entry.
+                viewStateStore.resetToInherit(stalePath);
+                // rebindShownPairs is cleared in handleDismissToast (via the
+                // toast-id → pairKey map) when the button's onDismiss fires.
+              },
+            },
+            {
+              label: 'No',
+              onClick: () => {
+                // Dismiss and suppress this specific pair for the session —
+                // the stale entry stays so the user can still rebind manually
+                // or undo. This matches [Ignore] scoping: the same stale→candidate
+                // pair will not re-fire on the next tree update.
+                ignoredPairs.add(pairKey);
+              },
+            },
+            {
+              label: 'Ignore',
+              onClick: () => {
+                // Suppress this pair for the rest of the session.
+                ignoredPairs.add(pairKey);
+              },
+            },
+          ],
+        );
+        // Remember which pair this toast represents so handleDismissToast
+        // can clean up rebindShownPairs when the toast goes away for ANY
+        // reason (button, close-X, or auto-dismiss timeout).
+        rebindToastPairs.set(toastId, pairKey);
+      }
+    });
+  }
 
   // True when at least one design mesh is loaded. Memoized so DualViewport's
   // designViewportActive prop does not allocate a new array on every reactive pulse.
@@ -199,9 +374,10 @@ const App: Component = () => {
   // Toast queue state
   const [toasts, setToasts] = createSignal<ToastMessage[]>([]);
 
-  function showToast(message: string, type: ToastMessage['type']) {
+  function showToast(message: string, type: ToastMessage['type'], actions?: ToastAction[]): string {
     const id = String(++toastIdCounter);
-    setToasts((prev) => [...prev, { id, type, message }]);
+    setToasts((prev) => [...prev, { id, type, message, actions }]);
+    return id;
   }
 
   // Coalescer for serialization-error events — debounces and deduplicates bursts
@@ -260,10 +436,62 @@ const App: Component = () => {
       // Load into engine for evaluation (meshes, values, constraints)
       const guiState = await bridgeOpenFileEngine(path);
       engineStore.initFromState(guiState);
+
+      // Load persisted view state (sidecar > localStorage > null).
+      // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
+      // user views are in place when auto views are generated.
+      const persisted = await loadPersistedViews(path);
+      // Wrap the three store writes in a single batch so the debounced-save
+      // effect observes the path transition AND the new view/camera state
+      // atomically.  Without batch(), a future refactor that reorders or
+      // interleaves these updates could cause the effect to schedule a write
+      // with (oldPath, newState) — which the path-transition branch would
+      // then flush into the OUTGOING file's localStorage key, silently
+      // cross-corrupting sidecars.  Setting currentFilePath first inside the
+      // batch is the critical ordering: the effect sees `path !== activePath`
+      // and swaps the saver before any schedule() runs against the new state.
+      batch(() => {
+        setCurrentFilePath(path);
+        if (persisted !== null) {
+          viewStateStore.applyPersistedState(persisted);
+          // Restore per-viewport camera positions
+          for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
+            viewportStore.updateCamera(id, camera);
+          }
+        }
+      });
     } catch (err) {
       const msg = errorMessage(err);
       console.error('Open file failed:', msg);
       showToast(`Open file failed: ${msg}`, 'error');
+    }
+  }
+
+  /**
+   * Save the current view state to the sidecar file (.ri.views.json).
+   * Called when the user clicks "Save views" in the ViewSelector dropdown.
+   * Shows a success or error toast based on the outcome.
+   */
+  async function handleSaveViews() {
+    const path = currentFilePath();
+    if (!path) return;
+
+    const viewportCameras: Record<string, CameraState> = {};
+    for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
+      if (vp.camera) viewportCameras[id] = vp.camera;
+    }
+    const composed: PersistentViewState = {
+      ...viewStateStore.serializePersistedState(),
+      viewportCameras,
+      timestamp: new Date().toISOString(),
+    };
+
+    try {
+      await saveSidecar(path, composed);
+      const filename = path.split('/').pop() ?? path;
+      showToast(`Views saved to ${filename}.views.json`, 'success');
+    } catch (err) {
+      showToast(`Failed to save views: ${errorMessage(err)}`, 'error');
     }
   }
 
@@ -633,6 +861,14 @@ const App: Component = () => {
   }
 
   function handleDismissToast(id: string) {
+    // If this toast was a fuzzy-rebind prompt, release the pair from the
+    // "currently-shown" guard so a legitimate later tree change can surface
+    // the prompt again (unless the user already added it to ignoredPairs).
+    const pairKey = rebindToastPairs.get(id);
+    if (pairKey !== undefined) {
+      rebindToastPairs.delete(id);
+      rebindShownPairs.delete(pairKey);
+    }
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }
 
@@ -805,6 +1041,7 @@ const App: Component = () => {
                 onRangeSelect={selectionStore.rangeSelect}
                 onSelectAll={selectionStore.selectAll}
                 onOpenManage={() => setViewManageOpen(true)}
+                onSaveViews={handleSaveViews}
               />
               <PropertyEditor
                 values={engineStore.state.values}
@@ -856,6 +1093,7 @@ const App: Component = () => {
                   message={t.message}
                   type={t.type}
                   onDismiss={() => handleDismissToast(t.id)}
+                  actions={t.actions}
                 />
               )}
             </For>

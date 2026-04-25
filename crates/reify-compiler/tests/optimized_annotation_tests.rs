@@ -305,7 +305,10 @@ constraint def Plain {
 
     let relevant: Vec<_> = warning_diags(&module.diagnostics)
         .into_iter()
-        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .filter(|d| {
+            d.message
+                .contains("@optimized requires a string literal target")
+        })
         .collect();
     assert!(
         !relevant.is_empty(),
@@ -333,7 +336,10 @@ constraint def Plain {
 
     let relevant: Vec<_> = warning_diags(&module.diagnostics)
         .into_iter()
-        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .filter(|d| {
+            d.message
+                .contains("@optimized requires a string literal target")
+        })
         .collect();
     assert!(
         !relevant.is_empty(),
@@ -417,7 +423,10 @@ structure S {
     // The missing-target warning must still fire (on the malformed first @optimized).
     let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
         .into_iter()
-        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .filter(|d| {
+            d.message
+                .contains("@optimized requires a string literal target")
+        })
         .collect();
     assert!(
         !missing_target_warnings.is_empty(),
@@ -481,7 +490,10 @@ structure S {
     // The malformed second @optimized() must fire a missing-target warning.
     let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
         .into_iter()
-        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .filter(|d| {
+            d.message
+                .contains("@optimized requires a string literal target")
+        })
         .collect();
     assert!(
         !missing_target_warnings.is_empty(),
@@ -544,7 +556,10 @@ structure S {
     // The missing-target warning must still fire (on the non-string first @optimized).
     let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
         .into_iter()
-        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .filter(|d| {
+            d.message
+                .contains("@optimized requires a string literal target")
+        })
         .collect();
     assert!(
         !missing_target_warnings.is_empty(),
@@ -615,7 +630,8 @@ constraint def Plain {
 
     for d in warning_diags(&module.diagnostics) {
         assert!(
-            !d.message.contains("@optimized requires a string literal target"),
+            !d.message
+                .contains("@optimized requires a string literal target"),
             "well-formed @optimized should not trip missing-target warning: {:?}",
             d
         );

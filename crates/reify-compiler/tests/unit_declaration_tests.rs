@@ -30,7 +30,11 @@ fn custom_unit_declaration_registers_name_dimension_factor() {
         .iter()
         .find(|u| u.name == "thou")
         .expect("unit 'thou' not found in module.units");
-    assert_eq!(unit.dimension, DimensionVector::LENGTH, "dimension should be LENGTH");
+    assert_eq!(
+        unit.dimension,
+        DimensionVector::LENGTH,
+        "dimension should be LENGTH"
+    );
     assert!(
         (unit.factor - 0.0000254).abs() < 1e-12,
         "factor should be ≈0.0000254, got {}",
@@ -277,7 +281,9 @@ fn negative_factor_unit_in_quantity_literal() {
         .expect("value cell 'x' not found");
     if let Some(expr) = &x_cell.default_expr {
         if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, dimension, ..
+            si_value,
+            dimension,
+            ..
         }) = &expr.kind
         {
             assert!(
@@ -316,7 +322,11 @@ fn compound_dimension_volume_unit_in_quantity_literal() {
         .iter()
         .find(|u| u.name == "mm3")
         .expect("unit 'mm3' not found in module.units");
-    assert_eq!(unit.dimension, DimensionVector::VOLUME, "mm3 should have VOLUME dimension");
+    assert_eq!(
+        unit.dimension,
+        DimensionVector::VOLUME,
+        "mm3 should have VOLUME dimension"
+    );
 
     // Quantity-literal scalar value
     let template = module
@@ -331,7 +341,9 @@ fn compound_dimension_volume_unit_in_quantity_literal() {
         .expect("value cell 'v' not found");
     if let Some(expr) = &v_cell.default_expr {
         if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, dimension, ..
+            si_value,
+            dimension,
+            ..
         }) = &expr.kind
         {
             assert!(
@@ -377,7 +389,9 @@ fn custom_unit_with_compound_dimension_force_in_quantity_literal() {
         .expect("value cell 'f' not found");
     if let Some(expr) = &f_cell.default_expr {
         if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, dimension, ..
+            si_value,
+            dimension,
+            ..
         }) = &expr.kind
         {
             assert!(
@@ -415,7 +429,11 @@ fn custom_unit_with_compound_dimension_area_in_quantity_literal() {
         .iter()
         .find(|u| u.name == "cm2")
         .expect("unit 'cm2' not found");
-    assert_eq!(unit.dimension, DimensionVector::AREA, "cm2 should have AREA dimension");
+    assert_eq!(
+        unit.dimension,
+        DimensionVector::AREA,
+        "cm2 should have AREA dimension"
+    );
     assert!(
         (unit.factor - 0.0001).abs() < 1e-12,
         "cm2 factor should be ≈0.0001, got {}",
@@ -434,7 +452,9 @@ fn custom_unit_with_compound_dimension_area_in_quantity_literal() {
         .expect("value cell 'a' not found");
     if let Some(expr) = &a_cell.default_expr {
         if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, dimension, ..
+            si_value,
+            dimension,
+            ..
         }) = &expr.kind
         {
             assert!(

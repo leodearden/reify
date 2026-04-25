@@ -1,5 +1,44 @@
 use super::*;
 
+/// Shared helper for 2-argument modify operations (thicken, chamfer, fillet).
+///
+/// Validates that exactly 2 arguments were provided, emits a labeled diagnostic if not,
+/// then builds `CompiledGeometryOp::Modify` with args `[("target", ...), (arg2_name, ...)]`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compile_modify_2arg(
+    name: &str,
+    kind: ModifyKind,
+    arg2_name: &str,
+    compiled_args: Vec<CompiledExpr>,
+    target: GeomRef,
+    expr_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+    mut sub_ops: Vec<CompiledGeometryOp>,
+) -> Option<Vec<CompiledGeometryOp>> {
+    if compiled_args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "{}() expects 2 arguments, got {}",
+                name,
+                compiled_args.len()
+            ))
+            .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+        );
+        return None;
+    }
+    let mut it = compiled_args.into_iter();
+    let op = CompiledGeometryOp::Modify {
+        kind,
+        target,
+        args: vec![
+            ("target".to_string(), it.next().unwrap()),
+            (arg2_name.to_string(), it.next().unwrap()),
+        ],
+    };
+    sub_ops.push(op);
+    Some(sub_ops)
+}
+
 /// Compile a modify operation into CompiledGeometryOps.
 ///
 /// Takes pre-resolved target GeomRef, expr_span for diagnostics, and pre-accumulated sub_ops.
@@ -48,29 +87,16 @@ pub(crate) fn compile_modify_op(
             Some(sub_ops)
         }
         // thicken(target, offset)
-        "thicken" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "thicken() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Thicken,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("offset".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
+        "thicken" => compile_modify_2arg(
+            "thicken",
+            ModifyKind::Thicken,
+            "offset",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         // draft(target, angle, plane)
         "draft" => {
             if compiled_args.len() != 3 {
@@ -97,53 +123,27 @@ pub(crate) fn compile_modify_op(
             Some(sub_ops)
         }
         // chamfer(target, distance)
-        "chamfer" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "chamfer() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Chamfer,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("distance".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
+        "chamfer" => compile_modify_2arg(
+            "chamfer",
+            ModifyKind::Chamfer,
+            "distance",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         // fillet(target, radius)
-        "fillet" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "fillet() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Fillet,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("radius".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
+        "fillet" => compile_modify_2arg(
+            "fillet",
+            ModifyKind::Fillet,
+            "radius",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         _ => unreachable!("compile_modify_op called with non-modify name: {}", name),
     }
 }
@@ -157,18 +157,179 @@ mod tests {
     }
 
     #[test]
+    fn compile_modify_2arg_chamfer_builds_correct_args() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(5);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_2arg(
+            "chamfer",
+            ModifyKind::Chamfer,
+            "distance",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_2arg should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "distance"]);
+            }
+            other => panic!("expected Modify(Chamfer), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_modify_2arg_thicken_builds_correct_args() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(3);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_2arg(
+            "thicken",
+            ModifyKind::Thicken,
+            "offset",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_2arg should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Thicken,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "offset"]);
+            }
+            other => panic!("expected Modify(Thicken), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_modify_2arg_fillet_builds_correct_args() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_2arg(
+            "fillet",
+            ModifyKind::Fillet,
+            "radius",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_2arg should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "radius"]);
+            }
+            other => panic!("expected Modify(Fillet), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_modify_2arg_rejects_wrong_arg_count_with_label() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)]; // only 1 arg, need 2
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(5);
+        let span = SourceSpan::new(10, 20);
+        let result = compile_modify_2arg(
+            "chamfer",
+            ModifyKind::Chamfer,
+            "distance",
+            args,
+            target,
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(result.is_none(), "expected None for wrong arg count");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("chamfer() expects 2 arguments, got 1"),
+            "unexpected message: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected at least one label on arg-count diagnostic"
+        );
+        assert!(
+            !diagnostics[0].labels[0].span.is_empty(),
+            "expected non-empty span on arg-count label"
+        );
+    }
+
+    #[test]
     fn compile_modify_op_shell_direct() {
         // shell(target, thickness, face_0) — 3 args, target = GeomRef::Step(5)
         let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(5);
         let span = SourceSpan::new(0, 0);
-        let result = compile_modify_op("shell", args, target.clone(), span, &mut diagnostics, vec![]);
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let result = compile_modify_op(
+            "shell",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("compile_modify_op shell should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
-            CompiledGeometryOp::Modify { kind: ModifyKind::Shell, target: op_target, args: op_args } => {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Shell,
+                target: op_target,
+                args: op_args,
+            } => {
                 assert_eq!(*op_target, target);
                 let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
                 assert_eq!(names, vec!["target", "thickness", "face_0"]);
@@ -188,19 +349,65 @@ mod tests {
     param dist: Scalar = 2mm
     let result = chamfer(target, dist)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_chamfer_step0"));
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_chamfer_step0"),
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = crate::compile(&parsed);
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            compiled.diagnostics
+        );
+        let ops = &compiled.templates[0].realizations[0].operations;
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: op_target,
+                ..
+            } => {
+                // Non-geometry target → geom_ref(0) falls back to GeomRef::Step(0)
+                assert_eq!(
+                    *op_target,
+                    GeomRef::Step(0),
+                    "chamfer with non-geometry target should fall back to GeomRef::Step(0), got {:?}",
+                    op_target
+                );
+            }
+            other => panic!("expected Modify(Chamfer), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_modify_op_fillet_preserves_step0() {
+        // fillet is registered in geometry_arg_indices() — so geom_ref(0) is used.
+        // When the first arg is a scalar param (not a geometry let), the resolution
+        // block finds no ops for it, so geom_ref(0) falls back to GeomRef::Step(step_offset).
+        // With no sub-ops, step_offset == 0, so the target is GeomRef::Step(0).
+        let source = r#"structure S {
+    param target: Scalar = 5mm
+    param r: Scalar = 2mm
+    let result = fillet(target, r)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fillet_step0"));
         assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
         let compiled = crate::compile(&parsed);
         assert!(compiled.diagnostics.is_empty(), "unexpected diagnostics: {:?}", compiled.diagnostics);
         let ops = &compiled.templates[0].realizations[0].operations;
         assert_eq!(ops.len(), 1);
         match &ops[0] {
-            CompiledGeometryOp::Modify { kind: ModifyKind::Chamfer, target: op_target, .. } => {
+            CompiledGeometryOp::Modify { kind: ModifyKind::Fillet, target: op_target, .. } => {
                 // Non-geometry target → geom_ref(0) falls back to GeomRef::Step(0)
                 assert_eq!(*op_target, GeomRef::Step(0),
-                    "chamfer with non-geometry target should fall back to GeomRef::Step(0), got {:?}", op_target);
+                    "fillet with non-geometry target should fall back to GeomRef::Step(0), got {:?}", op_target);
             }
-            other => panic!("expected Modify(Chamfer), got {:?}", other),
+            other => panic!("expected Modify(Fillet), got {:?}", other),
         }
     }
 }

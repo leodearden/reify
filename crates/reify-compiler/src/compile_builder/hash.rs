@@ -1,9 +1,11 @@
 //! Phase-13 module content hash.
 //!
 //! Combines every piece of owned compiled content from `CompilationCtx`
-//! plus `compiled_purposes` and `parsed.path` into a single
+//! plus `compiled_purposes`, `parsed.path`, and `parsed.pragmas` into a single
 //! [`ContentHash`] via `ContentHash::combine_all`. Type-alias hashes are
 //! sorted by name so alias-declaration order doesn't perturb the result.
+//! Module pragmas are appended last (in declaration order) so pragma-free
+//! modules retain identical hashes to pre-pragma-hashing compilations.
 
 use reify_syntax::ParsedModule;
 use reify_types::{CompiledFunction, ContentHash};
@@ -37,7 +39,10 @@ pub(crate) fn compute_module_hash(
     });
 
     // Function content hashes
-    let function_hashes = ctx.functions.iter().map(|f: &CompiledFunction| f.content_hash);
+    let function_hashes = ctx
+        .functions
+        .iter()
+        .map(|f: &CompiledFunction| f.content_hash);
 
     // Trait content hashes
     let trait_hashes = ctx.trait_defs.iter().map(|t| t.content_hash);
@@ -60,6 +65,9 @@ pub(crate) fn compute_module_hash(
     alias_hash_pairs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let alias_hashes = alias_hash_pairs.into_iter().map(|(_, h)| h);
 
+    // Module-level pragma hashes (in declaration order; span excluded as positional).
+    let pragma_hashes = parsed.pragmas.iter().map(hash_pragma);
+
     let all_hashes = std::iter::once(path_hash)
         .chain(template_hashes)
         .chain(import_hashes)
@@ -69,7 +77,44 @@ pub(crate) fn compute_module_hash(
         .chain(field_hashes)
         .chain(purpose_hashes)
         .chain(unit_hashes)
-        .chain(alias_hashes);
+        .chain(alias_hashes)
+        .chain(pragma_hashes);
 
     ContentHash::combine_all(all_hashes)
+}
+
+/// Produce a deterministic [`ContentHash`] for a single module-level pragma.
+///
+/// Combines the pragma name and argument count (as `"name|count"`) with each argument's
+/// kind, key (for key-value), and value.  Encoding the count explicitly guards against
+/// collisions when a pragma has optional arguments that could be absent vs. present as
+/// an empty value.  Source span is intentionally excluded — it is positional metadata,
+/// not content.
+fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
+    let mut h = ContentHash::of_str(&format!("{}|{}", p.name, p.args.len()));
+    for arg in &p.args {
+        h = h.combine(hash_pragma_arg(arg));
+    }
+    h
+}
+
+fn hash_pragma_arg(arg: &reify_syntax::PragmaArg) -> ContentHash {
+    match arg {
+        reify_syntax::PragmaArg::KeyValue { key, value } => ContentHash::of_str("kv")
+            .combine(ContentHash::of_str(key))
+            .combine(ContentHash::of_str(&format_pragma_value(value))),
+        reify_syntax::PragmaArg::Bare(value) => ContentHash::of_str("bare")
+            .combine(ContentHash::of_str(&format_pragma_value(value))),
+    }
+}
+
+fn format_pragma_value(v: &reify_syntax::PragmaValue) -> String {
+    match v {
+        reify_syntax::PragmaValue::Ident(s) => format!("ident:{s}"),
+        reify_syntax::PragmaValue::Number(n) => format!("num:{:016x}", n.to_bits()),
+        reify_syntax::PragmaValue::String(s) => format!("str:{s}"),
+        reify_syntax::PragmaValue::Bool(b) => {
+            if *b { "bool:true".to_string() } else { "bool:false".to_string() }
+        }
+    }
 }

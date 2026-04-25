@@ -17,11 +17,11 @@ use std::collections::{HashMap, HashSet};
 use reify_syntax::ParsedModule;
 use reify_types::{Diagnostic, DiagnosticLabel};
 
+use crate::CompiledModule;
 use crate::annotations::{
     lower_annotations, optimized_target, validate_annotations, validate_pragmas,
 };
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::CompiledModule;
 use crate::type_resolution::{
     TypeAliasRegistry, convert_type_params, resolve_enum_type, resolve_type_expr_with_aliases,
 };
@@ -44,11 +44,18 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 /// Runs annotation/pragma lowering and validation exactly once per declaration,
 /// resolves param types where possible, and caches the `@optimized` target so
 /// instantiation sites can read it without re-scanning annotations.
+///
+/// `structure_names` is the set of structure/occurrence names in scope (both
+/// local and imported via the prelude). Param type names in this set suppress
+/// the "unknown type" diagnostic because the resolved type is discarded at
+/// def-compile time anyway — entity.rs only reads `param.name` and
+/// `param.default` at instantiation time.
 fn compile_constraint_def(
     c: &reify_syntax::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
     enum_defs: &[reify_types::EnumDef],
     trait_names: &HashSet<String>,
+    structure_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledConstraintDef {
     // Extract @optimized target from raw syntax annotations BEFORE lowering so the
@@ -90,10 +97,13 @@ fn compile_constraint_def(
                 .is_none()
                 && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
                 && resolve_enum_type(name, enum_defs).is_none()
+                && !structure_names.contains(name.as_str())
             {
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "unknown type '{}' in param '{}' of constraint def '{}'",
+                        "unknown type '{}' in param '{}' of constraint def '{}': \
+                         expected a builtin scalar, type parameter, alias, enum, \
+                         trait, structure, or occurrence name in scope",
                         name, param.name, c.name
                     ))
                     .with_label(DiagnosticLabel::new(te.span, "unknown type")),
@@ -136,13 +146,34 @@ pub(crate) fn phase_constraint_defs(
     prelude: &[&crate::CompiledModule],
     trait_names: &HashSet<String>,
 ) {
+    // Lazily built on first Declaration::Constraint; modules with zero
+    // constraint defs skip this allocation entirely.  The set contains
+    // structure/occurrence names in scope: local names filtered from
+    // seen_entity_names by kind, plus exported template names from every
+    // prelude module.  This mirrors the trait_names building pattern in
+    // phase_traits (traits_phase.rs:71-79).
+    let mut structure_names: Option<HashSet<String>> = None;
+
     for decl in &parsed.declarations {
         if let reify_syntax::Declaration::Constraint(c) = decl {
+            let names = structure_names.get_or_insert_with(|| {
+                ctx.seen_entity_names
+                    .iter()
+                    .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+                    .map(|(name, _)| name.clone())
+                    .chain(
+                        prelude
+                            .iter()
+                            .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
+                    )
+                    .collect()
+            });
             let compiled = compile_constraint_def(
                 c,
                 &ctx.alias_registry,
                 &ctx.resolution_enums,
                 trait_names,
+                names,
                 &mut ctx.diagnostics,
             );
             ctx.constraint_defs.push(compiled);
@@ -171,11 +202,12 @@ fn emit_constraint_def_shadow_warnings(
         for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
             if let Some(prev_path) = prelude_source.get(&cd.name) {
                 if *prev_path != module_path_str {
-                    ctx.diagnostics.push(Diagnostic::warning(format_shadow_warning(
-                        &cd.name,
-                        prev_path,
-                        &module_path_str,
-                    )));
+                    ctx.diagnostics
+                        .push(Diagnostic::warning(format_shadow_warning(
+                            &cd.name,
+                            prev_path,
+                            &module_path_str,
+                        )));
                 }
                 // First-import wins: do not record a second source.
             } else {
@@ -191,7 +223,9 @@ fn emit_constraint_def_shadow_warnings(
 ///
 /// Borrows from `local` (module-local constraint defs in ctx) and every prelude
 /// module's `constraint_defs`. Non-pub prelude defs are excluded — only pub
-/// constraint defs are exported.
+/// constraint defs are exported. All local constraint defs (pub or not) are
+/// inserted; non-pub local defs are only reachable within the current module
+/// but still shadow prelude defs of the same name.
 ///
 /// Shadow warnings for cross-prelude name collisions are NOT emitted here —
 /// they were already emitted once in [`phase_constraint_defs`] via

@@ -5,8 +5,14 @@
 use reify_test_support::{compile_source, errors_only, warnings_only};
 
 /// Helper: filter warnings whose message contains the given substring.
-fn annotation_warnings<'a>(module: &'a reify_compiler::CompiledModule, substr: &str) -> Vec<&'a reify_types::Diagnostic> {
-    warnings_only(module).into_iter().filter(|d| d.message.contains(substr)).collect()
+fn annotation_warnings<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    substr: &str,
+) -> Vec<&'a reify_types::Diagnostic> {
+    warnings_only(module)
+        .into_iter()
+        .filter(|d| d.message.contains(substr))
+        .collect()
 }
 
 // ── Step 3: annotation on structure propagates ──────────────────────────
@@ -14,11 +20,20 @@ fn annotation_warnings<'a>(module: &'a reify_compiler::CompiledModule, substr: &
 #[test]
 fn annotation_on_structure_propagates() {
     let module = compile_source("@test structure S { param x : Real }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.templates.len(), 1, "expected 1 template");
 
     let template = &module.templates[0];
-    assert_eq!(template.annotations.len(), 1, "expected 1 annotation, got {:?}", template.annotations);
+    assert_eq!(
+        template.annotations.len(),
+        1,
+        "expected 1 annotation, got {:?}",
+        template.annotations
+    );
     assert_eq!(template.annotations[0].name, "test");
     assert!(template.annotations[0].args.is_empty());
 }
@@ -27,14 +42,22 @@ fn annotation_on_structure_propagates() {
 
 #[test]
 fn annotation_with_args_on_function_propagates() {
-    let module = compile_source(
-        r#"@deprecated("use new_calc") fn old_calc(x: Real) -> Real { x }"#,
+    let module =
+        compile_source(r#"@deprecated("use new_calc") fn old_calc(x: Real) -> Real { x }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.functions.len(), 1, "expected 1 function");
 
     let func = &module.functions[0];
-    assert_eq!(func.annotations.len(), 1, "expected 1 annotation, got {:?}", func.annotations);
+    assert_eq!(
+        func.annotations.len(),
+        1,
+        "expected 1 annotation, got {:?}",
+        func.annotations
+    );
     assert_eq!(func.annotations[0].name, "deprecated");
     assert_eq!(func.annotations[0].args.len(), 1);
     assert_eq!(
@@ -48,28 +71,48 @@ fn annotation_with_args_on_function_propagates() {
 #[test]
 fn annotation_on_trait_propagates() {
     let module = compile_source("@deprecated trait Measurable { param width : Length }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.trait_defs.len(), 1, "expected 1 trait");
 
     let trait_def = &module.trait_defs[0];
-    assert_eq!(trait_def.annotations.len(), 1, "expected 1 annotation on trait, got {:?}", trait_def.annotations);
+    assert_eq!(
+        trait_def.annotations.len(),
+        1,
+        "expected 1 annotation on trait, got {:?}",
+        trait_def.annotations
+    );
     assert_eq!(trait_def.annotations[0].name, "deprecated");
 }
 
 #[test]
 fn annotation_on_field_propagates() {
-    let module = compile_source(
-        "field def temp_field : Point3 -> Real { source = analytical { |p| 0.0 } }",
-    );
+    let module =
+        compile_source("field def temp_field : Point3 -> Real { source = analytical { |p| 0.0 } }");
     // Note: @deprecated on field is tested separately; first verify basic field compiles
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
 
     let module = compile_source(
         "@deprecated field def temp_field : Point3 -> Real { source = analytical { |p| 0.0 } }",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.fields.len(), 1);
-    assert_eq!(module.fields[0].annotations.len(), 1, "expected 1 annotation on field");
+    assert_eq!(
+        module.fields[0].annotations.len(),
+        1,
+        "expected 1 annotation on field"
+    );
     assert_eq!(module.fields[0].annotations[0].name, "deprecated");
 }
 
@@ -82,13 +125,22 @@ fn annotation_on_purpose_propagates() {
         }
     "#;
     let module = compile_source(source);
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.compiled_purposes.len(), 1, "expected 1 purpose");
     assert_eq!(
-        module.compiled_purposes[0].annotations.len(), 1,
-        "expected 1 annotation on purpose, got {:?}", module.compiled_purposes[0].annotations
+        module.compiled_purposes[0].annotations.len(),
+        1,
+        "expected 1 annotation on purpose, got {:?}",
+        module.compiled_purposes[0].annotations
     );
-    assert_eq!(module.compiled_purposes[0].annotations[0].name, "deprecated");
+    assert_eq!(
+        module.compiled_purposes[0].annotations[0].name,
+        "deprecated"
+    );
 }
 
 // ── Step 9: annotation context validation ───────────────────────────────
@@ -97,20 +149,34 @@ fn annotation_on_purpose_propagates() {
 fn known_annotation_valid_context_no_warning() {
     // @test is valid on structure context — no warnings expected
     let module = compile_source("@test structure S { param x : Real }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let ann_warns = annotation_warnings(&module, "@test");
-    assert!(ann_warns.is_empty(), "unexpected annotation warnings: {:?}", ann_warns);
+    assert!(
+        ann_warns.is_empty(),
+        "unexpected annotation warnings: {:?}",
+        ann_warns
+    );
 }
 
 #[test]
 fn known_annotation_invalid_context_produces_warning() {
     // @test is NOT valid on field context — should produce a warning
-    let module = compile_source(
-        "@test field def f : Point3 -> Real { source = analytical { |p| 0.0 } }",
+    let module =
+        compile_source("@test field def f : Point3 -> Real { source = analytical { |p| 0.0 } }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let ann_warns = annotation_warnings(&module, "@test");
-    assert!(!ann_warns.is_empty(), "expected a warning about @test on field, got none");
+    assert!(
+        !ann_warns.is_empty(),
+        "expected a warning about @test on field, got none"
+    );
     assert!(
         ann_warns[0].message.contains("field"),
         "expected warning to mention 'field', got: {}",
@@ -124,21 +190,36 @@ fn deprecated_valid_on_any_context() {
     let module_fn = compile_source("@deprecated fn f(x: Real) -> Real { x }");
     assert!(errors_only(&module_fn).is_empty());
     let ann_warns_fn = annotation_warnings(&module_fn, "@deprecated");
-    assert!(ann_warns_fn.is_empty(), "unexpected @deprecated warning on fn: {:?}", ann_warns_fn);
+    assert!(
+        ann_warns_fn.is_empty(),
+        "unexpected @deprecated warning on fn: {:?}",
+        ann_warns_fn
+    );
 
     let module_struct = compile_source("@deprecated structure S { param x : Real }");
     assert!(errors_only(&module_struct).is_empty());
     let ann_warns_struct = annotation_warnings(&module_struct, "@deprecated");
-    assert!(ann_warns_struct.is_empty(), "unexpected @deprecated warning on structure: {:?}", ann_warns_struct);
+    assert!(
+        ann_warns_struct.is_empty(),
+        "unexpected @deprecated warning on structure: {:?}",
+        ann_warns_struct
+    );
 }
 
 #[test]
 fn unknown_annotation_produces_warning() {
     // @foobar is not a known annotation — should produce a warning mentioning 'unknown'
     let module = compile_source("@foobar structure S { param x : Real }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let ann_warns = annotation_warnings(&module, "unknown");
-    assert!(!ann_warns.is_empty(), "expected a warning about unknown annotation, got none");
+    assert!(
+        !ann_warns.is_empty(),
+        "expected a warning about unknown annotation, got none"
+    );
     assert!(
         ann_warns[0].message.contains("foobar"),
         "expected warning to mention 'foobar', got: {}",
@@ -150,12 +231,19 @@ fn unknown_annotation_produces_warning() {
 
 #[test]
 fn multiple_annotations_all_preserved() {
-    let module = compile_source(
-        r#"@test @deprecated("old") structure S { param x : Real }"#,
+    let module = compile_source(r#"@test @deprecated("old") structure S { param x : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let template = &module.templates[0];
-    assert_eq!(template.annotations.len(), 2, "expected 2 annotations, got {:?}", template.annotations);
+    assert_eq!(
+        template.annotations.len(),
+        2,
+        "expected 2 annotations, got {:?}",
+        template.annotations
+    );
     assert_eq!(template.annotations[0].name, "test");
     assert!(template.annotations[0].args.is_empty());
     assert_eq!(template.annotations[1].name, "deprecated");
@@ -172,7 +260,11 @@ fn annotation_arg_types_lowered() {
     let module = compile_source(
         r#"@config("name", 42, 1.5, true, mechanical) structure S { param x : Real }"#,
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     let template = &module.templates[0];
     assert_eq!(template.annotations.len(), 1);
     let args = &template.annotations[0].args;
@@ -181,13 +273,20 @@ fn annotation_arg_types_lowered() {
     assert_eq!(args[1], reify_types::AnnotationArg::Int(42));
     assert_eq!(args[2], reify_types::AnnotationArg::Real(1.5));
     assert_eq!(args[3], reify_types::AnnotationArg::Bool(true));
-    assert_eq!(args[4], reify_types::AnnotationArg::Ident("mechanical".into()));
+    assert_eq!(
+        args[4],
+        reify_types::AnnotationArg::Ident("mechanical".into())
+    );
 }
 
 #[test]
 fn annotation_on_occurrence_propagates() {
     let module = compile_source("@test occurrence Heat { param temp : Real }");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     let template = &module.templates[0];
     assert_eq!(
@@ -195,6 +294,10 @@ fn annotation_on_occurrence_propagates() {
         reify_compiler::EntityKind::Occurrence,
         "expected Occurrence entity_kind"
     );
-    assert_eq!(template.annotations.len(), 1, "expected 1 annotation on occurrence");
+    assert_eq!(
+        template.annotations.len(),
+        1,
+        "expected 1 annotation on occurrence"
+    );
     assert_eq!(template.annotations[0].name, "test");
 }

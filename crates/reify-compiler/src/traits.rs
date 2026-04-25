@@ -18,13 +18,18 @@ pub(crate) fn compile_trait(
                     // Extract the name from the Named variant; DimensionalOp can't appear
                     // as a trait param type annotation.
                     let name_opt = match &type_expr.kind {
-                        reify_syntax::TypeExprKind::Named { name, type_args } => Some((name.as_str(), type_args.as_slice())),
+                        reify_syntax::TypeExprKind::Named { name, type_args } => {
+                            Some((name.as_str(), type_args.as_slice()))
+                        }
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
                     };
                     if let Some((name, type_args)) = name_opt {
-                        if let Some(t) =
-                            resolve_type_with_aliases(name, &empty_params, alias_registry, trait_names)
-                        {
+                        if let Some(t) = resolve_type_with_aliases(
+                            name,
+                            &empty_params,
+                            alias_registry,
+                            trait_names,
+                        ) {
                             t
                         } else if let Some(t) = resolve_enum_type(name, enum_defs) {
                             // Enum type defined in the same module; reify enums are
@@ -36,10 +41,12 @@ pub(crate) fn compile_trait(
                                         "enum `{}` does not accept type arguments",
                                         name
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        type_expr.span,
-                                        "enum types are not generic",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "enum types are not generic",
+                                        ),
+                                    ),
                                 );
                             }
                             t
@@ -49,7 +56,10 @@ pub(crate) fn compile_trait(
                                     "unresolved type in trait '{}': {}",
                                     trait_decl.name, name
                                 ))
-                                .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
+                                .with_label(DiagnosticLabel::new(
+                                    type_expr.span,
+                                    "unknown type name",
+                                )),
                             );
                             Type::Real // fallback
                         }
@@ -60,7 +70,10 @@ pub(crate) fn compile_trait(
                                 "unresolved type in trait '{}': {}",
                                 trait_decl.name, type_expr
                             ))
-                            .with_label(DiagnosticLabel::new(type_expr.span, "unexpected dimensional expression")),
+                            .with_label(DiagnosticLabel::new(
+                                type_expr.span,
+                                "unexpected dimensional expression",
+                            )),
                         );
                         Type::Real
                     }
@@ -110,10 +123,9 @@ pub(crate) fn compile_trait(
                                         "unresolved type in trait '{}': {}",
                                         trait_decl.name, name
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        type_expr.span,
-                                        "unknown type name",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(type_expr.span, "unknown type name"),
+                                    ),
                                 );
                                 Some(Type::Real) // error-recovery fallback
                             }
@@ -125,7 +137,10 @@ pub(crate) fn compile_trait(
                                 "unresolved type in trait '{}': {}",
                                 trait_decl.name, type_expr
                             ))
-                            .with_label(DiagnosticLabel::new(type_expr.span, "unexpected dimensional expression")),
+                            .with_label(DiagnosticLabel::new(
+                                type_expr.span,
+                                "unexpected dimensional expression",
+                            )),
                         );
                         Some(Type::Real)
                     }
@@ -219,13 +234,8 @@ pub(crate) fn compile_purpose(
         if let Some(template) = template_registry.get(&param.entity_kind)
             && let Some(msg) = deprecation_message(&template.annotations)
         {
-            emit_deprecation_warning(
-                &template.entity_kind.to_string().to_lowercase(),
-                &param.entity_kind,
-                &msg,
-                param.span,
-                diagnostics,
-            );
+            let kind_label: &'static str = template.entity_kind.as_label();
+            emit_deprecation_warning(kind_label, &param.entity_kind, msg, param.span, diagnostics);
         }
     }
 
@@ -426,4 +436,3 @@ pub(crate) fn compile_purpose(
         pragmas: purpose_def.pragmas.clone(),
     }
 }
-

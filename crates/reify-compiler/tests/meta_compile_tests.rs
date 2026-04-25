@@ -188,9 +188,16 @@ fn duplicate_meta_key_error() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert_eq!(errors.len(), 1, "expected exactly one error for duplicate meta key, got: {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error for duplicate meta key, got: {:?}",
+        errors
+    );
     assert!(
-        errors.iter().any(|d| d.message.contains("duplicate meta key")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("duplicate meta key")),
         "expected 'duplicate meta key' error, got: {:?}",
         errors
     );
@@ -246,7 +253,9 @@ fn duplicate_meta_key_multiple_duplicates() {
         errors
     );
     assert!(
-        errors.iter().all(|d| d.message.contains("duplicate meta key")),
+        errors
+            .iter()
+            .all(|d| d.message.contains("duplicate meta key")),
         "all errors should be 'duplicate meta key' errors, got: {:?}",
         errors
     );
@@ -263,7 +272,9 @@ fn duplicate_meta_key_multiple_duplicates() {
     );
     // All label texts should mention "duplicate key" (not just the static fallback).
     assert!(
-        errors.iter().all(|d| d.labels.iter().any(|l| l.message.contains("duplicate key"))),
+        errors
+            .iter()
+            .all(|d| d.labels.iter().any(|l| l.message.contains("duplicate key"))),
         "all error labels should contain 'duplicate key', got: {:?}",
         errors
     );
@@ -283,7 +294,9 @@ fn duplicate_meta_key_multiple_duplicates() {
     // Each error's label should also name the specific key (IDE hover UX).
     for key in ["'x'", "'y'"] {
         assert!(
-            errors.iter().any(|d| d.labels.iter().any(|l| l.message.contains(key))),
+            errors
+                .iter()
+                .any(|d| d.labels.iter().any(|l| l.message.contains(key))),
             "expected a label mentioning key {key}, got: {errors:?}",
         );
     }
@@ -409,7 +422,9 @@ fn empty_meta_block_access_gives_no_key_error() {
         .collect();
     assert!(!errors.is_empty(), "expected at least one error");
     assert!(
-        errors.iter().any(|d| d.message.contains("meta block has no key")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("meta block has no key")),
         "expected 'meta block has no key' error for empty meta block access, got: {:?}",
         errors
     );
@@ -448,7 +463,9 @@ fn no_meta_block_access_still_gives_no_meta_block_error() {
         errors
     );
     assert!(
-        !errors.iter().any(|d| d.message.contains("meta block has no key")),
+        !errors
+            .iter()
+            .any(|d| d.message.contains("meta block has no key")),
         "should NOT produce 'meta block has no key' when no meta block is declared, got: {:?}",
         errors
     );
@@ -507,14 +524,27 @@ fn meta_change_affects_content_hash() {
     let (template_a, diags_a) = compile_first_template(source_a);
     let (template_b, diags_b) = compile_first_template(source_b);
 
-    let errors_a: Vec<_> = diags_a.iter().filter(|d| d.severity == Severity::Error).collect();
-    let errors_b: Vec<_> = diags_b.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors_a.is_empty(), "unexpected errors in source_a: {:?}", errors_a);
-    assert!(errors_b.is_empty(), "unexpected errors in source_b: {:?}", errors_b);
+    let errors_a: Vec<_> = diags_a
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let errors_b: Vec<_> = diags_b
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_a.is_empty(),
+        "unexpected errors in source_a: {:?}",
+        errors_a
+    );
+    assert!(
+        errors_b.is_empty(),
+        "unexpected errors in source_b: {:?}",
+        errors_b
+    );
 
     assert_ne!(
-        template_a.content_hash,
-        template_b.content_hash,
+        template_a.content_hash, template_b.content_hash,
         "entities differing only in meta value must have different content_hashes"
     );
 }
@@ -545,14 +575,27 @@ fn meta_presence_affects_content_hash() {
     let (template_with, diags_with) = compile_first_template(source_with_meta);
     let (template_without, diags_without) = compile_first_template(source_without_meta);
 
-    let errors_with: Vec<_> = diags_with.iter().filter(|d| d.severity == Severity::Error).collect();
-    let errors_without: Vec<_> = diags_without.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors_with.is_empty(), "unexpected errors (with meta): {:?}", errors_with);
-    assert!(errors_without.is_empty(), "unexpected errors (without meta): {:?}", errors_without);
+    let errors_with: Vec<_> = diags_with
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let errors_without: Vec<_> = diags_without
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_with.is_empty(),
+        "unexpected errors (with meta): {:?}",
+        errors_with
+    );
+    assert!(
+        errors_without.is_empty(),
+        "unexpected errors (without meta): {:?}",
+        errors_without
+    );
 
     assert_ne!(
-        template_with.content_hash,
-        template_without.content_hash,
+        template_with.content_hash, template_without.content_hash,
         "entity with meta block must have a different content_hash than the same entity without one"
     );
 }
@@ -586,14 +629,27 @@ fn meta_content_hash_is_deterministic() {
     let (template1, diags1) = compile_first_template(source);
     let (template2, diags2) = compile_first_template(source);
 
-    let errors1: Vec<_> = diags1.iter().filter(|d| d.severity == Severity::Error).collect();
-    let errors2: Vec<_> = diags2.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors1.is_empty(), "unexpected errors (run 1): {:?}", errors1);
-    assert!(errors2.is_empty(), "unexpected errors (run 2): {:?}", errors2);
+    let errors1: Vec<_> = diags1
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let errors2: Vec<_> = diags2
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors1.is_empty(),
+        "unexpected errors (run 1): {:?}",
+        errors1
+    );
+    assert!(
+        errors2.is_empty(),
+        "unexpected errors (run 2): {:?}",
+        errors2
+    );
 
     assert_eq!(
-        template1.content_hash,
-        template2.content_hash,
+        template1.content_hash, template2.content_hash,
         "two compilations of identical source must produce the same content_hash"
     );
 }
@@ -629,16 +685,27 @@ fn meta_key_rename_affects_content_hash() {
     let (template_author, diags_author) = compile_first_template(source_author);
     let (template_creator, diags_creator) = compile_first_template(source_creator);
 
-    let errors_author: Vec<_> =
-        diags_author.iter().filter(|d| d.severity == Severity::Error).collect();
-    let errors_creator: Vec<_> =
-        diags_creator.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors_author.is_empty(), "unexpected errors (author): {:?}", errors_author);
-    assert!(errors_creator.is_empty(), "unexpected errors (creator): {:?}", errors_creator);
+    let errors_author: Vec<_> = diags_author
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let errors_creator: Vec<_> = diags_creator
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_author.is_empty(),
+        "unexpected errors (author): {:?}",
+        errors_author
+    );
+    assert!(
+        errors_creator.is_empty(),
+        "unexpected errors (creator): {:?}",
+        errors_creator
+    );
 
     assert_ne!(
-        template_author.content_hash,
-        template_creator.content_hash,
+        template_author.content_hash, template_creator.content_hash,
         "entities differing only in meta key name must have different content_hashes"
     );
 }
@@ -677,14 +744,27 @@ fn meta_content_hash_key_order_independent() {
     let (template_z, diags_z) = compile_first_template(source_z_first);
     let (template_a, diags_a) = compile_first_template(source_a_first);
 
-    let errors_z: Vec<_> = diags_z.iter().filter(|d| d.severity == Severity::Error).collect();
-    let errors_a: Vec<_> = diags_a.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors_z.is_empty(), "unexpected errors (z-first): {:?}", errors_z);
-    assert!(errors_a.is_empty(), "unexpected errors (a-first): {:?}", errors_a);
+    let errors_z: Vec<_> = diags_z
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let errors_a: Vec<_> = diags_a
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_z.is_empty(),
+        "unexpected errors (z-first): {:?}",
+        errors_z
+    );
+    assert!(
+        errors_a.is_empty(),
+        "unexpected errors (a-first): {:?}",
+        errors_a
+    );
 
     assert_eq!(
-        template_z.content_hash,
-        template_a.content_hash,
+        template_z.content_hash, template_a.content_hash,
         "meta entries listed in different source order must produce the same content_hash"
     );
 }

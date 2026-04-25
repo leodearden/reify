@@ -1,5 +1,54 @@
 use super::*;
 
+/// Returns `true` if `ty` is a scalar-like leaf type eligible as the `Q`
+/// (quantity) side of Rules 2a/2b/2c.
+///
+/// The spec's "Q is a single value" framing covers the following leaf kinds:
+/// plain primitives (`Bool`, `Int`, `Real`, `String`), dimensioned scalars
+/// (`Scalar`), enumerations (`Enum`), type parameters (`TypeParam`),
+/// user-defined structure references (`StructureRef`), trait objects
+/// (`TraitObject`), and the geometry sentinel (`Geometry`).
+///
+/// Compound/aggregate types (`Vector`, `Tensor`, `Matrix`, `Point`, `List`,
+/// `Set`, `Map`, `Option`, `Complex`, `Field`, `Range`, `Function`, `Frame`,
+/// `Transform`, `Plane`, `Orientation`, `Axis`, `BoundingBox`) are NOT leaf
+/// types and return `false`.
+///
+/// **Spec reference:** `docs/reify-language-spec.md` §3.3.1 (lines 295–329).
+/// Specifically:
+/// - Lines 298–301: `Scalar<Q: Dimension>` is defined as an independent rank-0
+///   type without spatial dimensionality. Q must be a "Dimension" — a single
+///   dimensioned value, not a compound/aggregate carrier of shape.
+/// - Line 305: "**Tensor conversion:** `Scalar<Q>` converts implicitly to
+///   `Tensor<0, N, Q>` for any `N`, and vice versa." This is the basis of
+///   Rules 2a/2b; it only holds when Q is a leaf Dimension type.
+/// - Lines 317–320: restates the alias relationship and notes
+///   `Vector<N,Q> = Tensor<1,N,Q>`.
+///
+/// This allowlist (not a denylist) is intentional: future `Type` variants
+/// default to *rejected* rather than default-admitted, forcing each new
+/// variant to be explicitly evaluated against the spec's "Q is a Dimension /
+/// single value" criterion before being added here.
+///
+/// `Type::Error` is excluded: the anti-cascade guard at the top of
+/// `implicitly_converts_to` short-circuits before any leaf check is reached,
+/// so Error inputs never arrive here.
+fn is_scalar_like_leaf(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Bool
+            | Type::Int
+            | Type::Real
+            | Type::String
+            | Type::Scalar { .. }
+            | Type::Enum(_)
+            | Type::TypeParam(_)
+            | Type::StructureRef(_)
+            | Type::TraitObject(_)
+            | Type::Geometry
+    )
+}
+
 pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
     // Anti-cascade guard — asymmetric error-wildcard contract (task-448 / task-1918).
     //
@@ -57,25 +106,49 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
             },
         ) => tn == vn && tq == vq,
 
-        // Rule 2a: Q -> Tensor<0,_,Q>  (N is irrelevant for rank-0)
+        // Rule 2c: Tensor<0,M,Q> -> Tensor<0,N,Q>  (same Q, any N — N irrelevant for rank-0)
+        //
+        // Spec rationale: rank-0 tensors are semantically scalar-like; their N dimension
+        // carries no indexable information. By transitivity of Rules 2a/2b, if both
+        // `Q → Tensor<0,M,Q>` and `Q → Tensor<0,N,Q>` hold, direct
+        // `Tensor<0,M,Q> → Tensor<0,N,Q>` must also hold. Without this rule a trait
+        // requiring `Tensor<0,5,Q>` would reject a structure providing `Tensor<0,3,Q>`
+        // despite them being semantically identical.
+        //
+        // Guard: `is_scalar_like_leaf(q1)` mirrors the leaf-Q guard on Rules 2a/2b.
+        // The transitivity argument only holds when Rules 2a/2b themselves fire (i.e.
+        // when Q is a scalar-like leaf). Compound-Q pairs (e.g. Vector, Point) are
+        // rejected consistently with Rules 2a/2b. Checking q1 alone is sufficient;
+        // `q1 == q2` implies q2 is the same leaf.
         (
-            from_ty,
             Type::Tensor {
                 rank: 0,
-                quantity: tq,
+                quantity: q1,
                 ..
             },
-        ) => from_ty == tq.as_ref(),
+            Type::Tensor {
+                rank: 0,
+                quantity: q2,
+                ..
+            },
+        ) if is_scalar_like_leaf(q1) => q1 == q2,
+
+        // Rule 2a: Q -> Tensor<0,_,Q>  (N is irrelevant for rank-0)
+        //
+        // Guard: `from_ty` must be a scalar-like leaf type — see `is_scalar_like_leaf`.
+        // Compound/aggregate types are excluded: the spec's "Q is a single value" framing
+        // covers only leaf kinds (Bool, Int, Real, String, Scalar, Enum, TypeParam,
+        // StructureRef, TraitObject, Geometry). Rule 2c (above) handles Tensor<0>↔Tensor<0>.
+        (from_ty, Type::Tensor { rank: 0, quantity: tq, .. })
+            if is_scalar_like_leaf(from_ty)
+            => from_ty == tq.as_ref(),
 
         // Rule 2b: Tensor<0,_,Q> -> Q  (N is irrelevant for rank-0)
-        (
-            Type::Tensor {
-                rank: 0,
-                quantity: tq,
-                ..
-            },
-            to_ty,
-        ) => tq.as_ref() == to_ty,
+        //
+        // Guard: `to_ty` must be a scalar-like leaf type — see `is_scalar_like_leaf`.
+        (Type::Tensor { rank: 0, quantity: tq, .. }, to_ty)
+            if is_scalar_like_leaf(to_ty)
+            => tq.as_ref() == to_ty,
 
         // Rule 3: Tensor<2,N,Q> -> Matrix<N,N,Q>  (one-way, square matrices only)
         // Note: Matrix->Tensor is NOT allowed; the default `false` arm handles that.
@@ -96,12 +169,30 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
     }
 }
 
-/// Check if an argument type is compatible with a parameter type.
-/// Exact match always works. Int→Real widening is allowed.
-/// Implicit tensor/vector/matrix conversions are also checked (bidirectional).
+/// Check if an argument type is compatible with a declared parameter/annotation type.
 ///
-/// Not used in overload resolution (which uses exact matching), but used
-/// in trait conformance and field composition checks.
+/// Returns `true` when `arg_ty` can be used where `param_ty` is declared, under
+/// any of the following rules:
+/// - **Identity**: `param_ty == arg_ty` (delegated to `implicitly_converts_to`).
+/// - **Int→Real widening**: whole-number literals parse as `Int` and must be
+///   accepted where `Real` is annotated (e.g. `let x : Real = 42` at
+///   `conformance.rs:591`).
+/// - **Bidirectional implicit conversions**: calls `implicitly_converts_to` in
+///   **both** directions (`param→arg` and `arg→param`), so the explicitly
+///   one-way Rule 3 (`Tensor<2,N,Q>→Matrix<N,N,Q>`) appears symmetric here.
+///   This is intentional for trait-let-binding annotation checks
+///   (`conformance.rs:591`), where either annotation direction must be accepted.
+///
+/// # When to use `implicitly_converts_to` directly
+///
+/// **Use `implicitly_converts_to` directly when direction matters:**
+/// - Trait member conformance (`conformance.rs:384`): producer type must convert
+///   *to* the trait's declared type — direction is fixed.
+/// - Field composition (`functions.rs:289`): inner codomain must convert *to*
+///   outer domain — direction is fixed.
+///
+/// Using `type_compatible` at those sites would silently accept
+/// `Matrix<3,3,Q>→Tensor<2,3,Q>` even though Rule 3 is one-way.
 ///
 /// # Error-wildcard contract (task-448 / task-1918)
 ///
@@ -126,9 +217,6 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
          this indicates a bug at the call site (task-1918)"
     );
     if param_ty.is_error() || arg_ty.is_error() {
-        return true;
-    }
-    if param_ty == arg_ty {
         return true;
     }
     // Allow Int→Real widening coercion

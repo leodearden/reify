@@ -8298,7 +8298,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -8306,12 +8306,16 @@
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/src/trait_requirements.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+            "crates/reify-compiler/tests/trait_conformance_tests.rs",
+            "crates/reify-compiler/tests/trait_conformance_type_error_tests.rs"
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:03.337Z"
+        "updatedAt": "2026-04-22T11:55:28.081Z"
       },
       {
         "id": "388",
@@ -8495,18 +8499,22 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/constraint_inst_tests.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:03.407Z"
+        "updatedAt": "2026-04-22T11:55:28.237Z"
       },
       {
         "id": "395",
@@ -8516,19 +8524,17 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "deferred",
+        "status": "done",
         "metadata": {
-          "modules": [
-            "crates/reify-compiler/src"
-          ],
+          "modules": [],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/type_compat.rs"
-          ]
+          "files": [],
+          "done_provenance": {
+            "commit": "1852a03737e66827045f765a13d8a76708a1df21"
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:03.482Z"
+        "updatedAt": "2026-04-22T16:25:10.316Z"
       },
       {
         "id": "396",
@@ -8551,7 +8557,7 @@
         "id": "397",
         "title": "Review: Eval meta_map performance and refactoring (17 suggestions from task 212)",
         "description": "Triage and address 17 code review suggestions from the task-212 review. Key themes: hot-path clones, code duplication, eager cloning, async safety, test gaps.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "details": "<info added on 2026-04-21T14:28:33.374Z>\nMemory hints have been updated to include entities: [\"evaluate_let_bindings\", \"meta_map\", \"TopologyTemplate\"] and queries: [\"evaluate_let_bindings extract_dependency_trace topological sort\", \"meta_map performance review suggestions task 212\", \"task 470 eliminate redundant computation let_bindings\"]. Note: Task 470 (Eliminate redundant computation in evaluate_let_bindings) was created directly from this review's findings and completed via commit 2ab85ba6578c (2026-04-22). Task 397 is now unblocked and pending.\n</info added on 2026-04-21T14:28:33.374Z>\n<info added on 2026-04-22T04:14:27.079Z>\nREPLAN REQUIRED (reconciliation 2026-04-22): The original review target `crates/reify-eval/src/lib.rs` was split by task 2032 into `engine_*.rs` sibling modules (`engine_eval.rs`, `engine_edit.rs`, and related siblings). The 17 suggestions from task 212 (hot-path clones, code duplication, eager cloning, async safety, test gaps) must now be triaged against the post-split `engine_*.rs` structure. Memory hints: search 'task 2032 engine_*.rs split restructuring reify-eval lib.rs', search 'meta_map performance review suggestions task 212 hot-path clones', entities: evaluate_let_bindings, meta_map, engine_eval, engine_edit.\n</info added on 2026-04-22T04:14:27.079Z>",
@@ -8581,7 +8587,7 @@
           "files": [],
           "_causation_id": "f6512fb7-cad5-4e80-86da-ddbca8dc0e37"
         },
-        "updatedAt": "2026-04-22T04:21:56.396Z"
+        "updatedAt": "2026-04-22T11:55:28.476Z"
       },
       {
         "id": "398",
@@ -9280,19 +9286,25 @@
         "description": "In `crates/reify-compiler/src/lib.rs`, the `detect_recursive_structures()` function iterates over `st.sccs` twice with an identical `is_cycle` predicate — once to build `in_cycle[]` and emit diagnostics (lines ~2451-2469), and again to build `cyclic_sccs` (lines ~2475-2486). This duplicated predicate creates a divergence risk: if the is_cycle logic is updated in one loop but not the other, `in_cycle` flags and `cyclic_sccs` silently diverge, breaking the contract with the termination-check pass.\n\nFix: Merge both loops into a single pass that simultaneously builds `in_cycle[]`, emits diagnostics, and pushes to `cyclic_sccs`. Compute `is_cycle` exactly once per SCC.\n\nMemory hints: search \"detect_recursive_structures Tarjan SCC\" for implementation context; get_entity \"TopologyTemplate\" for the is_recursive field.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:03.699Z",
+        "updatedAt": "2026-04-22T10:14:41.659Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-compiler/src/lib.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/src"
-          ]
+          "files": [],
+          "modules": [],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Merge redundant SCC iteration loops in detect_recursive_structures"
+            ]
+          },
+          "done_provenance": {
+            "commit": "2bbe33c6ed3fb60ebaabe532ebc2a449bb0ae26a",
+            "note": "phantom-blocked — work already on main via scc.rs extraction 4 weeks before task was created"
+          }
         }
       },
       {
@@ -10770,7 +10782,7 @@
         "description": "The first-pass scope registration in compile_entity (reify-compiler/src/lib.rs ~line 2612-2646) uses is_geometry_let to pre-register let bindings with type hints before expression compilation. The ordering of the functions slice matters for forward references. This invariant is not documented. Add doc comments explaining the two-pass compilation strategy, the forward-reference capability, and shadowing behavior when names collide.\\n\\nMemory hints: search \"is_geometry_let forward reference\", entities: is_geometry_let, compile_entity",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10783,7 +10795,7 @@
             "crates/reify-compiler/src"
           ]
         },
-        "updatedAt": "2026-04-20T12:20:04.202Z"
+        "updatedAt": "2026-04-22T10:01:11.962Z"
       },
       {
         "id": "489",
@@ -11232,20 +11244,27 @@
         "description": "The prelude_trait_defs Vec at lib.rs:2123 exists for lifetime anchoring but is unnecessary since prelude is a borrowed slice.",
         "details": "Remove the intermediate Vec and iterate directly: for t in prelude.iter().flat_map(|m| m.trait_defs.iter()) { trait_registry.insert(t.name.clone(), t); }. This eliminates the heap allocation without any lifetime issues.\n\nFiles: crates/reify-compiler/src/lib.rs\n\nmemory_hints: search \"compile_with_prelude trait_registry\" | entities: compile_with_prelude",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
-          "files": [
-            "crates/reify-compiler/src/lib.rs"
-          ],
-          "modules": [
-            "crates/reify-compiler/src"
-          ]
+          "files": [],
+          "modules": [],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Eliminate unnecessary intermediate Vec in compile_with_prelude"
+            ]
+          },
+          "done_provenance": {
+            "commit": "68c21549d5f03b3b8eb1e21f453959d95fbd2f22",
+            "commit_input": "68c21549d",
+            "note": "Optimization already implemented in commit 68c21549d ('amend: extract build_trait_registry helper, suggestion 2'), which explicitly drops the intermediate prelude_trait_defs Vec and iterates prelude modules directly into the trait registry. Commit is on main. Current build_trait_registry helper in crates/reify-compiler/src/compile_builder/traits_phase.rs:30-44 implements exactly the pattern task 508 prescribes."
+          }
         },
-        "updatedAt": "2026-04-20T12:20:04.276Z"
+        "updatedAt": "2026-04-22T10:04:43.413Z"
       },
       {
         "id": "509",
@@ -11358,7 +11377,7 @@
         "description": "Address performance suggestions from task #326 review:\n1. Cache prelude functions in Engine::new() instead of re-cloning on every eval() call (crates/reify-eval/src/lib.rs:847-852)\n2. Remove unnecessary prelude_trait_defs Vec — prelude is &'static, no lifetime anchor needed (crates/reify-compiler/src/lib.rs:2123-2128)\n3. Consider pre-built prelude_context for compile_with_prelude to avoid re-flattening enums (crates/reify-compiler/src/lib.rs:2096-2100)\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-compiler/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11383,9 +11402,12 @@
               "compile_with_prelude pre-built prelude context avoid re-flattening enums"
             ]
           },
-          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
+          "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78",
+          "done_provenance": {
+            "commit": "94e327979d8f4d8bce213957819bf991593f8b47"
+          }
         },
-        "updatedAt": "2026-04-21T21:57:58.755Z"
+        "updatedAt": "2026-04-23T18:41:54.115Z"
       },
       {
         "id": "514",
@@ -17013,7 +17035,7 @@
         "description": "The prelude-unit seeding loop in compile_with_prelude constructs UnitEntry field-by-field from CompiledUnit. This is fragile: if UnitEntry gains a new field, the manual copy will silently compile with a default rather than carrying the field through.\n\nFix: Implement `From<&CompiledUnit> for UnitEntry` (using `SourceSpan::empty(0)` for span) and use it in the seeding loop. This makes the conversion canonical and ensures new fields are automatically carried through.\n\nLocations: crates/reify-compiler/src/lib.rs:2805-2813 (seeding loop), UnitEntry/CompiledUnit struct definitions.\n\nmemory_hints: search \"UnitEntry CompiledUnit struct fields\" for current struct shapes.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17026,7 +17048,7 @@
             "crates/reify-compiler/src"
           ]
         },
-        "updatedAt": "2026-04-20T12:20:04.981Z"
+        "updatedAt": "2026-04-22T10:01:12.124Z"
       },
       {
         "id": "764",
@@ -17083,19 +17105,17 @@
         "description": "The public API now has three entry points: compile() (no prelude), compile_with_prelude() (caller-supplied), and compile_with_stdlib() (full stdlib). The bare compile() silently fails to resolve any standard units — including the nine that were previously hard-coded — making it a trap for callers.\n\nFix: Either mark compile() with #[deprecated] pointing to compile_with_stdlib, or add a prominent doc warning that compile() is intended only for prelude-module bootstrapping and will not resolve standard units.\n\nLocation: crates/reify-compiler/src/lib.rs:2636-2641.\n\nmemory_hints: search \"compile entry point API\" for context on the three-function API.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-compiler/src/lib.rs"
-          ],
+          "files": [],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/lib.rs"
           ]
         },
-        "updatedAt": "2026-04-20T12:20:05.053Z"
+        "updatedAt": "2026-04-22T11:55:28.719Z"
       },
       {
         "id": "767",
@@ -18399,7 +18419,7 @@
         "description": "Bundle of low-severity cleanup items from 2026-04-03 review:\n\n1. reify-mcp/src/jsonrpc.rs:232 — serde_json::to_string(&response).unwrap_or_default() should be .expect(\"JsonRpcResponse serialization\") since structural failure is a bug (F7)\n2. Stale \"stub\" comments on fully-implemented files (F8):\n   - crates/reify-runtime/src/lib.rs:1 — \"Stub — M1 implementation pending\"\n   - crates/reify-mcp/src/tools/write.rs:1 — \"Write tool stubs (5 tools)\"\n   - crates/reify-eval/src/deps.rs:5 — \"minimal stub for task 12\"\n3. Dead-code fields stored but never read (F9):\n   - EntityDefRef::content_hash (crates/reify-compiler/src/lib.rs:4108)\n   - ConcurrentEvalAdapter::version (crates/reify-runtime/src/concurrent_eval.rs:69)\n   Either document why retained or remove.\n4. Redundant #[allow(unused_imports)] on crates/reify-expr/tests/component_helper_tests.rs:6 (F10)\n\nPartially overlaps with task #383 (sweep/loft dead code, pending).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -18434,7 +18454,7 @@
           },
           "_causation_id": "ad5a6e55-7ee2-4fbc-956e-635d477ccc78"
         },
-        "updatedAt": "2026-04-21T22:06:37.477Z"
+        "updatedAt": "2026-04-22T11:55:28.835Z"
       },
       {
         "id": "830",
@@ -24275,24 +24295,30 @@
       {
         "id": "1108",
         "title": "Clean up stale/fragile comments from task 1083 (OptionNone let-binding fixup)",
-        "description": "Two comment-cleanup items from the task 1083 review:\n\n1. **Stale doc comment** in `crates/reify-compiler/tests/qualified_access_compile_tests.rs` lines 278-280: The comment reads \"Currently fails because the let-binding second pass uses compiled_expr.result_type (Option<Real> placeholder) instead of consulting let_decl.type_expr, and lacks the OptionNone fixup present in the param-default path.\" This is now inaccurate — the fixup has been implemented and the test passes. Update to describe the test's purpose without \"Currently fails\" phrasing.\n\n2. **Fragile line-number reference** in `crates/reify-compiler/src/lib.rs` lines 5226-5227: Comment says \"mirroring the param-default fixup at lines 5179-5185\". Reference by description instead (e.g., \"mirroring the param-default OptionNone fixup in the `else` branch above\") so it doesn't go stale as the file is edited.",
-        "details": "",
-        "testStrategy": "",
-        "status": "deferred",
+        "description": "Stale doc-comment cleanup in crates/reify-compiler/tests and crates/reify-compiler/src from multiple review passes (task 1083 follow-up + esc-1966-3). All changes are doc-comment edits only — no assertion logic or production-code behavior changes.",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
+        "details": "### Item 1 — Stale doc comment from task 1083 (qualified_access_compile_tests.rs)\n\n**File:** `crates/reify-compiler/tests/qualified_access_compile_tests.rs` lines 278-280\n\nThe comment reads: \"Currently fails because the let-binding second pass uses compiled_expr.result_type (Option<Real> placeholder) instead of consulting let_decl.type_expr, and lacks the OptionNone fixup present in the param-default path.\" This is now inaccurate — the fixup has been implemented and the test passes. Update the comment to describe the tested behavior as it stands today (the OptionNone fixup is present and the test succeeds).\n\n### Item 2 — Second cleanup item from task 1083\n\nSee original task 1083 review notes in `crates/reify-compiler/src` for the second stale/fragile comment identified during that review pass. Retarget or remove as appropriate.\n\n### Item 3 — Stale doc-comment preamble on constraint_def_unknown_type_error_lists_acceptable_categories (esc-1966-3)\n\n**File:** `crates/reify-compiler/tests/constraint_def_compile_tests.rs:1264-1283`\n\nThe doc-comment preamble for assertion (ii) describes an \"at least two of the accepted categories by lowercase substring\" check with an \"'at least two' check to avoid over-pinning specific wording\" rationale, but the code actually asserts a single `structure` substring. The inline `// (ii) ...` comment correctly explains the chosen check. Fix: delete the outdated \"at least two...\" preamble lines from the doc comment above `fn constraint_def_unknown_type_error_lists_acceptable_categories`; do not alter the assertion logic.",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:05.266Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
             "crates/reify-compiler/src/lib.rs"
-          ]
-        }
+          ],
+          "curator_action": "combine",
+          "curator_justification": "Both tasks are tiny stale-doc-comment cleanups inside crates/reify-compiler/tests (and src). They share the same module-lock keys (reify-compiler/src + reify-compiler/tests), the same concern (doc comments that no longer match the code they annotate), and zero behavioral changes. Combining loads context once and serializes on the same lock with no parallelism loss. All four combine rules hold: single coherent concern, same ≤2 module keys, well under planning budget, both low/polish priority with",
+          "combined_at": "2026-04-22T15:19:55.627032+00:00",
+          "done_provenance": {
+            "commit": "71317add9d694dbe296dca021544120903bdad25"
+          }
+        },
+        "updatedAt": "2026-04-22T16:09:35.512Z"
       },
       {
         "id": "1109",
@@ -24633,7 +24659,7 @@
         "description": "In lib.rs:5146-5189, the same `compiled_templates.iter().find(|t| t.name == sub.structure_name)` linear scan is performed 3 times for the same sub (lines 5151, 5160, 5176). All find the same `child_tmpl`. Additionally, for collection subs, `sub_member_types` and `collection_sub_member_types` are populated with identical HashMap data.\n\nFix: Hoist the template lookup to a single `let child_tmpl = ...` and share it across all three consumers. For collection subs, either skip `sub_member_types` population (if they should use a different resolution path per the collection guard task) or share the HashMap.\n\nmemory_hints: search \"sub scope building template lookup\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24643,9 +24669,19 @@
           ],
           "modules": [
             "crates/reify-compiler/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Deduplicate template lookups in sub scope building"
+            ]
+          },
+          "done_provenance": {
+            "note": "Superseded by Task 1570 (done). The original lib.rs:5146-5189 target no longer exists — lib.rs is now 229 lines and `compiled_templates.iter().find` is gone from the compiler source. Task 1570 collapsed the duplicate template lookup in entity.rs and unified sub_member_types with collection_sub_member_types in scope.rs."
+          },
+          "_causation_id": "d483d5f6-cc64-4374-b7d1-d595a864247b"
         },
-        "updatedAt": "2026-04-20T12:20:05.338Z"
+        "updatedAt": "2026-04-22T20:28:26.705Z"
       },
       {
         "id": "1127",
@@ -25080,21 +25116,24 @@
         "description": "Refine the @deprecated use-site warning implementation in crates/reify-compiler/src/lib.rs:\n\n1. **Merge duplicate loops** (L5316-5328 + L5332): The deprecation-check loop and the type-argument-checking loop both iterate `structure.trait_bounds` and look up `trait_registry.get(&trait_bound.name)`. Merge the deprecation check into the existing loop body at L5332 to avoid redundant iteration and hash-map lookups.\n\n2. **Return `&str` from `deprecation_message`** (L4701-4711): Change signature from `fn deprecation_message(annotations: &[Annotation]) -> Option<String>` to `-> Option<&str>`. The annotations outlive every call-site, so return `Some(s.as_str())` for String args and `Some(\"\")` for no-args. Update the ~5 call-sites.\n\n3. **Consistent entity_kind label** (L3645-3654): The purpose-param deprecation check uses `template.entity_kind.to_string().to_lowercase()` while all other call-sites use hardcoded string literals. Match on `template.entity_kind` to produce a known literal for consistency.\n\n4. **Add deprecated occurrence test**: Tests cover structures, functions, traits, purpose params, but not occurrence types. Add a test that defines a `@deprecated` occurrence and references it to confirm warnings are emitted.\n\nmemory_hints: search \"deprecation_message emit_deprecation_warning\" in reify-compiler",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:05.412Z",
+        "updatedAt": "2026-04-23T19:26:37.237Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ],
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/traits.rs",
             "crates/reify-compiler/tests/deprecated_use_tests.rs"
-          ]
+          ],
+          "files": [],
+          "done_provenance": {
+            "commit": "02d193668f0be0934f36e12133157543a73ec56b"
+          }
         }
       },
       {
@@ -25103,16 +25142,21 @@
         "description": "TraitDecl.refinements is currently `Vec<String>` without individual spans. The deprecation warning for trait refinements (L4177-4191 in lib.rs) uses `trait_decl.span` (the entire child trait declaration) rather than pointing at the specific `: Base` refinement reference. This makes the warning highlight too much code.\n\nChange `refinements: Vec<String>` to `refinements: Vec<SpannedIdent>` (or similar span-bearing type) in reify-types, update the parser in reify-syntax to capture per-refinement spans, and update the compiler to use the precise span in the deprecation warning.\n\nmemory_hints: search \"TraitDecl refinements Vec<String>\" in reify-types; get_entity \"TraitDecl\"",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:05.479Z",
+        "updatedAt": "2026-04-23T18:41:57.078Z",
         "metadata": {
           "modules": [
-            "crates/reify-types/src",
-            "crates/reify-syntax/src",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/tests/deprecated_use_tests.rs",
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-syntax/tests/trait_tests.rs",
+            "crates/reify-types/src/lib.rs",
+            "crates/reify-types/src/spanned_ident.rs"
           ],
           "files": [
             "crates/reify-types/src/traits.rs",
@@ -25329,27 +25373,29 @@
         "description": "Consolidates pragma validation consolidation with context-aware diagnostics, module-level pragma inclusion in CompiledModule content_hash, and missing pragma test coverage (occurrences and #no_prelude storage).",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 1163 plus 2 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 1163: Consolidate pragma validation and add context-aware diagnostics\n\n\nTwo related improvements to pragma validation in the compiler:\n\n1. **Use `_context` parameter in `validate_pragmas`** (lib.rs:4732-4746): The `_context` parameter is accepted but never read. Unlike `validate_annotations` which uses context for context-specific warnings, `validate_pragmas` only does name-lookup. Use the context to provide better diagnostics (e.g., \"#no_prelude is only valid at module level\" when found on a block).\n\n2. **Consolidate known pragma name lists** (lib.rs:3905 and 4737): `KNOWN_MODULE_PRAGMAS` (5 entries) and `KNOWN_BLOCK_PRAGMAS` (3 entries, a subset) are defined independently with no compiler-enforced link. Extract to a shared location or add cross-references.\n\nMemory hints: search for \"pragma validation\" and \"known pragma names\" in reify-compiler.\n\n### Absorbed from task 1164: Include module-level pragmas in CompiledModule content hash\nThe content hash computation for CompiledModule (lib.rs:4530-4552) does not include module-level pragmas. If pragmas like `#precision(value=64)` are semantically meaningful for downstream compilation (solver config, numeric precision), a change to pragmas alone won't invalidate cached content hashes, risking stale results in incremental compilation.\n\nEither:\n- Hash the pragmas vector into `all_hashes` if they affect semantics, OR\n- Document that pragmas are intentionally excluded from the content hash if they are purely advisory/metadata.\n\nMemory hints: search for \"content hash\" and \"CompiledModule\" in reify-compiler. Check task 12 for content-hash caching context.\n\n### Absorbed from task 1165: Add missing pragma test coverage: occurrences and #no_prelude storage\nTwo test coverage gaps in pragma_compile_tests.rs:\n\n1. **Occurrence-level pragmas untested**: Tests cover pragma propagation for structures, traits, and purposes, but not occurrences. The `From<&'a OccurrenceDef>` → `EntityDefRef` conversion path that carries pragmas is untested. Add a test like `occurrence_pragma_propagated_to_topology_template`.\n\n2. **#no_prelude not verified in CompiledModule.pragmas**: Existing tests verify the behavioral effect (suppressing stdlib units) but not that `#no_prelude` itself appears in `module.pragmas`. Add an assertion like `module.pragmas.iter().any(|p| p.name == \"no_prelude\")` to `no_prelude_simple_structure_compiles_clean` or a new test.\n\nBoth are low-risk (shared code paths / behavioral coverage exists) but worth closing.\n\nMemory hints: search for \"pragma compile tests\" and \"EntityDefRef\" in reify-compiler.\n",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/pragma_compile_tests.rs"
-          ],
+          "files": [],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs"
           ],
           "bundled_from": [
             "1164",
             "1165"
           ],
           "bundled_at": "2026-04-11",
-          "bundle_key": "F"
+          "bundle_key": "F",
+          "done_provenance": {
+            "commit": "6b903ef078eac07f7961666eaf45d8a3128a44cd",
+            "note": "Task 1163 bundle merged to main via fast-forward (last commit in the task series)."
+          }
         },
-        "updatedAt": "2026-04-20T12:20:05.549Z"
+        "updatedAt": "2026-04-23T20:19:14.710Z"
       },
       {
         "id": "1164",
@@ -28026,18 +28072,24 @@
         "description": "Two issues in the guard compilation fallback at lib.rs:5761-5772:\n\n1. **Misleading cascade**: Setting `guard_expr = None` when guard compilation fails prevents the old \"guard references no Int/Bool param\" cascade, but introduces a new one — the termination check sees `guard_expr: None` and emits \"recursive sub has no termination condition: add a where clause\" even though the user DID write a where clause. Fix: add a `guard_compile_failed: bool` field to `SubComponentDecl` (or use a sentinel like `guard_expr: Some(POISON)`) so the termination check can distinguish \"no guard written\" from \"guard written but broken\" and skip checking entirely for the latter.\n\n2. **Severity filtering**: The `diagnostics.len()` delta approach counts ALL diagnostic severities. If `compile_expr` ever emits a warning for a valid guard, the guard would be incorrectly dropped. Fix: filter by `Severity::Error` instead of comparing total lengths: `diagnostics[diag_count_before..].iter().any(|d| d.severity == Severity::Error)`.\n\nAlso fix while in the area:\n- Update test file line 10 doc comment: \"undef in recursive sub args\" → \"undef in guard-referenced recursive sub args\"\n- Update test comment at line 428 to say \"Must NOT have the specific guard-references-no-param cascading error\" instead of claiming exactly one error\n\nmemory_hints: search \"termination check guard compilation SubComponentDecl\", get_entity \"SubComponentDecl\"\n\nSource: review suggestions S2+S3 from esc-408-1075 (task 408).",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:05.688Z",
+        "updatedAt": "2026-04-23T18:49:30.053Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler/src/connect.rs",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/scc.rs",
+            "crates/reify-compiler/src/termination.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/termination_check_tests.rs"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/termination.rs",
+            "crates/reify-compiler/tests/guard_compilation.rs",
             "crates/reify-compiler/tests/termination_check_tests.rs"
           ]
         }
@@ -29455,15 +29507,16 @@
         "description": "The ICE diagnostic pattern (format ICE message + DiagnosticLabel + push + fallback to Type::Real) is repeated nearly identically across four sites:\n- entity.rs:534-546 (structure param pass 2 resolution)\n- entity.rs:877-889 (port param pass 2 resolution)\n- guards.rs:269-281 (guarded member pass 2 resolution)\n\nAll share the same structure: \"internal compiler error: unresolved name '...' in pass 2\" with label \"ICE: name should have been registered in pass 1\".\n\nExtract a helper like `fn emit_ice_unresolved(diagnostics: &mut Vec<Diagnostic>, name: &str, span: Span, context: &str) -> Type` that pushes the ICE diagnostic and returns `Type::Real`. This reduces ~12 lines per site to 1 and centralizes the ICE format.\n\nmemory_hints: search(\"ICE diagnostic pattern entity guards unresolved pass 2\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:05.755Z",
+        "updatedAt": "2026-04-23T17:27:17.972Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
             "crates/reify-compiler/src/guards.rs",
+            "crates/reify-compiler/src/ice.rs",
             "crates/reify-compiler/src/lib.rs"
           ],
           "files": [
@@ -31933,24 +31986,24 @@
       {
         "id": "1505",
         "title": "Recursive detection: domain-tag hash, hoist constant, DRY compile_all, test comment",
-        "description": "Four improvements: (1) lib.rs:634: replace magic ContentHash::of(&[1u8]) with ContentHash::of_str(\"is_recursive\") for domain-tagging and hoist above loop as loop-invariant constant. (2) recursive_detection_tests.rs:571-577: refactor compile_all to call compile_module internally to reduce duplication. (3) recursive_detection_tests.rs:588-623: add comment noting is_recursive_mixed_into_content_hash assumes A's hash doesn't include B's resolved hash transitively.",
-        "details": "",
-        "testStrategy": "",
-        "status": "deferred",
+        "description": "Eliminate magic-value fragility and format-string discriminator/payload collision risks across `crates/reify-compiler/src/compile_builder`, and clean up duplicate test infrastructure in `recursive_detection_tests.rs`.",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
+        "details": "All items address ContentHash encoding correctness or test-infrastructure quality in the same module footprint:\n\n**hash.rs — pragma hash structural combines**\n- `hash.rs:111-120` (`format_pragma_value`): Strings like `\"str:foo\"` and `\"ident:foo\"` are fed into `ContentHash::of_str`. A `String` value whose bytes begin with `ident:` is only distinguishable from an `Ident` because the surrounding prefix differs — fragile if grammar ever allows colon-bearing idents. Replace with structurally separate combines:\n  ```rust\n  match v {\n      PragmaValue::String(s) => ContentHash::of_str(\"str\").combine(ContentHash::of_str(s)),\n      PragmaValue::Ident(s)  => ContentHash::of_str(\"ident\").combine(ContentHash::of_str(s)),\n      // ... other variants\n  }\n  ```\n- `hash.rs:94` (`hash_pragma`): Replace `format!(\"{name}|{count}\")` with `ContentHash::of_str(&p.name).combine(ContentHash::of_u64(p.args.len() as u64))`. Add a `combine_u64` helper if one does not already exist.\n- Also eliminates per-call `format!` allocations.\n- After these changes: verify all existing pragma tests still pass (absolute hash values will shift; update any snapshot or persistence test that pins exact hash bytes).\n\n**lib.rs:634 — recursive detection domain tag**\n- Replace magic `ContentHash::of(&[1u8])` with `ContentHash::of_str(\"is_recursive\")` for explicit domain-tagging.\n- Hoist the resulting constant above the enclosing loop as a loop-invariant binding.\n\n**recursive_detection_tests.rs — test infrastructure cleanup**\n- Lines 571-577: Refactor `compile_all` to call `compile_module` internally rather than duplicating its body.\n- Lines 588-623: Add a comment on `is_recursive_mixed_into_content_hash` noting that the test assumes A's content hash does not transitively include B's resolved hash.",
+        "testStrategy": "Memory hints: search \"ContentHash\" in reify-types; search \"content_hash\" and \"format_pragma_value\" and \"hash_pragma\" in reify-compiler/src/compile_builder.",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:05.820Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ],
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/tests/recursive_detection_tests.rs"
-          ]
-        }
+          ],
+          "files": [],
+          "curator_action": "combine",
+          "curator_justification": "The candidate (structural pragma hash combines in hash.rs) and Task 1505 (domain-tag magic-byte replacement + loop-invariant hoist + DRY test infra) share the same unified concern: eliminating magic-value/fragile-embedding patterns from ContentHash encoding in `crates/reify-compiler/src/compile_builder`. An implementer loading compile_builder context once can address all items together. The union of files_to_modify stays within the existing lock keys (compile_builder + recursive_detection_tests.",
+          "combined_at": "2026-04-23T20:13:38.767938+00:00"
+        },
+        "updatedAt": "2026-04-23T20:19:34.357Z"
       },
       {
         "id": "1506",
@@ -36963,7 +37016,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-21T19:43:31.745Z"
+        "updatedAt": "2026-04-23T17:27:13.973Z"
       },
       {
         "id": "1750",
@@ -37067,17 +37120,20 @@
         "id": "1753",
         "title": "Sweep fallback test: add path assertion and diagnostic verification",
         "description": "Two test coverage gaps in the sweep fallback test (crates/reify-compiler/src/lib.rs ~lines 1871-1921):\n\n1. **Missing path assertion**: The test asserts profiles[0] == GeomRef::Step(3) but does not assert profiles[1] (the path argument). The test comment says path falls back to Step(step_offset + 1) = Step(4) but this is never verified. Add: assert_eq!(profiles[1], GeomRef::Step(4), \"sweep path fallback should be Step(step_offset+1=4)\");\n\n2. **Missing diagnostic assertions**: The sweep test does not verify that error diagnostics were emitted. Unlike loft (which silently falls back), sweep intentionally emits diagnostics for non-geometry profile/path args. Verify diagnostic count and content: assert_eq!(diagnostics.len(), 2); assert!(diagnostics[0].message.contains(\"profile\")); assert!(diagnostics[1].message.contains(\"path\"));\n\nmemory_hints: search \"sweep fallback test assertion path diagnostic\", search \"compile_geometry_call sweep test\"",
-        "details": "",
+        "details": "<info added on 2026-04-23T19:31:29.338Z>\nThe test `sweep_non_geom_profile_fallback_uses_step_offset` has been relocated to `crates/reify-compiler/src/geometry.rs` lines 1727-1786 due to a mid-2026 refactor. The runtime behavior remains unchanged, with the sweep emitting two diagnostics for non-geometry profile/path arguments and falling back to Step(step_offset) and Step(step_offset+1). Apply the specified path and diagnostic assertions to the test in its new location.\n</info added on 2026-04-23T19:31:29.338Z>",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:05.886Z",
+        "updatedAt": "2026-04-23T19:31:36.702Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/lib.rs"
-          ]
+            "crates/reify-compiler/src/geometry.rs"
+          ],
+          "done_provenance": {
+            "commit": "9ba44124aa9ceb0152c4fcc73e45008c94368c38"
+          }
         }
       },
       {
@@ -37177,16 +37233,22 @@
         "description": "Three small robustness/doc improvements in the reify-compiler prelude compilation path, all stemming from the task-1392 refactor:\n\n1. **Block-scope the shared borrow in compile_module** (module_dag.rs ~lines 191-199): compile_project already wraps its collect_import_preludes + compile_with_prelude_refs in an explicit block scope (lines 261-264) so the shared borrow of modules is visually bounded. compile_module relies on a comment instead. Wrap lines 196-199 in a block: `let compiled = { let preludes = collect_import_preludes(&parsed, &self.modules); crate::compile_with_prelude_refs(&parsed, &preludes) };` to make both call sites consistent.\n\n2. **Add debug_assert in collect_import_preludes** (module_dag.rs lines 20-35): The function silently skips imports not found in the modules map. Add `debug_assert!(result.is_some(), \"import '{}' not yet compiled\", import.path);` inside the filter_map to surface invariant violations during development.\n\n3. **Fix misleading doc on compile_with_prelude** (lib.rs ~lines 74-81): The performance note says callers in a hot loop should use compile_with_prelude_refs \"directly\", but that function is pub(crate) so external callers cannot. Amend to: \"crate-internal callers in a hot loop should use compile_with_prelude_refs directly to avoid repeated allocation.\"\n\nmemory_hints: search \"collect_import_preludes block scope borrow\" and \"compile_with_prelude doc\"",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.018Z",
+        "updatedAt": "2026-04-23T19:46:40.457Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/module_dag.rs"
-          ]
+            "crates/reify-compiler/src"
+          ],
+          "files": [
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "done_provenance": {
+            "commit": "83b232c88c33e6670037e7531061b351b9e2a884"
+          }
         }
       },
       {
@@ -38066,16 +38128,19 @@
         "description": "The chamfer and fillet compiler arms in geometry.rs (lines ~867-909) are structurally identical, differing only in function name, ModifyKind variant, and second arg label. The same pattern exists for draft, shell, and thicken. Extract a shared helper like `compile_modify_2arg(kind, arg1_name, arg2_name, compiled_args, diagnostics, expr)` to reduce ~22 lines of near-identical code per arm.",
         "details": "## Location\n`crates/reify-compiler/src/geometry.rs` — the match arms for \"chamfer\", \"fillet\", and likely \"draft\", \"shell\", \"thicken\"\n\n## Pattern\nEach arm:\n1. Checks `compiled_args.len() != 2`\n2. Pushes an error diagnostic with the function name and span label\n3. Builds `CompiledGeometryOp::Modify { kind, target: GeomRef::Step(0), args: [(\"target\", ...), (arg2_name, ...)] }`\n\n## memory_hints\n- search: \"compile_geometry_op modify arms\"\n- search: \"Task 1715 geometry dispatch restructuring\"",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.086Z",
+        "updatedAt": "2026-04-22T16:01:04.957Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/geometry_modify.rs",
-            "crates/reify-compiler/src/lib.rs"
-          ]
+            "crates/reify-compiler/src/geometry_modify.rs"
+          ],
+          "files": [],
+          "done_provenance": {
+            "commit": "ad8461a185f02c104e458cd628bef464e8be1e32"
+          }
         }
       },
       {
@@ -38781,17 +38846,24 @@
         "description": "compile_curve_op is the only extracted geometry helper that does not accept sub_ops. All other helpers (compile_transform_op, compile_modify_op, compile_boolean_op) accept and propagate sub_ops. If a future curve constructor is registered in geometry_arg_indices(), the compiled sub-ops would be silently discarded.\n\nFix: Either pass sub_ops to compile_curve_op (prepend to returned vec for consistency) or add debug_assert!(sub_ops.is_empty()) at the call site in geometry.rs:548-549 to catch future mismatches at test time.\n\nmemory_hints:\n- search: \"compile_curve_op sub_ops geometry helper\"\n- entity: compile_curve_op, geometry_arg_indices",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.220Z",
+        "updatedAt": "2026-04-22T15:04:49.762Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src",
+            "crates/reify-eval/tests"
+          ],
+          "files": [
             "crates/reify-compiler/src/geometry_curve.rs",
-            "crates/reify-compiler/src/lib.rs"
-          ]
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-eval/tests/curve_constructors_e2e.rs"
+          ],
+          "done_provenance": {
+            "commit": "75b101ec52a8210e0e26d3147187023672f2f9f4"
+          }
         }
       },
       {
@@ -38800,15 +38872,21 @@
         "description": "compile_modify_op_chamfer_preserves_step0 (lib.rs:2282) tests that chamfer's GeomRef::Step(0) bug-compat is preserved through the full compile pipeline. There is no corresponding test for fillet. While they share the same dispatch arm today, a fillet-specific test would guard against accidental divergence if someone later splits the match arms.\n\nAdd compile_modify_op_fillet_preserves_step0 using `fillet(target, radius)` source, structurally parallel to the chamfer test.\n\nmemory_hints:\n- search: \"chamfer fillet Step(0) bug-compat test\"\n- entity: compile_modify_op, GeomRef",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.284Z",
+        "updatedAt": "2026-04-23T19:17:48.910Z",
         "metadata": {
           "modules": [
+            "crates/reify-compiler/src"
+          ],
+          "files": [
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "c88284fbc1e6ffa43f3aad7eb12ca6440b7e0bc7"
+          }
         }
       },
       {
@@ -38839,20 +38917,21 @@
         "description": "The arg-count-check → diagnostic → return None pattern is repeated verbatim across all arms in geometry_boolean.rs, geometry_transform.rs, geometry_modify.rs, and geometry_curve.rs. A small helper like `fn check_arg_count(name: &str, got: usize, expected: usize, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>) -> bool` could eliminate ~60 lines of boilerplate across the four files.\n\nThis is a pure DRY refactor — no behavioral changes.\n\nmemory_hints:\n- search: \"geometry arg count check diagnostic pattern\"\n- entity: compile_boolean_op, compile_transform_op, compile_modify_op, compile_curve_op",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.360Z",
+        "updatedAt": "2026-04-23T19:46:45.050Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/geometry_arg_check.rs",
             "crates/reify-compiler/src/geometry_boolean.rs",
             "crates/reify-compiler/src/geometry_curve.rs",
             "crates/reify-compiler/src/geometry_modify.rs",
             "crates/reify-compiler/src/geometry_transform.rs",
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "files": []
         }
       },
       {
@@ -38861,13 +38940,16 @@
         "description": "Boolean op regression tests (lib.rs:2317-2356) only cover union and union_all. There are no tests for intersection, difference, or intersection_all. A typo in the BooleanOp mapping (e.g., swapping Intersection and Difference) would not be caught.\n\nAdd at minimum:\n1. compile_boolean_op_difference_via_compile — difference is the only non-commutative boolean op, making it the most important to verify correct operand ordering (left vs right).\n2. compile_boolean_op_intersection_all_via_compile — covers the _all fold path for a non-union op.\n\nmemory_hints:\n- search: \"boolean op compile test union intersection difference\"\n- entity: compile_boolean_op, BooleanOp",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.432Z",
+        "updatedAt": "2026-04-22T11:55:30.063Z",
         "metadata": {
           "modules": [
+            "crates/reify-compiler/src"
+          ],
+          "files": [
             "crates/reify-compiler/src/lib.rs"
           ]
         }
@@ -39565,21 +39647,22 @@
         "description": "Design and implement Material as a first-class type so that `param material : Material = ...` is meaningful. Today Material only exists as a trait in `crates/reify-compiler/stdlib/materials_mechanical.ri`. Options: (a) canonical Material struct with name/density/young_modulus fields; (b) make Material-the-trait usable as an existential type backed by the trait-typed-params work. This enables dimensionally/physically correct plumbing in examples like BoltFlange instead of the `String = \"steel\"` stand-in used in task 1751.",
         "details": "## Scope\nSpawned from task 1751 esc-1751-2.\n\n## Open questions\n- Do we want a literal syntax like `material::steel` or a stdlib registry?\n- How does it relate to the trait-typed-params work (see sibling follow-up)?\n- Dimension types for density (`Density = kg/m^3`) may be needed in concert.\n\n### memory_hints\n- search: \"Material trait stdlib\"\n- search: \"physical properties density volume\"",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.629Z",
+        "updatedAt": "2026-04-22T11:55:30.183Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/entity.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/traits.rs",
-            "crates/reify-compiler/src/type_resolution.rs",
+            "crates/reify-compiler/stdlib",
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
             "crates/reify-compiler/stdlib/materials_mechanical.ri",
-            "crates/reify-compiler/tests/material_struct_tests.rs",
-            "crates/reify-compiler/tests/materials_mechanical_tests.rs",
-            "examples/m5_geometry_flange.ri"
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/materials_mechanical_tests.rs"
           ]
         }
       },
@@ -39827,16 +39910,19 @@
         "description": "In crates/reify-compiler/src/conformance.rs around line 273, `ty.clone()` is unconditionally called inside the default pre-registration loop. The clone is only *consumed* on the cold `!was_new` (trait-merge conflict) path for the debug event, but runs on every iteration (hot path). The existing inline comment acknowledges the clone is compile-time-only so cost is negligible, but this can be avoided.\n\nTwo suggested approaches:\n(a) Probe first: check `scope.names.contains_key(name)` — if present, clone `ty` for the debug emission before calling `register_if_absent(name, ty)`; otherwise move `ty` directly into `register_if_absent` without cloning.\n(b) Change `scope::register_if_absent` to return `Result<(), Type>` (or `Option<Type>`) that hands back the rejected `Type` on conflict, so the caller can log `ignored_ty` without cloning on either path.\n\nOption (b) is preferable because it removes the probe race/duplication and centralises the \"rejected type\" return in the API. Option (a) is mechanically simpler but duplicates the lookup.\n\nEither way, keep (or update) the inline comment to reflect the new ownership story and ensure the `trait_merge_name_conflict_emits_debug_event` test still passes (debug event still emits `ignored_ty`).\n\nmemory_hints:\n- search: \"register_if_absent scope trait merge conformance\"\n- entity: \"Scope\", \"register_if_absent\"",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.752Z",
+        "updatedAt": "2026-04-22T10:46:33.992Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
             "crates/reify-compiler/src/scope.rs"
-          ]
+          ],
+          "done_provenance": {
+            "note": "Phantom in-progress. Option (b) from task description landed on main 2026-04-17 via 4ce363c7d (refactor: register_if_absent -> Option<Type>) + c5c7fd248 (test update). Verified at conformance.rs:278 — hot-path clone eliminated."
+          }
         }
       },
       {
@@ -39933,13 +40019,13 @@
         "description": "The `inferred_let_exprs.get(name)` fallback inside the `available_defaults` builder in `crates/reify-compiler/src/conformance.rs:246-251` (task 1834 step-8) currently has no observable end-to-end coverage: `RequirementKind::Let` is unreachable from source because the parser's `lower_let` rejects `let x : T` without a value (documented in `let_with_type_and_no_value_parses_as_empty_trait`). That makes the entire inferred-type → `AvailableDefaultKind::Let` lookup path effectively dormant, so a future regression — e.g., breaking the cache population in the pre-register pass — would not be caught by any source-driven test.\n\nAdd an in-crate (`#[cfg(test)] mod tests` inside `conformance.rs`, since `MergeContext`, `TraitRequirement`, and `TraitDefault` are `pub(crate)`) unit test that calls `check_trait_conformance` with a manually-constructed `ctx.requirements` containing a `RequirementKind::Let(expected_ty)` and a sibling unannotated `DefaultKind::Let { cell_type: None, .. }`. Assert the inferred type from the let's expression satisfies the requirement (no diagnostics).\n\nA second negative case (inferred type incompatible with `expected_ty`) would also pin the `Some(default_type) => type-mismatch diagnostic` branch around line 297-309.\n\nOrigin: esc-1834-67 review suggestion #1 from reviewer_comprehensive (task 1834). Triaged as a follow-up rather than folded into 1834 because it requires an in-crate test module that doesn't exist yet — out of scope for the original task but worth pinning before a future parser change inadvertently surfaces `RequirementKind::Let` from source.\n\nMemory hints: search \"DefaultKind Let cell_type conformance scope registration\", \"MergeContext available_defaults\", entities: DefaultKind, RequirementKind, check_trait_conformance, MergeContext.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [
           "1834"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.877Z",
+        "updatedAt": "2026-04-22T17:01:59.574Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -39947,12 +40033,13 @@
               "resolution for: In-crate test coverage for unannotated-let → RequirementKind::Let satisfaction path"
             ]
           },
-          "files": [
+          "files": [],
+          "modules": [
             "crates/reify-compiler/src/conformance.rs"
           ],
-          "modules": [
-            "crates/reify-compiler/src"
-          ]
+          "done_provenance": {
+            "commit": "f7e489831c89aa95deb90948e1346b403c8bee69"
+          }
         }
       },
       {
@@ -40344,17 +40431,21 @@
         "description": "Three design-hardening follow-ups for the `inferred_let_exprs` cache and `available_defaults` map added in task 1834's conformance.rs pre-register pass. All three were surfaced by reviewer_comprehensive on task 1834 amendment round 3 (esc-1834-144) but deferred as non-urgent hardening rather than task 1834 deliverables.\n\nMemory hints: search \"task 1834 inferred_let_exprs cache available_defaults AvailableDefaultKind\"; entities: DefaultKind, AvailableDefaultKind, Type, compile_expr.",
         "details": "Three independent changes in `crates/reify-compiler/src/conformance.rs`. Each is small; bundling avoids repeated touch-passes on the same code region.\n\n1. **Error-cascade suppression (robustness)** — conformance.rs:~236-246\n   When `compile_expr` fails in the unannotated-let pre-register path (e.g. forward reference to a name not yet registered), `result_type` falls back to `Type::Real` (compile_expr error-recovery type). That `Type::Real` then flows into `inferred_let_exprs`, `available_defaults`, and the injected cell_type — causing a secondary `type mismatch for trait member … available default has Real` diagnostic whose wording leaks an implementation detail instead of the real cause (unresolved identifier).\n   Fix: Track a per-default compile-error bit (snapshot `diagnostics.len()` before/after `compile_expr`); when it trips, either skip inserting into `inferred_let_exprs` / return `None` from the `available_defaults` filter_map for that name, OR prefer a \"missing required member\" diagnostic over \"available default has Real\". Goal: a single unresolved-identifier error, not a cascade.\n   Add regression test: `unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch` in let_type_disambiguation_tests.rs — input like `trait HasA { let a = b + 1mm } structure S : HasA {}` must produce the unresolved-name diagnostic only, NOT a secondary \"available default has Real\" type-mismatch.\n\n2. **Kind-keyed cache (architecture)** — conformance.rs:~167-208\n   The cache's name-only key (`HashMap<String, CompiledExpr>`) is safe today under three documented invariants (no cross-kind writes; kind-guarded reads; `collect_all_requirements` dedup). Two of those invariants are enforced in a different function 100+ lines away. The symmetric `(String, AvailableDefaultKind)` key already exists on the `available_defaults` map ~70 lines below. Changing the cache key to match eliminates the cross-module invariant dependency at near-zero cost.\n   Fix: `HashMap<(String, AvailableDefaultKind), CompiledExpr>`, keyed on `(name.clone(), AvailableDefaultKind::Let)` at insert/read. Delete invariant #1 and #2 from the doc comment; keep #3 (dedup) since that is still load-bearing for the no-double-compile guarantee. Remove the `If any of these ever drift, key the cache on (String, AvailableDefaultKind) for symmetry` note.\n\n3. **Shared advertised-type helper (code_reuse)** — conformance.rs:~293-299 and ~536-538\n   Two sites compute \"annotation wins, else inferred\" for a Let default's advertised type, with slightly different formulations:\n   - `available_defaults` builder: `cell_type.clone().unwrap_or_else(|| inferred_let_exprs.get(name).map(|e| e.result_type.clone()).unwrap_or(Type::Real))`\n   - injection loop: `cell_type.clone().unwrap_or_else(|| compiled_expr.result_type.clone())`\n   Fix: Extract a small helper (module-private fn or closure) like `resolve_let_advertised_type(cell_type: &Option<Type>, inferred: Option<&CompiledExpr>) -> Type` that both sites call, centralizing the \"Real fallback on inference failure\" rule. Note: suggestion #1 above may remove the `Type::Real` safety net entirely (by dropping failed entries from the cache) — coordinate design order: if #1 lands first, the helper's fallback arm disappears.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: esc-1834-144 triage. Reviewer comments captured in that escalation detail. Task 1834 is complete as-is; this follow-up is pure design hardening.",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [
           "1834"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:06.939Z",
+        "updatedAt": "2026-04-23T17:27:18.445Z",
         "metadata": {
           "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
             "crates/reify-compiler/src/conformance.rs",
-            "crates/reify-compiler/tests/let_type_disambiguation_tests.rs"
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ]
         }
       },
@@ -40676,11 +40767,11 @@
         "description": "Follow-up from task 765 review.\n\nProblem: The cross-prelude collision check at `crates/reify-compiler/src/lib.rs:278-292` fires per-unit using `unit_registry.lookup`. If a single (malformed) prelude module contained two `pub unit foo` declarations, the warning would read `declared in both 'mod_a' and 'mod_a'` — nonsense. In practice `compile()` rejects intra-module duplicates earlier with proper spans, but the diagnostic is still incorrect when it does fire.\n\nFix: Guard the warning emission with\n```\nif existing.source_module.as_deref() != Some(&module_display[..]) { ... }\n```\nso only genuine cross-module collisions emit this warning. Intra-module dups have been (or should have been) reported at module-compile time.\n\nAcceptance:\n- Add a regression test where a single prelude module declares the same pub unit name twice; assert no `declared in both 'X' and 'X'` warning is emitted from `compile_with_prelude`'s seeding loop.\n- Existing cross-module collision tests continue to pass.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:07.008Z",
+        "updatedAt": "2026-04-22T10:01:13.593Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/lib.rs",
@@ -40851,18 +40942,23 @@
       {
         "id": "1940",
         "title": "Add non-zero step_offset companion test for chamfer non-geometry target fallback",
-        "description": "The renamed test `compile_modify_op_chamfer_non_geometry_target_fallback` (crates/reify-compiler/src/lib.rs:2395) compiles at the top level with step_offset=0, so asserting `GeomRef::Step(0)` is indistinguishable from the old bug-preserving behavior. Add a companion test that places `chamfer(scalar_param, dist)` in a context where step_offset > 0 (e.g. nested inside a boolean op / let chain after prior ops in the same realization) and assert the target is `GeomRef::Step(step_offset)`, not `Step(0)`. This will catch a future regression where geom_ref fell back to `Step(0)` unconditionally. Follow-up from task 1823 review.",
-        "details": "",
-        "testStrategy": "",
-        "status": "deferred",
+        "description": "Consolidate and extend non-geometry-target fallback test coverage in crates/reify-compiler/src/geometry_modify.rs: (1) extract a parameterized helper that runs the fallback assertion across all 2arg modify kinds (chamfer, fillet, thicken, shell), eliminating the near-identical compile_modify_op_chamfer_non_geometry_target_fallback (~line 341) and compile_modify_op_fillet_preserves_step0 (~line 387) copies; (2) add a companion test placing chamfer(scalar_param, dist) in a context where step_offset > 0 and asserting the target resolves to GeomRef::Step(step_offset), not Step(0).",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "Two improvements to fallback test coverage in geometry_modify.rs, both scoped to crates/reify-compiler/src:\n\n1. **Parameterize existing fallback tests** (geometry_modify.rs ~lines 341, 387): `compile_modify_op_chamfer_non_geometry_target_fallback` and `compile_modify_op_fillet_preserves_step0` are near-identical — differing only in op name/kind. Extract a helper (e.g. `assert_non_geometry_target_fallback(kind: ModifyKind, ...)`) that runs the fallback assertion for a given 2arg modify kind. Drive it with a table covering chamfer, fillet, thicken, and shell so coverage is uniform and scaffold is not hand-duplicated.\n\n2. **Add step_offset > 0 companion test** (geometry_modify.rs / lib.rs): The existing chamfer test compiles at top level with step_offset=0, so asserting `GeomRef::Step(0)` is indistinguishable from the old bug-preserving behavior. Add a companion test that places `chamfer(scalar_param, dist)` in a context where step_offset > 0 (e.g. nested inside a boolean op / let chain after prior ops in the same realization) and asserts the target is `GeomRef::Step(step_offset)`, not `Step(0)`.",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:07.073Z",
         "metadata": {
           "modules": [
+            "crates/reify-compiler/src"
+          ],
+          "files": [
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "curator_action": "combine",
+          "curator_justification": "Task 1940 (pending, combine_eligible=true) targets the same functions in geometry_modify.rs — the chamfer/fillet non-geometry-target fallback tests (~lines 341 and 387). Both tasks are tiny, share a root cause (sparse fallback test coverage in geometry_modify.rs), and serialize on the same module lock. Together they form one coherent \"harden fallback test coverage\" concern: parameterize the existing chamfer+fillet tests to cover all 2arg modify kinds AND add the step_offset>0 companion variant. ",
+          "combined_at": "2026-04-23T19:16:13.072578+00:00"
         }
       },
       {
@@ -41147,11 +41243,11 @@
         "description": "The two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` (task 1834/1907) suppresses duplicate Let-cell injection only when an *unannotated* Let loses to a Param/annotated-Let in Pass 1 (via `pass2_skipped`). The symmetric case — an annotated Let whose name was already claimed in Pass 1 by a Param registered earlier in the same Pass 1 loop — still causes the injection loop to emit both a Param cell and an annotated-Let cell for the same `(entity, member)` pair.\n\nThe `cross_kind_pre_registration_preserves_first_type` test (updated in commit 7a7c7127d) pins 1 cell in the Param + unannotated-Let case, but a Param + annotated-Let case is not covered by any test and still produces 2 cells. Pre-existing behavior, but inconsistent with the design comment at ~197-215 that frames the split as restoring symmetry.\n\nMemory hints: search \"task 1907 pass2_skipped pass1_skipped annotated-Let Param duplicate cells\"; entities: DefaultKind, AvailableDefaultKind.",
         "details": "Two options (reviewer proposed both):\n\nOption A (symmetric fix) — Extend Pass 1's Occupied path to mark annotated-Let conflicts in a new `pass1_skipped: HashSet<String>` set consumed by the injection loop the same way `pass2_skipped` is. This makes the two arms (Pass 1 / Pass 2) behaviorally identical: first-seen wins, and the loser's cell injection is suppressed regardless of kind.\n\nOption B (documented asymmetry) — Explicitly call out in the design comment at ~197-215 that annotated-Let + Param name collisions still emit duplicate cells. Add a follow-up task link. Pin current behavior with a test so future refactors don't silently flip it.\n\nRecommendation: Option A. The injection loop already reads `pass2_skipped`; adding a parallel `pass1_skipped` consumed at the same checkpoint is a small surgical change and removes a reviewer-accessible surprise. Option B effectively documents \"we know this is inconsistent\" and adds no mechanical guarantee.\n\nAdd test in `crates/reify-compiler/tests/trait_merge_tests.rs` mirroring `cross_kind_pre_registration_preserves_first_type` but using annotated-Let + Param (both with explicit types). Assert exactly 1 cell for the shared name (whichever default Pass 1 sees first wins).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1907 (esc-1907-20, suggestion 3).",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:07.136Z",
+        "updatedAt": "2026-04-23T17:34:26.456Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -41170,8 +41266,8 @@
             "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler/src/conformance",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
           ]
         }
       },
@@ -41441,16 +41537,23 @@
         "description": "The new \"unknown type\" diagnostic in compile_constraint_def (crates/reify-compiler/src/lib.rs ~113-132) only whitelists builtins (via resolve_type_expr_with_aliases), type parameters, aliases, and enums. It does NOT recognize structure/entity/trait names in scope. If a user writes `constraint def Foo { param s: MyStructure ... }`, they now get an error at def-compile time even though previously the raw ConstraintDef was just cloned into the registry and no such check ran.\n\nOptions: (a) broaden the whitelist to also accept structure/entity/trait names in scope; (b) keep the current strictness but reword the error to explicitly list acceptable categories (\"expected a builtin scalar, type param, alias, or enum\") so users see the restriction isn't arbitrary. Pick one and add a regression test.",
         "details": "Analogue precedent: compile_function has the same blind spot. If (a) is chosen, consider whether compile_function should be updated in parallel.\n\nmemory_hints: search \"constraint def unknown type param diagnostic\" for task 872 review context; search \"compile_function unknown type\" for the analogue.",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:07.200Z",
+        "updatedAt": "2026-04-22T15:25:24.805Z",
         "metadata": {
           "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "d61e421ebac48249e2e72881aac024baa211a1ff"
+          }
         }
       },
       {
@@ -41654,25 +41757,29 @@
       {
         "id": "1975",
         "title": "Broaden or reword constraint-def param \"unknown type\" diagnostic to avoid false positives on struct/entity/trait names",
-        "description": "The new \"unknown type\" diagnostic in compile_constraint_def (crates/reify-compiler/src/lib.rs ~113-132) only whitelists builtins (via resolve_type_expr_with_aliases), type parameters, aliases, and enums. It does NOT recognize structure/entity/trait names in scope. If a user writes `constraint def Foo { param s: MyStructure ... }`, they now get an error at def-compile time even though previously the raw ConstraintDef was cloned into the registry with no such check.\n\nOptions: (a) broaden the whitelist to also accept structure/entity/trait names in scope; (b) keep current strictness but reword the error to list acceptable categories (\"expected a builtin scalar, type param, alias, or enum\") so users see the restriction isn't arbitrary. Pick one and add a regression test. compile_function has the same blind spot — consider updating it in parallel if (a) is chosen.\n\nmemory_hints: search \"constraint def unknown type param diagnostic\" for task 872 review context.",
-        "details": "",
-        "testStrategy": "",
-        "status": "deferred",
+        "description": "Three tightly-coupled improvements to `phase_constraint_defs` in `crates/reify-compiler/src/compile_builder/defs_phase.rs`, all centred on the `structure_names` HashSet build (~lines 149-163) and the diagnostic that consumes it:\n\n1. **Whitelist broadening** (~lines 113-132): `compile_constraint_def`'s unknown-type diagnostic only whitelists builtins (via `resolve_type_expr_with_aliases`), type parameters, aliases, and enums — it does NOT recognise structure/entity/trait names in scope. A user writing `constraint def Foo { param s: MyStructure ... }` now gets a false-positive error even though the raw `ConstraintDef` previously compiled fine. Extend the whitelist lookup to include names drawn from `structure_names` (built at ~lines 149-163 from `seen_entity_names`).\n\n2. **Error message correction** (lines 104-107): Update the error message so that 'occurrence' appears alongside 'structure' in the list of acceptable categories.\n\n3. **Early-return / lazy-build optimization** (~lines 149-163): `structure_names: HashSet<String>` is currently allocated unconditionally, scanning every prelude's templates even for modules that contain zero `constraint def` declarations. Add an early-return (option a) before building the set when `parsed.declarations` contains no `Declaration::Constraint`, or build the set lazily (option b). Either approach eliminates wasted allocation for modules with large preludes but no constraint defs.",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
+        "details": "### Whitelist fix (original task 1975)\nFile: `crates/reify-compiler/src/compile_builder/defs_phase.rs` ~lines 113-132 (`compile_constraint_def` diagnostic).\nFile: `crates/reify-compiler/tests/constraint_def_compile_tests.rs` — add/update test covering structure/entity/trait param types that must no longer produce false-positive unknown-type errors.\n\n### Error message fix (esc-1966-3)\nFile: `crates/reify-compiler/src/compile_builder/defs_phase.rs` lines 104-107 (error message).\nExisting test: `constraint_def_unknown_type_error_lists_acceptable_categories` in `crates/reify-compiler/tests/constraint_def_compile_tests.rs:1264-1283` — update assertions to verify 'occurrence' appears in the error message alongside 'structure'.\n\n### Early-return / lazy optimization (esc-1966-3, reviewer_comprehensive)\nFile: `crates/reify-compiler/src/compile_builder/defs_phase.rs` ~lines 149-163 (`structure_names: HashSet<String>` build from prelude templates).\nOption (a): early-return before building the set if `parsed.declarations` contains no `Declaration::Constraint`.\nOption (b): build `structure_names` lazily on first access.\nAdd a smoke test asserting that a module with zero constraint defs still compiles cleanly (no regression from the early-return path).\n\nThis is a pure optimization for option (b) / early-return path — no behaviour change beyond the whitelist broadening above; no additional tests strictly required for the skip logic beyond the smoke test.",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:07.261Z",
         "metadata": {
-          "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/functions.rs",
+          "files": [],
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
           ],
-          "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ]
-        }
+          "curator_action": "combine",
+          "curator_justification": "The candidate (lazy/early-return for `structure_names` at defs_phase.rs:149-163) and Task 1975 touch the exact same function body and lines. Task 1975 already explicitly cites `defs_phase.rs ~149-163 (structure_names build from seen_entity_names)` as a file it must modify. Implementing both independently would produce a merge conflict on those lines. The candidate is tiny (< 300 chars of real detail, single file). Both serialize on the same module lock (`crates/reify-compiler/src/compile_builder",
+          "combined_at": "2026-04-22T15:22:44.856568+00:00",
+          "done_provenance": {
+            "commit": "0c75bcd2a1257f41d45db63102d17820a867c73f",
+            "commit_input": "0c75bcd2a",
+            "note": "Fast-forward landing on main via commit cluster bf32022f7/0c75bcd2a/75058f30b/fc5bceb85. Orchestrator's merge 961cc89b CAS-raced and never reached main, but the task payload (adding 'occurrence' to constraint-def unknown-type diagnostic) is on main. External reinstatement flipped status back to in-progress at 2026-04-22 17:47."
+          }
+        },
+        "updatedAt": "2026-04-23T06:21:51.068Z"
       },
       {
         "id": "1976",
@@ -41680,11 +41787,11 @@
         "description": "Three coupled improvements to the Option B fix landed in task 1951 (`crates/reify-compiler/src/conformance.rs` ~344-351 and the in-crate unit test ~932-1115).\n\n1. **Over-broad guard (robustness)** — conformance.rs:344-351. The current guard `if pass2_skipped.contains(name) { return None; }` fires on the WHOLE `DefaultKind::Let` arm regardless of `cell_type`. If two traits both provide a Let default for the same name — one annotated (Pass 1 registers it as a real cell) and one unannotated (Pass 2 records the name in `pass2_skipped`) — the guard drops BOTH from `available_defaults`. Meanwhile the injection loop at ~520-527 still emits a cell for the annotated Let, so the advertisement map is asymmetric with injection in the OPPOSITE direction the comment claims. A future `RequirementKind::Let` lookup against that name would emit a bogus \"missing required member\" instead of matching the legitimately injected annotated Let. Latent (RequirementKind::Let is not parser-reachable today, same reason esc-1951-6 and the unit test had to hand-build one), but a regression waiting for the parser extension.\n\n   Fix: tighten to `if cell_type.is_none() && pass2_skipped.contains(name) { return None; }`. That preserves Option B for the unannotated skipped Let while keeping any sibling annotated-Let advertisement intact, matching what the injection loop actually does. Update the rationale comment at ~324-334 to reflect the narrower scope.\n\n2. **Missing annotated-Let coverage (test_coverage)** — conformance.rs:932-1115 unit test. The current test covers the pass2_skipped-triggered-by-Param case but not pass2_skipped-triggered-by-annotated-Let. That latter case (Trait A: `let x : Length = 1mm`, Trait B: `let x = 5.0`) is exactly where the over-broad guard above would silently drop a legitimate annotated-Let advertisement. Add a second sub-case (or sibling test) where Pass 1 registers an annotated Let, Pass 2 records pass2_skipped from an unannotated Let with the same name, and a hand-built `RequirementKind::Let` requirement of the matching type is satisfied (no \"missing required member\" diagnostic emitted).\n\n3. **Single-letter substring match in test (test_quality)** — conformance.rs:1095-1105. The filter `d.message.contains('x')` matches incidental `x` letters in diagnostic prose (\"expr\", \"exists\", \"expect\", \"syntax\", \"mismatch\", etc.). Tighten to a delimited match — diagnostics quote member names as `'{}'`, so use `d.message.contains(\"'x'\")` or `d.message.contains(\"member 'x'\")`. Apply on both the phantom-diagnostic filter and the missing-member filter.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestions 1 + 3 + 4). Distinct from task 1952 (Pass 1 ↔ Pass 2 cell-injection symmetry — that's about the injection loop; this is about the advertisement builder) and from task 1914 #3 (shared advertised-type helper — the helper extraction would touch the same region; coordinate sequencing if both land).\n\nMemory hints: search \"task 1951 pass2_skipped phantom Let advertisement Option B\"; entities: DefaultKind, AvailableDefaultKind, RequirementKind.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-20T12:20:07.321Z",
+        "updatedAt": "2026-04-23T18:49:17.279Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/conformance.rs"
@@ -41751,21 +41858,18 @@
         "description": "Delete the `phantom_let_advertisement_contract_for_future_parser_extension` integration test in `crates/reify-compiler/tests/trait_merge_tests.rs` (~1404-1522, ~120 lines).\n\nThe test is explicitly self-documented as non-distinguishing: \"all three assertions pass unconditionally today\" and \"cannot distinguish the patched binary from the unpatched one\". The behavioral assertions are tautologies against the current code — it provides zero regression coverage for the Option B fix landed in task 1951 (the in-crate unit test `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name` in conformance.rs is what actually gates the behavior).\n\nAssertion 3 in particular is a pure wording pin on a diagnostic that is never emitted in the reachable universe, so it will continue to pass even if the Option B guard is deleted. Meanwhile the test locks in source-level details (trait/member/type names, compile-cleanly expectations) that can break for unrelated reasons.\n\nAction:\n- Delete the test function (and any test-only imports it solely uses).\n- Leave a short breadcrumb comment in `conformance.rs` near the pass2_skipped guard pointing to the in-crate unit test, so a future contributor extending the parser to make `RequirementKind::Let` reachable knows where the behavioral coverage lives.\n- When `RequirementKind::Let` becomes parser-reachable, write the regression test then in the reachable form (likely follow-up to esc-1951-6 / task 1951's design_concern escalation).\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestion 2).\n\nMemory hints: search \"task 1951 forward-compat placeholder phantom Let advertisement test\"; the test was added in commit 7351ae1c0 (worktree 1951 branch).",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-compiler/tests/trait_merge_tests.rs",
-            "crates/reify-compiler/src/conformance.rs"
-          ],
+          "files": [],
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-20T12:20:07.381Z"
+        "updatedAt": "2026-04-23T18:08:18.377Z"
       },
       {
         "id": "1980",
@@ -41833,7 +41937,7 @@
         "description": "Three coupled improvements to the Option B fix landed in task 1951 (`crates/reify-compiler/src/conformance.rs` ~344-351 and the in-crate unit test ~932-1115).\n\n1. **Over-broad guard (robustness)** — conformance.rs:344-351. The current guard `if pass2_skipped.contains(name) { return None; }` fires on the WHOLE `DefaultKind::Let` arm regardless of `cell_type`. If two traits both provide a Let default for the same name — one annotated (Pass 1 registers a real cell) and one unannotated (Pass 2 records the name in `pass2_skipped`) — the guard drops BOTH from `available_defaults`. Meanwhile the injection loop at ~520-527 still emits a cell for the annotated Let, so the advertisement map becomes asymmetric with injection in the OPPOSITE direction the comment claims. A future `RequirementKind::Let` lookup against that name would emit a bogus \"missing required member\" instead of matching the legitimately injected annotated Let. Latent (RequirementKind::Let is not parser-reachable today, same reason esc-1951-6 and the unit test had to hand-build one), but a regression waiting for the parser extension.\n\n   Fix: `if cell_type.is_none() && pass2_skipped.contains(name) { return None; }`. Update the rationale comment at ~324-334 to reflect the narrower scope.\n\n2. **Missing annotated-Let coverage (test_coverage)** — conformance.rs:932-1115 unit test currently only covers pass2_skipped-triggered-by-Param. Add a sub-case (or sibling test) where Pass 1 registers an annotated Let, Pass 2 records pass2_skipped from an unannotated Let with the same name, and a hand-built `RequirementKind::Let` requirement of the matching type is satisfied (no \"missing required member\" diagnostic). This surfaces the bug from #1.\n\n3. **Single-letter substring match in test (test_quality)** — conformance.rs:1095-1105. `d.message.contains('x')` matches incidental `x` letters in diagnostic prose. Tighten to `d.message.contains(\"'x'\")` or `\"member 'x'\"` on both filters.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestions 1 + 3 + 4). Distinct from task 1952 (cell-injection symmetry) and task 1914 #3 (shared advertised-type helper extraction — coordinate sequencing).\n\nMemory hints: search \"task 1951 pass2_skipped phantom Let advertisement Option B\"; entities: DefaultKind, AvailableDefaultKind, RequirementKind.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -41842,10 +41946,10 @@
             "crates/reify-compiler/src/conformance.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance"
           ]
         },
-        "updatedAt": "2026-04-20T12:20:07.440Z"
+        "updatedAt": "2026-04-23T18:11:57.022Z"
       },
       {
         "id": "1983",
@@ -41913,21 +42017,22 @@
         "id": "1985",
         "title": "conformance.rs: tighten pass2_skipped Let-advertisement guard + annotated-Let coverage + delimited substring",
         "description": "Three coupled improvements to task 1951's Option B fix in `crates/reify-compiler/src/conformance.rs`.\n\n1. Over-broad guard (robustness, line ~344-351): The guard `if pass2_skipped.contains(name) { return None; }` fires on the WHOLE `DefaultKind::Let` arm regardless of `cell_type`. If two traits both provide a Let default for the same name (one annotated, one unannotated), it drops BOTH from `available_defaults` while the injection loop still emits the annotated cell — asymmetric in the OPPOSITE direction the comment claims. Fix: `if cell_type.is_none() && pass2_skipped.contains(name) { return None; }`. Update rationale comment ~324-334. Latent today (RequirementKind::Let not parser-reachable) but a regression waiting for the parser extension.\n\n2. Missing annotated-Let test coverage (line ~932-1115 unit test): Add a sub-case where Pass 1 registers an annotated Let, Pass 2 records pass2_skipped from an unannotated Let with the same name, and a hand-built `RequirementKind::Let` requirement is satisfied (no missing-member diagnostic). Surfaces the bug from #1.\n\n3. Single-letter substring (test_quality, line ~1095-1105): `d.message.contains('x')` matches incidental letters in diagnostic prose. Tighten to `contains(\"'x'\")` or `contains(\"member 'x'\")` on both filters.\n\nVerify: `cargo test -p reify-compiler`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestions 1+3+4). Distinct from task 1952 (cell-injection symmetry) and task 1914 #3 (shared advertised-type helper).",
-        "details": "",
+        "details": "<info added on 2026-04-23T18:39:28.506Z>\nIMPORTANT: The file `conformance.rs` has been split into `conformance/checker.rs` and sibling files as per Task 2036 (commit f63f293b3, 2026-04-23). The line number references in this task are now outdated. Please navigate the code by function name: the `pass2_skipped` guard block in the `available_defaults` builder, the unit test for annotated-Let, and the single-letter substring assertions in tests. The primary file is now located at `crates/reify-compiler/src/conformance/checker.rs`.\n</info added on 2026-04-23T18:39:28.506Z>",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-compiler/src/conformance.rs"
-          ],
+          "files": [],
           "modules": [
-            "crates/reify-compiler/src"
-          ]
+            "crates/reify-compiler/src/conformance"
+          ],
+          "done_provenance": {
+            "note": "All three planned changes already landed on main via commits 6b0a77edc (RED test), 797a6c87a (narrowed guard), 1d8c7ea21 (tightened 'x' filters). HEAD is ancestor of main; git log main..HEAD empty. Code inspection confirmed checker.rs:520 guard narrowing, mod.rs annotated-Let test, and mod.rs:617/634 delimited-substring filters. `cargo test -p reify-compiler --lib conformance::tests::option_b` → 2 pass / 0 fail."
+          }
         },
-        "updatedAt": "2026-04-20T12:20:07.500Z"
+        "updatedAt": "2026-04-23T19:28:16.927Z"
       },
       {
         "id": "1986",
@@ -41986,19 +42091,25 @@
         "description": "Tighten guard at conformance.rs:344-351 to `cell_type.is_none() && pass2_skipped.contains(name)` so annotated-Let advertisements aren't dropped. Add unit-test sub-case for pass2_skipped triggered by annotated-Let. Replace `.contains('x')` with `.contains(\"'x'\")` in test filters at ~1095-1105.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/conformance.rs"
+            "crates/reify-compiler/src/conformance/checker.rs",
+            "crates/reify-compiler/src/conformance/mod.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
-          ]
+            "crates/reify-compiler/src/conformance"
+          ],
+          "done_provenance": {
+            "commit": "1d8c7ea218f7a82b6bdc45fe7f2af03f4f501bb1",
+            "commit_input": "1d8c7ea21",
+            "note": "Task 1988 scope (s1+s3+s4) already landed on main via three commits: 6b0a77edc (RED test), 797a6c87a (tightened guard), 1d8c7ea21 (filter refactor). Duplicate requeue pattern akin to Task 1985/1986."
+          }
         },
-        "updatedAt": "2026-04-20T12:20:07.560Z"
+        "updatedAt": "2026-04-23T19:34:13.770Z"
       },
       {
         "id": "1989",
@@ -42026,21 +42137,18 @@
         "description": "Delete the `phantom_let_advertisement_contract_for_future_parser_extension` integration test in `crates/reify-compiler/tests/trait_merge_tests.rs` (~1404-1522, ~120 lines).\n\nThe test is self-documented as non-distinguishing: \"all three assertions pass unconditionally today\" and \"cannot distinguish the patched binary from the unpatched one\". Behavioral assertions are tautologies against the current code — zero regression coverage for the Option B fix landed in task 1951. The in-crate unit test `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name` in conformance.rs is what gates the behavior.\n\nAssertion 3 is a pure wording pin on a diagnostic never emitted in the reachable universe, so it will continue to pass even if the Option B guard is deleted. Meanwhile the test locks in source-level details (trait/member/type names, compile-cleanly expectations) that can break for unrelated reasons.\n\nAction:\n- Delete the test function and any test-only imports it solely uses.\n- Leave a short breadcrumb comment in conformance.rs near the pass2_skipped guard pointing at the in-crate unit test.\n- When `RequirementKind::Let` becomes parser-reachable (see esc-1951-6 / task 1951's design_concern), write the regression test then in the reachable form.\n\nVerify: `cargo test -p reify-compiler`; clippy; fmt.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestion 2). Test added in commit 7351ae1c0 on the task/1951 branch.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "files": [
-            "crates/reify-compiler/tests/trait_merge_tests.rs",
-            "crates/reify-compiler/src/conformance.rs"
-          ],
+          "files": [],
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-20T12:20:07.619Z"
+        "updatedAt": "2026-04-23T18:37:33.774Z"
       },
       {
         "id": "1991",
@@ -42208,11 +42316,11 @@
         "description": "Every call to `Engine::eval()` and `Engine::edit_param()` clones the entire merged function table (`self.functions: Vec<CompiledFunction>`). `CompiledFunction` contains boxed expression trees, so cost is O(|user_fns + prelude_fns| * avg_tree_size) per call — a significant allocation for modules with a large prelude.",
         "details": "Change `Engine::functions` from `Vec<CompiledFunction>` to `Arc<Vec<CompiledFunction>>` so the borrow-checker workaround clone in `eval()` and `edit_param()` becomes O(1).\n\nKey sites:\n- `crates/reify-eval/src/lib.rs` near `let functions: Vec<CompiledFunction> = self.functions.clone();` inside `eval()` (the PERFORMANCE NOTE comment describes the fix)\n- `crates/reify-eval/src/lib.rs` near line ~1548: `let functions = self.functions.clone();` inside `edit_param()` — same pattern\n- `crates/reify-eval/src/concurrent.rs`: `ConcurrentEditSetup::functions` field is typed `Vec<CompiledFunction>` and assigned via `functions: self.functions.clone()` — needs the type change to `Arc<Vec<CompiledFunction>>`\n\nThe desired end state:\n```rust\nself.functions = Arc::new({ let mut v = module.functions.clone(); v.extend(prelude); v });\nlet functions = Arc::clone(&self.functions);   // O(1)\n```\n\nThe `concurrent.rs` change is the blocker that prevented this fix in task 515 (it lies outside that task's scope lock). This task should scope both files together.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:32:43.123Z",
+        "updatedAt": "2026-04-23T17:35:06.751Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/lib.rs",
@@ -42513,26 +42621,27 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:298-310` implements `ModifyKind::Draft` by taking `step_handles.last()` as the plane reference instead of evaluating the `plane` argument expression. A comment acknowledges the placeholder.\n\nResult: Draft produces incorrect output whenever the plane argument doesn't happen to be the most recent step. The `target_id` is correctly resolved via `resolve_geom_ref`, but `plane_id` is hard-coded.\n\nFix:\n1. Plumb the plane argument through as a `GeomRef` (or full expression that evaluates to a face/plane reference), then resolve it via `resolve_geom_ref` like `target`.\n2. Add an integration test that draft-operates on a non-most-recent step to catch regression.\n\nAlso audit related ops in this file for the same placeholder pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-eval/src/geometry_ops.rs"
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/tests/geometry_error_handling.rs"
           ],
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
             "crates/reify-compiler/src/geometry_modify.rs",
-            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/types.rs",
             "crates/reify-eval/src/geometry_ops.rs",
             "crates/reify-eval/tests/draft_e2e.rs",
             "crates/reify-eval/tests/geometry_error_handling.rs",
+            "crates/reify-eval/tests/geometry_sub_ref_e2e.rs",
             "crates/reify-test-support/src/helpers.rs"
           ]
         },
-        "updatedAt": "2026-04-20T12:20:07.740Z"
+        "updatedAt": "2026-04-23T17:27:14.346Z"
       },
       {
         "id": "2011",
@@ -42687,7 +42796,7 @@
         "description": "`CliState::user_overrides: Vec<(ValueCellId, Value)>` exists solely because `Engine::eval()` rebuilds the snapshot from module defaults and does NOT consult the engine's internal `param_overrides` map. The Mcp context therefore tracks overrides twice (once in the engine, once in `CliState`) and re-applies them via `reapply_user_overrides` after every `eval()`. See `crates/reify-cli/src/mcp_context.rs:142-185`.\n\nCleaner long-term fix: teach `Engine::eval()` to consult `param_overrides` (or add `eval_with_overrides`), letting `CliState::user_overrides` and `reapply_user_overrides` be deleted entirely. This also removes the override-leak risk between file switches (see related task on resetting param_overrides on load_file/open_file).\n\nMinimum acceptable: add a FIXME comment in `mcp_context.rs` next to `user_overrides` referencing this follow-up.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42701,9 +42810,12 @@
             "crates/reify-eval/src/engine_admin.rs",
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/eval_param_overrides.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "52b8a8b4a53df9aba0e003913314a37cfccf0b39"
+          }
         },
-        "updatedAt": "2026-04-21T22:22:03.767Z"
+        "updatedAt": "2026-04-22T20:47:45.882Z"
       },
       {
         "id": "2018",
@@ -43138,7 +43250,7 @@
         "description": "After tasks #934 (resolve_enum_type helper + check_trait_conformance optimization) and #2034 (MergeContext + collect_all_requirements extraction) both land, `check_trait_conformance` in `crates/reify-compiler/src/conformance.rs` will still be a large monolithic function (~400+ lines estimated). Decompose it into phase helpers.\n\nFirst read the current state of `check_trait_conformance` and identify natural phase boundaries. Expected candidates:\n- **resolve-structure-members** — build the `structure_members: HashMap<String, Type>` from the EntityDefRef (currently the ~80-line filter_map closure).\n- **walk-requirements** — invoke `collect_all_requirements` (already extracted by #2034) and collect the flattened requirement + default sets.\n- **check-members-vs-requirements** — compare each required member against the structure's members, emit mismatch diagnostics.\n- **emit-missing-member-diagnostics** — report requirements unsatisfied by the structure.\n- **merge-defaults** — inject default value cells + constraints for trait-provided defaults the structure did not override.\n\nExtract each phase into a `fn check_phase_<name>(...)` with a narrow signature. The top-level `check_trait_conformance` becomes a thin orchestrator (< 80 lines) calling each phase.\n\nIf the extracted helpers together grow conformance.rs past ~1000 lines again, move them to a sibling submodule `crates/reify-compiler/src/conformance/checker.rs` (converting conformance.rs into `conformance/mod.rs` or reorganizing as appropriate).\n\nSuccess criteria:\n- `cargo test -p reify-compiler` passes identically — no behavioral change intended.\n- `check_trait_conformance` body shrinks to < 80 lines.\n- ~12 pending tasks that currently contend on `conformance.rs` can split their edits across phase helpers and dispatch concurrently.\n\nWhy: task #934 was scoped as an optimization, not a decomposition. Even after it lands, the 700-line function remains the lock bottleneck. Proper decomposition is the durable fix.\n\nNote to executor: if after reading the post-#934 state you conclude check_trait_conformance is already < 250 lines and naturally cohesive (i.e. #934 did more than expected), defer this task with a note explaining — don't manufacture phase boundaries that don't exist.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "934",
           "936",
@@ -43148,15 +43260,18 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/conformance.rs",
             "crates/reify-compiler/src/conformance/mod.rs",
             "crates/reify-compiler/src/conformance/checker.rs"
           ],
           "modules": [
             "crates/reify-compiler/src"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "f63f293b3ca0547aa9eecf0996b51b7d7ced63bc",
+            "commit_input": "f63f293b3"
+          }
         },
-        "updatedAt": "2026-04-21T19:43:29.702Z"
+        "updatedAt": "2026-04-23T06:38:13.414Z"
       },
       {
         "id": "2037",
@@ -44001,11 +44116,11 @@
         "description": "Address review suggestion on crates/reify-types/src/identity.rs:28-36 (`ModulePath::from_dotted`).\n\nProblem: the function uses `debug_assert!` for emptiness and empty-segment checks, but the docstring's guidance (\"Add a `debug_assert` at call sites that accept user-provided strings\") inverts responsibility — callers shouldn't duplicate invariants the constructor owns. In release builds, bad inputs (\"\" or \"a..b\") silently produce `[\"\"]` or `[\"a\", \"\", \"b\"]`, which then flow into module identity keys. Since `from_dotted` is called on `module_path` strings originating from import declarations in `ModuleDag::compile_module` (crates/reify-compiler/src/module_dag.rs), a malformed parse/import can silently reach this in release.\n\nFix: either\n- (preferred) change the signature to `from_dotted(dotted: &str) -> Result<Self, ParseError>` and update the (few) callers to handle the error, OR\n- convert the `debug_assert!`s to hard `assert!`s since this is not a hot path.\n\nAlso: remove the misleading \"add a `debug_assert` at call sites\" note from the docstring — the invariant is the constructor's responsibility.\n\nMemory hints: grep `from_dotted` for the full caller set before choosing Result vs assert; callers include `module_dag.rs:160`, `module_dag.rs:197`, and likely the parser/test-support crates.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T20:18:22.131Z",
+        "updatedAt": "2026-04-22T15:48:47.714Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/identity.rs",
@@ -44017,7 +44132,10 @@
             "crates/reify-compiler/src/stdlib_loader.rs",
             "crates/reify-compiler/tests/module_dag_tests.rs",
             "crates/reify-types/src/identity.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "7a23786f179114ce0fdc33747c3f720033d35bc2"
+          }
         }
       },
       {
@@ -44043,16 +44161,19 @@
         "description": "Close a latent overlay-invariant escape in the `StdlibMode` deferred-commit logic (crates/reify-compiler/src/module_dag.rs, approximately lines 189–344 of the current file).\n\nThe issue: in the `Ok(path) if is_std_path` arm, when `stdlib_mode` is still `None`, `commit_fs_mode = true` is set but the actual write to `self.stdlib_mode` is deferred until after the module body (and its transitive imports) successfully compile. During the recursive `compile_module` calls for this module's own `import std.Y` statements, the `Err(fs_err) if is_std_path` arm can legitimately find Y only in the embedded stdlib (if Y is missing from `stdlib_root`) and commit `stdlib_mode = Some(Embedded)`. When the outer call returns, the unconditional `if commit_fs_mode { self.stdlib_mode = Some(FileSystem); }` overwrites the Embedded commit — silently mixing a filesystem-loaded outer module with an embedded-loaded inner dependency. This is the exact partial-overlay scenario the new invariant is meant to reject.\n\nNot reachable through the bundled stdlib today (none of `stdlib/*.ri` have `import` statements), but a user-supplied `stdlib_root` whose `.ri` files import other std.* modules will trip it, defeating the invariant.\n\nTwo viable fixes (pick one or combine):\n(a) Commit `stdlib_mode = Some(FileSystem)` eagerly *before* recursing into imports so the inner embedded-fallback arm sees `Some(FileSystem)` and emits the overlay diagnostic. Trade-off: a parse/compile failure on the outer module would taint mode for subsequent calls; guard this with revert-on-error if that matters.\n(b) After the inner recursion returns, re-check `self.stdlib_mode` and emit the partial-overlay diagnostic when `commit_fs_mode == true` but a descendant already switched mode to `Embedded`. Don't silently overwrite.\n\nAdd a regression test in `crates/reify-compiler/tests/module_dag_tests.rs` that constructs a user-supplied stdlib dir with one `.ri` file that `import`s another std.* module missing from the dir, and asserts the partial-overlay diagnostic fires.\n\nMemory hints: search \"stdlib embedded fallback module_dag StdlibMode partial overlay\"; review the two existing overlay tests `partial_stdlib_overlay_errors_when_fs_missing_later_module` and `partial_stdlib_overlay_errors_when_embedded_first_then_fs` in module_dag_tests.rs for setup patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T20:17:45.034Z",
+        "updatedAt": "2026-04-22T19:48:15.301Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/module_dag.rs",
             "crates/reify-compiler/tests/module_dag_tests.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "9671db37f5a9eac727daab6e2e065f0101f095c9"
+          }
         }
       },
       {
@@ -44079,17 +44200,20 @@
         "description": "Two post-merge polish items from task 1188 review: (a) tighten fragile substring assertions in geometry diagnostic tests; (b) guard the kind_display_tests table against silently-missing variants.",
         "details": "Follow-up to task 1188 (bundle landing ExtrudeSymmetric per-side threshold + Display impls for geometry op kinds). Two independent test-quality items:\n\n### Item A — Tighten diagnostic substring assertions\nLocation: `crates/reify-eval/tests/geometry_error_handling.rs` and any tests added in the 1188 bundle that use `diagnostics[0].message.contains(\"linear\")`, `contains(\"extrude\")`, etc.\n\nProblem: short lowercase tokens like `linear` and `extrude` are prefixes of longer op names (`linear_2d`, `extrude_symmetric`). A future refactor that emits the wrong-but-similar op name in the diagnostic would not be caught — the assertion would still pass.\n\nFix: assert on the full op token with a delimiter. Use `contains(\"for linear \")` (trailing space), `contains(\"for extrude \")`, `contains(\"for extrude_symmetric\")`, etc. — or anchor on the full Display output from `PrimitiveKind`/`ModifyKind` to pin the exact op name.\n\n### Item B — Pin Display-variant table against new variants\nLocation: `crates/reify-compiler/src/types.rs` around the `kind_display_tests` block (roughly lines 745-838 as of task 1188 landing).\n\nProblem: the table-driven Display round-trip tests pin a real contract but do not flag a new enum variant that lacks a Display arm. Rust's match exhaustiveness catches a missing arm in the `impl Display`, but the test table will silently skip any new variant added without updating both sides.\n\nFix (pick one):\n1. Add a `// NOTE: extend this table when adding a new variant to PrimitiveKind/ModifyKind/...` comment above each `check(&[...])` array. Cheap, no new deps.\n2. (Preferred if dep cost is acceptable) Thread the variant list through `strum::EnumIter` / `strum::IntoEnumIterator` so the test iterates all variants automatically and fails at compile time when a new one is added.\n\nCheck `Cargo.toml` for existing `strum` usage before adding a new dep; if already depended on transitively, option 2 is nearly free.\n\n### Verification\n- `cargo test -p reify-eval --test geometry_error_handling`\n- `cargo test -p reify-compiler --lib kind_display`\n- Add a negative test (feature-gated or doc-test) that would fail if a new variant is added without a Display arm — optional but demonstrates the guard works.\n\nMemory hints:\n- search: \"diagnostic substring assertion op token delimiter\"\n- search: \"Display variant table strum EnumIter\"\n- entities: PrimitiveKind, ModifyKind, kind_display_tests, geometry_error_handling.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T20:47:12.626Z",
+        "updatedAt": "2026-04-22T16:58:01.294Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/types.rs",
             "crates/reify-eval/src/geometry_ops.rs",
             "crates/reify-test-support/src/helpers.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "cd80a17764dabc75e8d25e4a407e4873b749b8c5"
+          }
         }
       },
       {
@@ -44230,13 +44354,13 @@
         "description": "In engine_edit.rs edit_source Phase 4 (lines 1690-1817), the code removes collection-instance scoped cells via `new_snapshot.graph.value_cells.remove(&scoped_id)` and `values.remove(&scoped_id)`, but does NOT invalidate `self.cache` entries keyed by `NodeId::Value(scoped_id)`. A subsequent edit that re-adds a collection instance at the same index would find a stale cache entry from the previous incarnation.\n\nAlso: a `collection_sub` that is entirely REMOVED by the edit (no longer present in `new_snapshot.graph.collection_subs`) never has its scoped cells visited by Phase 4 at all — their cache entries are never invalidated. Latent because `Snapshot::from_compiled_module` rebuilds `graph.value_cells` from scratch, but `self.cache` is retained across edits.\n\nFix:\n1. In Phase 4's remove loop, call `self.cache.invalidate(&NodeId::Value(scoped_id))` for each removed scoped cell.\n2. Add a separate sweep that diffs old/new `graph.collection_subs`; for each entirely-removed collection_sub, enumerate its scoped_ids in the OLD graph and invalidate them.\n\nRegression test (tests/edit_source.rs): two-edit sequence grow collection → shrink → re-grow, assert the re-grown instance's value comes from a fresh evaluation (not a resurrected cache entry).\n\nmemory_hints:\n- search: \"collection_subs Phase 4 scoped cells\"\n- entity: \"CachedResult\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "2016"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:16:47.492Z",
+        "updatedAt": "2026-04-22T16:49:36.231Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -44247,7 +44371,10 @@
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/tests/edit_source.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "0400af28ab1b3842d47793fa8a2c414b048abc59"
+          }
         }
       },
       {
@@ -44305,15 +44432,18 @@
         "description": "Two post-merge polish follow-ups from task 2079 review (compile_builder extraction).\n\n1. **Anchor duplicate-diagnostic wire format** — `crates/reify-compiler/src/compile_builder/ctx.rs` test `record_or_report_duplicate_inserts_and_deduplicates` asserts `diagnostics.len() == 1` on the duplicate branch but does not verify the diagnostic's message text or label ordering. This helper is now the single source of truth for the `duplicate entity definition '<name>'` wire format (previously replicated verbatim across four pre_pass branches), so a silent message regression would only be caught by distant integration tests. Extend the test to assert:\n   - `diagnostics[0].message` contains `duplicate entity definition 'Widget'`\n   - Two labels present in order: first label span == `span_b` with kind `\"structure\"` (second def), second label span == `span_a` with kind referencing `\"first defined as structure here\"` (or the exact format).\n   This anchors behaviour that was previously enforced by duplication.\n\n2. **Clarify `build_constraint_def_registry` doc comment** — `crates/reify-compiler/src/compile_builder/entities_phase.rs:32-40`. Current doc says local defs \"override on name collision\" but does not call out that *all* local defs (pub or not) are inserted, only that prelude defs are filtered to pub. Extend the comment: e.g. \"All local constraint defs (pub or not) are inserted; non-pub local defs are only reachable within the current module but still shadow prelude defs of the same name.\" No behaviour change.\n\nCold-path micro-opt in `record_or_report_duplicate` (the redundant `.get().expect()` after `is_first_entity_def`) was also suggested but dismissed — not hot, and readability cost of `entry()` API rewrite outweighs the saved lookup.\n\n`cargo test -p reify-compiler` must pass.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-21T22:33:37.499Z",
+        "updatedAt": "2026-04-22T15:44:23.226Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "12d4f740dc09251339aa09a8ce8ff1a294cdc68d"
+          }
         }
       },
       {
@@ -44339,13 +44469,13 @@
         "description": "Task 2084's lock `edit_source_role_flipped_guard_member_matches_cold_eval` in crates/reify-eval/tests/edit_source.rs only covers the active→inactive direction of the role flip (a member that was Determined becoming Undef). The symmetric case — a member previously suppressed to Undef on the inactive branch becoming a live Determined value on the active branch — is not pinned.\n\nSince the fix relies on Phase 1 running the full activation/deactivation pass for the whole group, the symmetric case exercises a different path in `deactivate_if_not_auto` / activation that is worth a dedicated lock.\n\nAdd a companion test where `moving` starts on the else-branch (Undef under `use_thick=true`), then in module B moves to the where-branch. Assert cold and incremental agree on the now-Determined value. Reuse `parse_and_compile` / `fresh_engine` for minimal extra code. Mirror the dual-assertion pattern (relative + positive anchor) from the existing test so a \"both wrong\" regression cannot slip through.\n\nmemory_hints:\n- search: \"edit_source role-flipped guard member test\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "2084"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:48:48.616Z",
+        "updatedAt": "2026-04-23T18:53:42.487Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -44360,7 +44490,10 @@
               "Phase 1 activation deactivation guarded group member test cold eval"
             ]
           },
-          "_causation_id": "1ba4db3a-cd2f-4470-9c7e-06f9d0b2963f"
+          "_causation_id": "1ba4db3a-cd2f-4470-9c7e-06f9d0b2963f",
+          "done_provenance": {
+            "commit": "13124b93ec7b9a258efd043d1b6c76dc366e8a94"
+          }
         }
       },
       {
@@ -44420,13 +44553,13 @@
         "description": "crates/reify-eval/src/engine_edit.rs ~L1367-1407: `has_role_flipped_guard_member` is computed eagerly before the `||` chain at L1404-1407. The HashMap build + walk over old/new `guarded_groups` runs on every edit even when `structure_controlling` dirtiness or `has_added_guard_member` would already fire. On models with many guarded-group members this is wasted work on the hot edit path.\n\nFix: restructure so the role-flip probe runs via inline closure/IIFE after the cheap checks short-circuit: `let has_dirty_guards = sc_dirty || has_added_guard_member || compute_role_flip();`. Task 2084's lock `edit_source_role_flipped_guard_member_matches_cold_eval` still pins correctness.\n\nScope note: distinct from task 2088 (per-group filtering inside Phase 1/3 loops) — this is about the outer trigger only.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2084"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T00:48:49.746Z",
+        "updatedAt": "2026-04-22T11:55:32.298Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -44609,13 +44742,13 @@
         "description": "The role-flip probe in `Engine::edit_source` (crates/reify-eval/src/engine_edit.rs ~L1435) ends with `flipped || new_total != old_roles.len()`. `new_total` is a raw per-member iteration count (no dedup); `old_roles.len()` is a deduped HashMap len. When old and new guarded-groups each contain the same intra-group duplicate (same ValueCellId in both members and else_members of one group — an affirmatively-supported shape per `build_old_role_map`'s docstring), `new_total` counts it twice while `old_roles.len()` counts it once, so the probe falsely reports a role-flip and forces an unnecessary guard re-eval.\n\nSpotted by reviewer_comprehensive on task 2092 review (see Mem0 memory 092192b7-3d7d-417d-a2dc-81ebc18abc39).\n\nFix options (pick one):\n  (a) Track a HashSet<ValueCellId> of seen IDs during the new-groups walk; compare `seen.len() != old_roles.len()` after the loop (apples-to-apples dedup).\n  (b) Have `build_old_role_map` return `(map, pre_dedup_insert_count)` so the probe compares raw-vs-raw counts.\n\nAdd a regression test that constructs old and new graphs each containing the identical intra-group duplicate and asserts the probe does NOT report a role-flip (currently it would).\n\nmemory_hints:\n- search: \"build_old_role_map intra-group duplicate last-write-wins\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2092"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T01:55:42.323Z",
+        "updatedAt": "2026-04-22T11:55:32.458Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -44691,19 +44824,25 @@
       {
         "id": "2107",
         "title": "Pipe start-tangent guard follow-ups: NaN rejection, tolerance in error, -Z test case",
-        "description": "Three polish fixes co-located around the task-2095 Pipe start-tangent guard in crates/reify-kernel-occt/src/lib.rs. All strictly tighten the rejection contract; no behavior change for accepted (+Z) paths.",
-        "details": "Post-merge review of task 2095 (reviewer_comprehensive) flagged three related cleanups on the Pipe start-tangent guard:\n\n1. **NaN rejection (lib.rs:588-591).** The guard `if t.z < 1.0 - 1e-6` silently accepts NaN components because any comparison with NaN is false. `wire_start_tangent` already errors on zero magnitude and OCCT is unlikely to emit NaN, but defense-in-depth: flip to `!(t.z >= 1.0 - 1e-6)` (rejects NaN) or add an explicit `t.x.is_finite() && t.y.is_finite() && t.z.is_finite()` precheck before the tangent comparison.\n\n2. **Include tolerance in the runtime error (lib.rs:593-597).** The docstring says the constraint is \"+Z (within 1e-6)\" but the runtime error string drops the tolerance. Include it so callers hitting FP noise can tell whether their path is close-but-rejected vs. far-off (e.g. extend the message with \"expected tangent.z > 0.999999\").\n\n3. **Add -Z case to kernel_pipe_non_z_start_tangent_returns_error (lib.rs:4343-4368).** The test currently covers +X, +Y, and an XY-plane arc. A start-tangent ≈ (0,0,-1) also fails the `t.z > 1-1e-6` check and is worth pinning: -Z is the single case where a user might reasonably expect pipe() to \"just work\" (profile plane still aligned, direction flipped). Pinning makes the contract explicit; if -Z is ever accepted in a future orientation-generalization pass, this test becomes the forcing function.\n\nTriage context preserved in memory 0bb8ede0-45ea-426f-bbf6-903f7a1a7850 (observations_and_summaries, agent_id=claude-task-2095-steward).",
-        "testStrategy": "",
-        "status": "in-progress",
+        "description": "Five co-located polish items on validate_pipe_start_tangent and its surrounding tests in crates/reify-kernel-occt/src/lib.rs. All tighten the rejection contract, improve documentation, or remove brittle test assertions.",
+        "status": "done",
         "dependencies": [],
-        "priority": "low",
+        "priority": "medium",
+        "details": "Five co-located polish items on `validate_pipe_start_tangent` and its surrounding tests in `crates/reify-kernel-occt/src/lib.rs`. All tighten the rejection contract, improve documentation, or remove brittle test assertions; no behavior change for accepted (+Z) paths.\n\n1. **NaN rejection (lib.rs:588-591).** The guard `if t.z < 1.0 - 1e-6` silently accepts NaN components because any comparison with NaN is false. `wire_start_tangent` already errors on zero magnitude and OCCT is unlikely to emit NaN, but defense-in-depth: flip to `!(t.z >= 1.0 - 1e-6)` (rejects NaN) or add an explicit `t.x.is_finite() && t.y.is_finite() && t.z.is_finite()` precheck before the tangent comparison.\n\n2. **Include tolerance in the runtime error (lib.rs:593-597).** The docstring says the constraint is \"+Z (within 1e-6)\" but the runtime error string drops the tolerance. Include it so callers hitting FP noise can tell whether their path is close-but-rejected vs. far-off (e.g. extend the message with \"expected tangent.z > 0.999999\").\n\n3. **Add -Z case to `kernel_pipe_non_z_start_tangent_returns_error` (lib.rs:4343-4368).** The test currently covers +X, +Y, and an XY-plane arc. A start-tangent ≈ (0,0,-1) also fails the `t.z > 1-1e-6` check and is worth pinning: -Z is the single case where a user might reasonably expect pipe() to \"just work\" (profile plane still aligned, direction flipped). Pinning makes the contract explicit; if -Z is ever accepted in a future orientation-generalization pass, this test becomes the forcing function.\n\n4. **Move rationale into `validate_pipe_start_tangent`'s rustdoc (lib.rs ~108–120).** The caller at lib.rs:612 now says \"see validate_pipe_start_tangent\" (after task-2119 trims it to a one-line pointer). The helper's doc currently describes only mechanics; it lacks the WHY (BRepOffsetAPI_MakePipe requires profile-plane alignment with the path's start-tangent; non-+Z paths produce degenerate zero-volume solids) and the task-2095 deferred-work pointer for general-orientation support. Action: add the OCCT profile-plane rationale and task-2095 deferred-work reference to the rustdoc of `validate_pipe_start_tangent`.\n\n5. **Drop the `msg.contains(\"+Z\")` assertion from `validate_pipe_start_tangent_rejects_oversize_z` (lib.rs:4506–4524).** Since `1e100` is finite, `is_finite()` passes and only the tolerance branch can reject — the branch-disambiguating assertion is already implied by the input. The wording check adds no coverage and couples the test to the error string (same brittleness class as the wording-pin test removed in task 2119). Action: drop the `msg.contains(\"+Z\")` assertion and keep only the `Err(OperationFailed(_))` match.",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:03:57.670Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
-          ]
-        }
+          ],
+          "curator_action": "combine",
+          "curator_justification": "Both tasks touch only `crates/reify-kernel-occt/src/lib.rs` (no module-lock expansion), are tiny polish items co-located around `validate_pipe_start_tangent` and its tests, and will serialize on the same module lock anyway. Task 2107 is pending and combine_eligible. The unified concern — tighten the start-tangent guard's rejection contract, error message, test coverage, documentation, and brittle assertions — is coherent; 5 items, 1 file, well under planning budget. Combining loads context once ",
+          "combined_at": "2026-04-23T18:04:25.779805+00:00",
+          "done_provenance": {
+            "commit": "e14e93f6e6fecee47203a960890c04acb0553d48"
+          }
+        },
+        "updatedAt": "2026-04-23T18:49:12.689Z"
       },
       {
         "id": "2108",
@@ -44809,15 +44948,18 @@
         "description": "`crates/reify-compiler/src/types.rs:454-461` — the doc comment on `RealizationDecl.name` says `None for anonymous realizations that have no direct let-binding (e.g. intermediate guarded-group params without a user-visible name)`, but after Task 2011 all three compile-time call sites in `entity.rs` (lines 1345, 1371, 1887 — including the guarded-geometry path) populate `Some(param.name.clone())`. The only production of `name: None` is the `TopologyTemplateBuilder::realization()` test-support helper.\n\nOptions: (a) rewrite the doc to say `Some(...)` for every let-binding/named param emitted by the compiler; `None` is only produced by test scaffolding. (b) If a legitimate compile-time `None` case exists, add it back in entity.rs; otherwise narrow the type to `String` once test-support is updated.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:08:49.651Z",
+        "updatedAt": "2026-04-23T17:50:22.283Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/types.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "49de05629b92213593da98f0faf8ca7bc833391e"
+          }
         }
       },
       {
@@ -44843,17 +44985,20 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:253-257` — on an unknown `Sub(name)` lookup the error message is `unresolvable GeomRef::Sub('{name}') — no such named sub-reference in scope`. This is surfaced via `Diagnostic::error(format!(\"failed to compile geometry operation: {}\", err))` with no source span (the caller uses `SourceSpan::new(0,0)` everywhere upstream), so a user with a typo in `difference(body, hoel)` gets no indication of which file/line.\n\nNot specific to `Sub(name)` — all surrounding diagnostics share the same span-less shape. Fix: thread the realization's `span` into `execute_realization_ops` so per-op diagnostics can carry a span. Self-acknowledged follow-up from Task 2011 review (reviewer explicitly marked it out of scope).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T02:12:28.445Z",
+        "updatedAt": "2026-04-22T16:54:38.614Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
             "crates/reify-compiler/tests/let_scope_tests.rs",
             "crates/reify-eval/src/engine_build.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "bdb8eb344dc303e477b78cde1045c8566239f2e3"
+          }
         }
       },
       {
@@ -44862,17 +45007,20 @@
         "description": "Implement a NaN-safe guard for the start-tangent magnitude in the Pipe kernel as suggested in a previous code review.",
         "details": "In the file `crates/reify-kernel-occt/src/lib.rs`, around lines 588-591, add a check to ensure that the start-tangent magnitude is not NaN. This involves modifying the existing logic to include a conditional statement that verifies the magnitude is a valid number before proceeding with further calculations. Use Rust's `f32::is_nan()` or `f64::is_nan()` method to perform this check, depending on the data type used. If a NaN is detected, handle it gracefully by either setting a default value or logging an error, based on the existing error handling strategy in the module.",
         "testStrategy": "1. Write unit tests to simulate scenarios where the start-tangent magnitude could be NaN and verify that the guard correctly identifies and handles these cases. 2. Ensure that the tests cover both valid and invalid inputs, confirming that valid inputs are processed normally. 3. Run the full test suite to ensure no regressions are introduced by this change.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "2095"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T03:00:47.679Z",
+        "updatedAt": "2026-04-22T15:51:38.655Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "fcda8912f1a372b27d6451a743ec90cff84a056f"
+          }
         }
       },
       {
@@ -44925,15 +45073,18 @@
         "description": "Three small follow-ups from the post-merge review of task 2106 in crates/reify-kernel-occt/src/lib.rs.",
         "details": "Post-merge review (reviewer_comprehensive) of task-2106's changes to validate_pipe_start_tangent flagged three small polish items:\n\n1. **Delete the wording-pin test** (lib.rs:4444-4460, `validate_pipe_start_tangent_error_mentions_tolerance`). Its sole assertion is `msg.contains(\"tolerance\")`. It exercises no behavior beyond message prose — no tolerance value, no branch selection, no coordinate reporting. Rewording the message (e.g. \"accepted margin %e\") would break the test without changing any contract; conversely a real correctness regression (wrong comparator/branch) would slip past it. The adjacent `validate_pipe_start_tangent_rejects_negative_z` test already covers the not-+Z branch with a stronger assertion. Action: delete the test.\n\n2. **Trim doc duplication** (lib.rs:98-103 + 106-109 + 602-609). The unit-vector residual derivation now lives on `PIPE_START_TANGENT_Z_EPSILON`'s doc comment, the helper's rustdoc, and the inline comment at the Pipe arm call site. Keep the residual derivation on the constant only; let the helper's rustdoc describe behavior; trim the call-site inline comment to a one-line pointer (e.g. \"Reject paths whose start-tangent is not approximately +Z; see validate_pipe_start_tangent.\"). Low priority.\n\n3. **Optional upper-bound guard** (lib.rs:108-124, `validate_pipe_start_tangent`). After filtering NaN/Inf, the comparator `t.z < 1.0 - ε` accepts arbitrarily large finite `t.z` (e.g. 1e100) and does not enforce the unit-vector invariant the doc rationale depends on. Cheap defense against upstream FFI bugs in `wire_start_tangent`: add `|| t.z > 1.0 + PIPE_START_TANGENT_Z_EPSILON` to the guard, or assert `(t.x*t.x + t.y*t.y + t.z*t.z - 1.0).abs() < 1e-3` defensively. Not blocking; pre-refactor code had the same gap.\n\nAll three are co-located polish on the helper landed in commits 5be841671..d087ef970 (task 2106). No behavior change for accepted (+Z) paths.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T03:04:37.764Z",
+        "updatedAt": "2026-04-23T18:07:42.925Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "0b5831578cf363be4f6701c9368e8a252281aa9d"
+          }
         }
       },
       {
@@ -45195,11 +45346,11 @@
         "description": "Add a cfg(debug_assertions)-gated call to assert_value_cell_types_representable on the snapshot produced by Snapshot::from_compiled_module inside Engine::edit_source (crates/reify-eval/src/engine_edit.rs around line 951). Today the invariant is only asserted on the eval() cold-start path (engine_eval.rs:176-177), so a compiler-introduced violation during an edit-time recompile could slip past the guard until the next full eval.",
         "details": "Context: task 1867 added `#[cfg(debug_assertions)] assert_value_cell_types_representable(&snapshot.graph);` right after `Snapshot::from_compiled_module(module)` in Engine::eval (engine_eval.rs:175-177). Reviewer flagged that Engine::edit_source also calls Snapshot::from_compiled_module but does not re-run the assertion, leaving a coverage gap for edit-time recompiles.\n\nFix: add the same cfg-gated call immediately after the from_compiled_module invocation in engine_edit.rs (around line 951). The helper `assert_value_cell_types_representable` is `pub(crate)`-reachable via `crate::engine_eval::` or by re-exporting; confirm visibility and adjust if needed. Zero release-build cost because the call is cfg(debug_assertions).\n\nSource: task 1867 review suggestion (reviewer_comprehensive); skipped at the time because engine_edit.rs was outside task 1867's locked modules.\n\nmemory_hints:\n- search: \"assert_value_cell_types_representable engine_eval debug_assertions\"\n- entity: Engine, Snapshot",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T05:30:46.925Z",
+        "updatedAt": "2026-04-22T11:55:33.296Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -45228,18 +45379,20 @@
       {
         "id": "2134",
         "title": "engine_edit tests: resolve symmetry-test redundancy and fix hardcoded line ref",
-        "description": "Follow-up from task 2131 post-merge review. Two small test-quality issues around the new `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values` test in crates/reify-eval/src/engine_edit.rs (~line 2413).",
-        "details": "Two suggestions from the task 2131 post-merge review to address:\n\n1. **Redundant coverage with the new symmetry test.**\n   Location: crates/reify-eval/src/engine_edit.rs:2423-2470.\n   The new `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values` test covers the same invariants already pinned by:\n     - `reelaborate_guarded_group_leaves_active_members_with_no_default_expr_untouched` (active no-default no-op)\n     - `..._absent_from_graph_untouched` (active absent no-op)\n     - `reelaborate_guarded_group_activates_else_members_when_guard_false` (:2480) (inactive non-Auto → Undef under guard=false)\n   The stated purpose — \"a refactor that unrolls the loop and breaks one side asymmetrically would fail\" — is already achieved by having both guard=true and guard=false tests in the suite. Options:\n     (a) Delete the symmetry test (keep the narrower per-branch tests — better locality of failure messages).\n     (b) Replace the narrower per-branch tests with the symmetry test (removes ~60 lines of duplication, loses localized failure isolation).\n   Recommendation: (a), since per-branch tests give tighter failure localization and the symmetry is implicit in having both guard values covered.\n\n2. **Doc comment hard-codes line number `engine_edit.rs:68`.**\n   Location: crates/reify-eval/src/engine_edit.rs:2412-2414 (inside the doc comment of the new symmetry test if retained; otherwise moot).\n   The line number will drift as the file is edited. The existing intra-doc link `[`reelaborate_guarded_group`]` is sufficient. Drop the `:68` and refer to the loop by the enclosing function name only — e.g. \"the shared `for (cells, is_active) in ...` loop inside `reelaborate_guarded_group`\". Only relevant if (1) leaves the symmetry test in place.\n\nmemory_hints:\n- search: \"task 2131 reelaborate_guarded_group symmetry\"\n- file: crates/reify-eval/src/engine_edit.rs (around lines 2412–2470)",
-        "testStrategy": "",
-        "status": "in-progress",
+        "description": "Follow-up cleanups from post-merge reviews of tasks 2131 and 2144. Four related comment/docstring quality issues across engine_edit.rs and guard_eval.rs — all caused by hardcoded positional references that drift as the file evolves.",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "1. **Symmetry-test redundancy** (engine_edit.rs:2423-2470): `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values` duplicates invariants already pinned by `reelaborate_guarded_group_leaves_active_members_with_no_default_expr_untouched`, `..._absent_from_graph_untouched`, and `reelaborate_guarded_group_activates_else_members_when_guard_false` (:2480). Recommended action (a): delete the symmetry test; per-branch tests give tighter failure localization and symmetry is implicit in having both guard=true and guard=false covered.\n\n2. **Hardcoded line reference in doc comment** (engine_edit.rs:2412-2414): Doc comment references `engine_edit.rs:68`; replace with landmark-style phrasing (e.g. \"the guard-elaboration loop\") or remove entirely if the symmetry test is deleted per item 1.\n\n3. **Drifted line-number cites in `reapply_guard_deactivations_post_wave2` docstring** (engine_edit.rs ~lines 114-163): The docstring pins specific line numbers (e.g. \"line 589\", \"line 593\", \"line 432-437\", \"line 564\", \"lines 833 / 1892\") that have already drifted relative to the current file. Replace all exact line-number citations with symbolic references (e.g. \"Phase 1 in edit_param\", \"the snapshot-to-value rewrite loop\") so the docstring remains accurate as the file evolves.\n\n4. **Loosen test counter comment in guard_eval.rs**: Post-merge review suggestion from task 2144 to replace a fragile counter-specific comment (referencing a fixed call count) with phrasing that will not drift as surrounding code changes.",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-22T05:58:29.391Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
-          ]
+          ],
+          "curator_action": "combine",
+          "curator_justification": "The candidate is two tiny comment/docstring cleanups in engine_edit.rs and guard_eval.rs (both reify-eval module). Task 2134 is also tiny (2 items, engine_edit.rs only) and specifically includes fixing a hardcoded line-number citation in a doc comment — the same root cause as the candidate's drifted line-number cites in the reapply_guard_deactivations_post_wave2 docstring. All four items share the same subsystem concept (stale/hardcoded positional references in comments), both tasks are low-prio",
+          "combined_at": "2026-04-23T19:29:56.620301+00:00"
         }
       },
       {
@@ -45304,7 +45457,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T07:23:41.353Z",
+        "updatedAt": "2026-04-23T19:30:50.703Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs",
@@ -45323,15 +45476,14 @@
       },
       {
         "id": "2139",
-        "title": "Extract guard_value_unchanged helper to dedupe old_guard_val lookup in engine_edit",
-        "description": "The same `old_guard_val` lookup is duplicated verbatim across three sites in crates/reify-eval/src/engine_edit.rs (around lines 516, 744, and 1492/1759), each pulling `self.eval_state.as_ref().and_then(|s| s.snapshot.values.get(&group.guard_cell)).map(|(v, _)| v)` with near-identical comment blocks. Phase 3 edit_param (~744) and Phase 3 edit_source (~1759) skip logic is identical; Phase 1 edit_param and Phase 1 edit_source differ only by the added/role-flip clause.\n\nFix: extract a small helper like `fn guard_value_unchanged(&self, guard_cell: &ValueCellId, new_val: &Value) -> bool` on Engine (or a free fn scoped by eval_state). Call it from all three sites. Phase 1 of edit_source can layer the `has_added_in_group || has_role_flipped_guard_member` clause at the call site. Consolidate the doc-comment in one place.\n\nLow priority — functional no-op but reduces drift risk.\n\nSource: post-merge review suggestion on task 2088 (merge commit 90804da34).",
-        "details": "",
-        "testStrategy": "",
-        "status": "in-progress",
+        "title": "Extract guard lookup and guard_changed helpers to dedupe duplicated closures in engine_edit",
+        "description": "Two related helper extractions in `crates/reify-eval/src/engine_edit.rs` to eliminate duplicated guard-related code patterns and prevent future divergence bugs.",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "**1. `guard_value_unchanged` helper** (original task 2139)\n\nThe same `old_guard_val` lookup is duplicated verbatim across three sites in `crates/reify-eval/src/engine_edit.rs` (around lines 516, 744, and 1492/1759), each pulling:\n```rust\nself.eval_state.as_ref().and_then(|s| s.snapshot.values.get(&group.guard_cell)).map(|(v, _)| v)\n```\nwith near-identical comment blocks. Phase 3 edit_param (~744) and Phase 3 edit_source (~1759) skip logic is identical; Phase 1 edit_param and Phase 1 edit_source differ only by the added/role-flip clause. Extract a small helper (e.g. `fn guard_value_unchanged(...)`) to encapsulate this lookup and make future changes safe.\n\n**2. `phase3_guard_changed` helper** (new)\n\nThe `guard_changed` any-closure is duplicated verbatim between edit_param Phase 3 (lines 891-906) and edit_source Phase 3 (lines 1958-1973), including the task-2146 flip-then-revert clause:\n```rust\nphase1_reelaborated.get(...).is_some_and(|p1| Some(p1) != new_val)\n```\nDiverging these two predicates in the future is a real risk — the bug task 2146 fixed was exactly that kind of missed symmetry. Extract a helper, e.g.:\n```rust\nfn phase3_guard_changed(\n    groups: &[GuardedGroupIn],\n    ...\n) -> bool { ... }\n```\nso both Phase 3 sites share a single predicate definition.\n\nBoth helpers are pure deduplication; no behavioral changes expected.",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-22T07:24:12.588Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -45343,7 +45495,10 @@
               "guard value unchanged refactor helper extraction engine_edit.rs deduplication",
               "Phase 1 Phase 3 guard skip logic edit_param edit_source consolidation"
             ]
-          }
+          },
+          "curator_action": "combine",
+          "curator_justification": "Task 2139 is also a \"extract a small helper to dedupe duplicated code in engine_edit.rs\" refactor — it extracts `guard_value_unchanged` to dedupe the `old_guard_val` lookup pattern. The candidate extracts `phase3_guard_changed` to dedupe the guard_changed any-closure. Both are tiny (single file, helper extraction), share the same root cause (duplicated guard-related closures/lookups in engine_edit.rs), and will serialize on the same module lock. Combining satisfies all four hard rules: coherent ",
+          "combined_at": "2026-04-23T20:12:22.349378+00:00"
         }
       },
       {
@@ -45394,11 +45549,16 @@
         "description": "Apply the symmetric cross-phase dedup in edit_source that task 2140 applied in edit_param. edit_source in crates/reify-eval/src/engine_edit.rs has analogous Phase 1 (~line 1448) and Phase 3 (~line 1741) guard re-elaboration logic with the same cross-phase redundancy: Phase 3's old_guard_val is pulled from self.eval_state (pre-edit snapshot), so Phase 3 re-does Phase 1's work when a guard value actually flips. The perf-lock test `edit_source_phase1_and_3_skip_unchanged_guarded_groups` in tests/edit_source.rs:1926 currently asserts counter == 2, baking in the redundancy.\n\nDesign (from esc-2140-83):\n- Declare `phase1_reelaborated: HashSet<ValueCellId>` before Phase 1.\n- Insert after `self.last_guard_phase_group_evals += 1;` at ~line 1498.\n- In Phase 3 after the `let Some(guard_val) = ...` guard at ~line 1753, add `if phase1_reelaborated.contains(&group.guard_cell) { continue; }`.\n- Update perf-lock assertion in tests/edit_source.rs:1926 from `counter == 2` to `counter == 1`.\n\nCaveat: edit_source has additional skip conditions (added members, role-flipped guard members) that make per-group skip logic more complex than edit_param's. Account for these when wiring the HashSet population point so groups that were re-elaborated for role-flip or added-member reasons are correctly recorded as phase1_reelaborated.\n\nMemory hints: search for \"task 2140\" to see the edit_param design; see engine_edit.rs:727-753 for the post-wave2 cleanup that uses the phase1_reelaborated set in edit_param.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:16:31.523Z"
+        "updatedAt": "2026-04-22T09:57:08.016Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "e32059cfd93223929353f6f3f273f79b67ba7531"
+          }
+        }
       },
       {
         "id": "2143",
@@ -45406,17 +45566,33 @@
         "description": "The new post-solver pass in engine_eval.rs:819-827 and 858-866 writes (Undef, Auto) for inactive-branch Auto cells, overwriting values the solver just resolved. Meanwhile `deactivate_if_not_auto` (used by edit_param Phase 1 and the post-wave2 cleanup) PRESERVES the solver's value for Auto cells. This means initial `eval()` and `edit_param()` now produce different observable states for the same guard configuration when an Auto param appears in an inactive branch. The test fixture `edit_param_guard_group_mixed_members_via_edit_param` already had to be rewritten to chase this change from Determined/7mm to Undef/Auto.\n\nDecide which semantics is canonical and make the two paths match, or explicitly document the asymmetry and its rationale in a central place (not just inline comments in each site).\n\nSuggested fix: Either (a) make initial eval use `deactivate_if_not_auto` for inactive-branch Auto cells (preserve solver values, matching edit_param), or (b) update edit_param's deactivation to overwrite Auto cells to (Undef, Auto) (matching new eval). Document the decision in a module-level comment and add a test asserting `eval() → edit_param(no-op)` leaves Auto cells in identical state.\n\nSource: post-merge review suggestion on task 2140.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:18:04.114Z",
+        "updatedAt": "2026-04-23T18:38:47.239Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/guard_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "deactivate_if_not_auto",
+              "engine_eval.rs",
+              "engine_edit.rs"
+            ],
+            "queries": [
+              "inactive-branch Auto cell deactivation semantics eval() vs edit_param() asymmetry",
+              "deactivate_if_not_auto helper preserves solver values Auto cell inactive branch",
+              "post-solver guard re-evaluation pass engine_eval.rs Auto cell Undef override",
+              "Auto cell deactivation rule canonical semantics eval edit_param reconcile"
+            ]
+          },
+          "done_provenance": {
+            "commit": "40954772e342439086d7ff038163e5325c3774e3"
+          }
         }
       },
       {
@@ -45425,16 +45601,31 @@
         "description": "The post-wave2 cleanup in crates/reify-eval/src/engine_edit.rs:727-753 only iterates groups that Phase 1 actually re-elaborated (i.e. added to `phase1_reelaborated`). Groups that Phase 1 fired over but skipped via the per-group unchanged-guard short-circuit (line 524) are NOT in the set. Yet wave2 will still re-evaluate any inactive member of such a group whose default_expr reads a resolved auto param — overwriting the cell's prior Undef with a concrete value. Phase 3's per-group skip will then also short-circuit (guard value unchanged), so the corruption never gets repaired.\n\nThe existing test `edit_param_wave2_does_not_corrupt_inactive_members` exercises only the Phase-1-fired-for-this-group path; the Phase-1-skipped-but-dirty-guards path is untested.\n\nSuggested fix: Either (a) broaden the cleanup to iterate ALL guarded groups whose guard value is unchanged (re-assert inactive-branch deactivation regardless of whether Phase 1 ran for them), or (b) add a test that constructs two groups — one whose guard changes and one whose guard is unchanged but has an inactive member reading a resolved auto param — and asserts the unchanged group's inactive member stays Undef. If the intent is that this scenario cannot occur in practice, state the precondition and enforce it with a debug_assert.\n\nSource: post-merge review suggestion on task 2140.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:18:35.026Z",
+        "updatedAt": "2026-04-23T19:30:46.829Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/tests/guard_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "phase1_reelaborated",
+              "engine_edit.rs",
+              "guarded_groups"
+            ],
+            "queries": [
+              "post-wave2 cleanup phase1_reelaborated edit_param inactive member guard group skipped",
+              "phase1 skipped dirty-guard group inactive member wave2 corruption Undef",
+              "edit_param wave2 does not corrupt inactive members test coverage gap"
+            ]
+          },
+          "done_provenance": {
+            "commit": "46bb93c5d6962720b1a3cf166ae4bfe90dec06b3"
+          }
         }
       },
       {
@@ -45443,16 +45634,28 @@
         "description": "At crates/reify-eval/src/engine_edit.rs:728 the post-wave2 cleanup does `new_snapshot.graph.guarded_groups.clone()` to iterate and compare guard_cell against a HashSet. The iteration doesn't mutate the graph, so the clone is only needed because `new_snapshot` is borrowed immutably downstream through `&new_snapshot.graph`. In a structure with many guarded groups this is a wasted allocation per edit_param.\n\nSuggested fix: Re-scope the borrow so the iterator can borrow `&new_snapshot.graph.guarded_groups` directly, or iterate `phase1_reelaborated` itself and look up each group by guard_cell. The latter is also O(|phase1_reelaborated|) rather than O(|guarded_groups|).\n\nSource: post-merge review suggestion on task 2140.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:19:06.438Z",
+        "updatedAt": "2026-04-22T11:55:34.082Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/tests/guard_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "engine_edit.rs",
+              "guarded_groups",
+              "phase1_reelaborated"
+            ],
+            "queries": [
+              "guarded_groups clone post-wave2 cleanup edit_param allocation avoidance",
+              "phase1_reelaborated iterate guard_cell lookup avoid O(guarded_groups) clone",
+              "edit_param post-wave2 cleanup borrow scope refactor"
+            ]
+          }
         }
       },
       {
@@ -45465,17 +45668,416 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-22T09:53:11.783Z"
+        "updatedAt": "2026-04-23T19:30:50.278Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "phase1_reelaborated",
+              "engine_edit.rs",
+              "reapply_phase1_deactivations"
+            ],
+            "queries": [
+              "phase1_reelaborated wave2 guard flip dedup cross-phase edit_source edit_param",
+              "guard value changed between Phase 1 and Phase 3 wave2 auto param resolver flip",
+              "phase1_reelaborated HashMap guard value at insert time dedup bypass on flip",
+              "cross-phase dedup guard flip regression test else_member Undef Determined"
+            ]
+          }
+        }
+      },
+      {
+        "id": "2147",
+        "title": "Test coverage: role-flip/added-member interaction with edit_source cross-phase dedup",
+        "description": "In edit_source Phase 1 (crates/reify-eval/src/engine_edit.rs:1583-1590), the insert into `phase1_reelaborated` sits AFTER the `old_guard_val == Some(&guard_val) && !has_added_in_group && !has_role_flipped_guard_member` skip. Consequently groups reached via the role-flip or added-member triggers — whose guard value did not change — still land in the dedup set, and Phase 3 will skip them.\n\nThe new test added with task 2142 only exercises the guard-value-changed path (x=10mm → 3mm). The role-flip/added-member interaction with the new dedup set and the post-wave2 cleanup is not covered by this diff's tests. The existing role-flip test `edit_source_role_flipped_guard_member_matches_cold_eval` predates the dedup.\n\nSuggested fix: Add a regression test that combines a role-flipped guard member + resolver re-evaluation (wave2) + Phase 3 trigger, asserting results remain cold-eval-equivalent. At minimum verify `last_guard_phase_group_evals` matches the expected count. A cheap alternative: extend the existing role-flip cold-eval-equivalence test to also run under a source edit that triggers wave2.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive).",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:30:40.066Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/edit_source.rs"
+          ],
+          "memory_hints": {
+            "entities": [
+              "phase1_reelaborated",
+              "edit_source.rs",
+              "has_role_flipped_guard_member",
+              "has_added_in_group"
+            ],
+            "queries": [
+              "role-flip added-member guard phase1_reelaborated dedup set edit_source insert condition",
+              "has_role_flipped_guard_member has_added_in_group phase1 skip insert dedup set",
+              "role flipped guard member wave2 re-evaluation Phase 3 skip cold-eval equivalence test",
+              "edit_source_role_flipped_guard_member_matches_cold_eval test extend wave2 trigger"
+            ]
+          },
+          "done_provenance": {
+            "commit": "402379dda9181ed2c5787035f2a6c06f260d4ea4"
+          }
+        }
+      },
+      {
+        "id": "2148",
+        "title": "Tighten Rule 2c consistency: is_scalar_like_leaf guard and doc justification",
+        "description": "Two review suggestions from task-395 review of type_compat.rs. (a) is_scalar_like_leaf allowlist lacks spec-clause citation — either add doc justification pointing to authoritative source, or flip to denylist of shape-carrying types so future Type variants default to permissive. (b) Rule 2c (Tensor<0,M,Q>→Tensor<0,N,Q>) uses `q1 == q2` without the leaf-Q guard used by Rules 2a/2b — leaves compound-Q rank-0 pairs accepted where 2a/2b would refuse. Either document why 2c doesn't need the guard (both sides already rank-0 tensors, not wildcards), or add the same is_scalar_like_leaf(q1) guard for consistency.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:44:34.563Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/type_compat.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src/type_compat.rs",
+            "crates/reify-compiler/tests/implicit_conversion_tests.rs"
+          ],
+          "done_provenance": {
+            "commit": "087e5eae1868d14fec85f1a55c4e0fc41eaeb27e"
+          }
+        }
+      },
+      {
+        "id": "2149",
+        "title": "Add dimensioned-scalar coverage for Rule 2c (Tensor&lt;0,M,Q&gt;↔Tensor&lt;0,N,Q&gt;)",
+        "description": "Review suggestion from task-395. Rule 2c is only exercised with Type::Real as Q; the spec rationale is about trait conformance with dimensioned scalars. Add two tests in crates/reify-compiler/tests/implicit_conversion_tests.rs: (1) allow Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[m]&gt; (same dimension), (2) reject Tensor&lt;0,3,Scalar[m]&gt; → Tensor&lt;0,5,Scalar[angle]&gt; (quantity mismatch). Without the negative case a regression that accidentally drops the q1 == q2 check would still pass existing Real tests.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:08:18.989Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/implicit_conversion_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ],
+          "done_provenance": {
+            "commit": "5f00e6f91ec9cf5a6a7b6f704cd5befc80aabf8a"
+          }
+        }
+      },
+      {
+        "id": "2150",
+        "title": "Pin diagnostic-message wiring in field_composition_rejects_matrix_to_tensor2",
+        "description": "Review suggestion from task-395. The three field-composition tests in functions.rs (tests mod ~306-423) only assert diagnostic count; a refactor that reverses producer/consumer in the error string would still pass. In field_composition_rejects_matrix_to_tensor2, assert the diagnostic message contains \"codomain of 'inner'\" and \"domain of 'outer'\" so swapping inner/outer in the error would be caught.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T17:44:08.517Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "f1ff190ce6a63b4bcd04146dae1802d3590f3460"
+          }
+        }
+      },
+      {
+        "id": "2151",
+        "title": "module_dag.rs: extract diag_invalid_path helper + de-dup partial-overlay format strings",
+        "description": "Extract the inline map_err closures at crates/reify-compiler/src/module_dag.rs:234-235 and 288-289 into a `diag_invalid_path(path: &str, e: ModulePathParseError, context_phrase: &str) -> Vec<Diagnostic>` helper. Replace hard-coded \"resolving import\" with the context_phrase parameter so the top-level entry module can reuse it. Also cover the third partial-overlay site at 249-257 (wording \"add the missing module\" vs \"populate all stdlib modules\") — either extend the helper with a direction enum or add a sibling helper so all three overlay diagnostics share a single source of truth. Source: esc-2074-10 (S1+S2) + esc-2076-29 (S1).",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:27:10.968Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/module_dag.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ],
+          "done_provenance": {
+            "commit": "d0b07b916b9f2b160ce6b00083aa9dab94f8075c"
+          }
+        }
+      },
+      {
+        "id": "2152",
+        "title": "module_dag.rs: extract diag_invalid_path helper + de-dup partial-overlay format strings",
+        "description": "Refactor the diag_invalid_path and partial-overlay diagnostic infrastructure in module_dag.rs to be DRY and structurally discriminable — extracting the helper without a context_phrase parameter (both call sites use the same literal), relaxing the brittle phrase-matching test, and adding a structural discriminator to the partial-overlay regression test.",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "details": "1. **Extract `diag_invalid_path` helper WITHOUT `context_phrase`** (module_dag.rs:234-235 and 288-289): Pull the inline `map_err` closures into `diag_invalid_path(path: &str, e: ModulePathParseError) -> Vec<Diagnostic>`. Both current call sites (lines 331 and 385) pass the identical literal \"resolving import\" — inline it directly in the format string. YAGNI: if a future call site genuinely needs a different phrase, re-introduce the parameter then. Do NOT add a `context_phrase: &str` parameter.\n\n2. **Relax the brittle context-phrase unit test** (module_dag.rs:502-509, currently named `diag_invalid_path_formats_message_with_context_phrase`): This test was written against a parameterized design. Drop the context-phrase variant assertion; replace with a plain behavioral check that the formatted diagnostic mentions the path and the error text. Rename the test to `diag_invalid_path_formats_message`.\n\n3. **Cover the third partial-overlay site** (module_dag.rs:249-257): The wording \"add the missing module\" vs \"populate all stdlib modules\" distinguishes two sub-paths today. Either extend the helper with a direction/mode enum, or introduce two named helpers — whichever approach also provides the structural discriminator required in item 4.\n\n4. **Add a structural path discriminator** (module_dag.rs:230 entry-guard vs module_dag.rs:385 deferred-commit, tested at module_dag_tests.rs:1498-1507): The regression test currently substring-matches the word \"transitive\" in diagnostic prose to distinguish the two call sites through the shared `partial_overlay_fs_over_embedded_diag` helper. Add a `kind` field/variant to diagnostic output, or split into two named helpers with distinct output markers, so module_dag_tests.rs:1498-1507 can assert structural identity instead of prose wording.\n\n5. **De-dup residual format string literals**: After the extraction and discrimination work, remove any remaining duplicate inline format string literals across the partial-overlay paths.",
+        "testStrategy": null,
+        "subtasks": [],
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/module_dag.rs"
+          ],
+          "curator_action": "combine",
+          "curator_justification": "Task 2152 (pending, combine_eligible) is about to introduce `diag_invalid_path` WITH a `context_phrase: &str` parameter; the candidate argues YAGNI — both call sites at lines 331 and 385 already pass the identical literal \"resolving import\", so the parameter should never be introduced in the first place. These two items resolve the same function in the same file via opposing design decisions, making a coherent unified rewrite: extract the helper *without* the parameter (hardcode \"resolving impor",
+          "combined_at": "2026-04-23T18:24:37.206542+00:00",
+          "done_provenance": {
+            "commit": "55392a795489dd65f4b75dca688216767252dba1"
+          }
+        },
+        "updatedAt": "2026-04-23T19:15:15.672Z"
+      },
+      {
+        "id": "2153",
+        "title": "module_dag_tests: tighten partial-overlay test to assert distinguishing 'transitive' phrase",
+        "description": "In crates/reify-compiler/tests/module_dag_tests.rs:1455-1473, the three substring assertions (\"overlay/partial\", \"filesystem/embedded\", \"std.foo\") overlap loosely — they would pass even if the wrong error path (e.g. entry-guard variant rather than the new deferred-commit variant) were taken. Add an assertion for the distinguishing phrase \"transitive\" (or the exact context clause produced by the deferred-commit branch) so this test is tightly bound to the bug it guards. Source: esc-2076-29 (S2).",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:18:39.251Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "539fe03ab1847b60d88b4ec90bda042d3754ba8c"
+          }
+        }
+      },
+      {
+        "id": "2154",
+        "title": "Fix guarded-group Param override regression: consult param_overrides in member/else_member eval loops",
+        "description": "**Latent regression introduced in task 2017 — verified in engine_eval.rs.**\n\nengine_eval.rs lines 454-472 and 494-512 evaluate `ValueCellKind::Param` cells inside `guarded_groups.members` / `else_members` by calling eval_expr on `cell.default_expr` directly, never consulting `self.param_overrides`. Top-level Param handling (lines 1068, 1152) does consult param_overrides via validate_param_override. Pre-task-2017, CLI's reapply_user_overrides used Engine::edit_param which looked up cells in snapshot.graph.value_cells (includes guarded-group cells), so overrides survived update_source. Post-2017 CLI dropped its shadow-vec and relies solely on eval() consulting param_overrides — for guarded-group Params this path no longer fires and the override is silently lost.\n\nFix: inside both `for group in &template.guarded_groups` loops, when a member/else_member cell is `ValueCellKind::Param`, consult `self.param_overrides.get(&cell.id)` via `validate_param_override` before falling back to default_expr, mirroring the top-level Param branch.\n\nAdd an integration test that sets a CLI override on a guarded-group Param and calls update_source to confirm the override is preserved. If set_parameter on guarded-group Params is intentionally unsupported, document that and turn the test into a negative assertion. Source: esc-2017-31 (S1).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T17:28:56.806Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/eval_param_overrides.rs"
+          ]
+        }
+      },
+      {
+        "id": "2155",
+        "title": "Pipe start-tangent rationale doc and oversize_z test cleanup",
+        "description": "Two small follow-ups from the reviewer_comprehensive review of task 2119's changes in crates/reify-kernel-occt/src/lib.rs.",
+        "details": "Post-merge review of task-2119 flagged two co-located polish items on validate_pipe_start_tangent and its oversize_z test:\n\n1. Move rationale into the helper's rustdoc (lib.rs ~108-120). The caller at lib.rs:612 now just says \"see validate_pipe_start_tangent\". The previous inline block at the pipe-executor call site explained WHY the restriction exists (BRepOffsetAPI_MakePipe requires profile-plane alignment with the path's start-tangent; non-+Z paths produce degenerate zero-volume solids) and referenced task-2095 for the deferred general-orientation support. That rationale is not present on validate_pipe_start_tangent's doc comment — only mechanics are documented. Action: move the OCCT profile-plane rationale + task-2095 deferred-work pointer into the rustdoc of validate_pipe_start_tangent.\n\n2. Drop the msg.contains(\"+Z\") assertion from validate_pipe_start_tangent_rejects_oversize_z (lib.rs:4506-4524). Since 1e100 is finite, is_finite() passes and only the tolerance branch can reject — the branch-disambiguating assertion is already implied by the input. The wording check adds no coverage and couples the test to the error string (same brittleness class as the wording-pin test removed in task 2119). Action: drop the msg.contains(\"+Z\") assertion and keep only the Err(OperationFailed(_)) match.\n\nBoth items are co-located polish. No behavior change for accepted (+Z) paths.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:05:58.440Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-kernel-occt/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "2156",
+        "title": "Make post_solver_re_eval_guard_cells active-branch dispatch exhaustive",
+        "description": "In `crates/reify-eval/src/engine_eval.rs` (~lines 85-140), the active-branch arm of `post_solver_re_eval_guard_cells` uses `if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let` with an implicit else-skip. Today only `Auto { free }` falls into the skip path, which is intended, but if a new `ValueCellKind` variant is added in the future it will be silently skipped with no compiler warning.\n\nRefactor to an exhaustive `match cell.kind { Param | Let => ..., Auto { .. } => { /* skip, solver-owned */ } }`. This converts future variants into a compile error and documents the three-way decision in the code itself. Source: post-merge review suggestion on task 2143.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:43:41.077Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/guard_eval.rs"
+          ],
+          "memory_hints": {
+            "entities": [
+              "ValueCellKind",
+              "post_solver_re_eval_guard_cells",
+              "engine_eval.rs"
+            ],
+            "queries": [
+              "post_solver_re_eval_guard_cells active branch dispatch ValueCellKind",
+              "match exhaustive ValueCellKind Auto Param Let variants compiler warning"
+            ]
+          }
+        }
+      },
+      {
+        "id": "2157",
+        "title": "Strengthen eval_and_edit_param_paths_produce_same_inactive_auto_state test",
+        "description": "The invariant test at `crates/reify-eval/tests/guard_eval.rs:2420-2579` uses `MockConstraintSolver::new_solved` pre-seeded with the same answer for both engines (Path A and Path B), so it does not exercise whether the solver is actually re-invoked when the guard flips and `thickness` moves to the inactive branch in Path B. The test verifies value preservation across the two paths — which is the original regression — but will not catch a future bug where the solver fails to run in one path and a stale value is preserved.\n\nEither:\n - Extend `MockConstraintSolver` with an invocation counter and assert the expected re-invocation pattern in each path, OR\n - Add a clarifying comment to the test explaining that it deliberately does not cover solver re-invocation semantics (and pointing to where those are exercised).\n\nSource: post-merge review suggestion on task 2143.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T18:38:39.792Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/guard_eval.rs",
+            "crates/reify-test-support/src/mocks.rs"
+          ],
+          "memory_hints": {
+            "entities": [
+              "MockConstraintSolver",
+              "guard_eval.rs"
+            ],
+            "queries": [
+              "MockConstraintSolver invocation counter solver re-invocation pattern",
+              "eval_and_edit_param_paths inactive auto state test guard flip thickness"
+            ]
+          }
+        }
+      },
+      {
+        "id": "2158",
+        "title": "conformance: harden pass2 compile-error detection + chained unannotated-let regression",
+        "description": "Two robustness follow-ups on task 1914's pass2_compile_errors implementation in `crates/reify-compiler/src/conformance/checker.rs` (~lines 396–411).\n\nMemory hints: search \"task 1914 pass2_compile_errors compile_expr diagnostics.len Severity\"; entities: AvailableDefaultKind, compile_expr, pass2_compile_errors.",
+        "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestions #2 (checker.rs:396-399) and #4 (checker.rs:405-411).\n\n**#2 — Make the compile-error detector severity-safe.**\n`check_phase_pre_register_default_types` currently uses `diagnostics.len() > diag_before` to detect a compile_expr failure. The doc comment acknowledges this relies on an unchecked assumption: \"compile_expr only emits Severity::Error diagnostics.\" If a future Severity::Warning/Info diagnostic is pushed by any compile_expr code path, a successfully-typed let expression will be silently excluded from `inferred_let_exprs` → the `debug_assert!` in `check_phase_build_available_defaults_map` fires in tests, or the `Type::Real` defensive fallback silently advertises a phantom type in release (the exact phantom-type regression task 1914 set out to prevent).\n\nFix options, in order of preference:\n  1. Filter by severity: `let err_count_before = diagnostics.iter().filter(|d| d.severity == Severity::Error).count();` (and same after). Compare those counts.\n  2. Change `compile_expr` to return `(CompiledExpr, bool /*errored*/)` or `Result<CompiledExpr, ...>`.\n  3. Cheap mitigation: `debug_assert!(diagnostics[diag_before..].iter().all(|d| d.severity == Severity::Error), ...)` so drift fails loudly rather than silently.\n\n**#4 — Regression test for chained unannotated lets with an unresolved forward reference.**\nPre-1914, Pass 2 registered the (potentially poisoned) inferred type in scope even on compile failure; now on failure the name is NOT `register_if_absent`'d. Downstream effect: any *other* unannotated let whose body references this name will emit a new \"unresolved\" diagnostic that did not exist before. Task 1914's regression test only covers a single unannotated let, so the chained-let behavior change is unpinned.\n\nAction:\n  - Add regression test to `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` covering e.g. `trait T { let a = b + 1mm; let c = a * 2mm }` with `b` undefined. Assert the diagnostic set does NOT include a *new* \"unresolved `a`\" cascade caused by Pass 2 failing to register.\n  - If the test fails, consider registering `Type::Error` (poison sentinel) in scope on compile failure — the `implicitly_converts_to(Error, _)` asymmetric wildcard already suppresses cascades (see `type_compat.rs:3–26` and `check_phase_resolve_structure_members` at checker.rs:77–92 for the established pattern).\n\nVerify: `cargo test -p reify-compiler`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --check`.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1914"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2159",
+        "title": "conformance cleanup: dedupe kind-keyed cache test, single-bind composite key lookup, re-evaluate resolve_let_advertised_type helper",
+        "description": "Three small code/test cleanups on task 1914's kind-keyed cache and advertised-type helper in `crates/reify-compiler/src/conformance/{checker.rs,mod.rs}`.\n\nMemory hints: search \"task 1914 resolve_let_advertised_type inferred_let_exprs composite key\"; entities: resolve_let_advertised_type, AvailableDefaultKind.",
+        "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestions #1 (mod.rs:1345-1401), #3 (checker.rs:506-518), #5 (checker.rs:32-39).\n\n**#1 — Remove the duplicate cache-shape compile-tripwire test.**\n`check_phase_pre_register_default_types_cache_is_kind_keyed` (mod.rs ~line 1345) is a near-exact duplicate of `check_phase_pre_register_default_types_pass2_success_caches_unannotated_let` (immediately above). Both build identical AST (`let y = 2.5`), call the same pass, and assert `contains_key(&(\"y\".to_string(), AvailableDefaultKind::Let))` + same `result_type`. The composite-key compile-tripwire already exists in the predecessor test.\n\nAction: delete `check_phase_pre_register_default_types_cache_is_kind_keyed`. If a cross-kind-collision test is desired instead (a `Param`-named `x` AND a `Let`-named `x` coexist in `inferred_let_exprs` without collision), write *that* — it exercises the invariant that the composite key uniquely protects. Otherwise, simple deletion is fine.\n\n**#3 — Single-bind the composite-key lookup in `check_phase_build_available_defaults_map`.**\nAt checker.rs ~lines 506-518, the unannotated-let arm allocates the `(String, AvailableDefaultKind)` tuple twice per default:\n  - once inside `debug_assert!(... contains_key(&(name.to_string(), AvailableDefaultKind::Let)))`\n  - once for `inferred_let_exprs.get(&(name.to_string(), AvailableDefaultKind::Let))`\n\nEach allocates a String clone of `name`. Bind once:\n```\nlet key = (name.to_string(), AvailableDefaultKind::Let);\nlet entry = inferred_let_exprs.get(&key);\ndebug_assert!(cell_type.is_some() || entry.is_some(), \"...\");\nlet resolved = resolve_let_advertised_type(cell_type, entry);\n```\nSingle allocation, single lookup.\n\n**#5 — Re-evaluate `resolve_let_advertised_type` helper.**\nNow that suggestion #1 (pass2_compile_errors) has landed on task 1914, the helper's `Type::Real` fallback arm is defensive-only at both call sites:\n  - site 1 (available_defaults builder): the `debug_assert!` guards the fallback, so in release it's unreachable under the invariant\n  - site 2 (injection loop): always passes `Some(&compiled_expr)`, so the fallback is structurally unreachable\n\nOptions:\n  A. **Inline the helper at both sites.** Site 2 reverts to `cell_type.clone().unwrap_or_else(|| compiled_expr.result_type.clone())`. Site 1 becomes the single-bind form from #3 directly. Delete the three unit tests (their behavior is exercised end-to-end by conformance tests).\n  B. **Keep the helper but drop the \"falls back to Real when neither annotation nor inferred\" unit test** — its own doc says \"this arm should not be reached in practice.\"\n\nChoose based on whether centralizing the rule adds clarity (two call sites, one formula) or is a micro-abstraction. Both are defensible; lead's call. Note the helper doc comment is longer than the body — if kept, tighten the comment.\n\n**Coordination:** #3 depends on the single-bind rewrite from #5 option A (or the helper-preserving path from #5 option B). Sequence: pick #5 direction first, then apply #3.\n\nVerify: `cargo test -p reify-compiler`; `cargo clippy --workspace -- -D warnings`; `cargo fmt --check`.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1914"
+        ],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2160",
+        "title": "Tighten cascade-suppression regression test: add diagnostic-count assertion or span-based check",
+        "description": "Make `unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch` in `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` (~lines 748-831) less prose-dependent.\n\nMemory hints: search \"task 1914 cascade suppression regression test available default\"; entities: compile_source, errors_only.",
+        "details": "Origin: esc-1914-9 triage — reviewer_comprehensive suggestion #6.\n\nCurrent test asserts by substring match on error message prose (`\"available default\"` + `\"Real\"`, and `\"type mismatch for trait member\"` + `\"'a'\"`). This silently passes if the diagnostic wording is refactored (e.g., \"advertised default\"). The test comment correctly notes it doesn't assert an exact diagnostic count, but pinning on specific English strings risks a future prose cleanup letting a real regression slip through.\n\nReify does not yet have stable diagnostic codes/IDs, so the cleanest option isn't available. Pick one of:\n  1. **Span-based (preferred):** assert that no diagnostic whose span points at the trait-member `a` declaration exists, and that at least one root-cause diagnostic names `b`. Span is stable across prose refactors.\n  2. **Count-based backstop:** additionally assert the total error count stays at a specific small number (e.g., `assert_eq!(errors.len(), N)` or `<= N`). Simpler, pins total but breaks on unrelated error additions.\n  3. **Combination:** keep current substring checks AND add either a span check or a tight count bound.\n\nAlso consider: if Reify introduces stable diagnostic codes in the future, revisit this test (and similar prose-assertion tests) to migrate to code-based assertions.\n\nVerify: `cargo test -p reify-compiler test_unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch`; full suite clean.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1914"
+        ],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2161",
+        "title": "module_dag.rs: DRY partial_overlay_diag_fs_over_embedded_format test with shared helper",
+        "description": "Extract a `assert_fs_over_embedded(diag: &Diagnostic, expected_marker: &str, forbidden_marker: &str)` helper in the module_dag.rs tests to de-duplicate the Entry vs Transitive sub-tests of `partial_overlay_diag_fs_over_embedded_format` (crates/reify-compiler/src/module_dag.rs:497-543). Both variants share four assertions (path substring, root substring, \"resolved on the filesystem\", \"embedded stdlib\") plus the positive/negative structural marker checks — extract these into a single helper that takes the diagnostic and the expected/forbidden markers, then call it twice. Makes adding a future commit-site variant trivial.",
+        "details": "Source: review suggestion on task 2152 (esc-2152-11, reviewer_comprehensive).\n\nScope:\n- Only the test module in crates/reify-compiler/src/module_dag.rs (lines 497-543).\n- Do NOT change production code (partial_overlay_diag, OVERLAY_PREFIX, OVERLAY_SUFFIX) — the review noted that placement was fine and this is purely a test-DRYness change.\n\nAcceptance:\n- `assert_fs_over_embedded(&entry_diag, \"(fs-over-embedded/entry)\", \"(fs-over-embedded/transitive)\")` + analogous transitive call replace the duplicated assertion blocks.\n- Helper asserts: contains path, contains root, contains \"resolved on the filesystem\", contains \"embedded stdlib\", contains expected_marker, does not contain forbidden_marker.\n- `cargo test -p reify-compiler module_dag` passes.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T20:04:49.347Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/module_dag.rs"
+          ],
+          "done_provenance": {
+            "commit": "23cbdbd640b2352672a2b6e227a33871cded29ba"
+          }
+        }
+      },
+      {
+        "id": "2162",
+        "title": "Add EntityKind::as_label() to unify with Display impl",
+        "description": "In crates/reify-compiler/src/types.rs (around line 218-232), `EntityKind` has a `Display` impl that maps `Structure -> \"structure\"` and `Occurrence -> \"occurrence\"`. Task 1150 added a new match producing the same literals at crates/reify-compiler/src/traits.rs:237-240 to avoid a `to_string().to_lowercase()` allocation, creating a second source of truth that must stay in sync if a new variant is added.\n\nFix: expose `fn as_label(&self) -> &'static str` on `EntityKind` in types.rs that returns the same literals, and (a) have the Display impl delegate to it, (b) replace the match at traits.rs:237-240 with a call to `template.entity_kind.as_label()`. Check other call-sites for similar patterns.\n\nmemory_hints: search \"EntityKind Display\" in reify-compiler/src/types.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T19:59:18.241Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "c1c6101bf699fd5f94781cb9fa398dec79e0e583"
+          }
+        }
+      },
+      {
+        "id": "2163",
+        "title": "Extract shared wave2 guard-flip fixture for edit_param/edit_source regression tests",
+        "description": "The two wave2 guard-flip regression tests (crates/reify-eval/tests/edit_source.rs:2229 and crates/reify-eval/tests/guard_eval.rs:2483 — the latter hosts the edit_param variant) share ~90% of their fixture verbatim: identical guard_expr, m_decl/n_decl, constraint wiring, and sequenced solver values (depth 8mm → 3mm). The Rust setup is near-verbatim duplication.\n\nFix: extract a small helper (e.g. `fn wave2_flip_fixture() -> (CompiledModule, cell_ids, Box<dyn ConstraintSolver>)`) in a tests-local module or reify_test_support. Keep the two #[test] functions as thin wrappers that invoke edit_param vs. edit_source and assert the cell states, preserving the path-specific narrative in a short comment.\n\nLow priority / polish — functional no-op but reduces drift risk between the symmetric regressions.\n\nSource: post-merge review suggestion on task 2146 (esc-2146-21, reviewer_comprehensive).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T20:11:05.820Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/edit_source.rs",
+            "crates/reify-eval/tests/guard_eval.rs",
+            "crates/reify-test-support/src/fixtures.rs"
+          ]
+        }
+      },
+      {
+        "id": "2164",
+        "title": "Strengthen pragma content_hash test coverage (variants + negation + block-pragma)",
+        "description": "Expand pragma hashing tests to cover all PragmaValue variants, block-level pragma mutation, and pin absence of the legacy generic unknown-pragma warning for #no_prelude.",
+        "details": "Three related test-coverage additions in `crates/reify-compiler/tests/pragma_compile_tests.rs`:\n\n1. **Block-level pragma → module hash invariant** (hash.rs:69-81 context): `module_pragma_change_changes_module_content_hash` only exercises module-level pragmas. Add a sibling test that toggles a block-level pragma (e.g. `structure S { #precision(bits=32) ... }` vs `bits=64`) and asserts different `compiled.content_hash` values. Block pragmas reach the template via `structure.pragmas.to_vec()`, so propagation works only if `TopologyTemplate::content_hash` folds in `template.pragmas`. Passing test guards the invariant; failing test reveals block pragmas aren't in template hashes and need folding in.\n\n2. **PragmaValue + PragmaArg variant coverage** (hash.rs:111-120 context): Current determinism test only exercises KeyValue+Number. `hash_pragma_arg` has KeyValue/Bare branches and `format_pragma_value` has four variants (Ident, Number, String, Bool). Parameterize or add cases so each encoding contributes distinctively:\n   - `#precision(bare_ident_a)` vs `#precision(bare_ident_b)` (Bare + Ident)\n   - `#flag(enabled=true)` vs `#flag(enabled=false)` (KeyValue + Bool)\n   - `#tag(name=\"a\")` vs `#tag(name=\"b\")` (KeyValue + String)\n   Ensure different values produce different hashes.\n\n3. **Pin absence of legacy generic warning** (pragma_compile_tests.rs:340-351): `no_prelude_on_structure_emits_module_only_warning` only asserts the new \"only valid at module level\" message is present. Add an assertion that the old generic `\"unknown pragma #no_prelude\"` message is absent — e.g. `assert!(pragma_warnings(&module, \"unknown pragma\").is_empty())` — so a regression that emitted both or reverted to only the generic form would fail.\n\nMemory hints: search for \"pragma validation\" and \"pragma content_hash\" in reify-compiler. See task 1163 for the consolidation that introduced this code.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T20:18:02.696Z",
+        "metadata": {
+          "source": "steward-triage",
+          "spawn_context": "steward-triage",
+          "spawned_from": "1163",
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "2168",
+        "title": "Pragma hash test coverage: variants, block-pragma, legacy warning absence",
+        "description": "Expand pragma hash/diagnostic tests in crates/reify-compiler/tests/pragma_compile_tests.rs.",
+        "details": "Three test additions:\n\n1) Block-level pragma mutation → module hash: add sibling to `module_pragma_change_changes_module_content_hash` that toggles a structure-level pragma (e.g. `structure S { #precision(bits=32) ... }` vs `bits=64`) and asserts different `compiled.content_hash`. Block pragmas reach template via `structure.pragmas.to_vec()`; invariant holds only if `TopologyTemplate::content_hash` folds `template.pragmas`. If the new test fails, template hashing needs updating.\n\n2) PragmaValue+PragmaArg variant coverage: current determinism test only exercises KeyValue+Number. Add `#precision(bare_a)` vs `#precision(bare_b)` (Bare+Ident), `#flag(enabled=true)` vs `#flag(enabled=false)` (KV+Bool), `#tag(name=\"a\")` vs `#tag(name=\"b\")` (KV+String) — one per `format_pragma_value` variant.\n\n3) `no_prelude_on_structure_emits_module_only_warning` (pragma_compile_tests.rs:340-351): add `assert!(pragma_warnings(&module, \"unknown pragma\").is_empty())` to pin absence of the old generic warning.\n\nContext: task 1163 commits 03cbc1e29, d17f0554a, 35bcc9dde.",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-23T20:17:12.681Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-22T09:53:11.783Z",
-      "taskCount": 2138,
-      "completedCount": 1872,
+      "lastModified": "2026-04-23T20:19:34.357Z",
+      "taskCount": 2157,
+      "completedCount": 1916,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-23T20:19:44.478Z",
+      "description": "Tasks for master context"
     }
   }
 }

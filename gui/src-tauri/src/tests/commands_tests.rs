@@ -377,3 +377,128 @@ fn module_structure_all_public_types() {
     super::assert_ipc_contract::<SourceLocationInfo>();
     super::assert_ipc_contract::<FileData>();
 }
+
+// --- View sidecar tests (step-7) ---
+
+fn make_sample_persistent_state() -> crate::types::PersistentViewState {
+    crate::types::PersistentViewState {
+        version: "1".to_string(),
+        active_view_id: "auto:default".to_string(),
+        user_views: vec![],
+        explicit: std::collections::HashMap::new(),
+        viewport_cameras: std::collections::HashMap::new(),
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+    }
+}
+
+#[test]
+fn read_view_sidecar_returns_none_when_absent() {
+    use crate::commands::read_view_sidecar_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ri_path = dir.path().join("test.ri");
+    // The .ri file itself doesn't need to exist — only the sidecar matters.
+    let result = read_view_sidecar_impl(ri_path.to_str().unwrap());
+    assert!(result.is_ok(), "should return Ok when sidecar is absent");
+    assert!(
+        result.unwrap().is_none(),
+        "should return None when sidecar is absent"
+    );
+}
+
+#[test]
+fn write_view_sidecar_creates_file_next_to_ri_with_pretty_json() {
+    use crate::commands::write_view_sidecar_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ri_path = dir.path().join("bracket.ri");
+    let state = make_sample_persistent_state();
+
+    write_view_sidecar_impl(ri_path.to_str().unwrap(), &state).expect("write should succeed");
+
+    // Sidecar should be next to the .ri with .views.json appended.
+    let sidecar_path = format!("{}.views.json", ri_path.to_str().unwrap());
+    assert!(
+        std::path::Path::new(&sidecar_path).exists(),
+        "sidecar file should exist at {sidecar_path}"
+    );
+
+    let content = std::fs::read_to_string(&sidecar_path).unwrap();
+    // Pretty JSON contains newlines and the version field.
+    assert!(content.contains('\n'), "pretty JSON should contain newlines");
+    assert!(
+        content.contains("\"version\""),
+        "pretty JSON should contain version key"
+    );
+}
+
+// Note: a separate "returns_some_when_file_exists" test was removed — the
+// `view_sidecar_roundtrip` test below asserts field equality on the loaded
+// value, which strictly subsumes the weaker is_some() check.
+
+#[test]
+fn read_view_sidecar_returns_err_on_malformed_json() {
+    use crate::commands::read_view_sidecar_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ri_path = dir.path().join("bracket.ri");
+    let sidecar_path = format!("{}.views.json", ri_path.to_str().unwrap());
+
+    std::fs::write(&sidecar_path, b"not-valid-json").unwrap();
+
+    let result = read_view_sidecar_impl(ri_path.to_str().unwrap());
+    assert!(
+        result.is_err(),
+        "should return Err on malformed JSON, not panic"
+    );
+}
+
+#[test]
+fn view_sidecar_roundtrip() {
+    use crate::commands::{read_view_sidecar_impl, write_view_sidecar_impl};
+    use crate::types::{CameraStateData, ViewDefinitionData};
+
+    let dir = tempfile::tempdir().unwrap();
+    let ri_path = dir.path().join("bracket.ri");
+
+    let mut cameras = std::collections::HashMap::new();
+    cameras.insert(
+        "design".to_string(),
+        CameraStateData {
+            position: [1.0, 2.0, 3.0],
+            target: [0.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            zoom: 1.5,
+        },
+    );
+
+    let mut visibility = std::collections::HashMap::new();
+    visibility.insert("Bracket.flange".to_string(), "show".to_string());
+
+    let user_views = vec![ViewDefinitionData {
+        id: "user:my-view".to_string(),
+        name: "My View".to_string(),
+        auto: false,
+        visibility: visibility.clone(),
+        modified: Some(true),
+    }];
+
+    let mut explicit = std::collections::HashMap::new();
+    explicit.insert("Bracket.body".to_string(), "ghost".to_string());
+
+    let state = crate::types::PersistentViewState {
+        version: "1".to_string(),
+        active_view_id: "user:my-view".to_string(),
+        user_views,
+        explicit,
+        viewport_cameras: cameras,
+        timestamp: "2026-04-22T12:00:00Z".to_string(),
+    };
+
+    write_view_sidecar_impl(ri_path.to_str().unwrap(), &state).unwrap();
+    let loaded = read_view_sidecar_impl(ri_path.to_str().unwrap())
+        .unwrap()
+        .expect("should load state");
+
+    assert_eq!(loaded, state, "round-trip should preserve all fields");
+}

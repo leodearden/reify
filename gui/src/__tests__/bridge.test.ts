@@ -34,7 +34,10 @@ import {
   onNavigateToSource,
   getKernelStatus,
   onKernelStatus,
+  readViewSidecar,
+  writeViewSidecar,
 } from '../bridge';
+import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -477,5 +480,63 @@ describe('bridge def-preview commands', () => {
     expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
     expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
     expect(result.meshes[0].entity_path).toBe('BoltFlange.body');
+  });
+});
+
+// --- View sidecar bridge commands (step-9) ---
+
+const samplePersistentState: PersistentViewState = {
+  version: '1',
+  activeViewId: 'auto:default',
+  userViews: [],
+  explicit: {},
+  viewportCameras: {},
+  timestamp: '2026-01-01T00:00:00Z',
+};
+
+describe('bridge view sidecar commands', () => {
+  it('readViewSidecar invokes read_view_sidecar with { riPath }', async () => {
+    mockInvoke.mockResolvedValue(samplePersistentState);
+
+    await readViewSidecar('/project/bracket.ri');
+
+    expect(mockInvoke).toHaveBeenCalledWith('read_view_sidecar', {
+      riPath: '/project/bracket.ri',
+    });
+  });
+
+  it('readViewSidecar returns null when invoke resolves null', async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const result = await readViewSidecar('/project/bracket.ri');
+
+    expect(result).toBeNull();
+  });
+
+  it('readViewSidecar returns parsed PersistentViewState when invoke resolves a valid payload', async () => {
+    mockInvoke.mockResolvedValue(samplePersistentState);
+
+    const result = await readViewSidecar('/project/bracket.ri');
+
+    expect(result).toEqual(samplePersistentState);
+  });
+
+  it('writeViewSidecar invokes write_view_sidecar with { riPath, state }', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await writeViewSidecar('/project/bracket.ri', samplePersistentState);
+
+    expect(mockInvoke).toHaveBeenCalledWith('write_view_sidecar', {
+      riPath: '/project/bracket.ri',
+      state: samplePersistentState,
+    });
+  });
+
+  it('writeViewSidecar propagates invoke rejections', async () => {
+    mockInvoke.mockRejectedValue(new Error('disk full'));
+
+    await expect(
+      writeViewSidecar('/project/bracket.ri', samplePersistentState),
+    ).rejects.toThrow('disk full');
   });
 });

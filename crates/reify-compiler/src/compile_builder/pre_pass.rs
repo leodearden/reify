@@ -5,15 +5,14 @@
 //! otherwise performing no compilation work — that happens in the later
 //! phase modules.
 
-use reify_syntax::{Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl};
+use reify_syntax::{
+    Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl,
+};
 use reify_types::{Diagnostic, DiagnosticLabel};
 
 use crate::CompiledModule;
+use crate::annotations::is_known_module_pragma;
 use crate::compile_builder::ctx::CompilationCtx;
-
-/// Module-level pragmas recognized by the compiler. Unknown pragmas produce
-/// a warning diagnostic; they are otherwise ignored.
-const KNOWN_MODULE_PRAGMAS: &[&str] = &["no_prelude", "precision", "solver", "kernel", "version"];
 
 /// Forward every entry in `parsed.errors` as a warning diagnostic on `ctx`.
 ///
@@ -30,11 +29,13 @@ pub(crate) fn forward_parse_errors(ctx: &mut CompilationCtx, parsed: &ParsedModu
     }
 }
 
-/// Validate module-level pragmas against [`KNOWN_MODULE_PRAGMAS`], emitting
-/// a warning diagnostic for each unrecognized name.
+/// Validate module-level pragmas, emitting a warning diagnostic for each unrecognized name.
+///
+/// Recognized names are the union of [`crate::annotations::KNOWN_BLOCK_PRAGMAS`] and
+/// [`crate::annotations::MODULE_ONLY_PRAGMAS`], tested via [`is_known_module_pragma`].
 pub(crate) fn validate_module_pragmas(ctx: &mut CompilationCtx, parsed: &ParsedModule) {
     for pragma in &parsed.pragmas {
-        if !KNOWN_MODULE_PRAGMAS.contains(&pragma.name.as_str()) {
+        if !is_known_module_pragma(&pragma.name) {
             ctx.diagnostics.push(
                 Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
                     .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
@@ -127,11 +128,7 @@ pub(crate) fn collect_decl_refs<'a>(
             Declaration::Constraint(constraint) => {
                 // Constraints reserve names in the entity namespace (spec §4.2.1)
                 // even though constraint compilation is not yet implemented.
-                ctx.record_or_report_duplicate(
-                    &constraint.name,
-                    constraint.span,
-                    "constraint",
-                );
+                ctx.record_or_report_duplicate(&constraint.name, constraint.span, "constraint");
             }
             Declaration::Unit(unit_decl) => {
                 refs.unit_refs.push(unit_decl);
