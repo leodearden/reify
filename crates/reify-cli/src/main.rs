@@ -31,6 +31,15 @@ fn main() -> ExitCode {
         "build" => cmd_build(&args[2..]),
         "lsp" => cmd_lsp(),
         "gui" => cmd_gui(&args[2..]),
+        "gui-debug" => {
+            // `gui-debug` is sugar for `gui --debug`: prepend the flag and
+            // route through the same code path as `cmd_gui` so the two entry
+            // points share argument parsing and binary-launch logic.
+            let mut forwarded: Vec<String> = Vec::with_capacity(args.len() - 1);
+            forwarded.push("--debug".to_string());
+            forwarded.extend(args[2..].iter().cloned());
+            cmd_gui(&forwarded)
+        }
         "mcp-server" => cmd_mcp_server(&args[2..]),
         other => {
             eprintln!("Unknown command: {}", other);
