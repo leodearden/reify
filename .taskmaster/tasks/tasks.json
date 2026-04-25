@@ -47338,11 +47338,11 @@
         "description": "Extract a small helper for the `Arc::new(module.templates.iter().filter(|t| !t.meta.is_empty()).map(|t| (t.name.clone(), t.meta.clone())).collect())` incantation now duplicated in three sites after task 397's Arc refactor.",
         "details": "Add `build_meta_map(module: &CompiledModule) -> Arc<HashMap<String, HashMap<String, String>>>` in crates/reify-eval/src/lib.rs next to `eval_ctx_with_meta`, and call it from:\n- crates/reify-eval/src/engine_eval.rs ~203\n- crates/reify-eval/src/engine_eval.rs ~1062\n- crates/reify-eval/src/engine_edit.rs ~1442\n\nAcceptance: only one occurrence of `filter(|t| !t.meta.is_empty())` across crates/reify-eval/src; cargo test -p reify-eval passes.\n\nSource: follow-up from task 397 review (esc-397-72 suggestion 2).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:10.557Z",
+        "updatedAt": "2026-04-25T07:08:08.550Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -47504,7 +47504,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:08:07.852Z",
+      "lastModified": "2026-04-25T07:08:08.550Z",
       "taskCount": 2216,
       "completedCount": 1971,
       "tags": [
