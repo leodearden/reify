@@ -46955,13 +46955,13 @@
           ],
           "memory_hints": {
             "entities": [
-              "EvalResult",
-              "DeterminacyState",
-              "engine_eval.rs"
+              "eval_guarded_group_param_cell",
+              "EvalResult"
             ],
             "queries": [
-              "engine_eval param_overrides Undef Undetermined rejected override no default intentional asymmetry",
-              "EvalResult.values partial-map invariant Param cell skip paths"
+              "EvalResult values partial-map invariant Param-cell skip paths",
+              "eval_guarded_group_param_cell override resolution helper separate journal cache",
+              "engine_eval Param branch guarded-group skip paths unify document"
             ]
           },
           "curator_action": "combine",
