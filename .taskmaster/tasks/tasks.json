@@ -47946,7 +47946,18 @@
         "metadata": {
           "curator_action": "combine",
           "curator_justification": "Both tasks are tiny test-quality fixes in the reify-lsp module originating from the same task-2225 review, and they share a single unified concern: the eval_cached tests in reify-lsp are fragile — Task 2235's benchmark has no assertion (won't catch regressions), and Candidate 0's unit test is coupled to cache-store internals (breaks on engine refactors). They can be described as one coherent test-hardening effort, touch the same reify-lsp module lock, and the positive-signal rule for tiny tasks ",
-          "combined_at": "2026-04-25T09:04:37.579736+00:00"
+          "combined_at": "2026-04-25T09:04:37.579736+00:00",
+          "memory_hints": {
+            "entities": [
+              "EvalState",
+              "Engine",
+              "incremental_eval_benchmark.rs"
+            ],
+            "queries": [
+              "eval_cached benchmark timing assertion regression guard reify-lsp",
+              "incremental_path_uses_eval_cached test engine internal coupling"
+            ]
+          }
         }
       },
       {
