@@ -63,6 +63,7 @@ pub(crate) fn check_trait_conformance(
         &ctx,
         &inferred_let_exprs,
         &pass1_skipped,
+        &pass1_param_skipped,
         &pass2_skipped,
         &pass2_compile_errors,
     );
@@ -828,6 +829,7 @@ mod tests {
             &ctx,
             &inferred_let_exprs,
             &pass1_skipped,
+            &pass1_param_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
         );
@@ -2368,6 +2370,7 @@ mod tests {
         let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
             HashMap::new();
         let pass1_skipped: HashSet<String> = HashSet::new();
+        let pass1_param_skipped: HashSet<String> = HashSet::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
 
@@ -2375,6 +2378,7 @@ mod tests {
             &ctx,
             &inferred_let_exprs,
             &pass1_skipped,
+            &pass1_param_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
         );
@@ -2455,6 +2459,7 @@ mod tests {
             HashMap::new();
         // Positive control: without pass1_skipped, the annotated Let IS advertised.
         let empty_pass1_skipped: HashSet<String> = HashSet::new();
+        let empty_pass1_param_skipped: HashSet<String> = HashSet::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
 
@@ -2464,6 +2469,7 @@ mod tests {
             &ctx,
             &inferred_let_exprs,
             &empty_pass1_skipped,
+            &empty_pass1_param_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
         );
@@ -2482,6 +2488,7 @@ mod tests {
             &ctx,
             &inferred_let_exprs,
             &pass1_skipped,
+            &empty_pass1_param_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
         );

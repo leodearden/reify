@@ -658,6 +658,7 @@ pub(super) fn check_phase_build_available_defaults_map(
     ctx: &MergeContext,
     inferred_let_exprs: &HashMap<(String, AvailableDefaultKind), CompiledExpr>,
     pass1_skipped: &HashSet<String>,
+    pass1_param_skipped: &HashSet<String>,
     pass2_skipped: &HashSet<String>,
     pass2_compile_errors: &HashSet<String>,
 ) -> HashMap<(String, AvailableDefaultKind), Type> {
@@ -667,6 +668,17 @@ pub(super) fn check_phase_build_available_defaults_map(
             let name = d.name.as_deref()?;
             let (kind, ty) = match &d.kind {
                 DefaultKind::Param { cell_type, .. } => {
+                    // SYMMETRIC FIX (task 2208): suppress the phantom Param advertisement for
+                    // names in pass1_param_skipped. Pass 1 populates pass1_param_skipped when a
+                    // Param's register_if_absent found the scope slot already claimed by an
+                    // earlier annotated Let; the injection loop will NOT emit a Param cell for
+                    // this name, so advertising it would produce a phantom (name, Param) entry
+                    // with no injected cell — a "requirement satisfied" lie.
+                    // Unlike the Let guards there is no cell_type.is_some()/is_none() conjunction
+                    // needed here — the DefaultKind::Param arm is already kind-exclusive.
+                    if pass1_param_skipped.contains(name) {
+                        return None;
+                    }
                     (AvailableDefaultKind::Param, cell_type.clone())
                 }
                 DefaultKind::Let { cell_type, .. } => {
