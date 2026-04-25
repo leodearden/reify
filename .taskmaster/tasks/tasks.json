@@ -47887,13 +47887,12 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "purpose_activation.rs",
-              "Severity",
-              "compiled_purposes"
+              "purpose_activation"
             ],
             "queries": [
-              "purpose activation test fixture compile assertion pattern compiled_purposes",
-              "Severity Error diagnostic check in reify-eval test fixtures"
+              "purpose_activation §8 trap test fixture compiled cleanly",
+              "PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS empty ListLiteral vacuous true trap",
+              "purpose reflective aggregation populate params geometric_params runtime"
             ]
           }
         }
