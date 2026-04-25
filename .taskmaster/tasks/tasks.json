@@ -42267,7 +42267,18 @@
           "modules": [
             "crates/reify-compiler/src/conformance",
             "crates/reify-compiler/tests/trait_merge_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "phantom_let_advertisement_contract_for_future_parser_extension",
+              "option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name",
+              "pass2_skipped"
+            ],
+            "queries": [
+              "phantom_let_advertisement_contract tautological test conformance pass2_skipped",
+              "Option B fix RequirementKind::Let parser reachable guard conformance.rs"
+            ]
+          }
         },
         "updatedAt": "2026-04-25T08:23:15.642Z"
       },
