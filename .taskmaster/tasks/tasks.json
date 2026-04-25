@@ -46898,7 +46898,7 @@
         "id": "2194",
         "title": "engine_eval: unify Param-cell skip paths or document EvalResult.values partial-map invariant",
         "description": "Two coupled improvements in the Param-cell override subsystem to reduce future maintenance hazards: (1) the four task-2154 tests in eval_param_overrides.rs (~lines 584-727) duplicate the same `compile_source(\"structure S { param active : Bool = ...\")` string 8+ times with tiny variations; extract a module-scope `guarded_module(active: bool, x_type: &str, x_default: &str)` helper before more guarded-group tests compound the drift risk. (2) Task 2179 introduced an intentional asymmetry in engine_eval.rs's Param-cell loop: the rejected-override-no-default path writes `(Undef, Undetermined)` into both `values` and `snapshot.values`, while the no-override-no-default path silently `continue`s leaving `values` without an entry — either unify these paths or explicitly document the partial-map invariant so future callers know the map is intentionally sparse.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "details": "**S1 — Extract guarded_module() helper (eval_param_overrides.rs ~lines 584-727)**\n\nThe four task-2154 tests (type-kind variants, override-survival siblings) each inline a near-identical `compile_source(\"structure S { param active : Bool = ...\")` string. Extract:\n```rust\nfn guarded_module(active: bool, x_type: &str, x_default: &str) -> CompiledModule {\n    compile_source(&format!(\n        \"structure S {{ param active : Bool = {active}\\n  param x : {x_type} = {x_default} }}\"\n    ))\n}\n```\nReplace all 8+ duplicates with calls to this helper.\n\nAcceptance: `git grep 'compile_source.*param active' crates/reify-eval/tests/eval_param_overrides.rs` returns only the helper body.\n\n**S2 — Document or unify partial-map invariant (engine_eval.rs)**\n\nTask 2179 introduced an intentional asymmetry in the Param-cell loop in `crates/reify-eval/src/engine_eval.rs`:\n- **Rejected-override-no-default** (~lines 460-499): writes `(Undef, Undetermined)` into both `values` and `snapshot.values` so external callers never see a missing key.\n- **No-override-no-default** (~lines 394-416): silently `continue`s, leaving `values` without an entry for that cell (preserves pre-task-2017 behaviour).\n\nThis partial-map shape is a latent API hazard: callers that iterate `EvalResult.values` and assume every Param cell has an entry will silently miss no-default-no-override cells. Either:\n  (a) Unify: write `(Undef, Undetermined)` on the no-override-no-default path too, OR\n  (b) Document: add a named constant or prominent comment at the `continue` site that explicitly names the invariant (\"EvalResult.values intentionally omits Param cells with no override and no default\") so tooling authors know to guard their lookups.\n\nPick option (a) only if tests confirm no regression in downstream callers; otherwise option (b) with a doc comment and a matching test assertion is sufficient.\n\nAcceptance: a reader of engine_eval.rs can determine from code alone whether `EvalResult.values` always has an entry for every Param cell or may legitimately omit no-default-no-override cells.",
@@ -46923,7 +46923,8 @@
           "curator_action": "combine",
           "curator_justification": "The candidate is tiny (single file, pure test-helper extraction) — standalone orchestrator overhead is disproportionate to the work. Task 2194 is pending, combine_eligible, and already touches eval_param_overrides.rs. The implementer of 2194 will be writing new tests in that file to validate the partial-map invariant; having the guarded_module() helper available at that moment is a natural force-multiplier. The union of files stays within the same two-file module lock (engine_eval.rs + eval_para",
           "combined_at": "2026-04-25T08:54:14.620076+00:00"
-        }
+        },
+        "updatedAt": "2026-04-25T08:54:53.337Z"
       },
       {
         "id": "2195",
@@ -47847,7 +47848,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T08:54:49.715Z",
+      "lastModified": "2026-04-25T08:54:53.337Z",
       "taskCount": 2223,
       "completedCount": 1979,
       "tags": [
