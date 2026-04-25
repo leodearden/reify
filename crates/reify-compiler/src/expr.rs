@@ -1138,13 +1138,45 @@ pub(crate) fn compile_expr_guarded(
                     //   - Compile-time: emit an empty list so forall evaluates
                     //     vacuously true.  Runtime expansion against the bound
                     //     entity's actual params is deferred (follow-up task).
-                    //   - FIXME(task-2181 review-4): Type::Real element type is
-                    //     a compile-time placeholder.  Any follow-up task that
-                    //     populates the list at runtime MUST update this type in
-                    //     lockstep, or `forall p in subject.params: determined(p)`
-                    //     will typecheck `p` against the wrong type — silently,
-                    //     because the list is empty today.  Candidate refinement:
-                    //     Type::ParamRef once that variant is introduced.
+                    //   - FIXME(task-2199): Three blockers must all land together
+                    //     before this empty-list placeholder can be replaced with
+                    //     a real runtime expansion.  The current vacuous-true trap
+                    //     is pinned by the characterization test
+                    //     `manufacturing_ready_silently_passes_for_undetermined_params_trap`
+                    //     in crates/reify-eval/tests/purpose_activation.rs §8;
+                    //     that test's assertion MUST be flipped to Violated when
+                    //     expansion lands.
+                    //
+                    //     Blocker 1 — List population at activate_purpose:
+                    //       `activate_purpose` must replace this empty list with
+                    //       `ListLiteral([ValueRef(entity_ref, member), ...])` for
+                    //       each param of the bound entity.  The cell ids are
+                    //       already available in `CompiledPurpose.resolved_queries`
+                    //       (traits.rs:407-425); the wiring to the activation path
+                    //       is missing.
+                    //
+                    //     Blocker 2 — Quantifier variable identity carry-through:
+                    //       `forall p in [Bracket.x]: determined(p)` compiles
+                    //       `determined(p)` with the Quantifier's synthetic
+                    //       `variable_id` as the predicate cell.  At runtime the
+                    //       loop binds `variable_id` to the *value* of `Bracket.x`,
+                    //       but the determinacy snapshot has no entry for the
+                    //       synthetic id — `eval_expr` debug-asserts a "wiring bug"
+                    //       panic (reify-expr/src/lib.rs:472-478).  The quantifier
+                    //       must carry the actual `ValueCellId` of each iterated
+                    //       element into the predicate, not the synthetic loop var.
+                    //       Note: a new `Type::ParamRef` variant is NOT required;
+                    //       what is missing is identity carry-through so the
+                    //       predicate resolves to the bound cell, not the loop var.
+                    //
+                    //     Blocker 3 — Element type lockstep (task-1904):
+                    //       `Type::Real` is a placeholder element type.  Any
+                    //       populator MUST ensure the element type matches each
+                    //       param's declared type, or `forall` typechecks `p`
+                    //       against the wrong type — silently, because the list is
+                    //       empty today.  Cross-reference: task 1904
+                    //       (integration_full_v01.rs:660-662) tracks the same
+                    //       runtime-expansion concern from a different angle.
                     //   - Empty list satisfies the Quantifier arm's
                     //     `List(elem) | Set(elem)` type check at forall compile.
                     return CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
