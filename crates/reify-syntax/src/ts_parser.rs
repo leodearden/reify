@@ -432,17 +432,6 @@ impl<'a> Lowering<'a> {
         params
     }
 
-    /// Find a trait_bound_list child within a node and extract its bounds as strings.
-    fn find_trait_bound_list(&self, node: tree_sitter::Node) -> Vec<String> {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "trait_bound_list" {
-                return self.lower_trait_bound_list(child);
-            }
-        }
-        vec![]
-    }
-
     /// Find a trait_bound_list child and extract full TraitBoundRef entries.
     fn find_trait_bound_refs(&self, node: tree_sitter::Node) -> Vec<TraitBoundRef> {
         let mut cursor = node.walk();
