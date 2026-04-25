@@ -679,7 +679,66 @@ impl Engine {
                 // Evaluate else_members (active when guard is false)
                 for cell in &group.else_members {
                     if guard_is_false {
-                        if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let {
+                        // Mirror the top-level Param branch and the members loop above:
+                        // consult param_overrides for Param cells, validate, warn-and-retain
+                        // on rejection, fall back to default_expr.
+                        if cell.kind == ValueCellKind::Param {
+                            let override_val = match self.param_overrides.get(&cell.id) {
+                                None => {
+                                    if cell.default_expr.is_none() {
+                                        values.insert(cell.id.clone(), Value::Undef);
+                                        snapshot.values.insert(
+                                            cell.id.clone(),
+                                            (Value::Undef, DeterminacyState::Undetermined),
+                                        );
+                                        continue;
+                                    }
+                                    None
+                                }
+                                Some(v) => match validate_param_override(v, &cell.cell_type) {
+                                    Ok(()) => Some(v.clone()),
+                                    Err(ParamOverrideRejection::TypeKindMismatch) => {
+                                        diagnostics.push(Diagnostic::warning(format!(
+                                            "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                                            cell.id, cell.cell_type, v
+                                        )));
+                                        None
+                                    }
+                                    Err(ParamOverrideRejection::ScalarDimensionMismatch {
+                                        expected,
+                                        got,
+                                    }) => {
+                                        diagnostics.push(Diagnostic::warning(format!(
+                                            "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                                            cell.id, expected, got
+                                        )));
+                                        None
+                                    }
+                                },
+                            };
+
+                            let val = if let Some(v) = override_val {
+                                v
+                            } else if let Some(ref expr) = cell.default_expr {
+                                reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_determinacy(&snapshot.values),
+                                )
+                            } else {
+                                // Override existed but was rejected AND no default_expr.
+                                values.insert(cell.id.clone(), Value::Undef);
+                                snapshot.values.insert(
+                                    cell.id.clone(),
+                                    (Value::Undef, DeterminacyState::Undetermined),
+                                );
+                                continue;
+                            };
+                            values.insert(cell.id.clone(), val.clone());
+                            snapshot
+                                .values
+                                .insert(cell.id.clone(), (val, DeterminacyState::Determined));
+                        } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
