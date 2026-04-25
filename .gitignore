@@ -23,6 +23,7 @@ tree-sitter-reify/package-lock.json
 test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
+data/.orchestrator/queue/*.db*
 *.kate-swp
 .jcodemunch.jsonc
 data/review-checkpoints/
