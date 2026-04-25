@@ -888,3 +888,71 @@ fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
          snapshot entry for p must be (Undef, Undetermined) after dimension-mismatch rejection"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2194 S2: partial-map invariant — no-override-no-default cells are absent
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression lock for the partial-map shape of `EvalResult.values`: when a
+/// Param cell has NO override stored AND NO `default_expr`, the cell is
+/// intentionally OMITTED from `EvalResult.values` (preserves pre-task-2017
+/// silent-skip semantics; engine_eval.rs:494-518). A sibling Param cell that
+/// HAS a default still appears in the map — the omission is per-cell, not
+/// per-module.
+///
+/// This test would FAIL against any future "unify (a)" refactor that switches
+/// the no-override-no-default arm from `continue` to `(Undef, Undetermined)`
+/// insert. Such a change MUST be intentional and accompanied by an explicit
+/// behavioural-contract update — this test is the drift detector.
+///
+/// Orthogonal counterpart to `eval_inserts_undef_for_no_default_param_with_rejected_override`
+/// (line 752): that test pins PRESENT for the rejected-override-no-default
+/// branch; this test pins ABSENT for the no-override-no-default branch.
+#[test]
+fn eval_omits_no_default_no_override_param_cell_from_result_values() {
+    let mut engine = fresh_engine();
+    let p_id = ValueCellId::new("S", "p");
+    let other_id = ValueCellId::new("S", "other");
+
+    // p has neither override (fresh engine) nor default_expr.
+    // other has a default — exercises the NOT-omitted path as a positive control.
+    let module = compile_source(
+        "structure S { param p: Int\n param other: Int = 42 }",
+    );
+    let result = engine.eval(&module);
+
+    // (a) Partial-map invariant: p must be ABSENT from result.values.
+    assert!(
+        result.values.get(&p_id).is_none(),
+        "no-override-no-default Param cell `p` must be absent from EvalResult.values \
+         (partial-map invariant; engine_eval.rs:494-518), got: {:?}",
+        result.values.get(&p_id)
+    );
+
+    // (b) Positive control: a sibling Param with a default IS present.
+    //     Sharpens the lock — proves the omission is per-cell, not a regression
+    //     where eval starts producing empty value maps.
+    assert_eq!(
+        result.values.get(&other_id),
+        Some(&Value::Int(42)),
+        "sibling Param cell `other` (with default) must be present in result.values"
+    );
+
+    // (c) Snapshot pre-seed survives: Snapshot::from_compiled_module pre-seeds
+    //     every cell with (Undef, Undetermined); the no-override-no-default
+    //     `continue` does NOT touch snapshot.values, so the pre-seed value
+    //     remains. This is the orthogonal half of the task-2179 snapshot
+    //     assertion (line 801) — together they cover both branches.
+    assert_eq!(
+        engine.snapshot().unwrap().values.get(&p_id),
+        Some(&(Value::Undef, DeterminacyState::Undetermined)),
+        "snapshot pre-seed for no-override-no-default cell must remain (Undef, Undetermined)"
+    );
+
+    // (d) No diagnostics: silent-skip means no warning fires for the omission.
+    assert!(
+        result.diagnostics.is_empty(),
+        "no-override-no-default Param cell must not emit any diagnostics, got: {:?}",
+        result.diagnostics
+    );
+}
