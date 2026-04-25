@@ -47488,7 +47488,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T07:06:40.664Z"
+        "updatedAt": "2026-04-25T07:06:40.664Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "LSP incremental eval implementation",
+              "eval_cached",
+              "compute_diagnostics_with_state"
+            ],
+            "queries": [
+              "LSP incremental eval eval_cached compute_diagnostics_with_state wiring",
+              "LSP incremental eval benchmark position-sensitive completion"
+            ]
+          }
+        }
       },
       {
         "id": "2226",
@@ -47548,7 +47561,9 @@
       "completedCount": 1973,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-25T07:45:53.851Z",
+      "description": "Tasks for master context"
     }
   }
 }
