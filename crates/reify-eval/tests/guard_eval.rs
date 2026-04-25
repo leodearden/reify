@@ -6,6 +6,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use reify_eval::Engine;
 use reify_test_support::builders::{ge, gt, literal, value_ref, value_ref_typed};
@@ -2826,6 +2827,12 @@ fn edit_param_wave2_does_not_corrupt_unchanged_guard_group() {
 /// The canonical rule — Auto cell lifecycle is owned by the constraint solver,
 /// not by guard activation/deactivation — is documented on the module-level `//!`
 /// doc of `engine_edit.rs` and on `deactivate_if_not_auto`.
+///
+/// Strengthened in task 2157: the assertions also pin the expected solver
+/// invocation pattern in each path.  Without these counts, two paths that BOTH
+/// skip the solver (or BOTH spuriously re-invoke it) could still produce
+/// identical 5 mm results from the mock, masking a regression where the
+/// engine's solver-invocation contract changes.
 #[test]
 fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
     let active_id = ValueCellId::new("S", "active");
@@ -2907,6 +2914,10 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
     let solver_a = MockConstraintSolver::new_solved(solved.clone());
     let solver_b = MockConstraintSolver::new_solved(solved);
 
+    // Capture counter handles before the solvers are moved into Box<dyn ConstraintSolver>.
+    let counter_a = solver_a.counter_handle();
+    let counter_b = solver_b.counter_handle();
+
     // ── Path A: direct eval with guard=true (else_members inactive at start) ──
     let checker_a = MockConstraintChecker::new();
     let mut engine_a = Engine::new(Box::new(checker_a), None).with_solver(Box::new(solver_a));
@@ -2952,6 +2963,38 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
         "expected inactive-branch Auto cell to be (Scalar(5mm ≈ 0.005 SI), Determined), \
          got {:?}",
         state_a
+    );
+
+    // ── Pin solver invocation counts for both paths ──
+    //
+    // Path A: exactly 1 cold-eval solve.
+    //   * Count = 0 → engine skipped solving entirely (pre-fix regression: inactive
+    //     Auto cells were overwritten with (Undef, Auto) before the solver ran, so the
+    //     engine might short-circuit).
+    //   * Count > 1 → redundant re-invocations during eval() (unexpected).
+    assert_eq!(
+        counter_a.load(Ordering::Acquire),
+        1,
+        "Path A: expected exactly 1 solver invocation during eval(), got {}; \
+         0 means the engine skipped solving (pre-fix Auto-cell overwrite regression), \
+         >1 means redundant re-invocations during eval()",
+        counter_a.load(Ordering::Acquire)
+    );
+
+    // Path B: exactly 1 solver invocation (cold eval only).
+    //   The constraint `thickness > 2mm` references only `thickness`, not `active`.
+    //   Therefore edit_param(active, true) does NOT dirty that constraint, and the
+    //   `constraints_dirty` guard at engine_edit.rs:776 short-circuits the second solve.
+    //   * Count = 0 → cold solve was skipped → stale Undef leaks through (regression).
+    //   * Count = 2 → edit_param spuriously re-invoked the solver for a non-dirty
+    //     constraint (unnecessary work, and a sign the dirty-cone logic regressed).
+    assert_eq!(
+        counter_b.load(Ordering::Acquire),
+        1,
+        "Path B: expected exactly 1 solver invocation across eval()+edit_param(), got {}; \
+         0 means the cold solve was skipped (stale Undef → false-positive value match), \
+         2 means edit_param spuriously re-invoked the solver for a non-dirty constraint",
+        counter_b.load(Ordering::Acquire)
     );
 }
 
