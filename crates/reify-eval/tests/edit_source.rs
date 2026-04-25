@@ -3378,8 +3378,13 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
 // ── Invariant-check tests ──────────────────────────────────────────────────
 
 /// `edit_source` must panic (in debug builds) on a malformed module whose
-/// `ValueCellDecl.cell_type` is `Type::TypeParam`, an unrepresentable variant
-/// that has no `Value` counterpart.
+/// `ValueCellDecl.cell_type` is an unrepresentable variant — either
+/// `Type::TypeParam` or `Type::Geometry` — that has no `Value` counterpart.
+///
+/// Both variants are exercised in a loop, mirroring the in-crate unit test
+/// `invariant_tests::panics_on_unrepresentable_cell_types` (engine_eval.rs:1514).
+/// The source of truth for which variants are unrepresentable is the runtime
+/// guard `assert_value_cell_types_representable` at engine_eval.rs:60.
 ///
 /// This mirrors the defensive invariant already present on the `Engine::eval`
 /// cold-start path (engine_eval.rs:247-249).  Without the corresponding fix in
@@ -3393,39 +3398,43 @@ fn edit_source_panics_on_unrepresentable_cell_type() {
     use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
     use reify_types::{ModulePath, Type};
 
-    // edit_source requires an Initialized engine — seed one first with a valid eval.
-    let mut engine = fresh_engine();
-    let good = bracket_compiled_module();
-    engine.eval(&good);
+    for ty in [Type::TypeParam("T".into()), Type::Geometry] {
+        // edit_source requires an Initialized engine — seed one first with a valid eval.
+        // The engine must be re-created per iteration: edit_source mutates state before
+        // the assertion fires, leaving the engine potentially poisoned after a panic.
+        let mut engine = fresh_engine();
+        let good = bracket_compiled_module();
+        engine.eval(&good);
 
-    // Build a malformed module that bypasses the compiler: a single ValueCellDecl
-    // whose cell_type = Type::TypeParam("T"), a variant that has no Value
-    // counterpart and triggers the invariant assertion.
-    let bad_module = CompiledModuleBuilder::new(ModulePath::single("bad"))
-        .template(
-            TopologyTemplateBuilder::new("Bad")
-                .param("Bad", "x", Type::TypeParam("T".into()), None)
-                .build(),
-        )
-        .build();
+        // Build a malformed module that bypasses the compiler: a single ValueCellDecl
+        // whose cell_type is the bound `ty` from the loop, an unrepresentable variant
+        // (either Type::TypeParam or Type::Geometry) that triggers the invariant assertion.
+        let bad_module = CompiledModuleBuilder::new(ModulePath::single("bad"))
+            .template(
+                TopologyTemplateBuilder::new("Bad")
+                    .param("Bad", "x", ty, None)
+                    .build(),
+            )
+            .build();
 
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let _ = engine.edit_source(&bad_module);
-    }));
-    assert!(
-        result.is_err(),
-        "expected edit_source to panic on unrepresentable cell_type but it returned normally",
-    );
-    let err = result.unwrap_err();
-    let msg = err
-        .downcast_ref::<String>()
-        .map(|s| s.as_str())
-        .or_else(|| err.downcast_ref::<&str>().copied())
-        .unwrap_or("<non-string panic>");
-    // The literal mirrors `crate::engine_eval::ASSERT_MSG_PREFIX` (pub(crate) — not
-    // importable from an integration-test binary, so the substring is spelled out here).
-    assert!(
-        msg.contains("unrepresentable cell_type"),
-        "panic message did not contain expected substring \"unrepresentable cell_type\": {msg}",
-    );
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let _ = engine.edit_source(&bad_module);
+        }));
+        assert!(
+            result.is_err(),
+            "expected edit_source to panic on unrepresentable cell_type but it returned normally",
+        );
+        let err = result.unwrap_err();
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("<non-string panic>");
+        // The literal mirrors `crate::engine_eval::ASSERT_MSG_PREFIX` (pub(crate) — not
+        // importable from an integration-test binary, so the substring is spelled out here).
+        assert!(
+            msg.contains("unrepresentable cell_type"),
+            "panic message did not contain expected substring \"unrepresentable cell_type\": {msg}",
+        );
+    }
 }
