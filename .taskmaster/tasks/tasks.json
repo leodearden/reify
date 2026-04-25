@@ -46529,7 +46529,7 @@
         "description": "Two related hot-path hardenings in engine_eval.rs Param handling. (1) Performance: inner loop does `contains_key(&cell.id)` followed by `get(&cell.id)`; collapse to a single `get()` match. (2) Robustness: when override validation fails AND cell has no `default_expr`, the cell is currently skipped entirely — no entry in `values` or `snapshot.values`, so downstream readers see a missing key instead of Undef. Insert Value::Undef with DeterminacyState::Undetermined and add a regression test (a struct with a no-default Param whose override is rejected, plus a downstream Let reading it) to confirm no unwrap panic. Source: esc-2017-31 (S3+S4).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -46541,9 +46541,12 @@
           "modules": [
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
-          ]
+          ],
+          "done_provenance": {
+            "note": "Implementation verified in engine_eval.rs lines 459-507 (single get() lookup, Undef+Undetermined insertion on rejected-override-no-default). Regression tests verified in eval_param_overrides.rs lines 430+ (task-2179 S4 comment; two test fns covering type-kind and dimension-mismatch rejection paths). Tests were placed in eval_param_overrides.rs by task 2202 rather than the originally planned param_override_rejection_tests.rs. Verified by Stage 2 reconciliation 2026-04-25."
+          }
         },
-        "updatedAt": "2026-04-25T06:58:08.410Z"
+        "updatedAt": "2026-04-25T07:45:04.404Z"
       },
       {
         "id": "2180",
@@ -47540,14 +47543,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:41:00.280Z",
+      "lastModified": "2026-04-25T07:45:04.404Z",
       "taskCount": 2217,
-      "completedCount": 1972,
+      "completedCount": 1973,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-25T07:44:57.894Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
