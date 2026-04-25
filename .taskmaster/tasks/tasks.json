@@ -47704,11 +47704,11 @@
         "description": "The LSP diagnostics pipeline still creates a fresh Engine on every didChange/didOpen, discarding cached evaluation state. Comment at crates/reify-lsp/src/diagnostics.rs:90-93 says \"True source-level incrementality (diffing compiled modules) is future work.\"\n\nTasks 479 (benchmark test) and 480 (the implementation) were both marked done in 2026-04, but only 479 was actually delivered. Engine::eval_cached and edit_param exist and are used elsewhere — the LSP path simply hasn't been wired up.\n\nDone: compute_diagnostics_with_state reuses the existing Engine and calls eval_cached() when CompiledModule.content_hash is unchanged; falls back to fresh Engine + full eval() on structural change. Existing LSP tests pass; benchmark test from #479 shows measurable speedup for param-only edits.\n\nmemory_hints:\n- search: \"Engine eval_cached incremental evaluation\"\n- search: \"EvalState compute_diagnostics_with_state cold start\"\n- entity: \"Engine\"\n- entity: \"EvalState\"",
         "details": "## Why this re-files\n\nTask 480 was marked done at 2026-04-02 with no commit reference. The diagnostics.rs cold-start block (lines 87-95) is unchanged on main. The benchmark test from task 479 either didn't ship or doesn't gate on the gap. This task re-files the implementation so the briefing has live tracking.\n\n## Implementation guidance (from #480)\n\nAdd `last_content_hash: Option<ContentHash>` to `EvalState`. Replace the unconditional Engine recreation with:\n\n```rust\nlet structure_unchanged = state.last_content_hash\n    .map(|h| h == compiled.content_hash)\n    .unwrap_or(false);\nif structure_unchanged && state.engine.is_initialized() {\n    let _ = state.engine.eval_cached(&compiled, VersionId(state.version_counter));\n} else {\n    state.engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);\n    let _ = state.engine.eval(&compiled);\n}\nstate.last_content_hash = Some(compiled.content_hash);\n```\n\n## Files\n- crates/reify-lsp/src/diagnostics.rs (EvalState, compute_diagnostics_with_state)\n\n## Verification\n- All existing reify-lsp tests pass\n- Benchmark test from #479 actually demonstrates speedup\n- Three-phase lifecycle (valid → violating → valid) still works with engine reuse",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T07:06:40.664Z",
+        "updatedAt": "2026-04-25T09:05:15.067Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -47720,6 +47720,9 @@
               "LSP incremental eval architecture reify",
               "eval_cached function signature and caching contract"
             ]
+          },
+          "done_provenance": {
+            "commit": "e68a9649cac704c27a8146238d1cb808fc7f69f8"
           }
         }
       },
@@ -47961,9 +47964,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T09:05:10.784Z",
+      "lastModified": "2026-04-25T09:05:15.067Z",
       "taskCount": 2225,
-      "completedCount": 1979,
+      "completedCount": 1980,
       "tags": [
         "master"
       ]
