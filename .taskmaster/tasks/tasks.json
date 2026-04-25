@@ -47337,7 +47337,19 @@
           "modules": [
             "crates/reify-compiler/src/expr.rs",
             "crates/reify-compiler/tests/purpose_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "WILDCARD_STRUCTURE_KIND",
+              "expr.rs",
+              "purpose-subject member access"
+            ],
+            "queries": [
+              "Structure wildcard guard purpose member validation expr.rs entity_kind",
+              "purpose_compile_tests wildcard Occurrence characterization coverage"
+            ]
+          },
+          "_causation_id": "6964b007-e4e0-4e06-a277-cb1ab4f1ea89"
         }
       },
       {
