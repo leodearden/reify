@@ -780,3 +780,107 @@ purpose weight_target(subject : Structure) {
         "post-activation: remap_entity must rewrite ValueRef entity from 'weight_target' to 'Bracket'"
     );
 }
+
+// ── §8: Reflective aggregation trap (task-2199) ──────────────────────────────
+
+/// # Characterization test — do NOT fix by making this GREEN without reading the comment
+///
+/// This test pins the **vacuous-true trap** introduced by the compile-time
+/// placeholder at `crates/reify-compiler/src/expr.rs:1136-1150`.
+///
+/// ## What the trap is
+///
+/// `subject.params` / `subject.geometric_params` / `subject.material_params`
+/// inside a purpose body compile to an empty `ListLiteral`.  At eval time,
+/// `forall p in subject.params: determined(p)` iterates over `[]` and returns
+/// `Bool(true)` — vacuous truth — so the purpose-injected constraint is
+/// reported `Satisfied` even when the bound entity has undetermined params.
+///
+/// ## Why this test asserts `Satisfied` (not `Violated`)
+///
+/// This is a CHARACTERIZATION test of the *current broken behavior*, NOT a
+/// test of the desired correct behavior.  The assertion is intentionally
+/// counterintuitive: `Satisfied` here means "the trap is still in effect."
+///
+/// When runtime expansion (path a) lands, `subject.params` will be populated
+/// with `ValueRef(entity_ref, member)` elements at activation time, the
+/// quantifier will carry cell identity into `determined(p)`, and `Bracket.x`
+/// will evaluate as `Undetermined` → `Violated`.
+///
+/// **When runtime expansion lands, FLIP this assertion to
+/// `Satisfaction::Violated` (or `Satisfaction::Indeterminate`).**
+///
+/// ## Three blockers for runtime expansion (task-2199 analysis)
+///
+/// 1. **List population at activate_purpose**: the placeholder empty list must
+///    be replaced by `ListLiteral([ValueRef(entity_ref, member), ...])` for each
+///    param of the bound entity.  The data is available in
+///    `CompiledPurpose.resolved_queries` (traits.rs:407-425); the wiring is missing.
+///
+/// 2. **Quantifier variable identity carry-through**: `forall p in [Bracket.x]:
+///    determined(p)` binds a synthetic `variable_id` in the loop, but the
+///    `DeterminacyPredicate`'s `cell` field holds that synthetic id — which is
+///    absent from the determinacy snapshot.  `eval_expr` debug-asserts a
+///    "wiring bug" panic (reify-expr/src/lib.rs:472-478).  The quantifier must
+///    carry the actual cell identity of each iterated element into the predicate.
+///
+/// 3. **Element type lockstep**: the placeholder uses
+///    `Type::List(Box::new(Type::Real))`.  Any populator MUST update this in
+///    lockstep, or `forall` typechecks `p` against the wrong element type.
+///    Cross-reference: task 1904 (integration_full_v01.rs:660-662) tracks the
+///    same concern from a different angle.
+#[test]
+fn manufacturing_ready_silently_passes_for_undetermined_params_trap() {
+    // Bracket has a deliberately undetermined param: no default, no auto.
+    // With runtime expansion, `determined(p)` for `Bracket.x` would return
+    // false → `forall` → false → Violated.  Today it silently passes (trap).
+    let source = r#"
+structure Bracket {
+    param x : Real
+}
+
+purpose manufacturing_ready(subject : Structure) {
+    constraint forall p in subject.params: determined(p)
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    // make_simple_engine() uses SimpleConstraintChecker (not MockConstraintChecker)
+    // so it can return Satisfied/Violated rather than Unchecked.
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // Activate — injects the purpose constraint into snapshot.graph.constraints.
+    engine.activate_purpose("manufacturing_ready", "Bracket");
+
+    // Use check_constraints_with_values (NOT engine.check()) because purpose-injected
+    // constraints live in snapshot.graph.constraints, which engine.check() does not visit.
+    let (constraint_results, _) = engine
+        .check_constraints_with_values(&eval_result.values)
+        .expect("check_constraints_with_values must not return an error");
+
+    // Find the injected constraint by its purpose-prefixed entity id.
+    // Format: "purpose:<name>@<entity>" (engine_purposes.rs:41).
+    let purpose_result = constraint_results
+        .iter()
+        .find(|e| e.id.entity.starts_with("purpose:manufacturing_ready@Bracket"))
+        .expect(
+            "expected a purpose-injected constraint with entity prefix \
+             'purpose:manufacturing_ready@Bracket'",
+        );
+
+    // ‼ TRAP ASSERTION — asserts the broken/vacuous-true behavior, NOT desired behavior ‼
+    //
+    // `subject.params` compiles to `[]` (empty list), so
+    // `forall p in []: determined(p)` is vacuously true → Satisfied.
+    // Bracket.x is undetermined, but the forall never inspects it.
+    //
+    // WHEN RUNTIME EXPANSION LANDS: flip this to Satisfaction::Violated or Indeterminate.
+    assert_eq!(
+        purpose_result.satisfaction,
+        Satisfaction::Satisfied,
+        "TRAP (task-2199 / expr.rs:1136-1150): vacuous-true — subject.params compiles \
+         to an empty list, so forall iterates [] and returns true regardless of Bracket.x \
+         being undetermined. When runtime expansion lands, flip this assertion to Violated.",
+    );
+}
