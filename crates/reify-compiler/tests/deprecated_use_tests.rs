@@ -202,6 +202,44 @@ fn deprecated_trait_used_as_refinement_emits_warning() {
     );
 }
 
+// ── Step 8: deprecation label highlights only the refinement identifier ────
+
+#[test]
+fn deprecated_trait_used_as_refinement_warning_points_at_refinement() {
+    // Same fixture as deprecated_trait_used_as_refinement_emits_warning above.
+    let source = "@deprecated\ntrait Base { param x : Real }\n\ntrait Derived : Base { param y : Real }";
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = deprecation_warnings(&module, "Base");
+    assert!(
+        !warns.is_empty(),
+        "expected deprecation warning for Base, got warnings: {:?}",
+        warnings_only(&module)
+    );
+
+    let labels = &warns[0].labels;
+    assert!(
+        !labels.is_empty(),
+        "expected at least one label on deprecation warning"
+    );
+    let s = labels[0].span;
+    assert_eq!(
+        &source[s.start as usize..s.end as usize],
+        "Base",
+        "deprecation label should highlight exactly the 'Base' refinement identifier"
+    );
+    assert_eq!(
+        s.end - s.start,
+        4,
+        "span length should be exactly 4 (len of 'Base'), not the whole declaration"
+    );
+}
+
 // ── Step 9: deprecated structure used as purpose parameter emits warning ─────
 
 #[test]
