@@ -148,6 +148,18 @@ const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "value
 const PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS: &[&str] =
     &["params", "geometric_params", "material_params"];
 
+/// Entity-kind name that acts as the purpose-subject wildcard.
+///
+/// A purpose declared as `purpose check(subject : Structure)` binds to *any*
+/// structure entity at activation time — there is no static template to validate
+/// member accesses against.  The compiler uses this constant to detect that case
+/// and skip member validation.
+///
+/// If a sibling wildcard kind is ever added (e.g., `"Occurrence"` gains first-class
+/// wildcard status), add it here alongside this constant rather than embedding
+/// another bare string literal at the call site.
+const WILDCARD_STRUCTURE_KIND: &str = "Structure";
+
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
@@ -1203,8 +1215,8 @@ pub(crate) fn compile_expr_guarded(
                     //     lookup fails (no template by that name), fall through
                     //     silently — the generic form binds at activation time and
                     //     has no static template to validate against.
-                    //   - Belt-and-braces: `struct_name != "Structure"` makes the
-                    //     wildcard-skip intent explicit even though a registry miss
+                    //   - Belt-and-braces: `struct_name != WILDCARD_STRUCTURE_KIND` makes
+                    //     the wildcard-skip intent explicit even though a registry miss
                     //     (no template named "Structure") would also fall through.
                     //     Both guards are intentional: the name guard protects
                     //     against a hypothetical future stdlib "Structure" template;
@@ -1217,7 +1229,7 @@ pub(crate) fn compile_expr_guarded(
                         Type::StructureRef(name) => name.clone(),
                         _ => unreachable!("outer guard ensures StructureRef"),
                     };
-                    if struct_name != "Structure"
+                    if struct_name != WILDCARD_STRUCTURE_KIND
                         && let Some(registry) = scope.template_registry
                         && let Some(template) = registry.get(struct_name.as_str())
                     {
