@@ -47952,23 +47952,21 @@
         "description": "crates/reify-lsp/src/diagnostics.rs:109-117 discards the result of `engine.eval()` and `engine.eval_cached()` with `let _ = ...`. The pre-change code also discarded these (`let _eval_result = ...`), so this is not a regression — but eval-time diagnostics are silently dropped on the floor. Today `check_snapshot` covers the constraint surface, but if eval ever starts emitting diagnostics not reflected in the snapshot (e.g. evaluation-time errors for non-checker codepaths), the LSP will silently lose them.\n\nDone: capture eval/eval_cached diagnostics and merge them into the result alongside the check_result.diagnostics filter. At minimum, leave a TODO comment documenting why the result is discarded so a future maintainer doesn't repeat the analysis.",
         "details": "Originating review of task 2225. Reviewer: reviewer_comprehensive. Suggestion category: robustness.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-25T09:05:10.783Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T09:02:40.298Z",
-      "taskCount": 2224,
+      "lastModified": "2026-04-25T09:05:10.784Z",
+      "taskCount": 2225,
       "completedCount": 1979,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-25T09:04:37.682Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-25T09:04:56.081Z"
+      ]
     }
   }
 }
