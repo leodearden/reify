@@ -427,6 +427,44 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// task-2154 step-1: guarded-group active-member (members loop) override survival
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// After an initial `eval()`, writing an override via `set_param_and_invalidate`
+/// on a guarded-group Param (inside a `where guard { param x ... }` block) and
+/// calling `eval()` again must surface the overridden value — NOT the compiled
+/// module default.  Currently FAILS because the cold-eval third pass at
+/// engine_eval.rs:576-613 evaluates `cell.default_expr` directly without
+/// consulting `self.param_overrides`.
+#[test]
+fn eval_honors_override_on_guarded_group_active_member_param() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
+    );
+    let x_id = ValueCellId::new("S", "x");
+
+    // Initial eval: x is inside the active branch, default should be 5mm = 0.005m.
+    let first = engine.eval(&module);
+    assert_eq!(
+        first.values.get(&x_id),
+        Some(&length_scalar(0.005)),
+        "pre-override eval should yield the 5mm default for the guarded-group member"
+    );
+
+    // Establish override on the guarded-group Param.
+    engine.set_param_and_invalidate(&x_id, length_scalar(0.012));
+
+    // Re-evaluate — the cold-eval third pass must now consult param_overrides.
+    let second = engine.eval(&module);
+    assert_eq!(
+        second.values.get(&x_id),
+        Some(&length_scalar(0.012)),
+        "post-override eval must surface the 0.012m override for the guarded-group member, not the 5mm default"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // task-2179 S4: rejected-override-with-no-default inserts Undef into result.values
 // ──────────────────────────────────────────────────────────────────────────────
 
