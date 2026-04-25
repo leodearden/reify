@@ -47745,15 +47745,16 @@
         "description": "After task 2208, `check_phase_pre_register_default_types` (`crates/reify-compiler/src/conformance/checker.rs:359`) returns a 5-tuple `(HashMap, HashSet, HashSet, HashSet, HashSet)` where four positions are `HashSet<String>` skip-sets. Each call site (production + tests) positionally destructures. An accidental swap of two HashSet positions would compile but silently route losers to the wrong skip-set — a hard-to-debug correctness bug. The COMPILE-TRIPWIRE comments throughout the test suite only fire on arity changes, not on misordering. With a 5th set added by 2208 and a 6th plausibly coming, a small named struct would eliminate the position-swap risk and make the tripwire comments unnecessary.",
         "details": "Scope:\n1. In `crates/reify-compiler/src/conformance/checker.rs`, define:\n   ```rust\n   pub(super) struct PreRegisterOutput {\n       pub inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr>,\n       pub pass1_skipped: HashSet<String>,\n       pub pass1_param_skipped: HashSet<String>,\n       pub pass2_skipped: HashSet<String>,\n       pub pass2_compile_errors: HashSet<String>,\n   }\n   ```\n   (Confirm exact field names by reading the local-variable names at the top of the function body — they must match.)\n2. Change `check_phase_pre_register_default_types` to return `PreRegisterOutput` instead of the 5-tuple. Drop `#[allow(clippy::type_complexity)]` if it becomes redundant.\n3. Update both production call sites in `crates/reify-compiler/src/conformance/mod.rs` (~lines 52 and 808) to use field access (`out.pass1_skipped`, etc.) instead of positional destructuring.\n4. Update each test call site that destructures the 5-tuple (mod.rs lines ~1488, 1579, 1693, 1824, 1957, 2067, and any others) to bind the result and use field access.\n5. Remove or update the `// COMPILE-TRIPWIRE: destructure as 5-tuple ...` and `**COMPILE-TRIPWIRE**` doc-comments in those phase-contract tests — once positions no longer matter, the comments are stale. (Field-name access remains a compile error if a field is renamed, so the spirit of the tripwire survives.)\n6. Verify:\n   - `cargo test -p reify-compiler` (unit + integration tests green)\n   - `cargo clippy --workspace -- -D warnings`\n   - `cargo fmt --check`\n\nOut of scope: do NOT change skip-set semantics or insertion sites. This is a pure type/structure refactor — every call site should compile to identical behavior.\n\nOrigin: reviewer_comprehensive suggestion #2 on task 2208 (esc-2208-18).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-25T08:23:09.909Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T08:23:08.580Z",
+      "lastModified": "2026-04-25T08:23:09.910Z",
       "taskCount": 2220,
       "completedCount": 1975,
       "tags": [
