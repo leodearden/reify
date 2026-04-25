@@ -47959,7 +47959,21 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-25T09:05:10.783Z"
+        "updatedAt": "2026-04-25T09:05:10.783Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "Engine",
+              "EvalState",
+              "compute_diagnostics_with_state",
+              "eval_cached"
+            ],
+            "queries": [
+              "eval_cached diagnostics discarded LSP diagnostics pipeline",
+              "LSP incremental eval eval_cached compute_diagnostics_with_state task 2225"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
@@ -47969,7 +47983,9 @@
       "completedCount": 1980,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-25T12:40:31.223Z",
+      "description": "Tasks for master context"
     }
   }
 }
