@@ -25172,7 +25172,7 @@
         "id": "1151",
         "title": "Add span info to trait refinement entries for precise deprecation diagnostics",
         "description": "TraitDecl.refinements is currently `Vec<String>` without individual spans. The deprecation warning for trait refinements (L4177-4191 in lib.rs) uses `trait_decl.span` (the entire child trait declaration) rather than pointing at the specific `: Base` refinement reference. This makes the warning highlight too much code.\n\nChange `refinements: Vec<String>` to `refinements: Vec<SpannedIdent>` (or similar span-bearing type) in reify-types, update the parser in reify-syntax to capture per-refinement spans, and update the compiler to use the precise span in the deprecation warning.\n\nmemory_hints: search \"TraitDecl refinements Vec<String> span\" in reify-types; get_entity \"TraitDecl\"",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "details": "Ensure that the `SpannedIdent` type is correctly implemented to carry span information for each refinement entry. Update the relevant modules to handle this new type and ensure backward compatibility where necessary.",
@@ -25207,7 +25207,7 @@
           },
           "_causation_id": "ab53b07c-1edc-4e1f-bc6c-4a4c4bb11af9"
         },
-        "updatedAt": "2026-04-25T06:58:16.761Z"
+        "updatedAt": "2026-04-25T07:08:05.960Z"
       },
       {
         "id": "1152",
@@ -47451,7 +47451,7 @@
         "description": "The review briefing at review/briefing.yaml lists 9 known_gaps but all tracking tasks (476/477/478/479/480/481/482/485/486) are now status=done. Run /review-briefing to refresh.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -47462,7 +47462,8 @@
           "modules": [
             "review"
           ]
-        }
+        },
+        "updatedAt": "2026-04-25T07:08:06.139Z"
       },
       {
         "id": "2225",
@@ -47502,14 +47503,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:08:04.435Z",
+      "lastModified": "2026-04-25T07:08:06.139Z",
       "taskCount": 2216,
       "completedCount": 1971,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-25T07:08:05.578Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
