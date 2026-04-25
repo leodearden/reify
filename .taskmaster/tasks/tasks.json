@@ -47405,7 +47405,20 @@
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "eval_ctx_with_meta",
+              "build_meta_map",
+              "engine_eval.rs",
+              "engine_edit.rs"
+            ],
+            "queries": [
+              "Arc meta_map rebuild sites engine_eval engine_edit reify-eval",
+              "eval_ctx_with_meta build_meta_map helper canonicalization task 397"
+            ]
+          },
+          "_causation_id": "6964b007-e4e0-4e06-a277-cb1ab4f1ea89"
         }
       },
       {
@@ -47695,7 +47708,9 @@
       "completedCount": 1974,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-25T08:19:07.144Z",
+      "description": "Tasks for master context"
     }
   }
 }
