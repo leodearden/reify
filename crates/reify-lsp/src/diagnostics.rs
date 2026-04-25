@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{ConstraintNodeId, ModulePath, Satisfaction, SourceSpan};
+use reify_types::{ContentHash, ConstraintNodeId, ModulePath, Satisfaction, SourceSpan};
 use tower_lsp::lsp_types::{self, Url};
 
 use crate::analysis::module_name_from_uri;
@@ -13,9 +13,10 @@ use crate::convert;
 /// Holds the Engine and last compiled module so the server can incrementally
 /// update diagnostics when the source changes.
 pub struct EvalState {
-    engine: reify_eval::Engine,
+    pub(crate) engine: reify_eval::Engine,
     last_module: Option<CompiledModule>,
     version_counter: u64,
+    last_content_hash: Option<ContentHash>,
 }
 
 impl EvalState {
@@ -26,7 +27,18 @@ impl EvalState {
             engine: reify_eval::Engine::new(Box::new(checker), None),
             last_module: None,
             version_counter: 0,
+            last_content_hash: None,
         }
+    }
+
+    /// Returns the content hash of the last successfully compiled module, if any.
+    pub fn last_content_hash(&self) -> Option<ContentHash> {
+        self.last_content_hash
+    }
+
+    /// Returns true if the engine has been initialized by a prior `eval()` or `eval_cached()` call.
+    pub fn is_engine_initialized(&self) -> bool {
+        self.engine.is_initialized()
     }
 }
 
@@ -149,7 +161,8 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Store compiled module for potential future use
+    // Store compiled module and content hash for incremental eval on next call
+    state.last_content_hash = Some(compiled.content_hash);
     state.last_module = Some(compiled);
 
     DiagnosticsResult {
