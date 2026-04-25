@@ -279,7 +279,7 @@ impl MockConstraintSolver {
     /// reads after the solver has been moved into `Box::new(solver)`, see
     /// [`counter_handle`][Self::counter_handle].
     pub fn call_count(&self) -> usize {
-        self.invocation_count.load(Ordering::Acquire)
+        self.invocation_count.load(Ordering::Relaxed)
     }
 
     /// Return a shared handle to the invocation counter.
@@ -299,7 +299,7 @@ impl MockConstraintSolver {
 
 impl ConstraintSolver for MockConstraintSolver {
     fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
-        self.invocation_count.fetch_add(1, Ordering::Release);
+        self.invocation_count.fetch_add(1, Ordering::Relaxed);
         self.result.clone()
     }
 }
@@ -996,10 +996,15 @@ mod tests {
             Box::new(MockConstraintSolver::new_no_progress("test"));
     }
 
-    /// Adding `Arc<AtomicUsize>` to `MockConstraintSolver` must not break Send+Sync.
-    /// (This is a compile-time check; if the type is unsound the test below won't compile.)
+    /// Verify that `MockConstraintSolver` counts invocations correctly via both
+    /// `call_count()` and the `counter_handle()` Arc.  Also confirms that adding
+    /// `Arc<AtomicUsize>` to the struct does not break `Send + Sync`.
     #[test]
     fn mock_constraint_solver_counts_invocations() {
+        // Compile-time Send+Sync check: if the type is unsound this won't compile.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockConstraintSolver>();
+
         let mut values = HashMap::new();
         values.insert(ValueCellId::new("S", "thickness"), Value::length(0.005));
 
@@ -1009,7 +1014,7 @@ mod tests {
         // Before any calls: both counter_handle and call_count must report 0.
         let counter = solver.counter_handle();
         assert_eq!(solver.call_count(), 0, "call_count should be 0 before any solve()");
-        assert_eq!(counter.load(Ordering::Acquire), 0, "handle should be 0 before any solve()");
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "handle should be 0 before any solve()");
 
         // Drive three invocations.
         solver.solve(&problem);
@@ -1019,7 +1024,7 @@ mod tests {
         // Both accessors must agree and reflect all three calls.
         assert_eq!(solver.call_count(), 3, "call_count should be 3 after three solve() calls");
         assert_eq!(
-            counter.load(Ordering::Acquire),
+            counter.load(Ordering::Relaxed),
             3,
             "handle must stay in sync — counter_handle is a live view of the same AtomicUsize"
         );

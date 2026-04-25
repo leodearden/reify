@@ -2972,13 +2972,14 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
     //     Auto cells were overwritten with (Undef, Auto) before the solver ran, so the
     //     engine might short-circuit).
     //   * Count > 1 → redundant re-invocations during eval() (unexpected).
+    let count_a = counter_a.load(Ordering::Relaxed);
     assert_eq!(
-        counter_a.load(Ordering::Acquire),
+        count_a,
         1,
         "Path A: expected exactly 1 solver invocation during eval(), got {}; \
          0 means the engine skipped solving (pre-fix Auto-cell overwrite regression), \
          >1 means redundant re-invocations during eval()",
-        counter_a.load(Ordering::Acquire)
+        count_a
     );
 
     // Path B: exactly 1 solver invocation (cold eval only).
@@ -2988,13 +2989,14 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
     //   * Count = 0 → cold solve was skipped → stale Undef leaks through (regression).
     //   * Count = 2 → edit_param spuriously re-invoked the solver for a non-dirty
     //     constraint (unnecessary work, and a sign the dirty-cone logic regressed).
+    let count_b = counter_b.load(Ordering::Relaxed);
     assert_eq!(
-        counter_b.load(Ordering::Acquire),
+        count_b,
         1,
         "Path B: expected exactly 1 solver invocation across eval()+edit_param(), got {}; \
          0 means the cold solve was skipped (stale Undef → false-positive value match), \
          2 means edit_param spuriously re-invoked the solver for a non-dirty constraint",
-        counter_b.load(Ordering::Acquire)
+        count_b
     );
 }
 
