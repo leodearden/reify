@@ -45995,11 +45995,11 @@
         "description": "Two small follow-ups from the reviewer_comprehensive review of task 2119's changes in crates/reify-kernel-occt/src/lib.rs.",
         "details": "Post-merge review of task-2119 flagged two co-located polish items on validate_pipe_start_tangent and its oversize_z test:\n\n1. Move rationale into the helper's rustdoc (lib.rs ~108-120). The caller at lib.rs:612 now just says \"see validate_pipe_start_tangent\". The previous inline block at the pipe-executor call site explained WHY the restriction exists (BRepOffsetAPI_MakePipe requires profile-plane alignment with the path's start-tangent; non-+Z paths produce degenerate zero-volume solids) and referenced task-2095 for the deferred general-orientation support. That rationale is not present on validate_pipe_start_tangent's doc comment — only mechanics are documented. Action: move the OCCT profile-plane rationale + task-2095 deferred-work pointer into the rustdoc of validate_pipe_start_tangent.\n\n2. Drop the msg.contains(\"+Z\") assertion from validate_pipe_start_tangent_rejects_oversize_z (lib.rs:4506-4524). Since 1e100 is finite, is_finite() passes and only the tolerance branch can reject — the branch-disambiguating assertion is already implied by the input. The wording check adds no coverage and couples the test to the error string (same brittleness class as the wording-pin test removed in task 2119). Action: drop the msg.contains(\"+Z\") assertion and keep only the Err(OperationFailed(_)) match.\n\nBoth items are co-located polish. No behavior change for accepted (+Z) paths.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T07:00:52.981Z",
+        "updatedAt": "2026-04-25T07:01:22.439Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
@@ -46009,6 +46009,11 @@
             "queries": [
               "resolution for: Pipe start-tangent rationale doc and oversize_z test cleanup"
             ]
+          },
+          "done_provenance": {
+            "commit": "5780874078b2a5716bc17cc33d4dcb64f5127d1c",
+            "commit_input": "578087407",
+            "note": "Both polish items landed: rustdoc rationale in 3ec25984f, dropped +Z substring assertion in 578087407"
           }
         }
       },
@@ -46456,7 +46461,13 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Bulk examples smoke test: every examples/*.ri parses + compiles"
+            ]
+          }
         },
         "updatedAt": "2026-04-25T07:01:17.708Z"
       },
@@ -47427,9 +47438,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:01:17.709Z",
+      "lastModified": "2026-04-25T07:01:22.439Z",
       "taskCount": 2213,
-      "completedCount": 1967,
+      "completedCount": 1968,
       "tags": [
         "master"
       ]
