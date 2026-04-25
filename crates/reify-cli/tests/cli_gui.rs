@@ -146,6 +146,82 @@ fn gui_with_valid_ri_file_skips_launch_when_env_set() {
     );
 }
 
+#[test]
+fn gui_default_mode_skip_message_indicates_debug_false() {
+    // `reify gui <fixture>` (no --debug) should report debug=false in the SKIP
+    // message so the test seam exposes the parsed debug-mode state without
+    // having to spawn a real reify-gui subprocess.
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    assert!(fixture.exists(), "fixture file should exist");
+
+    let output = reify_cmd()
+        .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        .args(["gui", fixture.to_str().unwrap()])
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "should exit non-zero when gui launch is skipped"
+    );
+    assert!(
+        stderr.contains("debug=false"),
+        "skip-launch error should include debug=false marker, got: {stderr}"
+    );
+}
+
+#[test]
+fn gui_debug_flag_skip_message_indicates_debug_true() {
+    // `reify gui --debug <fixture>` should parse the flag and propagate it via
+    // the SKIP message as debug=true.
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    assert!(fixture.exists(), "fixture file should exist");
+
+    let output = reify_cmd()
+        .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        .args(["gui", "--debug", fixture.to_str().unwrap()])
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "should exit non-zero when gui launch is skipped"
+    );
+    assert!(
+        stderr.contains("debug=true"),
+        "skip-launch error with --debug should include debug=true marker, got: {stderr}"
+    );
+}
+
+#[test]
+fn gui_mcp_flag_is_alias_for_debug() {
+    // `--mcp` is the alias spelling of `--debug` and should produce the same
+    // debug=true marker in the SKIP message.
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    assert!(fixture.exists(), "fixture file should exist");
+
+    let output = reify_cmd()
+        .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        .args(["gui", "--mcp", fixture.to_str().unwrap()])
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "should exit non-zero when gui launch is skipped"
+    );
+    assert!(
+        stderr.contains("debug=true"),
+        "skip-launch error with --mcp should include debug=true marker (alias for --debug), got: {stderr}"
+    );
+}
+
 fn read_tauri_config() -> Value {
     let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../gui/src-tauri/tauri.conf.json");
