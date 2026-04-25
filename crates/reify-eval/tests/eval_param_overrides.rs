@@ -509,6 +509,75 @@ fn eval_honors_override_on_guarded_group_else_member_param() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// task-2154 step-5: type-kind mismatch on guarded-group member emits warning
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// When the user source is edited so that a guarded-group Param's type-kind no
+/// longer matches the override value (here: Scalar[LENGTH] override against an
+/// Int cell inside a `where active { ... }` block), eval() must:
+/// - fall back to the module default (the Int default wins),
+/// - emit a Warning diagnostic naming the cell + "type-kind",
+/// - RETAIN the override in `param_overrides` so that reverting the edit
+///   resurfaces it.
+///
+/// Mirrors eval_param_overrides.rs:139-191 but on a guarded-group Param.
+#[test]
+fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning() {
+    let mut engine = fresh_engine();
+    let x_id = ValueCellId::new("S", "x");
+
+    // Module A: x is Scalar[LENGTH] inside a guarded group. Set a matching override.
+    let module_a = compile_source(
+        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
+    );
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&x_id, length_scalar(0.12));
+
+    // Module B: x is now an Int inside the same guard. The Scalar override is
+    // type-kind incompatible.
+    let module_b = compile_source(
+        "structure S { param active : Bool = true\n where active { param x : Int = 7 } }",
+    );
+    let result_b = engine.eval(&module_b);
+
+    // (a) The Int default wins, not the (now-mismatched) Scalar override.
+    assert_eq!(
+        result_b.values.get(&x_id),
+        Some(&Value::Int(7)),
+        "type-kind mismatched override must be skipped in favour of Int default on guarded-group Param"
+    );
+
+    // (b) Exactly one Warning diagnostic calls out the mismatched cell.
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.x"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.x, got: {:?}",
+        result_b.diagnostics
+    );
+    let wmsg = warnings[0].message.as_str();
+    assert!(
+        wmsg.contains("type-kind"),
+        "warning should mention 'type-kind', got: {wmsg:?}"
+    );
+
+    // (c) The override is RETAINED — re-eval Module A: the Scalar override resurfaces.
+    let module_a_again = compile_source(
+        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
+    );
+    let result_a2 = engine.eval(&module_a_again);
+    assert_eq!(
+        result_a2.values.get(&x_id),
+        Some(&length_scalar(0.12)),
+        "override must survive a transient type-kind mismatch eval on guarded-group Param"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // task-2179 S4: rejected-override-with-no-default inserts Undef into result.values
 // ──────────────────────────────────────────────────────────────────────────────
 
