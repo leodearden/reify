@@ -47302,11 +47302,11 @@
         "description": "Decide whether ASSERT_MSG_PREFIX should be promoted to pub (still cfg(debug_assertions)) so integration tests can import it, or dropped in favor of the hard-coded substring everywhere. The current pub(crate) state is the worst-of-both: tests/edit_source.rs:3516-3521 and tests/value_cell_type_invariants.rs both hard-code the literal while the constant exists nominally as the \"single source of truth.\" Also smooth the panic grammar at engine_eval.rs:61-67 — the current text reads \"value cell `{id}` has unrepresentable cell_type Type::TypeParam(..)\" which is awkward; consider embedding the prefix as a leading phrase or re-quoting `cell_type` as a field name.",
         "details": "Suggestions from task 2132 review (reviewer_comprehensive). Two coupled concerns on the same sentinel:\n\n1. api_visibility (engine_eval.rs:30-32): ASSERT_MSG_PREFIX is `pub(crate)`, so integration tests outside the crate cannot import it and hard-code the literal. Options: (a) promote to `pub` (keep cfg(debug_assertions)) and re-export from lib.rs so `reify_eval::ASSERT_MSG_PREFIX` is reachable from integration tests; (b) drop the constant entirely and accept a hard-coded substring everywhere. Pick one — the half-measure should not stand.\n\n2. error_message_quality (engine_eval.rs:61-67): Current format `\"value cell `{}` has {} {:?} post-compilation; ...\"` with PREFIX interpolated in the middle reads as \"has unrepresentable cell_type Type::TypeParam(\\\"T\\\")\" — `cell_type` no longer reads as a field name. Suggested: `format!(\"{}: value cell `{}` has cell_type {:?} post-compilation; ...\", ASSERT_MSG_PREFIX, id, node.cell_type)` or similar lead-with-prefix layout.\n\nScope: engine_eval.rs (the constant + the panic format). If option (a) is chosen, touch lib.rs re-export and the two hard-coded substrings in tests/edit_source.rs:3519 and tests/value_cell_type_invariants.rs.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T14:43:38.512Z",
+        "updatedAt": "2026-04-25T06:58:10.688Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -47322,11 +47322,11 @@
         "description": "Extend `tests/edit_source.rs::edit_source_panics_on_unrepresentable_cell_type` (lines 3480-3522) to iterate over both unrepresentable variants `Type::TypeParam(\"T\".into())` and `Type::Geometry`, matching the style of the in-crate unit test `invariant_tests::panics_on_unrepresentable_cell_types`. Today only Type::TypeParam is exercised, leaving a drift risk between the variant list in `assert_value_cell_types_representable` and the edit-path coverage.",
         "details": "Suggestion from task 2132 review (reviewer_comprehensive, test_coverage_gap).\n\nCurrent test (tests/edit_source.rs:3495-3501) builds a single bad_module with Type::TypeParam(\"T\"). Wrap the bad-module construction + engine seeding + panic::catch_unwind block in `for ty in [Type::TypeParam(\"T\".into()), Type::Geometry] { ... }` so both variants exercise the edit-path assertion.\n\nNote: the engine may need to be re-created inside the loop since edit_source mutates state; confirm by rerunning.\n\nSource: engine_eval.rs:60 matches both `Type::TypeParam(_)` and `Type::Geometry` — pairing the integration test with the guard list prevents the variant list and the test from drifting.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T14:44:25.614Z",
+        "updatedAt": "2026-04-25T06:58:10.833Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -47410,7 +47410,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:10.557Z",
+      "lastModified": "2026-04-25T06:58:10.833Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
