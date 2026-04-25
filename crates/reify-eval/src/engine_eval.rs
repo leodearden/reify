@@ -493,25 +493,28 @@ impl Engine {
                     // retain call after Snapshot::from_compiled_module).
                     let override_val = match self.param_overrides.get(&cell.id) {
                         None => {
-                            // No override stored: only proceed if a default
-                            // exists — otherwise silently skip this cell
-                            // (preserves the pre-task-2017 behaviour for
-                            // untouched no-default Param cells).
+                            // PARTIAL-MAP INVARIANT — `EvalResult.values` intentionally OMITS
+                            // Param cells that have NO override AND NO default_expr.  This
+                            // `continue` preserves the pre-task-2017 silent-skip semantics for
+                            // untouched no-default Param cells — a deliberate baseline; flipping
+                            // it to an Undef-insert would be a cross-cutting behaviour change
+                            // with broad blast radius across the existing reify-eval test suite.
                             //
-                            // NOTE — asymmetry with the rejected-override path:
-                            // When an override EXISTS but is rejected below, the
-                            // `else` branch (line ~446) writes (Undef,
-                            // Undetermined) into both maps so external callers
-                            // never see a missing key. But when NO override was
-                            // ever stored (this arm), the cell is still skipped
-                            // silently, leaving `values` without an entry for
-                            // that cell. This pre-task-2017 baseline is preserved
-                            // deliberately — extending it here would be a
-                            // cross-cutting behaviour change with broad blast
-                            // radius across existing tests. A follow-up task
-                            // should unify the two skip paths (either both insert
-                            // Undef, or document the invariant in EvalResult's
-                            // type doc so callers know when a key may be absent).
+                            // Asymmetry by design (NOT a bug):
+                            //   - this arm (no override, no default)        → cell ABSENT from values
+                            //   - rejected-override-no-default arm (~L560)  → values gets (Undef, …)
+                            //   - guarded-group helper (eval_guarded_group_param_cell, L180-254)
+                            //     → cell always Undef in values (both no-override and rejected paths)
+                            //
+                            // External callers iterating EvalResult.values MUST guard their lookups
+                            // for Param cells: prefer `values.get_or_undef(&id)` (defined on
+                            // ValueMap) over `values.get(&id).unwrap()` — the latter panics on
+                            // no-override-no-default cells.  The contract is also documented on
+                            // the `EvalResult.values` field in lib.rs.
+                            //
+                            // Regression lock: tests/eval_param_overrides.rs::
+                            //   eval_omits_no_default_no_override_param_cell_from_result_values
+                            // pins the ABSENT shape; flipping to insert would fail that test.
                             if cell.default_expr.is_none() {
                                 continue;
                             }

@@ -307,6 +307,22 @@ pub struct CachedEvalResult {
 /// Result of evaluating a compiled module.
 #[derive(Debug)]
 pub struct EvalResult {
+    /// Computed values for every cell whose evaluation produced one.
+    ///
+    /// **PARTIAL-MAP INVARIANT** (see engine_eval.rs ~L494-518): Param cells
+    /// that have NO `default_expr` AND NO entry in `Engine::param_overrides`
+    /// are intentionally OMITTED from this map — preserving the pre-task-2017
+    /// silent-skip baseline.  Callers iterating `EvalResult.values` for Param
+    /// cells MUST guard their lookups (e.g. `values.get_or_undef(&id)` on
+    /// `ValueMap`) — `.get(&id).unwrap()` will panic on no-override-no-default
+    /// cells.
+    ///
+    /// All OTHER paths populate `values`:
+    /// - Auto cells → `Value::Undef`
+    /// - Param with override (accepted) → the override value
+    /// - Param with override (rejected) AND no default → `Value::Undef`
+    /// - Param with default_expr → evaluated default
+    /// - Let / guarded-group cells → see their respective evaluators
     pub values: ValueMap,
     pub diagnostics: Vec<Diagnostic>,
     pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
