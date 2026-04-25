@@ -114,7 +114,9 @@ pub(crate) fn phase_traits(
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
 
     // Deprecation check: warn when a trait refinement references a @deprecated parent trait.
-    // TODO: use refinement.span for the label (step-6); currently uses the enclosing decl span.
+    // Each refinement carries its own per-entry span, so the label highlights exactly
+    // the offending identifier (e.g. `Base` in `trait Derived : Base`) rather than
+    // the whole child-trait declaration.
     for trait_decl in trait_refs {
         for refinement in &trait_decl.refinements {
             if let Some(parent_trait) = trait_registry.get(refinement.name.as_str())
@@ -124,7 +126,7 @@ pub(crate) fn phase_traits(
                     "trait",
                     &refinement.name,
                     msg,
-                    trait_decl.span,
+                    refinement.span,
                     &mut ctx.diagnostics,
                 );
             }
