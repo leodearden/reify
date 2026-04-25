@@ -55,15 +55,27 @@ echo "==> Installing gui dependencies..."
 (cd gui && npm install --no-audit --no-fund --silent)
 
 # -- 4. Start vite dev server in background -----------------------------------
+# IMPORTANT: We use `pushd`/`popd` instead of `(cd gui && npm run dev ...) &`.
+# The subshell-based form sets `$!` to the SUBSHELL's pid, not npm's, so the
+# EXIT trap's `kill "$VITE_PID"` may signal the subshell while leaving the
+# real npm/vite process alive — vite then keeps :1420 bound and the next dev
+# run fails to start. With pushd/popd, `$!` points directly at npm.
 echo "==> Starting vite dev server on :1420..."
-(cd gui && npm run dev -- --port 1420) &
+pushd gui >/dev/null
+npm run dev -- --port 1420 &
 VITE_PID=$!
+popd >/dev/null
 
 # Install EXIT trap to reap vite on every termination path. This MUST stay
 # active for the whole script — we deliberately do NOT exec the GUI binary
 # so this trap fires when reify-gui exits (or when the user Ctrl-C's during
 # the polling loop, etc.).
-trap 'kill "$VITE_PID" 2>/dev/null || true; wait "$VITE_PID" 2>/dev/null || true' EXIT
+#
+# We reap descendants first via `pkill -P "$VITE_PID"`: npm typically forks
+# vite as a child, and signaling only npm can leave vite holding the port.
+# `pkill -P` is best-effort (may not be on every system); the `|| true` keeps
+# the trap robust under set -e.
+trap 'pkill -P "$VITE_PID" 2>/dev/null || true; kill "$VITE_PID" 2>/dev/null || true; wait "$VITE_PID" 2>/dev/null || true' EXIT
 
 # -- 5. Wait for vite readiness ----------------------------------------------
 echo "==> Waiting for vite at http://127.0.0.1:1420/ ..."
