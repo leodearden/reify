@@ -42744,6 +42744,7 @@
             "crates/reify-compiler/src/geometry.rs",
             "crates/reify-compiler/src/geometry_modify.rs",
             "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs",
             "crates/reify-eval/src/geometry_ops.rs",
             "crates/reify-eval/tests/draft_e2e.rs",
             "crates/reify-eval/tests/geometry_error_handling.rs",
@@ -47524,7 +47525,9 @@
       "completedCount": 1972,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-25T07:11:10.176Z",
+      "description": "Tasks for master context"
     }
   }
 }
