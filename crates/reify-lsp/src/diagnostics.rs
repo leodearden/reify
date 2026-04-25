@@ -527,6 +527,42 @@ mod tests {
         );
     }
 
+    // --- step-1 (task-2236): eval_diagnostics_surfaced_in_stateful_pipeline ---
+
+    /// Eval-time diagnostics (e.g. circular let-binding) must appear in the LSP result.
+    ///
+    /// `structure S { let a = b + 1; let b = a + 1 }` has a cyclic let-binding
+    /// dependency that is NOT detected at compile time (only geometry-let cycles
+    /// are caught in the compiler). The engine catches it inside
+    /// `evaluate_let_bindings` (engine_eval.rs:1529) and records it in
+    /// `EvalResult::diagnostics`. Today `compute_diagnostics_with_state` discards
+    /// that result with `let _ = ...`, so this test FAILS until step-2 wires the
+    /// merge.
+    #[test]
+    fn eval_diagnostics_surfaced_in_stateful_pipeline() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        // Cyclic let-bindings: `a` depends on `b` and `b` depends on `a`.
+        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+        let circular_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("circular")
+                    && d.message.contains('a')
+                    && d.message.contains('b')
+            })
+            .collect();
+        assert!(
+            !circular_errors.is_empty(),
+            "eval-time circular let-binding diagnostic must be surfaced as an LSP ERROR; \
+             got diagnostics: {:?}",
+            result.diagnostics
+        );
+    }
+
     // --- step-3: eval_cached path via basis_version ---
 
     #[test]
