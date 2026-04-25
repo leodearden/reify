@@ -754,6 +754,7 @@ mod tests {
     use crate::assert_value_approx;
     use crate::values::{meters, mm2, mm3, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
+    use std::sync::atomic::Ordering;
     use std::sync::Barrier;
 
     #[test]
@@ -958,6 +959,35 @@ mod tests {
 
         let _boxed: Box<dyn ConstraintSolver> =
             Box::new(MockConstraintSolver::new_no_progress("test"));
+    }
+
+    /// Adding `Arc<AtomicUsize>` to `MockConstraintSolver` must not break Send+Sync.
+    /// (This is a compile-time check; if the type is unsound the test below won't compile.)
+    #[test]
+    fn mock_constraint_solver_counts_invocations() {
+        let mut values = HashMap::new();
+        values.insert(ValueCellId::new("S", "thickness"), Value::length(0.005));
+
+        let solver = MockConstraintSolver::new_solved(values);
+        let problem = empty_problem();
+
+        // Before any calls: both counter_handle and call_count must report 0.
+        let counter = solver.counter_handle();
+        assert_eq!(solver.call_count(), 0, "call_count should be 0 before any solve()");
+        assert_eq!(counter.load(Ordering::Acquire), 0, "handle should be 0 before any solve()");
+
+        // Drive three invocations.
+        solver.solve(&problem);
+        solver.solve(&problem);
+        solver.solve(&problem);
+
+        // Both accessors must agree and reflect all three calls.
+        assert_eq!(solver.call_count(), 3, "call_count should be 3 after three solve() calls");
+        assert_eq!(
+            counter.load(Ordering::Acquire),
+            3,
+            "handle must stay in sync — counter_handle is a live view of the same AtomicUsize"
+        );
     }
 
     // step-5: failing tests for per-query-type mock configuration
