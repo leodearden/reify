@@ -47518,7 +47518,17 @@
           "modules": [
             "crates/reify-compiler/src/compile_builder",
             "crates/reify-compiler/tests/import_warning_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "compile_with_stdlib",
+              "compile_with_prelude_refs"
+            ],
+            "queries": [
+              "module resolution not yet implemented import warning compiler",
+              "stdlib prelude compile_with_stdlib single module entry point"
+            ]
+          }
         }
       },
       {
