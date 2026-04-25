@@ -45781,11 +45781,11 @@
         "description": "The `phase1_reelaborated` HashSet in both edit_param (task 2140) and edit_source (task 2142) dedup assumes Phase 1's re-elaboration is idempotent *for a given guard value*. If the guard cell itself reads a resolved auto param, wave2 can flip the guard between Phase 1 and Phase 3. `reapply_phase1_deactivations` uses the *current* guard_val to deactivate newly-inactive members (correct), but never evaluates the default_expr of newly-active else_members whose default_expr does not read a resolved auto param. Phase 3 then skips the group via `phase1_reelaborated`, leaving those cells Undef when they should be Determined.\n\nScope: crates/reify-eval/src/engine_edit.rs — applies symmetrically to both edit_source (lines ~1860-1868, ~1583-1590) and edit_param (task 2140 path, comment at 1442-1445).\n\nSuggested fix options:\n(a) Track guard value at insert time: replace `HashSet<ValueCellId>` with `HashMap<ValueCellId, Value>` and in Phase 3 don't dedup when the current guard value differs from the recorded one (fall through to full re-elaboration, including active-branch default_expr evaluation).\n(b) Have `reapply_phase1_deactivations` detect a guard flip versus Phase 1's recorded value and, on flip, fall through to full re-elaboration rather than only re-deactivating.\n\nAdd a targeted regression test: source edit that changes a non-guard constraint input, guard reads a resolved auto param, guard flips because of the resolver, else_members' default_exprs are literals (not reading auto params). Verify the newly-active else_members transition from Undef to Determined and match cold-eval results.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive). Inherited from task 2140 — predates this diff.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T19:30:50.278Z",
+        "updatedAt": "2026-04-25T06:58:07.059Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -45977,11 +45977,11 @@
         "description": "**Latent regression introduced in task 2017 — verified in engine_eval.rs.**\n\nengine_eval.rs lines 454-472 and 494-512 evaluate `ValueCellKind::Param` cells inside `guarded_groups.members` / `else_members` by calling eval_expr on `cell.default_expr` directly, never consulting `self.param_overrides`. Top-level Param handling (lines 1068, 1152) does consult param_overrides via validate_param_override. Pre-task-2017, CLI's reapply_user_overrides used Engine::edit_param which looked up cells in snapshot.graph.value_cells (includes guarded-group cells), so overrides survived update_source. Post-2017 CLI dropped its shadow-vec and relies solely on eval() consulting param_overrides — for guarded-group Params this path no longer fires and the override is silently lost.\n\nFix: inside both `for group in &template.guarded_groups` loops, when a member/else_member cell is `ValueCellKind::Param`, consult `self.param_overrides.get(&cell.id)` via `validate_param_override` before falling back to default_expr, mirroring the top-level Param branch.\n\nAdd an integration test that sets a CLI override on a guarded-group Param and calls update_source to confirm the override is preserved. If set_parameter on guarded-group Params is intentionally unsupported, document that and turn the test into a negative assertion. Source: esc-2017-31 (S1).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T17:28:56.806Z",
+        "updatedAt": "2026-04-25T06:58:07.192Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -45995,11 +45995,11 @@
         "description": "Two small follow-ups from the reviewer_comprehensive review of task 2119's changes in crates/reify-kernel-occt/src/lib.rs.",
         "details": "Post-merge review of task-2119 flagged two co-located polish items on validate_pipe_start_tangent and its oversize_z test:\n\n1. Move rationale into the helper's rustdoc (lib.rs ~108-120). The caller at lib.rs:612 now just says \"see validate_pipe_start_tangent\". The previous inline block at the pipe-executor call site explained WHY the restriction exists (BRepOffsetAPI_MakePipe requires profile-plane alignment with the path's start-tangent; non-+Z paths produce degenerate zero-volume solids) and referenced task-2095 for the deferred general-orientation support. That rationale is not present on validate_pipe_start_tangent's doc comment — only mechanics are documented. Action: move the OCCT profile-plane rationale + task-2095 deferred-work pointer into the rustdoc of validate_pipe_start_tangent.\n\n2. Drop the msg.contains(\"+Z\") assertion from validate_pipe_start_tangent_rejects_oversize_z (lib.rs:4506-4524). Since 1e100 is finite, is_finite() passes and only the tolerance branch can reject — the branch-disambiguating assertion is already implied by the input. The wording check adds no coverage and couples the test to the error string (same brittleness class as the wording-pin test removed in task 2119). Action: drop the msg.contains(\"+Z\") assertion and keep only the Err(OperationFailed(_)) match.\n\nBoth items are co-located polish. No behavior change for accepted (+Z) paths.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T18:05:58.440Z",
+        "updatedAt": "2026-04-25T06:58:07.332Z",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt/src/lib.rs"
@@ -47409,7 +47409,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:06.923Z",
+      "lastModified": "2026-04-25T06:58:07.332Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
