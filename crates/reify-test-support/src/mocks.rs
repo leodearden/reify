@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use reify_types::{
@@ -231,8 +232,15 @@ impl OptimizedImpl for BrokenCountOptimizedImpl {
 }
 
 /// Mock constraint solver that returns predetermined results.
+///
+/// Each call to [`ConstraintSolver::solve`] is counted.  Use
+/// [`call_count`][Self::call_count] for direct reads while the solver is still
+/// owned, or [`counter_handle`][Self::counter_handle] to obtain a cloned
+/// `Arc<AtomicUsize>` that remains valid after the solver is moved into a
+/// `Box<dyn ConstraintSolver>` and handed to the engine.
 pub struct MockConstraintSolver {
     result: SolveResult,
+    invocation_count: Arc<AtomicUsize>,
 }
 
 impl MockConstraintSolver {
@@ -243,6 +251,7 @@ impl MockConstraintSolver {
                 values,
                 unique: true,
             },
+            invocation_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -250,6 +259,7 @@ impl MockConstraintSolver {
     pub fn new_infeasible(diagnostics: Vec<Diagnostic>) -> Self {
         Self {
             result: SolveResult::Infeasible { diagnostics },
+            invocation_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -259,12 +269,37 @@ impl MockConstraintSolver {
             result: SolveResult::NoProgress {
                 reason: reason.into(),
             },
+            invocation_count: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Return the number of times [`ConstraintSolver::solve`] has been called.
+    ///
+    /// Use this accessor while the solver is still owned by the caller.  For
+    /// reads after the solver has been moved into `Box::new(solver)`, see
+    /// [`counter_handle`][Self::counter_handle].
+    pub fn call_count(&self) -> usize {
+        self.invocation_count.load(Ordering::Acquire)
+    }
+
+    /// Return a shared handle to the invocation counter.
+    ///
+    /// Clones the internal `Arc<AtomicUsize>` so that callers can read the
+    /// count after the solver has been moved into a `Box<dyn ConstraintSolver>`
+    /// and ownership transferred to the engine.  The counter is the same
+    /// `AtomicUsize` that `solve()` increments, so reads via the handle are
+    /// always in sync with [`call_count`][Self::call_count].
+    ///
+    /// Mirrors the `captured_problems()` handle pattern on
+    /// `MultiCallSpyConstraintSolver`.
+    pub fn counter_handle(&self) -> Arc<AtomicUsize> {
+        self.invocation_count.clone()
     }
 }
 
 impl ConstraintSolver for MockConstraintSolver {
     fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+        self.invocation_count.fetch_add(1, Ordering::Release);
         self.result.clone()
     }
 }
