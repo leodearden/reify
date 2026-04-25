@@ -47995,14 +47995,13 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "Engine",
-              "EvalState",
-              "compute_diagnostics_with_state",
-              "eval_cached"
+              "LSP incremental eval implementation",
+              "LSP incremental eval benchmark"
             ],
             "queries": [
-              "eval_cached diagnostics discarded LSP diagnostics pipeline",
-              "LSP incremental eval eval_cached compute_diagnostics_with_state task 2225"
+              "LSP incremental eval eval_cached compute_diagnostics_with_state",
+              "eval_cached diagnostics surface LSP",
+              "Task 2225 LSP incremental eval wire eval_cached"
             ]
           }
         }
