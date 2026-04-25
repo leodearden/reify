@@ -160,6 +160,99 @@ fn post_solver_re_eval_guard_cells(
     }
 }
 
+/// Resolve and write the effective value for a guarded-group Param cell,
+/// consulting `param_overrides`, validating any stored override, falling back
+/// to `cell.default_expr`, and handling the no-override / rejected-override
+/// cases symmetrically with the inactive-member write-Undef treatment.
+///
+/// Called from the `members` loop (when `guard_is_true`) and the
+/// `else_members` loop (when `guard_is_false`) inside the third pass of
+/// [`Engine::eval`].  Centralising the resolution block here means any future
+/// change to the validation policy (a new [`ParamOverrideRejection`] variant,
+/// a different Diagnostic shape, a journal/cache hook) only has to be made in
+/// one place — the triple-copy divergence that produced the guarded-group
+/// override bug (task 2154) cannot recur.
+///
+/// **Cache / journal**: neither the EvalEvent journal nor the eval cache is
+/// consulted here — see the deferred-cache rationale at
+/// `engine_eval.rs:487-496` (top-level Param branch, rejected-no-default arm).
+/// The same reasoning applies to both active-branch call sites.
+fn eval_guarded_group_param_cell(
+    cell: &ValueCellDecl,
+    param_overrides: &HashMap<ValueCellId, Value>,
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let override_val = match param_overrides.get(&cell.id) {
+        None => {
+            // No override stored AND no default_expr: write (Undef, Undetermined)
+            // and return early.  This mirrors the inactive-member treatment a few
+            // lines below in the calling loop (the `else` arm that writes Undef
+            // for deactivated cells) — NOT the top-level Param branch
+            // (engine_eval.rs:402-424), which bare-continues without inserting
+            // into `values` (a pre-task-2017 baseline preserved to avoid a
+            // cross-cutting behaviour change). Guarded-group cells always write
+            // Undef so all cells appear in EvalResult.values regardless of
+            // override presence.
+            if cell.default_expr.is_none() {
+                values.insert(cell.id.clone(), Value::Undef);
+                snapshot.values.insert(
+                    cell.id.clone(),
+                    (Value::Undef, DeterminacyState::Undetermined),
+                );
+                return;
+            }
+            None
+        }
+        Some(v) => match validate_param_override(v, &cell.cell_type) {
+            Ok(()) => Some(v.clone()),
+            Err(ParamOverrideRejection::TypeKindMismatch) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                    cell.id, cell.cell_type, v
+                )));
+                None
+            }
+            Err(ParamOverrideRejection::ScalarDimensionMismatch { expected, got }) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                    cell.id, expected, got
+                )));
+                None
+            }
+        },
+    };
+
+    let val = if let Some(v) = override_val {
+        v
+    } else if let Some(ref expr) = cell.default_expr {
+        reify_expr::eval_expr(
+            expr,
+            &eval_ctx_with_meta(values, functions, meta_map)
+                .with_determinacy(&snapshot.values),
+        )
+    } else {
+        // Override existed but was rejected AND no default_expr.
+        // Write (Undef, Undetermined) into both maps so external readers of
+        // EvalResult.values see a well-defined Undef instead of a missing key.
+        //
+        // Cache/journal recording is intentionally omitted here — see the
+        // deferred-cache rationale at engine_eval.rs:487-496 (top-level Param
+        // branch, rejected-no-default arm). The same reasoning applies here.
+        values.insert(cell.id.clone(), Value::Undef);
+        snapshot.values.insert(
+            cell.id.clone(),
+            (Value::Undef, DeterminacyState::Undetermined),
+        );
+        return;
+    };
+    values.insert(cell.id.clone(), val.clone());
+    snapshot.values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
+}
+
 impl Engine {
     /// Evaluate a compiled module, returning computed values.
     ///
@@ -577,69 +670,15 @@ impl Engine {
                     if guard_is_true {
                         // Evaluate normally
                         if cell.kind == ValueCellKind::Param {
-                            // Mirror the top-level Param branch (engine_eval.rs:401-507):
-                            // consult param_overrides, validate, warn-and-retain on
-                            // rejection, fall back to default_expr.
-                            let override_val = match self.param_overrides.get(&cell.id) {
-                                None => {
-                                    // No override stored: only proceed if a default
-                                    // exists — otherwise silently skip this cell
-                                    // (matches the top-level None arm at ~line 402).
-                                    if cell.default_expr.is_none() {
-                                        values.insert(cell.id.clone(), Value::Undef);
-                                        snapshot.values.insert(
-                                            cell.id.clone(),
-                                            (Value::Undef, DeterminacyState::Undetermined),
-                                        );
-                                        continue;
-                                    }
-                                    None
-                                }
-                                Some(v) => match validate_param_override(v, &cell.cell_type) {
-                                    Ok(()) => Some(v.clone()),
-                                    Err(ParamOverrideRejection::TypeKindMismatch) => {
-                                        diagnostics.push(Diagnostic::warning(format!(
-                                            "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                                            cell.id, cell.cell_type, v
-                                        )));
-                                        None
-                                    }
-                                    Err(ParamOverrideRejection::ScalarDimensionMismatch {
-                                        expected,
-                                        got,
-                                    }) => {
-                                        diagnostics.push(Diagnostic::warning(format!(
-                                            "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                                            cell.id, expected, got
-                                        )));
-                                        None
-                                    }
-                                },
-                            };
-
-                            let val = if let Some(v) = override_val {
-                                v
-                            } else if let Some(ref expr) = cell.default_expr {
-                                reify_expr::eval_expr(
-                                    expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                        .with_determinacy(&snapshot.values),
-                                )
-                            } else {
-                                // Override existed but was rejected AND no default_expr.
-                                // Write (Undef, Undetermined) — matches top-level
-                                // rejected-no-default arm at engine_eval.rs:482-486.
-                                values.insert(cell.id.clone(), Value::Undef);
-                                snapshot.values.insert(
-                                    cell.id.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                                continue;
-                            };
-                            values.insert(cell.id.clone(), val.clone());
-                            snapshot
-                                .values
-                                .insert(cell.id.clone(), (val, DeterminacyState::Determined));
+                            eval_guarded_group_param_cell(
+                                cell,
+                                &self.param_overrides,
+                                &mut values,
+                                &mut snapshot,
+                                &functions,
+                                &self.meta_map,
+                                &mut diagnostics,
+                            );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
@@ -683,61 +722,15 @@ impl Engine {
                         // consult param_overrides for Param cells, validate, warn-and-retain
                         // on rejection, fall back to default_expr.
                         if cell.kind == ValueCellKind::Param {
-                            let override_val = match self.param_overrides.get(&cell.id) {
-                                None => {
-                                    if cell.default_expr.is_none() {
-                                        values.insert(cell.id.clone(), Value::Undef);
-                                        snapshot.values.insert(
-                                            cell.id.clone(),
-                                            (Value::Undef, DeterminacyState::Undetermined),
-                                        );
-                                        continue;
-                                    }
-                                    None
-                                }
-                                Some(v) => match validate_param_override(v, &cell.cell_type) {
-                                    Ok(()) => Some(v.clone()),
-                                    Err(ParamOverrideRejection::TypeKindMismatch) => {
-                                        diagnostics.push(Diagnostic::warning(format!(
-                                            "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                                            cell.id, cell.cell_type, v
-                                        )));
-                                        None
-                                    }
-                                    Err(ParamOverrideRejection::ScalarDimensionMismatch {
-                                        expected,
-                                        got,
-                                    }) => {
-                                        diagnostics.push(Diagnostic::warning(format!(
-                                            "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                                            cell.id, expected, got
-                                        )));
-                                        None
-                                    }
-                                },
-                            };
-
-                            let val = if let Some(v) = override_val {
-                                v
-                            } else if let Some(ref expr) = cell.default_expr {
-                                reify_expr::eval_expr(
-                                    expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                        .with_determinacy(&snapshot.values),
-                                )
-                            } else {
-                                // Override existed but was rejected AND no default_expr.
-                                values.insert(cell.id.clone(), Value::Undef);
-                                snapshot.values.insert(
-                                    cell.id.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                                continue;
-                            };
-                            values.insert(cell.id.clone(), val.clone());
-                            snapshot
-                                .values
-                                .insert(cell.id.clone(), (val, DeterminacyState::Determined));
+                            eval_guarded_group_param_cell(
+                                cell,
+                                &self.param_overrides,
+                                &mut values,
+                                &mut snapshot,
+                                &functions,
+                                &self.meta_map,
+                                &mut diagnostics,
+                            );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
