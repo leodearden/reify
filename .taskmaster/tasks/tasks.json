@@ -47021,16 +47021,14 @@
             "crates/reify-eval/tests/purpose_activation.rs"
           ],
           "memory_hints": {
-            "entity_refs": [
-              "EvalResult",
-              "CompilationScope",
-              "Task 2181",
-              "PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS"
+            "entities": [
+              "purpose_activation",
+              "geometric_params",
+              "params reflection"
             ],
             "queries": [
-              "PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS empty-list placeholder purpose body",
-              "subject.params geometric_params reflective aggregation runtime expansion",
-              "purpose_activation forall determined constrained vacuous trap"
+              "purpose body reflective query params geometric_params populate runtime",
+              "purpose reflective aggregation subject eval reify"
             ]
           },
           "_causation_id": "8163d829-88fd-4a81-80bd-24fa9891e2ba"
