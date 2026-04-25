@@ -47941,7 +47941,17 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/eval_param_overrides.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "eval_guarded_group_param_cell",
+              "eval_param_overrides.rs"
+            ],
+            "queries": [
+              "dimension-mismatch override test else-member guarded group eval_param_overrides",
+              "guarded-group else_members dimension mismatch test coverage task 2154"
+            ]
+          }
         }
       },
       {
