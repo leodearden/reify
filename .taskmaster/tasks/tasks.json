@@ -47647,13 +47647,13 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "reify-debug MCP server",
-              "sidecar binary",
-              "resource_dir"
+              "reify-lsp",
+              "GUI sidecar",
+              "Tauri IPC"
             ],
             "queries": [
-              "single command GUI launch sidecar build servers debug MCP",
-              "reify-debug MCP server engine_state click_element tools"
+              "GUI launch single command build sidecar servers debug MCP mode",
+              "Tauri sidecar IPC bridge GUI architecture reify"
             ]
           }
         }
