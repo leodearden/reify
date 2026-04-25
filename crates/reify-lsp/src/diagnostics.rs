@@ -468,6 +468,42 @@ mod tests {
         );
     }
 
+    // --- step-3: eval_cached path via basis_version ---
+
+    #[test]
+    fn incremental_path_uses_eval_cached_when_content_unchanged() {
+        use reify_eval::cache::NodeId;
+        use reify_types::ValueCellId;
+
+        let uri = test_uri();
+        let source = reify_test_support::bracket_source();
+
+        // (1) First call: cold-start
+        let mut state = EvalState::new();
+        compute_diagnostics_with_state(&mut state, source, &uri);
+        assert_eq!(state.version_counter, 1, "version_counter should be 1 after first call");
+
+        // (2) Second call with identical source: should use eval_cached path
+        compute_diagnostics_with_state(&mut state, source, &uri);
+        assert_eq!(state.version_counter, 2, "version_counter should be 2 after second call");
+
+        // (3) Inspect cache: basis_version of Bracket.width should be > 0
+        //     eval_cached passes VersionId(state.version_counter) which is VersionId(2) at call time
+        //     (counter is incremented to 2 before eval_cached is called).
+        //     A cold-start would reset the engine to a fresh state with basis_version=0.
+        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        let entry = state
+            .engine
+            .cache_store()
+            .get(&node)
+            .expect("Bracket.width cache entry must exist after eval");
+        assert!(
+            entry.basis_version.0 > 0,
+            "eval_cached path should bump basis_version > 0; cold-start path would reset to 0, got {}",
+            entry.basis_version.0
+        );
+    }
+
     // --- step-1: content-hash tracking across calls ---
 
     #[test]
