@@ -415,6 +415,16 @@ mod tests {
     }
 
     #[test]
+    fn single_geom_target_kinds_covers_all_modify_kind_variants() {
+        assert_eq!(
+            single_geom_target_kinds().len(),
+            ModifyKind::VARIANT_COUNT,
+            "single_geom_target_kinds()'s CASES table must cover every ModifyKind variant; \
+             missing coverage would silently exclude a kind from regression tests"
+        );
+    }
+
+    #[test]
     fn compile_modify_op_non_geometry_target_fallback_all_single_geom_target_kinds() {
         for &(kind, fn_name, tail) in single_geom_target_kinds() {
             assert_non_geometry_target_fallback(kind, fn_name, tail);
