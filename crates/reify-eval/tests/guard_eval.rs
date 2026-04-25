@@ -12,7 +12,7 @@ use reify_test_support::builders::{ge, gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintSolver, SequencedMockConstraintSolver,
-    TopologyTemplateBuilder, mm, parse_and_compile,
+    TopologyTemplateBuilder, mm, parse_and_compile, wave2_flip_fixture,
 };
 use reify_types::*;
 
@@ -2583,84 +2583,17 @@ fn edit_param_phase3_reelaborates_multiple_auto_driven_guard_groups() {
 /// Phase 3's dedup would skip the group and never re-deactivate m.
 #[test]
 fn edit_param_wave2_does_not_corrupt_inactive_members() {
-    let x_id = ValueCellId::new("S", "x");
-    let depth_id = ValueCellId::new("S", "depth");
-    let guard_id = ValueCellId::new("S", "__guard_0");
-    let m_id = ValueCellId::new("S", "m");
-
-    // Guard expression: x > 5mm.  Reads `x`, so guard cell is in dirty_cone(x).
-    let guard_expr = gt(value_ref("S", "x"), literal(mm(5.0)));
-
-    // Member m: let m = depth  (non-auto Let cell that reads the auto param).
-    // When guard=false, m must be Undef.  Wave2 will try to overwrite it.
-    let m_decl = ValueCellDecl {
-        id: m_id.clone(),
-        kind: ValueCellKind::Let,
-        visibility: Visibility::Private,
-        cell_type: Type::length(),
-        default_expr: Some(value_ref("S", "depth")), // reads auto param depth
-        solver_hints: Vec::new(),
-        span: SourceSpan::new(0, 0),
-    };
-
-    let template = TopologyTemplateBuilder::new("S")
-        // x: structure_controlling (guard depends on x) AND read by constraint
-        .param(
-            "S",
-            "x",
-            Type::length(),
-            Some(literal(mm(10.0))),
-        )
-        // depth: auto param resolved by solver (solver sets depth = x)
-        .auto_param("S", "depth", Type::length())
-        // constraint reads both depth and x → dirty when x changes → solver re-runs
-        .constraint(
-            "S",
-            0,
-            Some("depth_ge_x"),
-            ge(value_ref("S", "depth"), value_ref("S", "x")),
-        )
-        // guarded group: guard depends on x; member m reads depth
-        .guarded_group(
-            guard_expr,
-            guard_id.clone(),
-            vec![m_decl], // members (active when guard = true)
-            vec![],       // constraints
-            vec![],       // else_members
-            vec![],       // else_constraints
-        )
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(template)
-        .build();
-
-    // Sequenced solver: first call → depth = 10mm (initial eval);
-    //                   second call → depth = 3mm (after edit_param(x, 3mm)).
-    let mut solved1 = HashMap::new();
-    solved1.insert(depth_id.clone(), mm(10.0));
-    let mut solved2 = HashMap::new();
-    solved2.insert(depth_id.clone(), mm(3.0));
-    let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved {
-            values: solved1,
-            unique: true,
-        },
-        SolveResult::Solved {
-            values: solved2,
-            unique: true,
-        },
-    ]);
+    let fixture = wave2_flip_fixture();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(fixture.solver);
 
     // Initial eval: x=10mm, guard=true, solver→depth=10mm, m=depth=10mm.
-    let initial = engine.eval(&module);
+    let initial = engine.eval(&fixture.module_initial);
     assert!(
-        matches!(initial.values.get(&m_id), Some(Value::Scalar { si_value, .. }) if (*si_value - 0.010).abs() < 1e-10),
+        matches!(initial.values.get(&fixture.m_id), Some(Value::Scalar { si_value, .. }) if (*si_value - 0.010).abs() < 1e-10),
         "initial eval: m should be 10mm (= depth) when guard is true, got {:?}",
-        initial.values.get(&m_id),
+        initial.values.get(&fixture.m_id),
     );
 
     // edit_param(x, 3mm):
@@ -2670,18 +2603,18 @@ fn edit_param_wave2_does_not_corrupt_inactive_members() {
     //   Post-wave2 cleanup (fix): m re-deactivated to Undef.
     //   Phase 3: skipped via phase1_reelaborated (cleanup already correct).
     let edited = engine
-        .edit_param(x_id, Value::length(0.003)) // 3mm in SI
+        .edit_param(fixture.x_id.clone(), Value::length(0.003)) // 3mm in SI
         .expect("edit_param must succeed");
 
     // m must be Undef: guard is false (x=3mm ≤ 5mm), so the active branch
     // (members) is inactive.  Without the post-wave2 cleanup, m would be 3mm
     // (wave2's re-evaluation result) because Phase 3 is skipped by the dedup.
     assert!(
-        matches!(edited.values.get(&m_id), Some(Value::Undef)),
+        matches!(edited.values.get(&fixture.m_id), Some(Value::Undef)),
         "m must be Undef after guard flips false; \
          if m is a concrete value (e.g. 3mm), wave2 corrupted the inactive member \
          and the post-wave2 cleanup is missing or broken. Got {:?}",
-        edited.values.get(&m_id),
+        edited.values.get(&fixture.m_id),
     );
 }
 
