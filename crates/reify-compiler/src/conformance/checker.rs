@@ -606,18 +606,19 @@ pub(super) fn check_phase_pre_register_default_types(
 ///    are small in practice so this is acceptable; a two-level map is the escape hatch if
 ///    it ever becomes a hot path.
 ///
-/// ## Pass 1/Pass 2 skipped exclusions — `cell_type`-gated for mutual exclusion
+/// ## Pass 1/Pass 2 skipped exclusions — three symmetric guards
 ///
-/// Two symmetric guards suppress phantom Let advertisements to maintain the
-/// "advertisement mirrors injection" invariant (task 1951 Option B + task 1952):
+/// Three symmetric guards suppress phantom advertisements to maintain the
+/// "advertisement mirrors injection" invariant (task 1951 Option B + task 1952 + task 2208):
 ///
-/// | Guard                                            | Skipped by | Cell_type predicate |
-/// |--------------------------------------------------|------------|---------------------|
-/// | `cell_type.is_none() && pass2_skipped.contains` | Pass 2     | unannotated (`None`)|
-/// | `cell_type.is_some() && pass1_skipped.contains` | Pass 1     | annotated (`Some`)  |
+/// | Guard                                            | Skipped by | Cell_type predicate         |
+/// |--------------------------------------------------|------------|-----------------------------|
+/// | `cell_type.is_none() && pass2_skipped.contains` | Pass 2     | unannotated Let (`None`)    |
+/// | `cell_type.is_some() && pass1_skipped.contains` | Pass 1     | annotated Let (`Some`)      |
+/// | `pass1_param_skipped.contains`                   | Pass 1     | n/a — Param arm, no Option  |
 ///
-/// The `cell_type` predicates are mutually exclusive: a given Let entry can only satisfy
-/// one of the two guards — it is either annotated or unannotated, never both.
+/// The Let `cell_type` predicates are mutually exclusive: a given Let entry can only satisfy
+/// one of the two Let guards — it is either annotated or unannotated, never both.
 ///
 /// **pass2_skipped**: When `cell_type` is `None` (unannotated Let) *and* the name is in
 /// `pass2_skipped`, this entry is excluded. Pass 2 populates `pass2_skipped` exclusively
@@ -633,6 +634,15 @@ pub(super) fn check_phase_pre_register_default_types(
 /// for names in `pass1_skipped`, so advertising such a name would produce a phantom
 /// `(name, Let) → Type` entry with no injected cell backing it — a "requirement satisfied"
 /// lie. The `cell_type.is_some() &&` conjunction parallels the `is_none()` guard.
+///
+/// **pass1_param_skipped**: When a Param name is in `pass1_param_skipped`, the `Param` arm
+/// returns `None` unconditionally, excluding the phantom `(name, Param) → Type` advertisement.
+/// Pass 1 populates `pass1_param_skipped` when a Param's `register_if_absent` call finds the
+/// scope slot already claimed by an annotated Let (task 2208). Unlike the two Let guards, no
+/// `cell_type` predicate is needed — `DefaultKind::Param` has no `cell_type: Option`
+/// discriminant; the arm is already kind-exclusive. The injection loop mirrors this guard via
+/// a matching `if pass1_param_skipped.contains(name) { continue; }` at the top of the Param
+/// arm in `check_phase_inject_defaults`.
 ///
 /// ## `pass2_compile_errors` exclusion (task 1914 suggestion #1)
 ///

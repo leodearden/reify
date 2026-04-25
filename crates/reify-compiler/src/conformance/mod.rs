@@ -1817,8 +1817,9 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        // COMPILE-TRIPWIRE: destructure as 4-tuple — fails to compile until step-3 changes the
-        // return type from (HashMap, HashSet, HashSet) to (HashMap, HashSet, HashSet, HashSet).
+        // COMPILE-TRIPWIRE: destructure as 5-tuple — fails to compile until step-2 changes the
+        // return type from (HashMap, HashSet, HashSet, HashSet) to
+        // (HashMap, HashSet, HashSet, HashSet, HashSet), adding pass1_param_skipped.
         let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,

@@ -584,8 +584,8 @@ structure def S : Left + Right {
 /// Let losers via `pass2_skipped`.
 ///
 /// The test name reflects the post-fix semantics: the annotated Let IS suppressed/discarded.
-/// The reverse direction (annotated Let wins scope, Param loses) is a known remaining
-/// asymmetry — see `annotated_let_wins_param_loses_known_asymmetry` (ignored).
+/// The reverse direction (annotated Let wins scope, Param loses) is covered symmetrically by
+/// `annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped` (task 2208).
 #[test]
 fn annotated_let_suppressed_by_pass1_skipped_when_param_wins_slot() {
     let source = r#"
@@ -1143,7 +1143,7 @@ structure def S : TraitA + TraitB {
 ///
 /// Expected: no errors, exactly 1 `x` cell (the annotated Let from TraitB).
 #[test]
-fn annotated_let_wins_param_loses_known_asymmetry() {
+fn annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped() {
     // Reverse of cross_kind_pre_registration_preserves_first_type_annotated_let:
     // TraitB (annotated Let) is listed first in the bound list.
     let source = r#"
