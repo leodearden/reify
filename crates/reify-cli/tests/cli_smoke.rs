@@ -42,6 +42,29 @@ fn no_args_shows_help_with_all_commands() {
 }
 
 #[test]
+fn help_text_mentions_gui_debug_subcommand() {
+    // `reify` with no args should mention the `gui-debug` subcommand alongside
+    // the other commands.
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "reify with no args should exit non-zero"
+    );
+    assert!(
+        stderr.contains("gui-debug"),
+        "help text should mention 'gui-debug' subcommand, got: {stderr}"
+    );
+}
+
+#[test]
 fn check_no_file_shows_usage() {
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(["check"])

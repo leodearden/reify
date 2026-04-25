@@ -198,6 +198,31 @@ fn gui_debug_flag_skip_message_indicates_debug_true() {
 }
 
 #[test]
+fn gui_debug_subcommand_routes_to_cmd_gui_with_debug_true() {
+    // `reify gui-debug <fixture>` should route through the same code path as
+    // `reify gui --debug <fixture>` and produce debug=true in the SKIP message.
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    assert!(fixture.exists(), "fixture file should exist");
+
+    let output = reify_cmd()
+        .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        .args(["gui-debug", fixture.to_str().unwrap()])
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "should exit non-zero when gui launch is skipped"
+    );
+    assert!(
+        stderr.contains("debug=true"),
+        "gui-debug subcommand should produce debug=true marker, got: {stderr}"
+    );
+}
+
+#[test]
 fn gui_mcp_flag_is_alias_for_debug() {
     // `--mcp` is the alias spelling of `--debug` and should produce the same
     // debug=true marker in the SKIP message.
