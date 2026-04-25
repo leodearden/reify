@@ -262,11 +262,18 @@ fn cmd_build(args: &[String]) -> ExitCode {
 fn cmd_gui(args: &[String]) -> ExitCode {
     // Parse `--debug` / `--mcp` flags (both set the same `debug` boolean) and
     // strip them from the positional args before extracting the file path.
+    // Any other `--`-prefixed token is rejected explicitly so a typo like
+    // `--debugg` fails loud instead of being silently treated as a file path.
     let mut debug = false;
     let mut positional: Vec<&String> = Vec::with_capacity(args.len());
     for a in args {
         match a.as_str() {
             "--debug" | "--mcp" => debug = true,
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `gui`: {}", flag);
+                eprintln!("Usage: reify gui [--debug] <file>");
+                return ExitCode::FAILURE;
+            }
             _ => positional.push(a),
         }
     }
@@ -294,14 +301,15 @@ fn cmd_gui(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Check if launch is suppressed (for testing / CI). The error message
-    // includes the parsed debug-mode state so tests can assert on it without
-    // spawning a real reify-gui subprocess.
+    // Check if launch is suppressed (for testing / CI). The user-facing error
+    // is kept clean (no internal flag state). Tests that need to assert on the
+    // parsed debug-mode set `REIFY_GUI_DEBUG_PROBE=1` to enable a structured
+    // probe line — keeping the test seam off the default error path.
     if std::env::var("REIFY_GUI_SKIP_LAUNCH").is_ok() {
-        eprintln!(
-            "Error: could not launch reify-gui (launch skipped via REIFY_GUI_SKIP_LAUNCH; debug={})",
-            debug
-        );
+        if std::env::var("REIFY_GUI_DEBUG_PROBE").is_ok() {
+            eprintln!("REIFY_GUI_DEBUG_PROBE: debug={}", debug);
+        }
+        eprintln!("Error: could not launch reify-gui (launch skipped via REIFY_GUI_SKIP_LAUNCH)");
         return ExitCode::FAILURE;
     }
 

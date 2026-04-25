@@ -147,16 +147,18 @@ fn gui_with_valid_ri_file_skips_launch_when_env_set() {
 }
 
 #[test]
-fn gui_default_mode_skip_message_indicates_debug_false() {
-    // `reify gui <fixture>` (no --debug) should report debug=false in the SKIP
-    // message so the test seam exposes the parsed debug-mode state without
-    // having to spawn a real reify-gui subprocess.
+fn gui_default_mode_probe_indicates_debug_false() {
+    // `reify gui <fixture>` (no --debug) should emit `debug=false` on the
+    // dedicated probe channel (REIFY_GUI_DEBUG_PROBE=1), keeping the
+    // user-visible error message clean. The probe channel is a deliberate
+    // test seam — opt-in via env var, not part of the default error path.
     let fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
         .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        .env("REIFY_GUI_DEBUG_PROBE", "1")
         .args(["gui", fixture.to_str().unwrap()])
         .output()
         .expect("failed to execute reify binary");
@@ -167,21 +169,22 @@ fn gui_default_mode_skip_message_indicates_debug_false() {
         "should exit non-zero when gui launch is skipped"
     );
     assert!(
-        stderr.contains("debug=false"),
-        "skip-launch error should include debug=false marker, got: {stderr}"
+        stderr.contains("REIFY_GUI_DEBUG_PROBE: debug=false"),
+        "probe channel should report debug=false, got: {stderr}"
     );
 }
 
 #[test]
-fn gui_debug_flag_skip_message_indicates_debug_true() {
+fn gui_debug_flag_probe_indicates_debug_true() {
     // `reify gui --debug <fixture>` should parse the flag and propagate it via
-    // the SKIP message as debug=true.
+    // the probe channel as debug=true.
     let fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
         .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        .env("REIFY_GUI_DEBUG_PROBE", "1")
         .args(["gui", "--debug", fixture.to_str().unwrap()])
         .output()
         .expect("failed to execute reify binary");
@@ -192,21 +195,24 @@ fn gui_debug_flag_skip_message_indicates_debug_true() {
         "should exit non-zero when gui launch is skipped"
     );
     assert!(
-        stderr.contains("debug=true"),
-        "skip-launch error with --debug should include debug=true marker, got: {stderr}"
+        stderr.contains("REIFY_GUI_DEBUG_PROBE: debug=true"),
+        "probe channel for --debug should report debug=true, got: {stderr}"
     );
 }
 
 #[test]
 fn gui_debug_subcommand_routes_to_cmd_gui_with_debug_true() {
     // `reify gui-debug <fixture>` should route through the same code path as
-    // `reify gui --debug <fixture>` and produce debug=true in the SKIP message.
+    // `reify gui --debug <fixture>` and produce debug=true on the probe
+    // channel — this is the only end-to-end check that the gui-debug
+    // subcommand wiring forwards `--debug` to cmd_gui.
     let fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
         .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        .env("REIFY_GUI_DEBUG_PROBE", "1")
         .args(["gui-debug", fixture.to_str().unwrap()])
         .output()
         .expect("failed to execute reify binary");
@@ -217,21 +223,22 @@ fn gui_debug_subcommand_routes_to_cmd_gui_with_debug_true() {
         "should exit non-zero when gui launch is skipped"
     );
     assert!(
-        stderr.contains("debug=true"),
-        "gui-debug subcommand should produce debug=true marker, got: {stderr}"
+        stderr.contains("REIFY_GUI_DEBUG_PROBE: debug=true"),
+        "gui-debug subcommand should produce debug=true on probe, got: {stderr}"
     );
 }
 
 #[test]
 fn gui_mcp_flag_is_alias_for_debug() {
     // `--mcp` is the alias spelling of `--debug` and should produce the same
-    // debug=true marker in the SKIP message.
+    // debug=true marker on the probe channel.
     let fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
         .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        .env("REIFY_GUI_DEBUG_PROBE", "1")
         .args(["gui", "--mcp", fixture.to_str().unwrap()])
         .output()
         .expect("failed to execute reify binary");
@@ -242,8 +249,66 @@ fn gui_mcp_flag_is_alias_for_debug() {
         "should exit non-zero when gui launch is skipped"
     );
     assert!(
-        stderr.contains("debug=true"),
-        "skip-launch error with --mcp should include debug=true marker (alias for --debug), got: {stderr}"
+        stderr.contains("REIFY_GUI_DEBUG_PROBE: debug=true"),
+        "probe channel for --mcp should report debug=true (alias for --debug), got: {stderr}"
+    );
+}
+
+#[test]
+fn gui_skip_launch_default_error_message_does_not_leak_debug_state() {
+    // Without REIFY_GUI_DEBUG_PROBE, the SKIP_LAUNCH error must not contain
+    // the parsed debug flag — that's internal state and should stay off the
+    // user-visible error path. (The probe channel is the structured way to
+    // observe it from tests.)
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    assert!(fixture.exists(), "fixture file should exist");
+
+    let output = reify_cmd()
+        .env("REIFY_GUI_SKIP_LAUNCH", "1")
+        // Deliberately do NOT set REIFY_GUI_DEBUG_PROBE
+        .args(["gui", "--debug", fixture.to_str().unwrap()])
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "should exit non-zero when gui launch is skipped"
+    );
+    assert!(
+        !stderr.contains("debug=true") && !stderr.contains("debug=false"),
+        "default SKIP_LAUNCH error must not leak debug-flag state, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("REIFY_GUI_DEBUG_PROBE"),
+        "probe-channel marker must not appear without the env var set, got: {stderr}"
+    );
+}
+
+#[test]
+fn gui_unknown_flag_is_rejected() {
+    // A `--`-prefixed token that isn't `--debug` or `--mcp` should be rejected
+    // explicitly with a clear error, not silently passed through as a file
+    // path (which would produce a confusing 'must have .ri extension' error
+    // pointing at the flag).
+    let output = reify_cmd()
+        .args(["gui", "--debugg", "some.ri"])
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "reify gui with unknown --typo flag should exit non-zero"
+    );
+    assert!(
+        stderr.contains("--debugg"),
+        "error should name the offending flag, got: {stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("unknown"),
+        "error should describe the flag as unknown, got: {stderr}"
     );
 }
 
