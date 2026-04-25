@@ -46922,15 +46922,14 @@
       },
       {
         "id": "2195",
-        "title": "engine_eval: unify cache recording on rejected-override-no-default Param path",
-        "description": "On the S4 rejected-override-no-default path in `crates/reify-eval/src/engine_eval.rs` (lines ~480-489), cache recording via `self.cache.record_evaluation(...)` is deliberately omitted. Every OTHER branch in the Param-cell loop records to the cache, so on re-eval at the same VersionId before any invalidation event the journal shows a `Started`/`Completed` pair with no accompanying cache entry for this node — tooling that joins journal events against cache state will find the mismatch surprising.\n\nThe omission is defensible for task 2179 (preserves pre-refactor behaviour; avoids `try_fast_path` in `eval_cached` serving a stale Undef across versions and masking the underlying source-level problem). But it leaves an inconsistency worth resolving.\n\nResolve by picking ONE of:\n(a) Uniformly record an Undef cache entry with proper invalidation on override-change. Needs an invalidation key that is triggered when the rejected override is replaced / removed, so the cache doesn't serve stale Undef on re-eval after the source edit.\n(b) Model the rejected-override skip with a dedicated `EvalOutcome::SkippedInvalidOverride` variant so the journal/cache divergence becomes explicit and downstream consumers can reason about it.\n\nPreferred: (b) if the enum extension is cheap and downstream consumers are small in number; (a) if cache semantics for this path can be made sound.\n\nSource: esc-2179-15 S3 (reviewer_comprehensive).",
-        "details": "",
-        "testStrategy": "",
+        "title": "engine_eval: unify EvalEvent journal and cache recording across all Param-cell eval paths",
+        "description": "Two gaps in `crates/reify-eval/src/engine_eval.rs` leave Param-cell evaluations invisible to the journal and/or cache while other top-level Param paths record both:\n\n1. **S4 rejected-override-no-default path** (lines ~480-489): `cache.record_evaluation(...)` is deliberately omitted even though a `Started`/`Completed` EvalEvent pair IS emitted — tooling joining journal events against cache state finds the mismatch surprising, since every other top-level Param branch records both.\n\n2. **`eval_guarded_group_param_cell` helper** (~lines 180-254): emits neither `EvalEvent` records nor `cache.record_evaluation` calls, leaving all guarded-group Param evaluations invisible to both journal and cache while top-level Param evaluations are fully visible. The pre-task-2154 inline code skipped these too, so this is not a regression — but the asymmetry will surface as missing journal entries for consumers that join guarded-group Param evals against the cache.",
         "status": "pending",
         "dependencies": [],
-        "priority": "low",
+        "priority": "medium",
+        "details": "- Add `cache.record_evaluation(...)` to the S4 rejected-override-no-default path in the top-level Param-cell loop (~lines 480-489) so journal EvalEvent entries and cache entries are always paired.\n- Emit `EvalEvent` journal records (Started/Completed) and call `cache.record_evaluation(...)` in `eval_guarded_group_param_cell` (~lines 180-254) to match the top-level Param branch behaviour.\n- Add or extend regression tests in `crates/reify-eval/tests/eval_param_overrides.rs` covering both gaps: (a) S4 path produces a cache entry alongside its EvalEvent pair, and (b) guarded-group Param evals appear in the journal and cache.\n- If the `cache.rs` interface needs extension to support either recording path, scope the change to `crates/reify-eval/src/cache.rs`.\n- If concurrent evaluation touches the same recording paths, update `crates/reify-runtime/src/concurrent.rs` accordingly.",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:08.978Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/cache.rs",
@@ -46948,7 +46947,10 @@
               "cache recording omitted rejected-override-no-default param path engine_eval",
               "eval_cached try_fast_path cache semantics rejected override"
             ]
-          }
+          },
+          "curator_action": "combine",
+          "curator_justification": "The candidate and task 2195 share the same root cause: Param-cell eval paths in engine_eval.rs that silently skip journal/cache recording while the remaining top-level paths record both. Task 2195 fixes the S4 top-level path missing cache.record_evaluation (EvalEvent is already emitted); the candidate fixes eval_guarded_group_param_cell missing both EvalEvent emission and cache.record_evaluation. Both are tiny (1–4 files each), serialize on the same reify-eval module lock, and touch the same fil",
+          "combined_at": "2026-04-25T08:53:56.377164+00:00"
         }
       },
       {
@@ -47824,6 +47826,17 @@
             "crates/reify-eval/tests/eval_param_overrides.rs"
           ]
         }
+      },
+      {
+        "id": "2234",
+        "title": "Add eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning",
+        "description": "Test coverage for the new `eval_guarded_group_param_cell` helper is asymmetric:\n- members-loop: type-kind + dimension + override-survival tests\n- else_members-loop: type-kind + override-survival ONLY (no dimension test)\n\nDimension-mismatch on the else-branch goes through the same helper today, but a future change that special-cases members vs else_members inside the helper (e.g. branching on a new field) would not be caught.\n\nFix: add `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning` in crates/reify-eval/tests/eval_param_overrides.rs mirroring the members-branch dimension test (currently named `eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning`). Use the else-branch source pattern from `eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_warning` (active=false; param x in `where active { ... }`; test param y in `else { ... }`). Source: esc-2154-17 review_suggestion #3.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -47835,7 +47848,8 @@
         "master"
       ],
       "created": "2026-04-25T08:51:59.350Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-25T08:54:14.108Z"
     }
   }
 }
