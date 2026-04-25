@@ -47431,7 +47431,7 @@
         "description": "The review briefing at /home/leo/src/reify/review/briefing.yaml was last modified 2026-03-26 and lists 9 known_gaps that have all since been resolved (tasks 476/477/478/479/480/481/482/485/486 all status=done). Also the custom-unit-decl gap (tasks 208/209/210) appears resolved per units_phase.rs:74 which compiles units into ctx.unit_registry and ctx.compiled_units.\n\nAction: run /review-briefing to refresh the file. Replace the closed gaps with any current/new gaps. Worth re-deriving fresh stability_concerns (briefing currently has none enumerated).\n\nWhy this matters: a stale briefing leads reviewers to dismiss real findings as \"known gaps\" or to chase phantom issues.\n\nVerification details:\n- task 476: gui/src/App.tsx:91-102 invokes claudeSendMessage/claudeAbort\n- task 477: crates/reify-runtime/src/concurrent.rs:279-360 wires both subsystems in execute_with_config\n- task 478: TauriToolContext::builder().with_selection(...) in gui/src-tauri/src/main.rs:296-301\n- task 481/482: crates/reify-lsp/src/completion.rs:31-167 has determine_context() with TopLevel/StructureBody/Expression/DotAccess/TypePosition narrowing\n- task 485: crates/reify-lsp/src/goto_def.rs:71-152 compute_goto_definition_cross_file() resolves imports\n- task 486: gui/src/panels/PropertyEditor.tsx:99-110 accepts QUANTITY_RE regex",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -47442,7 +47442,8 @@
           "modules": [
             "review"
           ]
-        }
+        },
+        "updatedAt": "2026-04-25T07:08:04.435Z"
       },
       {
         "id": "2224",
@@ -47501,15 +47502,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:07:29.429Z",
-      "taskCount": 2215,
+      "lastModified": "2026-04-25T07:08:04.435Z",
+      "taskCount": 2216,
       "completedCount": 1971,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-25T07:07:37.882Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-25T07:08:02.788Z"
+      ]
     }
   }
 }
