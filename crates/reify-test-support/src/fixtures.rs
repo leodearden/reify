@@ -1,8 +1,9 @@
-use reify_compiler::{CompiledModule, RequirementKind};
+use reify_compiler::{CompiledModule, RequirementKind, ValueCellDecl, ValueCellKind, Visibility};
 use reify_syntax::ParsedModule;
 use reify_types::{
-    BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value,
-    DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
+    BinOp, ContentHash, ConstraintSolver, DimensionVector, ModulePath, SolveResult, SourceSpan,
+    Type, Value, ValueCellId, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION,
+    TEST_ANNOTATION,
 };
 
 use crate::builders::{
@@ -948,6 +949,134 @@ structure def Steel : MaterialSpec + Elastic {
     param shear_modulus : Real = 77.0
 }
 "#
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Wave2 guard-flip fixture
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Shared scenario for the wave2 guard-flip regression tests.
+///
+/// Both `edit_param_wave2_does_not_corrupt_inactive_members` (guard_eval.rs)
+/// and `edit_source_wave2_does_not_corrupt_inactive_members` (edit_source.rs)
+/// build the same `structure S`:
+///
+/// ```text
+/// structure S {
+///     param x: Length = 10mm          // (or 3mm in module_edited)
+///     auto depth: Length              // resolved by solver
+///     constraint depth >= x           // [label: "depth_ge_x"] dirty when x changes
+///     where x > 5mm {                 // guard depends on x
+///         let m = depth               // m reads the auto param
+///     }
+/// }
+/// ```
+///
+/// Cell-ID layout:
+/// - `x_id    = ValueCellId::new("S", "x")`
+/// - `depth_id = ValueCellId::new("S", "depth")`
+/// - `guard_id = ValueCellId::new("S", "__guard_0")`
+/// - `m_id    = ValueCellId::new("S", "m")`
+///
+/// Solver sequence:
+/// - 1st call → `depth = 10mm`  (initial `eval()` with guard=true)
+/// - 2nd call → `depth = 3mm`   (post-edit with guard=false)
+///
+/// The "wave2 corrupts inactive member" bug surfaces when the post-flip wave2
+/// re-evaluation rewrites `m` to 3mm even though the guard is now false; the
+/// post-wave2 cleanup must re-deactivate `m` to `Value::Undef`.
+pub struct Wave2FlipFixture {
+    /// Module with `x = 10mm` — used by both tests for the initial `eval()`.
+    pub module_initial: CompiledModule,
+    /// Module with `x = 3mm` — used by `edit_source` as the new source;
+    /// ignored (but available) by `edit_param`.
+    pub module_edited: CompiledModule,
+    /// Cell ID for the param `x: Length`.
+    pub x_id: ValueCellId,
+    /// Cell ID for the auto param `depth: Length`.
+    pub depth_id: ValueCellId,
+    /// Cell ID for the guard sentinel `__guard_0`.
+    pub guard_id: ValueCellId,
+    /// Cell ID for the let-binding `m: Length`.
+    pub m_id: ValueCellId,
+    /// Sequenced solver: 1st call → depth=10mm; 2nd call → depth=3mm.
+    pub solver: Box<dyn ConstraintSolver>,
+}
+
+/// Build the shared wave2 guard-flip fixture.
+///
+/// See [`Wave2FlipFixture`] for the full scenario description.
+pub fn wave2_flip_fixture() -> Wave2FlipFixture {
+    use std::collections::HashMap;
+
+    use crate::builders::{ge, gt, literal, value_ref};
+    use crate::mocks::SequencedMockConstraintSolver;
+
+    let x_id = ValueCellId::new("S", "x");
+    let depth_id = ValueCellId::new("S", "depth");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let m_id = ValueCellId::new("S", "m");
+
+    // `let m = depth` — non-auto Let cell that reads the auto param `depth`.
+    // When the guard is false, m must be Value::Undef.
+    // Wave2 will try to overwrite it; the post-wave2 cleanup must re-deactivate it.
+    let m_decl = ValueCellDecl {
+        id: m_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "depth")),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Build a TopologyTemplate for structure S with the given x default (mm).
+    let build_template = |x_default_mm: f64| {
+        // Guard expression: `x > 5mm`.  Reads `x`, so guard cell is in dirty_cone(x).
+        let guard_expr = gt(value_ref("S", "x"), literal(crate::mm(5.0)));
+        TopologyTemplateBuilder::new("S")
+            // x: structure_controlling (guard depends on x) AND read by the constraint
+            .param("S", "x", Type::length(), Some(literal(crate::mm(x_default_mm))))
+            // depth: auto param resolved by the solver
+            .auto_param("S", "depth", Type::length())
+            // constraint reads both depth and x → dirty when x changes → solver re-runs
+            .constraint(
+                "S",
+                0,
+                Some("depth_ge_x"),
+                ge(value_ref("S", "depth"), value_ref("S", "x")),
+            )
+            // guarded group: guard depends on x; member m reads depth (auto param)
+            .guarded_group(
+                guard_expr,
+                guard_id.clone(),
+                vec![m_decl.clone()], // members (active when guard = true)
+                vec![],               // constraints
+                vec![],               // else_members
+                vec![],               // else_constraints
+            )
+            .build()
+    };
+
+    let module_initial = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(build_template(10.0))
+        .build();
+    let module_edited = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(build_template(3.0))
+        .build();
+
+    // Sequenced solver: 1st call → depth=10mm (initial eval);
+    //                   2nd call → depth=3mm  (post-edit).
+    let mut solved1 = HashMap::new();
+    solved1.insert(depth_id.clone(), crate::mm(10.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(depth_id.clone(), crate::mm(3.0));
+    let solver = Box::new(SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1, unique: true },
+        SolveResult::Solved { values: solved2, unique: true },
+    ])) as Box<dyn ConstraintSolver>;
+
+    Wave2FlipFixture { module_initial, module_edited, x_id, depth_id, guard_id, m_id, solver }
 }
 
 #[cfg(test)]
