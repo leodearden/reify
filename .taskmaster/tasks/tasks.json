@@ -44945,9 +44945,10 @@
             "description": "Include memory hints to allow agents to prefetch context at execution time. Hints: search 'pipe start-tangent NaN guard reject tolerance error message', search 'task 2095 pipe kernel orientation Z-aligned start-tangent guard', entity 'GeometryOp::Pipe'.",
             "dependencies": [],
             "details": "Update the task metadata with the specified memory hints.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Ensure that the memory hints are correctly added and can be utilized for context prefetching.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-25T08:02:19.720Z"
           }
         ],
         "metadata": {
@@ -44966,7 +44967,7 @@
             "note": "Branch already merged into main; HEAD of worktree is ancestor of main. Tip commit covers the task-2106 polish series (commits 5be841671..d087ef970)."
           }
         },
-        "updatedAt": "2026-04-22T02:47:36.025Z"
+        "updatedAt": "2026-04-25T08:02:19.720Z"
       },
       {
         "id": "2107",
@@ -47672,7 +47673,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T08:01:20.094Z",
+      "lastModified": "2026-04-25T08:02:19.720Z",
       "taskCount": 2217,
       "completedCount": 1973,
       "tags": [
