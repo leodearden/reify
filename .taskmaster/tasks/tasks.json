@@ -47103,11 +47103,11 @@
         "description": "In `crates/reify-compiler/src/geometry_modify.rs` around lines 394-415, the exhaustiveness sentinel closure in `single_geom_target_kinds()` only forces the author to extend the `match` arms when a new `ModifyKind` variant is added — it does NOT force them to add (or deliberately skip) the variant in `CASES`. A developer can silence the compile error by updating the match alone, silently leaving the new kind out of regression coverage. The doc comment (\"forcing an explicit classify-or-skip decision\") slightly oversells what the sentinel mechanically enforces.\n\nPick one:\n(a) Tighten the doc comment to reflect that the sentinel only forces acknowledgement of a new variant, not inclusion in CASES.\n(b) Replace/augment the sentinel with a `const _: () = assert!(CASES.len() == <variant_count>)` style check, requiring a `ModifyKind::VARIANT_COUNT` constant (or equivalent) so that adding a variant without updating CASES fails to compile.\n\nOption (b) is strictly stronger but requires a supporting constant; option (a) is a one-line comment tightening.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:09.584Z",
+        "updatedAt": "2026-04-25T07:54:55.536Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry_modify.rs",
@@ -47642,14 +47642,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:45:04.404Z",
+      "lastModified": "2026-04-25T07:54:55.538Z",
       "taskCount": 2217,
       "completedCount": 1973,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-25T07:45:53.851Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
