@@ -47913,7 +47913,18 @@
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/eval_param_overrides.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "eval_guarded_group_param_cell",
+              "engine_eval.rs",
+              "eval_param_overrides.rs"
+            ],
+            "queries": [
+              "eval_guarded_group_param_cell doc-comment numeric line references stable anchors",
+              "guarded-group Param override regression task 2154 engine_eval"
+            ]
+          }
         }
       },
       {
