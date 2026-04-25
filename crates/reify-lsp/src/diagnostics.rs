@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{ContentHash, ConstraintNodeId, ModulePath, Satisfaction, SourceSpan, VersionId};
+use reify_types::{
+    ContentHash, ConstraintNodeId, Diagnostic, ModulePath, Satisfaction, SourceSpan, VersionId,
+};
 use tower_lsp::lsp_types::{self, Url};
 
 use crate::analysis::module_name_from_uri;
@@ -106,15 +108,28 @@ pub fn compute_diagnostics_with_state(
         .map(|h| h == compiled.content_hash)
         .unwrap_or(false);
 
-    if content_unchanged {
-        let _ = state
+    // Capture eval-time diagnostics from eval() / eval_cached().
+    //
+    // eval/eval_cached can emit non-checker diagnostics that are NOT reflected
+    // in check_snapshot()'s CheckResult: circular let-binding dependencies,
+    // sub-component lookup failures, param_override type/dimension mismatches,
+    // solver Infeasible / NoProgress warnings. We capture them here and merge
+    // them through the same `violated_messages` dedup filter below.
+    //
+    // On the rare check_snapshot → None fallback we drop the captured copy
+    // because check() internally re-runs eval() and prepends those diagnostics
+    // to CheckResult.diagnostics — keeping them would double-emit.
+    let mut eval_diagnostics: Vec<Diagnostic> = if content_unchanged {
+        state
             .engine
-            .eval_cached(&compiled, VersionId(state.version_counter));
+            .eval_cached(&compiled, VersionId(state.version_counter))
+            .eval_result
+            .diagnostics
     } else {
         let checker = SimpleConstraintChecker;
         state.engine = reify_eval::Engine::new(Box::new(checker), None);
-        let _ = state.engine.eval(&compiled);
-    }
+        state.engine.eval(&compiled).diagnostics
+    };
 
     // Check constraints from snapshot, falling back to full check() if snapshot is absent
     let check_result = match state.engine.check_snapshot(&compiled) {
@@ -123,6 +138,10 @@ pub fn compute_diagnostics_with_state(
             eprintln!(
                 "[reify-lsp] check_snapshot returned None after eval, falling back to full check"
             );
+            // check() re-runs eval() internally and includes its diagnostics in
+            // CheckResult.diagnostics; drop our independently captured copy to
+            // avoid double-emission.
+            eval_diagnostics = Vec::new();
             state.engine.check(&compiled)
         }
     };
@@ -145,6 +164,14 @@ pub fn compute_diagnostics_with_state(
         .map(|e| format!("constraint {} violated", e.id))
         .collect();
     for diag in &check_result.diagnostics {
+        if !violated_messages.contains(&diag.message) {
+            diagnostics.push(convert::convert_diagnostic(diag, source, uri));
+        }
+    }
+
+    // Merge eval-time diagnostics (circular let-bindings, solver warnings, etc.)
+    // through the same violated_messages filter for symmetry.
+    for diag in &eval_diagnostics {
         if !violated_messages.contains(&diag.message) {
             diagnostics.push(convert::convert_diagnostic(diag, source, uri));
         }
