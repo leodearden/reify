@@ -691,6 +691,8 @@ pub(super) fn check_phase_build_available_defaults_map(
                     // (task 1951 Option B, narrowed to unannotated Lets). Pass 2 populates
                     // pass2_skipped exclusively from `cell_type: None` entries; the
                     // `cell_type.is_none()` conjunction restricts suppression to that case.
+                    // Regression cover: `super::tests::option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`
+                    // (hand-builds a `RequirementKind::Let` requirement that no current parser path produces).
                     if cell_type.is_none() && pass2_skipped.contains(name) {
                         return None;
                     }
