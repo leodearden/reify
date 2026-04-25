@@ -47806,6 +47806,17 @@
             ]
           }
         }
+      },
+      {
+        "id": "2233",
+        "title": "Replace numeric line refs with stable anchors in eval_guarded_group_param_cell doc-comments and tests",
+        "description": "The doc-comment for `eval_guarded_group_param_cell` (crates/reify-eval/src/engine_eval.rs:163-179 at task-2154 landing) cites three hard-coded line ranges in the same file: `engine_eval.rs:487-496`, `engine_eval.rs:402-424`, `engine_eval.rs:576-613`. Line numbers shift with every edit, so these pointers will silently rot. Same problem applies to test-file comments in crates/reify-eval/tests/eval_param_overrides.rs (around lines 432-435, 466-469 at task-2154 landing).\n\nFix: replace numeric refs with stable anchors. Examples:\n- \"see top-level Param branch in `Engine::eval`, rejected-no-default arm\" instead of `engine_eval.rs:487-496`\n- \"see members-loop test ABOVE\" or by test function name instead of `eval_param_overrides.rs:208-260`\n\nScope is doc-comments only — no code/behavioural changes. Source: esc-2154-17 review_suggestion #1.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -47817,7 +47828,8 @@
         "master"
       ],
       "created": "2026-04-25T08:40:42.236Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-25T08:47:03.935Z"
     }
   }
 }
