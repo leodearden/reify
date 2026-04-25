@@ -47509,7 +47509,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T07:08:07.852Z"
+        "updatedAt": "2026-04-25T07:08:07.852Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/conformance",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/trait_typed_param_tests.rs"
+          ]
+        }
       },
       {
         "id": "2228",
