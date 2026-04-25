@@ -46688,11 +46688,11 @@
         "description": "In crates/reify-eval/src/geometry_ops.rs:2852-2857 and 2913-2918, the current assertions narrow the negative check to a single sibling literal (`extrude_symmetric`, `linear_2d`). Since SweepKind and PatternKind derive `strum_macros::EnumIter` and future variants (e.g. `ExtrudeThin`, `LinearHex`) are plausible, a regression mis-identifying `Extrude`/`Linear` as any new underscore-suffixed sibling would slip past.\n\nBroaden the negative check to reject any `extrude_` / `linear_` prefix while keeping it decoupled from the ` for {kind}` diagnostic template (the motivation for task 2186):\n\n```rust\nassert!(msg.contains(\"extrude\") && !msg.contains(\"extrude_\"), ...);\nassert!(msg.contains(\"linear\") && !msg.contains(\"linear_\"), ...);\n```\n\nThis preserves template-independence (task 2186's intent) while catching any future underscore-suffixed variant (reviewer's concern).\n\nSource: esc-2186-9 S1+S2.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T08:38:29.260Z",
+        "updatedAt": "2026-04-25T06:58:08.697Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/geometry_ops.rs"
@@ -46781,11 +46781,11 @@
         "description": "Task 2179 introduced an intentional asymmetry in the Param-cell loop in `crates/reify-eval/src/engine_eval.rs`:\n\n- **Rejected-override-no-default** (lines ~460-499): writes `(Undef, Undetermined)` into both `values` and `snapshot.values` so external callers never see a missing key.\n- **No-override-no-default** (lines ~394-416): still silently `continue`s, leaving `values` without an entry for that cell. This preserves pre-task-2017 behaviour for untouched no-default Param cells.\n\nThis partial-map contract is a `.get().unwrap()` footgun — exactly what S4 was introduced to eliminate on the other arm. The in-code comment (engine_eval.rs:400-413) already flags this as a follow-up.\n\nResolve by picking ONE of:\n(a) Make both skip paths insert `(Undef, Undetermined)` uniformly. Risk: cross-cutting behaviour change; audit downstream call sites and existing tests that may rely on absent-key semantics.\n(b) Document the partial-map invariant on the `EvalResult.values` type (doc comment describing exactly when a key may be absent) AND audit existing `EvalResult.values.get(&id).unwrap()` callers to confirm none of them rely on the absent-key behaviour for no-default untouched Param cells.\n\nPrefer (a) for long-term hygiene if the audit surfaces no blocker; otherwise (b).\n\nSource: esc-2179-15 S2 (reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:12:31.454Z",
+        "updatedAt": "2026-04-25T06:58:08.834Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -46812,11 +46812,11 @@
         "description": "On the S4 rejected-override-no-default path in `crates/reify-eval/src/engine_eval.rs` (lines ~480-489), cache recording via `self.cache.record_evaluation(...)` is deliberately omitted. Every OTHER branch in the Param-cell loop records to the cache, so on re-eval at the same VersionId before any invalidation event the journal shows a `Started`/`Completed` pair with no accompanying cache entry for this node — tooling that joins journal events against cache state will find the mismatch surprising.\n\nThe omission is defensible for task 2179 (preserves pre-refactor behaviour; avoids `try_fast_path` in `eval_cached` serving a stale Undef across versions and masking the underlying source-level problem). But it leaves an inconsistency worth resolving.\n\nResolve by picking ONE of:\n(a) Uniformly record an Undef cache entry with proper invalidation on override-change. Needs an invalidation key that is triggered when the rejected override is replaced / removed, so the cache doesn't serve stale Undef on re-eval after the source edit.\n(b) Model the rejected-override skip with a dedicated `EvalOutcome::SkippedInvalidOverride` variant so the journal/cache divergence becomes explicit and downstream consumers can reason about it.\n\nPreferred: (b) if the enum extension is cheap and downstream consumers are small in number; (a) if cache semantics for this path can be made sound.\n\nSource: esc-2179-15 S3 (reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:12:32.216Z",
+        "updatedAt": "2026-04-25T06:58:08.978Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/cache.rs",
@@ -47409,7 +47409,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:08.555Z",
+      "lastModified": "2026-04-25T06:58:08.978Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
