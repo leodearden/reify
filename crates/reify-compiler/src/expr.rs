@@ -1152,8 +1152,8 @@ pub(crate) fn compile_expr_guarded(
                     //       `ListLiteral([ValueRef(entity_ref, member), ...])` for
                     //       each param of the bound entity.  The cell ids are
                     //       already available in `CompiledPurpose.resolved_queries`
-                    //       (traits.rs:407-425); the wiring to the activation path
-                    //       is missing.
+                    //       (see `compile_purpose` in traits.rs); the wiring to the
+                    //       activation path is missing.
                     //
                     //     Blocker 2 — Quantifier variable identity carry-through:
                     //       `forall p in [Bracket.x]: determined(p)` compiles
@@ -1162,9 +1162,10 @@ pub(crate) fn compile_expr_guarded(
                     //       loop binds `variable_id` to the *value* of `Bracket.x`,
                     //       but the determinacy snapshot has no entry for the
                     //       synthetic id — `eval_expr` debug-asserts a "wiring bug"
-                    //       panic (reify-expr/src/lib.rs:472-478).  The quantifier
-                    //       must carry the actual `ValueCellId` of each iterated
-                    //       element into the predicate, not the synthetic loop var.
+                    //       panic (see `DeterminacyPredicate` handling in
+                    //       `eval_expr`).  The quantifier must carry the actual
+                    //       `ValueCellId` of each iterated element into the
+                    //       predicate, not the synthetic loop var.
                     //       Note: a new `Type::ParamRef` variant is NOT required;
                     //       what is missing is identity carry-through so the
                     //       predicate resolves to the bound cell, not the loop var.

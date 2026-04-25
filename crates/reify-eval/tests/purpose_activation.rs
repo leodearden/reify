@@ -785,50 +785,20 @@ purpose weight_target(subject : Structure) {
 
 /// # Characterization test — do NOT fix by making this GREEN without reading the comment
 ///
-/// This test pins the **vacuous-true trap** introduced by the compile-time
-/// placeholder at `crates/reify-compiler/src/expr.rs:1136-1150`.
+/// This test pins the **vacuous-true trap**: `subject.params` inside a purpose body
+/// compiles to an empty `ListLiteral` (placeholder at `expr.rs:1136-1150`), so
+/// `forall p in []: determined(p)` is vacuously true and the purpose reports
+/// `Satisfied` even for an entity with undetermined params.
 ///
-/// ## What the trap is
+/// This is a CHARACTERIZATION test of the *current broken behavior*, NOT a test of
+/// the desired correct behavior.
 ///
-/// `subject.params` / `subject.geometric_params` / `subject.material_params`
-/// inside a purpose body compile to an empty `ListLiteral`.  At eval time,
-/// `forall p in subject.params: determined(p)` iterates over `[]` and returns
-/// `Bool(true)` — vacuous truth — so the purpose-injected constraint is
-/// reported `Satisfied` even when the bound entity has undetermined params.
+/// **When runtime expansion lands, FLIP this assertion to `Satisfaction::Violated`
+/// (or `Satisfaction::Indeterminate`).**
 ///
-/// ## Why this test asserts `Satisfied` (not `Violated`)
-///
-/// This is a CHARACTERIZATION test of the *current broken behavior*, NOT a
-/// test of the desired correct behavior.  The assertion is intentionally
-/// counterintuitive: `Satisfied` here means "the trap is still in effect."
-///
-/// When runtime expansion (path a) lands, `subject.params` will be populated
-/// with `ValueRef(entity_ref, member)` elements at activation time, the
-/// quantifier will carry cell identity into `determined(p)`, and `Bracket.x`
-/// will evaluate as `Undetermined` → `Violated`.
-///
-/// **When runtime expansion lands, FLIP this assertion to
-/// `Satisfaction::Violated` (or `Satisfaction::Indeterminate`).**
-///
-/// ## Three blockers for runtime expansion (task-2199 analysis)
-///
-/// 1. **List population at activate_purpose**: the placeholder empty list must
-///    be replaced by `ListLiteral([ValueRef(entity_ref, member), ...])` for each
-///    param of the bound entity.  The data is available in
-///    `CompiledPurpose.resolved_queries` (traits.rs:407-425); the wiring is missing.
-///
-/// 2. **Quantifier variable identity carry-through**: `forall p in [Bracket.x]:
-///    determined(p)` binds a synthetic `variable_id` in the loop, but the
-///    `DeterminacyPredicate`'s `cell` field holds that synthetic id — which is
-///    absent from the determinacy snapshot.  `eval_expr` debug-asserts a
-///    "wiring bug" panic (reify-expr/src/lib.rs:472-478).  The quantifier must
-///    carry the actual cell identity of each iterated element into the predicate.
-///
-/// 3. **Element type lockstep**: the placeholder uses
-///    `Type::List(Box::new(Type::Real))`.  Any populator MUST update this in
-///    lockstep, or `forall` typechecks `p` against the wrong element type.
-///    Cross-reference: task 1904 (integration_full_v01.rs:660-662) tracks the
-///    same concern from a different angle.
+/// See `FIXME(task-2199)` at `crates/reify-compiler/src/expr.rs:1141` for the
+/// full blocker analysis (list population, quantifier identity carry-through,
+/// element-type lockstep).
 #[test]
 fn manufacturing_ready_silently_passes_for_undetermined_params_trap() {
     // Bracket has a deliberately undetermined param: no default, no auto.
@@ -864,10 +834,13 @@ purpose manufacturing_ready(subject : Structure) {
     let purpose_result = constraint_results
         .iter()
         .find(|e| e.id.entity.starts_with("purpose:manufacturing_ready@Bracket"))
-        .expect(
-            "expected a purpose-injected constraint with entity prefix \
-             'purpose:manufacturing_ready@Bracket'",
-        );
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a purpose-injected constraint with entity prefix \
+                 'purpose:manufacturing_ready@Bracket'; found ids: {:?}",
+                constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+            )
+        });
 
     // ‼ TRAP ASSERTION — asserts the broken/vacuous-true behavior, NOT desired behavior ‼
     //
