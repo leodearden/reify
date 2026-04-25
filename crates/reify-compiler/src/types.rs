@@ -596,6 +596,26 @@ pub enum ModifyKind {
     Thicken,
 }
 
+impl ModifyKind {
+    /// The number of variants in this enum.
+    ///
+    /// **Maintenance contract**: MUST be bumped whenever a variant is added to
+    /// `ModifyKind`.  Two automated checks enforce this:
+    ///
+    /// - **Runtime**: `kind_display_tests::modify_kind_variant_count_matches_exhaustive_enumeration`
+    ///   in this file uses a no-wildcard `match k: ModifyKind` closure to anchor the count; adding
+    ///   a variant breaks that test's compile, routing the author here.  After bumping, the runtime
+    ///   `assert_eq!` confirms the new value is consistent.
+    ///
+    /// - **Compile-time**: `geometry_modify::single_geom_target_kinds()` contains
+    ///   `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)`.  If `CASES` is
+    ///   not extended to match the bumped count, `cargo check` fails immediately.
+    ///
+    /// Consumer ground-truth: `crates/reify-compiler/src/geometry_modify.rs`'s
+    /// `single_geom_target_kinds()` must have one `CASES` row per variant.
+    pub const VARIANT_COUNT: usize = 5;
+}
+
 impl std::fmt::Display for ModifyKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
