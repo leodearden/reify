@@ -47844,14 +47844,12 @@
           ],
           "memory_hints": {
             "entities": [
-              "pass1_param_skipped",
-              "annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped",
-              "ValueCellKind",
-              "trait_merge_tests.rs"
+              "conformance"
             ],
             "queries": [
-              "pass1_param_skipped conformance Param loser suppression reverse direction",
-              "ValueCellKind::Let assert cell kind type after loser suppression conformance test"
+              "conformance pass1_param_skipped annotated_let wins param loser suppressed",
+              "Task 2208 pass1 param losers cell duplication reverse direction",
+              "conformance two-pass pre-register kind type cell surviving"
             ]
           }
         }
