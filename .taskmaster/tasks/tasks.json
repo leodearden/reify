@@ -46894,14 +46894,13 @@
       {
         "id": "2194",
         "title": "engine_eval: unify Param-cell skip paths or document EvalResult.values partial-map invariant",
-        "description": "Task 2179 introduced an intentional asymmetry in the Param-cell loop in `crates/reify-eval/src/engine_eval.rs`:\n\n- **Rejected-override-no-default** (lines ~460-499): writes `(Undef, Undetermined)` into both `values` and `snapshot.values` so external callers never see a missing key.\n- **No-override-no-default** (lines ~394-416): still silently `continue`s, leaving `values` without an entry for that cell. This preserves pre-task-2017 behaviour for untouched no-default Param cells.\n\nThis partial-map contract is a `.get().unwrap()` footgun — exactly what S4 was introduced to eliminate on the other arm. The in-code comment (engine_eval.rs:400-413) already flags this as a follow-up.\n\nResolve by picking ONE of:\n(a) Make both skip paths insert `(Undef, Undetermined)` uniformly. Risk: cross-cutting behaviour change; audit downstream call sites and existing tests that may rely on absent-key semantics.\n(b) Document the partial-map invariant on the `EvalResult.values` type (doc comment describing exactly when a key may be absent) AND audit existing `EvalResult.values.get(&id).unwrap()` callers to confirm none of them rely on the absent-key behaviour for no-default untouched Param cells.\n\nPrefer (a) for long-term hygiene if the audit surfaces no blocker; otherwise (b).\n\nSource: esc-2179-15 S2 (reviewer_comprehensive).",
-        "details": "",
-        "testStrategy": "",
+        "description": "Two coupled improvements in the Param-cell override subsystem to reduce future maintenance hazards: (1) the four task-2154 tests in eval_param_overrides.rs (~lines 584-727) duplicate the same `compile_source(\"structure S { param active : Bool = ...\")` string 8+ times with tiny variations; extract a module-scope `guarded_module(active: bool, x_type: &str, x_default: &str)` helper before more guarded-group tests compound the drift risk. (2) Task 2179 introduced an intentional asymmetry in engine_eval.rs's Param-cell loop: the rejected-override-no-default path writes `(Undef, Undetermined)` into both `values` and `snapshot.values`, while the no-override-no-default path silently `continue`s leaving `values` without an entry — either unify these paths or explicitly document the partial-map invariant so future callers know the map is intentionally sparse.",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
+        "details": "**S1 — Extract guarded_module() helper (eval_param_overrides.rs ~lines 584-727)**\n\nThe four task-2154 tests (type-kind variants, override-survival siblings) each inline a near-identical `compile_source(\"structure S { param active : Bool = ...\")` string. Extract:\n```rust\nfn guarded_module(active: bool, x_type: &str, x_default: &str) -> CompiledModule {\n    compile_source(&format!(\n        \"structure S {{ param active : Bool = {active}\\n  param x : {x_type} = {x_default} }}\"\n    ))\n}\n```\nReplace all 8+ duplicates with calls to this helper.\n\nAcceptance: `git grep 'compile_source.*param active' crates/reify-eval/tests/eval_param_overrides.rs` returns only the helper body.\n\n**S2 — Document or unify partial-map invariant (engine_eval.rs)**\n\nTask 2179 introduced an intentional asymmetry in the Param-cell loop in `crates/reify-eval/src/engine_eval.rs`:\n- **Rejected-override-no-default** (~lines 460-499): writes `(Undef, Undetermined)` into both `values` and `snapshot.values` so external callers never see a missing key.\n- **No-override-no-default** (~lines 394-416): silently `continue`s, leaving `values` without an entry for that cell (preserves pre-task-2017 behaviour).\n\nThis partial-map shape is a latent API hazard: callers that iterate `EvalResult.values` and assume every Param cell has an entry will silently miss no-default-no-override cells. Either:\n  (a) Unify: write `(Undef, Undetermined)` on the no-override-no-default path too, OR\n  (b) Document: add a named constant or prominent comment at the `continue` site that explicitly names the invariant (\"EvalResult.values intentionally omits Param cells with no override and no default\") so tooling authors know to guard their lookups.\n\nPick option (a) only if tests confirm no regression in downstream callers; otherwise option (b) with a doc comment and a matching test assertion is sufficient.\n\nAcceptance: a reader of engine_eval.rs can determine from code alone whether `EvalResult.values` always has an entry for every Param cell or may legitimately omit no-default-no-override cells.",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:08.834Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -46917,7 +46916,10 @@
               "engine_eval param_overrides Undef Undetermined rejected override no default intentional asymmetry",
               "EvalResult.values partial-map invariant Param cell skip paths"
             ]
-          }
+          },
+          "curator_action": "combine",
+          "curator_justification": "The candidate is tiny (single file, pure test-helper extraction) — standalone orchestrator overhead is disproportionate to the work. Task 2194 is pending, combine_eligible, and already touches eval_param_overrides.rs. The implementer of 2194 will be writing new tests in that file to validate the partial-map invariant; having the guarded_module() helper available at that moment is a natural force-multiplier. The union of files stays within the same two-file module lock (engine_eval.rs + eval_para",
+          "combined_at": "2026-04-25T08:54:14.620076+00:00"
         }
       },
       {
@@ -47833,23 +47835,21 @@
         "description": "Test coverage for the new `eval_guarded_group_param_cell` helper is asymmetric:\n- members-loop: type-kind + dimension + override-survival tests\n- else_members-loop: type-kind + override-survival ONLY (no dimension test)\n\nDimension-mismatch on the else-branch goes through the same helper today, but a future change that special-cases members vs else_members inside the helper (e.g. branching on a new field) would not be caught.\n\nFix: add `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning` in crates/reify-eval/tests/eval_param_overrides.rs mirroring the members-branch dimension test (currently named `eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning`). Use the else-branch source pattern from `eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_warning` (active=false; param x in `where active { ... }`; test param y in `else { ... }`). Source: esc-2154-17 review_suggestion #3.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-25T08:54:38.696Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T08:47:18.828Z",
-      "taskCount": 2222,
+      "lastModified": "2026-04-25T08:54:38.696Z",
+      "taskCount": 2223,
       "completedCount": 1978,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-25T08:51:59.350Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-25T08:54:14.108Z"
+      ]
     }
   }
 }
