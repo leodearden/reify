@@ -47555,13 +47555,13 @@
         "metadata": {
           "memory_hints": {
             "entities": [
-              "LSP incremental eval implementation",
-              "eval_cached",
-              "compute_diagnostics_with_state"
+              "reify-lsp",
+              "compute_diagnostics_with_state",
+              "eval_cached"
             ],
             "queries": [
-              "LSP incremental eval eval_cached compute_diagnostics_with_state wiring",
-              "LSP incremental eval benchmark position-sensitive completion"
+              "LSP incremental eval architecture reify",
+              "eval_cached function signature and caching contract"
             ]
           }
         }
@@ -47647,7 +47647,9 @@
       "completedCount": 1973,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-25T07:59:12.361Z",
+      "description": "Tasks for master context"
     }
   }
 }
