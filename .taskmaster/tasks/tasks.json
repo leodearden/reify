@@ -47021,7 +47021,7 @@
         "id": "2199",
         "title": "Purpose reflective aggregation: populate .params/.geometric_params at runtime (or add trap-behavior eval test)",
         "description": "Task 2181 shipped a compile-time placeholder that makes `subject.params` / `subject.geometric_params` / `subject.material_params` compile to an empty ListLiteral in purpose bodies. At runtime this means `forall p in subject.params: determined(p)` evaluates vacuously true — purposes like `manufacturing_ready` and `dimensionally_valid` in `examples/m5_purpose.ri` silently pass for any entity regardless of whether params are actually determined. Previously the compiler errored loudly; now it passes silently, which is strictly worse from a correctness standpoint. Either expand the placeholder at activation time against the bound entity's real params, or at minimum add a visible trap. Additionally, memory hints metadata should be added to assist future agents in prefetching relevant context at execution time.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "details": "**Hook point:** `crates/reify-compiler/src/expr.rs:1166-1180` (the `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS` arm emitting `CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)))`).\n\n**Two acceptable paths:**\n\n1. **Runtime expansion** (preferred, higher value): plumb the bound entity's param set into `activate_purpose` / `remap_entity` so the empty list is replaced with the real `ParamRef` list at activation time. `determined()` / `constrained()` predicates already exist; the missing piece is the mapping from \"reflective member → concrete param list of the bound entity\". Likely needs a synthetic `Type::ParamRef` variant (flagged in the FIXME at expr.rs:1171 — any runtime populator MUST update the element type in lockstep, or forall typechecks against the wrong element type).\n\n2. **Eval-layer characterization test** (minimum viable): add an integration test in `crates/reify-eval/tests/purpose_activation.rs` that activates `manufacturing_ready` against a Bracket with deliberately undetermined params and asserts the purpose currently reports Satisfied. Document the trap behavior in the test body so the silent pass is test-visible and the runtime-expansion task has a clear RED→GREEN target. Optionally emit a one-shot warning diagnostic when the empty-list placeholder is emitted, so users aren't surprised by a purpose that has no teeth.\n\n**Acceptance:**\n- Either (a) reflective aggregations in purpose bodies populate at runtime and `manufacturing_ready` against an undetermined-param entity reports Unsatisfied/Violated instead of Satisfied, OR (b) a characterization test lives at `purpose_activation.rs` that asserts the current trap behavior so the next contributor cannot silently regress the semantics.\n- FIXME at `expr.rs:1171` is resolved or tightened.\n\n**Source:** esc-2181-18 S1 (reviewer_comprehensive on task 2181)\n\n**Memory Hints:** Add metadata to prefetch relevant context at execution time.",
@@ -47043,9 +47043,12 @@
               "purpose reflective aggregation subject eval reify"
             ]
           },
-          "_causation_id": "8163d829-88fd-4a81-80bd-24fa9891e2ba"
+          "_causation_id": "8163d829-88fd-4a81-80bd-24fa9891e2ba",
+          "done_provenance": {
+            "commit": "b137d36d23a9fb660a02925e3839e33f2b590955"
+          }
         },
-        "updatedAt": "2026-04-25T06:58:14.757Z"
+        "updatedAt": "2026-04-25T08:31:17.945Z"
       },
       {
         "id": "2200",
@@ -47340,14 +47343,13 @@
       {
         "id": "2213",
         "title": "Replace magic-string \"Structure\" wildcard guard in purpose member validation with a named constant",
-        "description": "In `crates/reify-compiler/src/expr.rs:1187`, the wildcard guard `struct_name != \"Structure\"` is a bare string literal. Extract it to a named constant so the wildcard convention is greppable in one shot.",
-        "details": "**Source:** esc-2200-41 S2 (reviewer_comprehensive on task 2200)\n\n**Hook point:** `crates/reify-compiler/src/expr.rs:1183-1218` (purpose-subject regular-member-access branch).\n\n**Problem:** The guard `struct_name != \"Structure\"` is a magic-string comparison. The inline comment correctly notes this is belt-and-braces against the registry miss, but a stdlib (or user) structure literally named `Structure` would silently bypass validation — a fragile invariant that depends on the entire system never registering that name.\n\n**Approach:**\n1. Introduce a constant `WILDCARD_STRUCTURE_KIND: &str = \"Structure\"` colocated with the entity_kind wildcard logic (likely in `expr.rs` near the purpose-subject branch, or somewhere shared if other wildcard kinds exist — `Occurrence` is mentioned in the comments as another wildcard kind, so the constant module may eventually grow).\n2. Replace the literal at line 1187 with the constant.\n3. (Optional / stretch) If a more semantic predicate exists or can be cheaply introduced (e.g., `entity_kind.is_wildcard()` on whatever type carries kind names), prefer that — but only if it's a small change. Otherwise the named constant is sufficient.\n\n**Acceptance:**\n- No remaining bare `\"Structure\"` string compare in the purpose-subject branch.\n- Existing tests in `purpose_compile_tests.rs` still pass (the wildcard characterization test in particular).\n- A grep for `WILDCARD_STRUCTURE_KIND` (or whatever name) finds the rule in one location.",
-        "testStrategy": "",
+        "description": "Two no-behavior-change code-clarity improvements in the purpose-body section of `crates/reify-compiler/src/expr.rs`: (1) move the ~40-line task-2199 FIXME blocker analysis out of the hot compile path and replace it with a short pointer comment; (2) extract the magic-string \"Structure\" wildcard guard to a named constant so the convention is greppable.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "**Hook points:**\n- `expr.rs:1141-1180` — FIXME blocker analysis block (Blocker 1: list population at activate_purpose; Blocker 2: quantifier identity carry-through; Blocker 3: element-type lockstep w/ task-1904)\n- `expr.rs:1183-1218` — purpose-subject regular-member-access branch, `struct_name != \"Structure\"` guard\n\n---\n\n**(A) Relocate task-2199 FIXME blocker analysis (esc-2199-15 S2)**\n\nMove the multi-blocker analysis block to either (a) the task-2199 details/notes in the task DB, or (b) a `docs/notes/purpose-reflective-aggregation.md`-style file. Replace the inline ~40 lines with a short pointer comment, e.g.:\n\n```rust\n// Reflective aggregation placeholder — emits empty list so forall is vacuously\n// true. Runtime expansion deferred; see task-2199 notes for the three blockers\n// (list population, quantifier identity carry-through, element-type lockstep)\n// and the §8 characterization test in purpose_activation.rs.\nreturn CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));\n```\n\nDo NOT change the placeholder behavior itself — that remains the scope of task 2199. Source: esc-2199-15 S2 (reviewer_comprehensive on task 2199).\n\n---\n\n**(B) Extract \"Structure\" wildcard guard to named constant (esc-2200-41 S2)**\n\n**Problem:** The guard `struct_name != \"Structure\"` at line 1187 is a magic-string comparison. A stdlib (or user) structure literally named `Structure` would silently bypass validation — a fragile invariant that depends on the entire system never registering that name.\n\n**Approach:**\n1. Introduce a constant `WILDCARD_STRUCTURE_KIND: &str = \"Structure\"` colocated with the entity_kind wildcard logic in `expr.rs` near the purpose-subject branch (or in a shared location if other wildcard kinds, e.g. `Occurrence`, eventually join it).\n2. Replace the bare string literal at line 1187 with the constant.\n3. (Optional / stretch) If a more semantic predicate (e.g. `entity_kind.is_wildcard()`) can be cheaply introduced, prefer it — otherwise the named constant is sufficient.\n\n**Acceptance:**\n- Inline FIXME block at `expr.rs:1141-1180` replaced with a ≤5-line pointer comment; placeholder runtime behavior unchanged.\n- No remaining bare `\"Structure\"` string compare in the purpose-subject branch.\n- A grep for `WILDCARD_STRUCTURE_KIND` (or chosen name) finds the rule in exactly one location.\n- Existing tests in `purpose_compile_tests.rs` still pass (the wildcard characterization test in particular).\n- `cargo clippy --workspace -- -D warnings` and `cargo fmt --check` clean.",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:10.173Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -47364,7 +47366,10 @@
               "purpose_compile_tests wildcard Occurrence characterization coverage"
             ]
           },
-          "_causation_id": "6964b007-e4e0-4e06-a277-cb1ab4f1ea89"
+          "_causation_id": "6964b007-e4e0-4e06-a277-cb1ab4f1ea89",
+          "curator_action": "combine",
+          "curator_justification": "Both tasks are tiny, no-behavior-change code-clarity edits in the same file (`crates/reify-compiler/src/expr.rs`) within the same contiguous purpose-body section (lines 1141–1218). They serialize on the same module lock, so combining loses zero parallelism. The union of files_to_modify stays within the same 2-file lock set already held by task 2213. An implementer loads the purpose-body section once and handles both cleanups in a single pass.",
+          "combined_at": "2026-04-25T08:30:48.535886+00:00"
         }
       },
       {
@@ -47788,9 +47793,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T08:29:26.705Z",
+      "lastModified": "2026-04-25T08:31:17.946Z",
       "taskCount": 2221,
-      "completedCount": 1976,
+      "completedCount": 1977,
       "tags": [
         "master"
       ]
