@@ -48,7 +48,7 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+    let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
         check_phase_pre_register_default_types(
             &ctx,
             &structure_all_members,
@@ -802,7 +802,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         // --- Phase 3: pre-register default types ---
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_all_members,
@@ -1481,7 +1481,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1508,6 +1508,14 @@ mod tests {
             "Expected pass1_skipped to be empty for a param-only context; \
              got: {:?}",
             pass1_skipped
+        );
+        // Negative control: a param-only fixture (single Param, no competing annotated Let)
+        // must never populate pass1_param_skipped (no Param can lose without a prior annotated Let).
+        assert!(
+            pass1_param_skipped.is_empty(),
+            "Expected pass1_param_skipped to be empty for a param-only context; \
+             got: {:?}",
+            pass1_param_skipped
         );
         assert!(
             pass2_skipped.is_empty(),
@@ -1564,7 +1572,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1588,6 +1596,14 @@ mod tests {
             "Expected pass1_skipped to be empty for a unannotated-let-only context; \
              got: {:?}",
             pass1_skipped
+        );
+        // Negative control: an unannotated-Let-only fixture (no Param, no annotated Let)
+        // must never populate pass1_param_skipped.
+        assert!(
+            pass1_param_skipped.is_empty(),
+            "Expected pass1_param_skipped to be empty for an unannotated-let-only context; \
+             got: {:?}",
+            pass1_param_skipped
         );
         assert!(
             pass2_skipped.is_empty(),
@@ -1670,7 +1686,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1699,6 +1715,14 @@ mod tests {
             "Expected pass1_skipped to be empty: the unannotated-Let loser is recorded in \
              pass2_skipped, not pass1_skipped; got: {:?}",
             pass1_skipped
+        );
+        // Negative control: unannotated Let losing to a Param must not populate
+        // pass1_param_skipped (only Param losers to an annotated Let go there).
+        assert!(
+            pass1_param_skipped.is_empty(),
+            "Expected pass1_param_skipped to be empty: the unannotated-Let loser goes into \
+             pass2_skipped, not pass1_param_skipped; got: {:?}",
+            pass1_param_skipped
         );
         assert!(
             pass2_compile_errors.is_empty(),
@@ -1792,7 +1816,7 @@ mod tests {
 
         // COMPILE-TRIPWIRE: destructure as 4-tuple — fails to compile until step-3 changes the
         // return type from (HashMap, HashSet, HashSet) to (HashMap, HashSet, HashSet, HashSet).
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -2035,7 +2059,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
