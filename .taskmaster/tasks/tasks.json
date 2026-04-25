@@ -47188,15 +47188,11 @@
             "crates/reify-compiler/src/types.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "ModifyKind",
-              "single_geom_target_kinds",
-              "CASES"
-            ],
+            "entities": [],
             "queries": [
-              "geometry_modify.rs exhaustiveness sentinel CASES table",
-              "ModifyKind variant count compile-time assert",
-              "single_geom_target_kinds CASES membership enforcement approach"
+              "single_geom_target_kinds exhaustiveness CASES table sentinel",
+              "geometry ops target kinds exhaustiveness enforcement",
+              "non-geom-target fallback regression lock Draft kind geometry"
             ]
           }
         }
