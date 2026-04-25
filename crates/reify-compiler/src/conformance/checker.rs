@@ -329,28 +329,23 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// compile against a scope that did not yet contain `b`. Both passes run BEFORE
 /// `available_defaults` is built so Pass 2's inference results feed requirement-matching.
 ///
-/// ## Skip-set symmetry (task 1952 amendment)
+/// ## Skip-set symmetry (task 1952 + task 2208 amendments)
 ///
-/// Both passes produce a `HashSet<String>` recording same-name losers so the injection loop
-/// (phase 6) and advertisement builder (phase 4) can suppress duplicate cells and phantom
+/// All three passes produce a `HashSet<String>` recording same-name losers so the injection
+/// loop (phase 6) and advertisement builder (phase 4) can suppress duplicate cells and phantom
 /// entries:
 ///
-/// | Set              | Populated by | Loser kind              | Cell_type gate         |
-/// |------------------|--------------|-------------------------|------------------------|
-/// | `pass1_skipped`  | Pass 1 loop  | annotated Let (`Some`)  | `cell_type.is_some()`  |
-/// | `pass2_skipped`  | Pass 2 loop  | unannotated Let (`None`)| `cell_type.is_none()`  |
+/// | Set                   | Populated by | Loser kind              | Cell_type gate         |
+/// |-----------------------|--------------|-------------------------|------------------------|
+/// | `pass1_skipped`       | Pass 1 loop  | annotated Let (`Some`)  | `cell_type.is_some()`  |
+/// | `pass1_param_skipped` | Pass 1 loop  | Param (no Option gate)  | n/a — kind-exclusive   |
+/// | `pass2_skipped`       | Pass 2 loop  | unannotated Let (`None`)| `cell_type.is_none()`  |
 ///
-/// The `cell_type`-gated guards in both consumers (advertisement + injection) are mutually
-/// exclusive: `cell_type.is_some() && pass1_skipped` vs `cell_type.is_none() && pass2_skipped`.
-///
-/// ## Known remaining asymmetry
-///
-/// The reverse direction — a `Param` losing to an annotated Let that appears *earlier* in
-/// `ctx.defaults` — is NOT fixed by this task. Fixing it would require a composite
-/// `HashSet<(String, AvailableDefaultKind)>` or a kind-tracking `HashMap<String,
-/// AvailableDefaultKind>`, which diverges from the task's specified `HashSet<String>` shape
-/// and the "mark annotated-Let conflicts" scope. Tracked in the `pass1_skipped` declaration
-/// comment above.
+/// The `cell_type`-gated guards in the Let consumers are mutually exclusive:
+/// `cell_type.is_some() && pass1_skipped` vs `cell_type.is_none() && pass2_skipped`. The
+/// `pass1_param_skipped` guard in the `DefaultKind::Param` arm needs no `cell_type` predicate
+/// because the arm is already kind-exclusive. Together the three sets cover all same-name loser
+/// directions and restore full Pass-1 symmetry.
 ///
 /// # DESIGN LIMITATION
 ///
