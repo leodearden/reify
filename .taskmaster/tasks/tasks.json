@@ -46353,11 +46353,11 @@
         "description": "Task 1842 extracted a shared `check_arg_count_exact` / `check_arg_count_at_least` helper across geometry_boolean.rs, geometry_transform.rs, geometry_modify.rs, and geometry_curve.rs. Boolean/modify callers pass `Some(expr_span)` so their diagnostics get a \"wrong number of arguments\" label, but transform/curve callers still pass `None` (preserving pre-existing behavior). Consequently, translate/rotate/scale/rotate_around/line_segment/arc/helix arg-count errors have no labeled span in IDE/editor diagnostics — the bad call is not underlined.\n\nThread `expr_span` through `compile_transform_op` and `compile_curve_op` so those call sites can pass `Some(expr_span)` to `check_arg_count_exact` / `check_arg_count_at_least`. This both fixes the UX gap and removes the `Option<SourceSpan>` smell in the helper (every static call site will then have a span), allowing the helper signature to tighten to always-required `SourceSpan`.\n\nAcceptance:\n- `compile_transform_op` and `compile_curve_op` accept `expr_span: SourceSpan` (or equivalent) and forward it.\n- All arg-count diagnostics in transform/curve paths now carry a `wrong number of arguments` label at the call site span.\n- After threading, update `check_arg_count_exact` / `check_arg_count_at_least` to take `span: SourceSpan` (non-optional); remove the `Option` branch.\n- Existing snapshot/diagnostic tests updated to reflect the new labels.\n\nmemory_hints:\n- search: \"geometry arg count check helper expr_span\"\n- entity: compile_transform_op, compile_curve_op, check_arg_count_exact, check_arg_count_at_least",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T07:03:30.566Z",
+        "updatedAt": "2026-04-25T07:04:13.099Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/geometry_transform.rs",
@@ -46376,6 +46376,11 @@
             "queries": [
               "resolution for: Thread expr_span through compile_transform_op and compile_curve_op for labeled arg-count diagnostics"
             ]
+          },
+          "done_provenance": {
+            "commit": "7f3be81dd3b07f9c5f38613b5f24165fe1281c26",
+            "commit_input": "7f3be81dd",
+            "note": "Task work landed on main via step-1..8 commits ending with 7f3be81dd (centralised label text, variadic curves) and 60824b827 (step-8 tighten helpers to bare SourceSpan). HEAD of task/2172 is already an ancestor of main — fast-forward, no single merge commit. All four acceptance criteria satisfied; cargo test -p reify-compiler passes the geometry_arg_count_span tests (10 transform+curve tests included)."
           }
         }
       },
@@ -47461,9 +47466,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:04:04.420Z",
+      "lastModified": "2026-04-25T07:04:13.100Z",
       "taskCount": 2213,
-      "completedCount": 1970,
+      "completedCount": 1971,
       "tags": [
         "master"
       ]
