@@ -47953,13 +47953,12 @@
           "combined_at": "2026-04-25T09:04:37.579736+00:00",
           "memory_hints": {
             "entities": [
-              "EvalState",
-              "Engine",
-              "incremental_eval_benchmark.rs"
+              "LSP incremental eval benchmark"
             ],
             "queries": [
-              "eval_cached benchmark timing assertion regression guard reify-lsp",
-              "incremental_path_uses_eval_cached test engine internal coupling"
+              "LSP timing benchmark eval_cached bench harness soft sanity bound",
+              "Task 2225 LSP incremental eval timing benchmark benches",
+              "LSP incremental eval implementation benchmark"
             ]
           }
         }
