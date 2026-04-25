@@ -46230,7 +46230,18 @@
             "crates/reify-eval/tests/edit_source.rs",
             "crates/reify-eval/tests/guard_eval.rs",
             "crates/reify-test-support/src/fixtures.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "edit_param",
+              "edit_source",
+              "run_probe_scenario"
+            ],
+            "queries": [
+              "wave2 guard flip shared fixture edit_param edit_source regression tests",
+              "run_probe_scenario helper probe scenario fixture tests"
+            ]
+          }
         }
       },
       {
