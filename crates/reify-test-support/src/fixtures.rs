@@ -1435,4 +1435,149 @@ mod tests {
             "missing 'port mount : NonExistentTrait'"
         );
     }
+
+    /// Step-1 (failing): verify the shape of the `wave2_flip_fixture` helper.
+    ///
+    /// This test deliberately references `wave2_flip_fixture()` which does not
+    /// exist until step-2.  Compilation failure here confirms the test is
+    /// correctly exercising a not-yet-implemented function.
+    #[test]
+    fn wave2_flip_fixture_has_expected_structure() {
+        use reify_types::{ConstraintSolver, SolveResult, ValueCellId};
+        let fixture = wave2_flip_fixture();
+
+        // (f) Cell IDs match expected names.
+        assert_eq!(fixture.x_id, ValueCellId::new("S", "x"));
+        assert_eq!(fixture.depth_id, ValueCellId::new("S", "depth"));
+        assert_eq!(fixture.guard_id, ValueCellId::new("S", "__guard_0"));
+        assert_eq!(fixture.m_id, ValueCellId::new("S", "m"));
+
+        // (a) module_initial has exactly one template named "S".
+        assert_eq!(
+            fixture.module_initial.templates.len(),
+            1,
+            "module_initial should have exactly one template"
+        );
+        let t = &fixture.module_initial.templates[0];
+        assert_eq!(t.name, "S", "template name should be 'S'");
+
+        // (b) template has x (Param) and depth (Auto { free: false }) cells.
+        let x_cell = t
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "x")
+            .expect("expected template to have value_cell 'x'");
+        assert!(
+            matches!(x_cell.kind, ValueCellKind::Param),
+            "x cell should be Param, got: {:?}",
+            x_cell.kind
+        );
+        let depth_cell = t
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "depth")
+            .expect("expected template to have value_cell 'depth'");
+        assert!(
+            matches!(depth_cell.kind, ValueCellKind::Auto { free: false }),
+            "depth cell should be Auto {{ free: false }}, got: {:?}",
+            depth_cell.kind
+        );
+
+        // (c) one constraint labeled "depth_ge_x".
+        assert_eq!(
+            t.constraints.len(),
+            1,
+            "template should have exactly one constraint"
+        );
+        assert_eq!(
+            t.constraints[0].label.as_deref(),
+            Some("depth_ge_x"),
+            "constraint label should be 'depth_ge_x'"
+        );
+
+        // (d) one guarded group with expected shape.
+        assert_eq!(
+            t.guarded_groups.len(),
+            1,
+            "template should have exactly one guarded_group"
+        );
+        let gg = &t.guarded_groups[0];
+        assert_eq!(
+            gg.guard_value_cell,
+            fixture.guard_id,
+            "guard_value_cell should equal fixture.guard_id"
+        );
+        assert_eq!(gg.members.len(), 1, "guarded_group should have exactly one member");
+        assert_eq!(
+            gg.members[0].id,
+            fixture.m_id,
+            "member id should match fixture.m_id"
+        );
+        assert!(gg.constraints.is_empty(), "guarded_group constraints should be empty");
+        assert!(gg.else_members.is_empty(), "guarded_group else_members should be empty");
+        assert!(
+            gg.else_constraints.is_empty(),
+            "guarded_group else_constraints should be empty"
+        );
+
+        // (e) module_edited has the same structural shape as module_initial.
+        assert_eq!(
+            fixture.module_edited.templates.len(),
+            1,
+            "module_edited should have exactly one template"
+        );
+        let te = &fixture.module_edited.templates[0];
+        assert_eq!(te.name, "S", "module_edited template name should be 'S'");
+        assert!(
+            te.value_cells.iter().any(|vc| vc.id.member == "x"),
+            "module_edited should have 'x' cell"
+        );
+        assert!(
+            te.value_cells.iter().any(|vc| vc.id.member == "depth"),
+            "module_edited should have 'depth' cell"
+        );
+        assert_eq!(te.constraints.len(), 1, "module_edited should have one constraint");
+        assert_eq!(te.guarded_groups.len(), 1, "module_edited should have one guarded_group");
+
+        // (g) solver returns 10mm then 3mm for depth_id.
+        let problem = crate::mocks::empty_problem();
+        let result1 = fixture.solver.solve(&problem);
+        match &result1 {
+            SolveResult::Solved { values, .. } => {
+                let depth_val = values
+                    .get(&fixture.depth_id)
+                    .expect("first solve result should contain depth_id");
+                match depth_val {
+                    reify_types::Value::Scalar { si_value, .. } => {
+                        assert!(
+                            (*si_value - 0.010).abs() < 1e-10,
+                            "first solve: depth should be 10mm (0.010 SI), got {}",
+                            si_value
+                        );
+                    }
+                    other => panic!("first solve: depth should be Scalar, got {:?}", other),
+                }
+            }
+            other => panic!("first solve should be Solved, got {:?}", other),
+        }
+        let result2 = fixture.solver.solve(&problem);
+        match &result2 {
+            SolveResult::Solved { values, .. } => {
+                let depth_val = values
+                    .get(&fixture.depth_id)
+                    .expect("second solve result should contain depth_id");
+                match depth_val {
+                    reify_types::Value::Scalar { si_value, .. } => {
+                        assert!(
+                            (*si_value - 0.003).abs() < 1e-10,
+                            "second solve: depth should be 3mm (0.003 SI), got {}",
+                            si_value
+                        );
+                    }
+                    other => panic!("second solve: depth should be Scalar, got {:?}", other),
+                }
+            }
+            other => panic!("second solve should be Solved, got {:?}", other),
+        }
+    }
 }
