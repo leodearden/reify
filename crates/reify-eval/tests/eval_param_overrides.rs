@@ -34,6 +34,27 @@ fn length_scalar(si_meters: f64) -> Value {
     }
 }
 
+/// Build a single-structure source with a guarded group `where active { param x : T = D }`
+/// and compile it. The shape the task-2154 tests need varies in `active` (Bool default),
+/// `x_type` (the guarded-member type), and `x_default` (its default expression); everything
+/// else is invariant. Centralising the format string here defeats the drift risk that
+/// would otherwise compound as more guarded-group tests are added.
+fn guarded_module(active: bool, x_type: &str, x_default: &str) -> CompiledModule {
+    compile_source(&format!(
+        "structure S {{ param active : Bool = {active}\n where active {{ param x : {x_type} = {x_default} }} }}"
+    ))
+}
+
+/// Sibling of `guarded_module` for shape-2 tests that exercise the `else { ... }` branch.
+/// The active-branch `param x : Scalar = 5mm` is invariant across all shape-2 sites in
+/// this file (and is exactly what gets tested when `active = true` re-eval re-surfaces an
+/// override after a transient mismatch); only the else-branch `param y` varies.
+fn guarded_module_with_else(active: bool, y_type: &str, y_default: &str) -> CompiledModule {
+    compile_source(&format!(
+        "structure S {{ param active : Bool = {active}\n where active {{ param x : Scalar = 5mm }} else {{ param y : {y_type} = {y_default} }} }}"
+    ))
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // step-1: cold-start honouring a single override
 // ──────────────────────────────────────────────────────────────────────────────
@@ -439,9 +460,7 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
 #[test]
 fn eval_honors_override_on_guarded_group_active_member_param() {
     let mut engine = fresh_engine();
-    let module = compile_source(
-        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
-    );
+    let module = guarded_module(true, "Scalar", "5mm");
     let x_id = ValueCellId::new("S", "x");
 
     // Initial eval: x is inside the active branch, default should be 5mm = 0.005m.
@@ -477,9 +496,7 @@ fn eval_honors_override_on_guarded_group_active_member_param() {
 #[test]
 fn eval_honors_override_on_guarded_group_else_member_param() {
     let mut engine = fresh_engine();
-    let module = compile_source(
-        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Scalar = 10mm } }",
-    );
+    let module = guarded_module_with_else(false, "Scalar", "10mm");
     let x_id = ValueCellId::new("S", "x");
     let y_id = ValueCellId::new("S", "y");
 
@@ -527,17 +544,13 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning
     let x_id = ValueCellId::new("S", "x");
 
     // Module A: x is Scalar[LENGTH] inside a guarded group. Set a matching override.
-    let module_a = compile_source(
-        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
-    );
+    let module_a = guarded_module(true, "Scalar", "5mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&x_id, length_scalar(0.12));
 
     // Module B: x is now an Int inside the same guard. The Scalar override is
     // type-kind incompatible.
-    let module_b = compile_source(
-        "structure S { param active : Bool = true\n where active { param x : Int = 7 } }",
-    );
+    let module_b = guarded_module(true, "Int", "7");
     let result_b = engine.eval(&module_b);
 
     // (a) The Int default wins, not the (now-mismatched) Scalar override.
@@ -566,9 +579,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning
     );
 
     // (c) The override is RETAINED — re-eval Module A: the Scalar override resurfaces.
-    let module_a_again = compile_source(
-        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
-    );
+    let module_a_again = guarded_module(true, "Scalar", "5mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&x_id),
@@ -595,17 +606,13 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
     let x_id = ValueCellId::new("S", "x");
 
     // Module A: x is Scalar[LENGTH] inside a guarded group. Set a LENGTH override.
-    let module_a = compile_source(
-        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
-    );
+    let module_a = guarded_module(true, "Scalar", "5mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&x_id, length_scalar(0.12));
 
     // Module B: x is now Mass (still Scalar kind; type-kind guard passes,
     // ScalarDimensionMismatch fires).
-    let module_b = compile_source(
-        "structure S { param active : Bool = true\n where active { param x : Mass = 2kg } }",
-    );
+    let module_b = guarded_module(true, "Mass", "2kg");
     let result_b = engine.eval(&module_b);
 
     // (a) The Mass default wins (2kg → 2.0 SI).
@@ -638,9 +645,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
     );
 
     // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
-    let module_a_again = compile_source(
-        "structure S { param active : Bool = true\n where active { param x : Scalar = 5mm } }",
-    );
+    let module_a_again = guarded_module(true, "Scalar", "5mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&x_id),
@@ -675,17 +680,13 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
 
     // Module A: y is Scalar[LENGTH] in the else-branch (guard = false). Set a
     // matching LENGTH override.
-    let module_a = compile_source(
-        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Scalar = 10mm } }",
-    );
+    let module_a = guarded_module_with_else(false, "Scalar", "10mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
 
     // Module B: y is now an Int inside the else-branch. The Scalar override is
     // type-kind incompatible.
-    let module_b = compile_source(
-        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Int = 7 } }",
-    );
+    let module_b = guarded_module_with_else(false, "Int", "7");
     let result_b = engine.eval(&module_b);
 
     // (a) The Int default wins, not the (now-mismatched) Scalar override.
@@ -714,9 +715,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
     );
 
     // (c) The override is RETAINED — re-eval Module A: the Scalar override resurfaces.
-    let module_a_again = compile_source(
-        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Scalar = 10mm } }",
-    );
+    let module_a_again = guarded_module_with_else(false, "Scalar", "10mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&y_id),
