@@ -45781,11 +45781,11 @@
         "description": "The `phase1_reelaborated` HashSet in both edit_param (task 2140) and edit_source (task 2142) dedup assumes Phase 1's re-elaboration is idempotent *for a given guard value*. If the guard cell itself reads a resolved auto param, wave2 can flip the guard between Phase 1 and Phase 3. `reapply_phase1_deactivations` uses the *current* guard_val to deactivate newly-inactive members (correct), but never evaluates the default_expr of newly-active else_members whose default_expr does not read a resolved auto param. Phase 3 then skips the group via `phase1_reelaborated`, leaving those cells Undef when they should be Determined.\n\nScope: crates/reify-eval/src/engine_edit.rs — applies symmetrically to both edit_source (lines ~1860-1868, ~1583-1590) and edit_param (task 2140 path, comment at 1442-1445).\n\nSuggested fix options:\n(a) Track guard value at insert time: replace `HashSet<ValueCellId>` with `HashMap<ValueCellId, Value>` and in Phase 3 don't dedup when the current guard value differs from the recorded one (fall through to full re-elaboration, including active-branch default_expr evaluation).\n(b) Have `reapply_phase1_deactivations` detect a guard flip versus Phase 1's recorded value and, on flip, fall through to full re-elaboration rather than only re-deactivating.\n\nAdd a targeted regression test: source edit that changes a non-guard constraint input, guard reads a resolved auto param, guard flips because of the resolver, else_members' default_exprs are literals (not reading auto params). Verify the newly-active else_members transition from Undef to Determined and match cold-eval results.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive). Inherited from task 2140 — predates this diff.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:07.059Z",
+        "updatedAt": "2026-04-25T06:58:12.502Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -47410,7 +47410,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:12.029Z",
+      "lastModified": "2026-04-25T06:58:12.502Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
