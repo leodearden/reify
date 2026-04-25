@@ -965,6 +965,53 @@ purpose check(subject : Occurrence) {
     );
 }
 
+/// Characterization test: a **user-declared** `structure Structure { ... }` must
+/// NOT trigger a "has no member" error when a non-existent member is accessed on a
+/// purpose subject typed as `Structure`.
+///
+/// This pins the documented fragility from esc-2200-41 S2: the guard
+/// `struct_name != "Structure"` (now `struct_name != WILDCARD_STRUCTURE_KIND`) makes
+/// a user-defined template literally named `Structure` indistinguishable from the
+/// language-level wildcard form — member validation is skipped entirely, even though
+/// a concrete template exists in the registry.
+///
+/// When a future task replaces the magic-string guard with a proper semantic
+/// predicate (e.g., `entity_kind.is_wildcard()`), this test will turn RED because
+/// the user-declared `Structure` template would then be validated like any other
+/// concrete type.  That red is intentional: it forces a deliberate decision about
+/// whether the registered template should be used for validation.
+#[test]
+fn compile_purpose_user_defined_structure_named_structure_bypasses_validation() {
+    // A user-declared structure that happens to share the wildcard sentinel name.
+    // Accessing the non-existent member `bogus` must be silent today because the
+    // magic-string guard treats any `Structure`-typed subject as the wildcard form.
+    let source = r#"
+structure Structure {
+    param mass : Mass = 1kg
+}
+purpose check(subject : Structure) {
+    constraint subject.bogus > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // The magic-string guard must NOT produce "has no member" diagnostics even
+    // though a concrete template named "Structure" is now registered.
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for a user-declared `structure Structure` \
+         subject (magic-string guard bypasses validation for any subject typed as \
+         'Structure'), but got: {:#?}\n\
+         If this fails after a semantic-predicate refactor, see the test doc-comment.",
+        no_member_errors
+    );
+}
+
 /// Characterization test: a sub-component name on a concrete subject must NOT
 /// trigger a "has no member" diagnostic — sub_components are valid member
 /// kinds even though their type resolution is not yet implemented.
