@@ -47547,7 +47547,19 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "assert_value_cell_types_representable",
+              "Type::Geometry",
+              "Type::TypeParam",
+              "edit_source_panics_on_unrepresentable_cell_type"
+            ],
+            "queries": [
+              "assert_value_cell_types_representable guard Type::TypeParam Type::Geometry unrepresentable variants",
+              "edit_source invariant test catch_unwind unrepresentable cell type engine_eval guard"
+            ]
+          }
         }
       },
       {
