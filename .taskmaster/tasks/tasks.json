@@ -8298,7 +8298,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -8315,7 +8315,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-24T09:37:55.957Z"
+        "updatedAt": "2026-04-25T06:58:04.650Z"
       },
       {
         "id": "388",
@@ -17046,7 +17046,7 @@
         "id": "763",
         "title": "Add From<&CompiledUnit> for UnitEntry conversion",
         "description": "The prelude-unit seeding loop in compile_with_prelude constructs UnitEntry field-by-field from CompiledUnit. This is fragile: if UnitEntry gains a new field, the manual copy will silently compile with a default rather than carrying the field through.\n\nFix: Implement `From<&CompiledUnit> for UnitEntry` (using `SourceSpan::empty(0)` for span) and use it in the seeding loop. This makes the conversion canonical and ensures new fields are automatically carried through.\n\nLocations: crates/reify-compiler/src/lib.rs:2805-2813 (seeding loop), UnitEntry/CompiledUnit struct definitions.\n\nMemory hints: search \"UnitEntry CompiledUnit struct fields\" for current struct shapes. Attach memory hints: entities [\"UnitEntry\", \"CompiledUnit\"]; queries [\"UnitEntry CompiledUnit struct fields conversion\", \"From trait impl seeding loop compile_with_prelude\"].",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "details": "Ensure that the `From` trait implementation correctly maps all fields from `CompiledUnit` to `UnitEntry`, including any new fields that may be added in the future.",
@@ -17073,7 +17073,8 @@
             ]
           },
           "_causation_id": "ab53b07c-1edc-4e1f-bc6c-4a4c4bb11af9"
-        }
+        },
+        "updatedAt": "2026-04-25T06:58:05.536Z"
       },
       {
         "id": "764",
@@ -47407,15 +47408,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-24T15:29:57.844Z",
-      "taskCount": 2210,
+      "lastModified": "2026-04-25T06:58:05.536Z",
+      "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-24T15:45:00.366Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-24T15:45:55.584Z"
+      ]
     }
   }
 }
