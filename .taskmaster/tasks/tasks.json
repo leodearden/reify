@@ -46187,11 +46187,11 @@
         "description": "The two wave2 guard-flip regression tests (crates/reify-eval/tests/edit_source.rs:2229 and crates/reify-eval/tests/guard_eval.rs:2483 — the latter hosts the edit_param variant) share ~90% of their fixture verbatim: identical guard_expr, m_decl/n_decl, constraint wiring, and sequenced solver values (depth 8mm → 3mm). The Rust setup is near-verbatim duplication.\n\nFix: extract a small helper (e.g. `fn wave2_flip_fixture() -> (CompiledModule, cell_ids, Box<dyn ConstraintSolver>)`) in a tests-local module or reify_test_support. Keep the two #[test] functions as thin wrappers that invoke edit_param vs. edit_source and assert the cell states, preserving the path-specific narrative in a short comment.\n\nLow priority / polish — functional no-op but reduces drift risk between the symmetric regressions.\n\nSource: post-merge review suggestion on task 2146 (esc-2146-21, reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:07.732Z",
+        "updatedAt": "2026-04-25T06:58:13.533Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs",
@@ -47410,7 +47410,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:12.991Z",
+      "lastModified": "2026-04-25T06:58:13.533Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
