@@ -42764,13 +42764,13 @@
           ],
           "memory_hints": {
             "entities": [
+              "geometry_ops.rs",
               "Draft geometry op",
-              "geometry functions",
               "step_handles"
             ],
             "queries": [
-              "Draft geometry op plane expression evaluate instead of step_handles placeholder",
-              "compile_draft_op geometry plane expression"
+              "Draft geometry op plane expression evaluation reify",
+              "step_handles last placeholder geometry ops"
             ]
           }
         },
