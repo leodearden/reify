@@ -46851,16 +46851,14 @@
             "crates/reify-eval/tests/eval_param_overrides.rs"
           ],
           "memory_hints": {
-            "entity_refs": [
+            "entities": [
               "EvalResult",
-              "Task 2179",
-              "Task 2017",
-              "engine_eval"
+              "DeterminacyState",
+              "engine_eval.rs"
             ],
             "queries": [
-              "EvalResult.values partial-map invariant absent key convention",
-              "Param cell no-override no-default skip continue engine_eval",
-              "EvalResult values unwrap footgun caller audit"
+              "engine_eval param_overrides Undef Undetermined rejected override no default intentional asymmetry",
+              "EvalResult.values partial-map invariant Param cell skip paths"
             ]
           }
         }
