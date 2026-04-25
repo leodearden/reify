@@ -47411,7 +47411,7 @@
         "description": "The review briefing at `/home/leo/src/reify/review/briefing.yaml` was last modified 2026-03-26 and lists 9 known_gaps that have all since been resolved:\n\n- task 476 (Wire Claude chat panel to Tauri sidecar IPC) — DONE; `gui/src/App.tsx:91-102` invokes `claudeSendMessage`/`claudeAbort`; sidecar wiring complete in `gui/src-tauri/src/claude_bridge.rs`\n- task 477 (Wire CommitmentTracker/PriorityPromoter into ConcurrentScheduler) — DONE; `crates/reify-runtime/src/concurrent.rs:279-360` actively registers and uses both subsystems in `execute_with_config`\n- task 478 (Wire GUI selection state through to MCP get_selection) — DONE; `TauriToolContext::builder().with_selection(state.selection.clone())` in `gui/src-tauri/src/main.rs:296-301`; frontend updates via `update_selection` Tauri command (`gui/src/stores/selectionStore.ts:38`)\n- task 479/480 (LSP incremental eval) — DONE\n- task 481/482 (Position-aware completion) — DONE; `crates/reify-lsp/src/completion.rs:31-167` has `determine_context()` and `compute_completions()` with TopLevel/StructureBody/Expression/DotAccess/TypePosition narrowing\n- task 485 (Cross-file goto-definition) — DONE; `crates/reify-lsp/src/goto_def.rs:71-152` `compute_goto_definition_cross_file()` resolves imports + imported names\n- task 486 (Property editor quantity literals) — DONE; `gui/src/panels/PropertyEditor.tsx:99-110` accepts via `QUANTITY_RE` regex\n\nAction: run `/review-briefing` to refresh the file. Replace the closed gaps with any current/new gaps. Likely worth re-deriving fresh stability_concerns (briefing currently has none enumerated). Also worth re-checking the known custom-unit-decl gap (tasks 208/209/210) — agent verification suggests `crates/reify-compiler/src/compile_builder/units_phase.rs:74` actually compiles units now (`compile_unit(...)` registers into `ctx.unit_registry`/`ctx.compiled_units`); the briefing still lists this as a gap.\n\nWhy this matters: a stale briefing leads reviewers to dismiss real findings as \"known gaps\" or to chase phantom issues. Quality-is-king norm: flagging proactively rather than letting it compound.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -47421,9 +47421,12 @@
           ],
           "modules": [
             "review"
-          ]
+          ],
+          "done_provenance": {
+            "note": "review/briefing.yaml refreshed 2026-04-25: removed 9 closed tracking tasks (208/209/210, 325, 477, 478, 479+480, 481+482, 485, 476, 486), added 3 new tracked gaps (#2225 LSP incremental eval, #2226 user-import warning + single-module entry point, #2227 Option<TraitObject>/collection trait conformance)"
+          }
         },
-        "updatedAt": "2026-04-25T06:58:16.035Z"
+        "updatedAt": "2026-04-25T07:09:02.521Z"
       },
       {
         "id": "2223",
@@ -47504,9 +47507,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:08:08.550Z",
+      "lastModified": "2026-04-25T07:09:02.540Z",
       "taskCount": 2216,
-      "completedCount": 1971,
+      "completedCount": 1972,
       "tags": [
         "master"
       ]
