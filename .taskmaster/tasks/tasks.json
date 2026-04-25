@@ -47595,15 +47595,11 @@
             "crates/reify-eval/tests/edit_source.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "assert_value_cell_types_representable",
-              "Type::Geometry",
-              "Type::TypeParam",
-              "edit_source_panics_on_unrepresentable_cell_type"
-            ],
+            "entities": [],
             "queries": [
-              "assert_value_cell_types_representable guard Type::TypeParam Type::Geometry unrepresentable variants",
-              "edit_source invariant test catch_unwind unrepresentable cell type engine_eval guard"
+              "edit_source invariant test Type::TypeParam Type::Geometry loop",
+              "edit_source role-flip probe run_probe_scenario helper",
+              "Task 2214 edit_source role-flip probe tests extract run_probe_scenario"
             ]
           }
         }
