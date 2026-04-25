@@ -103,7 +103,7 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
                     md = format!(
                         "```reify\ntrait {} : {}\n```",
                         t.name,
-                        t.refinements.join(" + ")
+                        t.refinements.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(" + ")
                     );
                 }
                 if let Some(doc) = ctx.find_entity_doc(word) {

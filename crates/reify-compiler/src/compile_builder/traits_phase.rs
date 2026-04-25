@@ -114,15 +114,15 @@ pub(crate) fn phase_traits(
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
 
     // Deprecation check: warn when a trait refinement references a @deprecated parent trait.
-    // TraitDecl.refinements is Vec<String> without individual spans; use the child trait's span.
+    // TODO: use refinement.span for the label (step-6); currently uses the enclosing decl span.
     for trait_decl in trait_refs {
-        for refinement_name in &trait_decl.refinements {
-            if let Some(parent_trait) = trait_registry.get(refinement_name.as_str())
+        for refinement in &trait_decl.refinements {
+            if let Some(parent_trait) = trait_registry.get(refinement.name.as_str())
                 && let Some(msg) = deprecation_message(&parent_trait.annotations)
             {
                 emit_deprecation_warning(
                     "trait",
-                    refinement_name,
+                    &refinement.name,
                     msg,
                     trait_decl.span,
                     &mut ctx.diagnostics,

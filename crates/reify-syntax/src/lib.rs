@@ -1,6 +1,6 @@
 mod ts_parser;
 
-use reify_types::{ContentHash, PortDirection, SourceSpan};
+use reify_types::{ContentHash, PortDirection, SourceSpan, SpannedIdent};
 use std::fmt;
 
 /// A parsed module — the output of the parser.
@@ -391,7 +391,7 @@ pub struct TraitDecl {
     pub doc: Option<String>,
     pub is_pub: bool,
     pub type_params: Vec<TypeParamDecl>,
-    pub refinements: Vec<String>,
+    pub refinements: Vec<SpannedIdent>,
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,

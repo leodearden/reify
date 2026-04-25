@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use crate::*;
-use reify_types::{ContentHash, ModulePath, SourceSpan};
+use reify_types::{ContentHash, ModulePath, SourceSpan, SpannedIdent};
 
 /// Check a child node for errors before lowering it. If the node has errors,
 /// push a parse error and return None. Otherwise, evaluate the lowering expression.
@@ -473,6 +473,42 @@ impl<'a> Lowering<'a> {
         bounds
     }
 
+    /// Find a trait_bound_list child and extract refinement entries as SpannedIdent values.
+    ///
+    /// Modeled on `find_trait_bound_refs` / `lower_trait_bound_refs`, but without type_args,
+    /// since the grammar's trait refinements (`trait Derived : Base`) never carry type arguments.
+    fn find_trait_refinement_list(&self, node: tree_sitter::Node) -> Vec<SpannedIdent> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "trait_bound_list" {
+                return self.lower_trait_refinement_list(child);
+            }
+        }
+        vec![]
+    }
+
+    /// Extract SpannedIdent entries from a trait_bound_list node (refinement context).
+    fn lower_trait_refinement_list(&self, node: tree_sitter::Node) -> Vec<SpannedIdent> {
+        let mut entries = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "trait_bound_entry" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    entries.push(SpannedIdent {
+                        name: self.node_text(name_node).to_string(),
+                        span: self.span(name_node),
+                    });
+                }
+            } else if child.kind() == "identifier" {
+                entries.push(SpannedIdent {
+                    name: self.node_text(child).to_string(),
+                    span: self.span(child),
+                });
+            }
+        }
+        entries
+    }
+
     /// Lower a type_expr node to a TypeExpr. Handles both bare identifiers and parameterized types.
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
@@ -611,8 +647,9 @@ impl<'a> Lowering<'a> {
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
 
-        // Extract refinements from optional trait_bound_list child
-        let refinements = self.find_trait_bound_list(node);
+        // Extract refinements from optional trait_bound_list child;
+        // each entry carries its precise byte-offset span for diagnostics.
+        let refinements = self.find_trait_refinement_list(node);
 
         let (members, pragmas) = self.lower_trait_members(node);
 
