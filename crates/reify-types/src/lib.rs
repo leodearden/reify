@@ -9,6 +9,7 @@ pub mod identity;
 pub mod persistent;
 pub mod provenance;
 pub mod source_location;
+pub mod spanned_ident;
 pub mod traits;
 pub mod ty;
 pub mod value;
@@ -51,4 +52,5 @@ pub use value::{
     quaternion_is_finite,
 };
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
+pub use spanned_ident::SpannedIdent;
 pub use warm::{OpaqueState, WarmStartable};
