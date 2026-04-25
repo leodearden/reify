@@ -834,6 +834,32 @@ mod kind_display_tests {
         (ModifyKind::Thicken, "thicken"),
     ]); }
 
+    #[test]
+    fn modify_kind_variant_count_matches_exhaustive_enumeration() {
+        // No-wildcard arm: adding a new ModifyKind variant breaks compile here,
+        // routing the author to this test before they can satisfy the compiler.
+        let _exhaustive_check = |k: ModifyKind| match k {
+            ModifyKind::Fillet => (),
+            ModifyKind::Chamfer => (),
+            ModifyKind::Shell => (),
+            ModifyKind::Draft => (),
+            ModifyKind::Thicken => (),
+        };
+        // Ground-truth enumeration: must list every variant exactly once.
+        let all = [
+            ModifyKind::Fillet,
+            ModifyKind::Chamfer,
+            ModifyKind::Shell,
+            ModifyKind::Draft,
+            ModifyKind::Thicken,
+        ];
+        assert_eq!(
+            ModifyKind::VARIANT_COUNT,
+            all.len(),
+            "VARIANT_COUNT must equal the count of ModifyKind variants enumerated above"
+        );
+    }
+
     #[test] fn transform_kind_display() { check(&[
         (TransformKind::Translate, "translate"),
         (TransformKind::Rotate, "rotate"),
