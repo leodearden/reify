@@ -476,6 +476,62 @@ mod tests {
         );
     }
 
+    // --- step-5: cold-start fallback regression lock ---
+
+    #[test]
+    fn structural_change_takes_cold_start_and_detects_violations() {
+        use reify_eval::cache::NodeId;
+        use reify_types::ValueCellId;
+
+        let uri = test_uri();
+
+        // (1) First call with valid source — no ERROR diagnostics
+        let mut state = EvalState::new();
+        let source_valid = reify_test_support::bracket_source();
+        let result1 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
+        let errors1: Vec<_> = result1
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors1.is_empty(),
+            "Phase 1: valid source should produce no errors, got: {errors1:?}"
+        );
+
+        // (2) Second call with violating source (different content_hash) — at least one ERROR
+        let source_violating = reify_test_support::bracket_source_violating();
+        let result2 = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
+        let errors2: Vec<_> = result2
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("constraint")
+                    && d.message.to_lowercase().contains("violated")
+            })
+            .collect();
+        assert!(
+            !errors2.is_empty(),
+            "Phase 2: violating source should produce at least one constraint violation ERROR"
+        );
+
+        // (3) After cold-start fallback, cache entries use the new engine's first-eval version (0)
+        //     thickness is a param modified by bracket_source_violating
+        let node = NodeId::Value(ValueCellId::new("Bracket", "thickness"));
+        let entry = state
+            .engine
+            .cache_store()
+            .get(&node)
+            .expect("Bracket.thickness cache entry must exist after eval");
+        assert_eq!(
+            entry.basis_version.0,
+            0,
+            "cold-start fallback must create a fresh Engine; Bracket.thickness basis_version should be 0 (first eval on new engine), got {}",
+            entry.basis_version.0
+        );
+    }
+
     // --- step-3: eval_cached path via basis_version ---
 
     #[test]
