@@ -45999,7 +45999,18 @@
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/eval_param_overrides.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "engine_eval.rs",
+              "guarded_groups",
+              "param_overrides"
+            ],
+            "queries": [
+              "guarded group Param override member else_member eval loops param_overrides consult",
+              "edit_param guarded_groups members template param_overrides"
+            ]
+          }
         }
       },
       {
