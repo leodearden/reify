@@ -42750,7 +42750,18 @@
             "crates/reify-eval/tests/geometry_error_handling.rs",
             "crates/reify-eval/tests/geometry_sub_ref_e2e.rs",
             "crates/reify-test-support/src/helpers.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Draft geometry op",
+              "geometry functions",
+              "step_handles"
+            ],
+            "queries": [
+              "Draft geometry op plane expression evaluate instead of step_handles placeholder",
+              "compile_draft_op geometry plane expression"
+            ]
+          }
         },
         "updatedAt": "2026-04-25T06:58:12.029Z"
       },
