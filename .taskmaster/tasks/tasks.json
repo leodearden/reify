@@ -46012,11 +46012,11 @@
         "description": "In `crates/reify-eval/src/engine_eval.rs` (~lines 85-140), the active-branch arm of `post_solver_re_eval_guard_cells` uses `if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let` with an implicit else-skip. Today only `Auto { free }` falls into the skip path, which is intended, but if a new `ValueCellKind` variant is added in the future it will be silently skipped with no compiler warning.\n\nRefactor to an exhaustive `match cell.kind { Param | Let => ..., Auto { .. } => { /* skip, solver-owned */ } }`. This converts future variants into a compile error and documents the three-way decision in the code itself. Source: post-merge review suggestion on task 2143.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:25:44.069Z",
+        "updatedAt": "2026-04-25T06:58:07.464Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -46041,11 +46041,11 @@
         "description": "The invariant test at `crates/reify-eval/tests/guard_eval.rs:2420-2579` uses `MockConstraintSolver::new_solved` pre-seeded with the same answer for both engines (Path A and Path B), so it does not exercise whether the solver is actually re-invoked when the guard flips and `thickness` moves to the inactive branch in Path B. The test verifies value preservation across the two paths — which is the original regression — but will not catch a future bug where the solver fails to run in one path and a stale value is preserved.\n\nEither:\n - Extend `MockConstraintSolver` with an invocation counter and assert the expected re-invocation pattern in each path, OR\n - Add a clarifying comment to the test explaining that it deliberately does not cover solver re-invocation semantics (and pointing to where those are exercised).\n\nSource: post-merge review suggestion on task 2143.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T18:38:39.792Z",
+        "updatedAt": "2026-04-25T06:58:07.600Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/guard_eval.rs",
@@ -46187,11 +46187,11 @@
         "description": "The two wave2 guard-flip regression tests (crates/reify-eval/tests/edit_source.rs:2229 and crates/reify-eval/tests/guard_eval.rs:2483 — the latter hosts the edit_param variant) share ~90% of their fixture verbatim: identical guard_expr, m_decl/n_decl, constraint wiring, and sequenced solver values (depth 8mm → 3mm). The Rust setup is near-verbatim duplication.\n\nFix: extract a small helper (e.g. `fn wave2_flip_fixture() -> (CompiledModule, cell_ids, Box<dyn ConstraintSolver>)`) in a tests-local module or reify_test_support. Keep the two #[test] functions as thin wrappers that invoke edit_param vs. edit_source and assert the cell states, preserving the path-specific narrative in a short comment.\n\nLow priority / polish — functional no-op but reduces drift risk between the symmetric regressions.\n\nSource: post-merge review suggestion on task 2146 (esc-2146-21, reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:11:05.820Z",
+        "updatedAt": "2026-04-25T06:58:07.732Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs",
@@ -47409,7 +47409,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:07.332Z",
+      "lastModified": "2026-04-25T06:58:07.732Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
