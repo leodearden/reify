@@ -46149,13 +46149,11 @@
             "crates/reify-test-support/src/mocks.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "MockConstraintSolver",
-              "guard_eval.rs"
-            ],
+            "entities": [],
             "queries": [
-              "MockConstraintSolver invocation counter solver re-invocation pattern",
-              "eval_and_edit_param_paths inactive auto state test guard flip thickness"
+              "eval_and_edit_param_paths_produce_same_inactive_auto_state test strengthen",
+              "auto cells inactive branch eval edit_param symmetry",
+              "Auto-cell deactivation rule inactive branch post-solver pass"
             ]
           }
         }
