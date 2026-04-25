@@ -203,6 +203,16 @@ fn all_m5_types_exported() {
 }
 
 #[test]
+fn spanned_ident_exported() {
+    let si = reify_types::SpannedIdent {
+        name: "Rigid".into(),
+        span: reify_types::SourceSpan::new(0, 5),
+    };
+    assert_eq!(si.name, "Rigid");
+    assert_eq!(si.span, reify_types::SourceSpan::new(0, 5));
+}
+
+#[test]
 fn presentation_info_types_exported() {
     // DiagnosticInfo is accessible at the reify_types crate root
     let _d = reify_types::DiagnosticInfo {
