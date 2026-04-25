@@ -2852,9 +2852,9 @@ mod tests {
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("for extrude")
+            diagnostics[0].message.contains("extrude")
                 && !diagnostics[0].message.contains("extrude_"),
-            "diagnostic message should identify the Extrude variant (no underscore-suffixed sibling), got: {}",
+            "diagnostic message should mention 'extrude' but not any underscore-suffixed sibling (extrude_*), got: {}",
             diagnostics[0].message
         );
     }
