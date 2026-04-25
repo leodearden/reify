@@ -42444,7 +42444,18 @@
             "crates/reify-eval/src/lib.rs",
             "crates/reify-runtime/src/concurrent_eval.rs",
             "crates/reify-runtime/tests/concurrent_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine::eval",
+              "Engine::edit_param",
+              "CompiledFunction"
+            ],
+            "queries": [
+              "CompiledFunction Vec clone Arc performance Engine eval edit_param",
+              "Engine functions compiled module Arc clone hot path"
+            ]
+          }
         }
       },
       {
