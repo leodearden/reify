@@ -44910,7 +44910,18 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "build_old_role_map",
+              "engine_edit.rs",
+              "role-flip probe"
+            ],
+            "queries": [
+              "build_old_role_map intra-group duplicate last-write-wins ValueCellId dedup",
+              "engine_edit role-flip probe new_total old_roles len mismatch intra-group"
+            ]
+          }
         }
       },
       {
@@ -47134,7 +47145,19 @@
             "crates/reify-compiler/src/expr.rs",
             "crates/reify-compiler/src/traits.rs",
             "crates/reify-compiler/tests/purpose_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "ValueCellId",
+              "remap_entity",
+              "activate_purpose",
+              "expr.rs"
+            ],
+            "queries": [
+              "ValueCellId encoding purpose param StructureRef collision multi-param identity",
+              "activate_purpose remap_entity single entity stamp purpose-body member access"
+            ]
+          }
         }
       },
       {
