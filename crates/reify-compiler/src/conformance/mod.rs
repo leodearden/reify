@@ -2494,6 +2494,100 @@ mod tests {
         );
     }
 
+    /// Phase-contract test: `check_phase_build_available_defaults_map` excludes a Param
+    /// advertisement when its name is in `pass1_param_skipped` (task 2208 step-3).
+    ///
+    /// ## Invariant: advertisement mirrors injection
+    ///
+    /// The injection loop (step-6) will skip Param cell emission when
+    /// `pass1_param_skipped.contains(name)`. For correctness, the advertisement map must
+    /// also omit the corresponding `(name, Param)` entry — otherwise a
+    /// `RequirementKind::Param` lookup could match a phantom advertisement with no injected
+    /// cell backing it, producing a spurious "requirement satisfied" answer.
+    ///
+    /// ## Fixture
+    ///
+    /// `ctx.defaults = [Param "x":Length]` — the Param that Pass 1 would have skipped.
+    /// `pass1_param_skipped = {"x"}` — simulates the Pass 1 race loss (annotated Let won).
+    ///
+    /// ## Assertions
+    ///
+    /// - With `pass1_param_skipped = {"x"}`: `available_defaults.get(("x", Param)) == None`.
+    /// - Positive control (empty `pass1_param_skipped`): `available_defaults.get(("x", Param)) == Some(&Length)`.
+    ///
+    /// **COMPILE-TRIPWIRE**: fails to compile until step-4 adds
+    /// `pass1_param_skipped: &HashSet<String>` as a new parameter of
+    /// `check_phase_build_available_defaults_map`.
+    #[test]
+    fn check_phase_build_available_defaults_map_excludes_param_for_pass1_param_skipped_name() {
+        let param_decl = reify_syntax::ParamDecl {
+            name: "x".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Param {
+                cell_type: Type::length(),
+                default_decl: param_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
+            HashMap::new();
+        let pass1_skipped: HashSet<String> = HashSet::new();
+        let pass2_skipped: HashSet<String> = HashSet::new();
+        let pass2_compile_errors: HashSet<String> = HashSet::new();
+
+        // Positive control: without pass1_param_skipped suppression, the Param IS advertised.
+        let empty_pass1_param_skipped: HashSet<String> = HashSet::new();
+
+        // COMPILE-TRIPWIRE: `&empty_pass1_param_skipped` is the new parameter — fails to compile
+        // until step-4 adds `pass1_param_skipped: &HashSet<String>` to the function signature.
+        let positive_control = check_phase_build_available_defaults_map(
+            &ctx,
+            &inferred_let_exprs,
+            &pass1_skipped,
+            &empty_pass1_param_skipped,
+            &pass2_skipped,
+            &pass2_compile_errors,
+        );
+        assert_eq!(
+            positive_control.get(&("x".to_string(), AvailableDefaultKind::Param)),
+            Some(&Type::length()),
+            "positive control: without pass1_param_skipped, Param 'x' must be advertised \
+             as Some(&Type::length()); the guard must not over-suppress"
+        );
+
+        // Negative test: with pass1_param_skipped = {"x"}, the Param must be suppressed.
+        let mut pass1_param_skipped: HashSet<String> = HashSet::new();
+        pass1_param_skipped.insert("x".to_string());
+
+        let available_defaults = check_phase_build_available_defaults_map(
+            &ctx,
+            &inferred_let_exprs,
+            &pass1_skipped,
+            &pass1_param_skipped,
+            &pass2_skipped,
+            &pass2_compile_errors,
+        );
+        assert_eq!(
+            available_defaults.get(&("x".to_string(), AvailableDefaultKind::Param)),
+            None,
+            "Param 'x' must be excluded from available_defaults when its name is in \
+             pass1_param_skipped — advertisement mirrors injection (no phantom entry for \
+             a cell that will not be injected)"
+        );
+    }
+
     /// Phase-contract test for `check_phase_check_members_against_requirements`.
     ///
     /// Verifies that the helper emits a "missing required member" diagnostic when a
