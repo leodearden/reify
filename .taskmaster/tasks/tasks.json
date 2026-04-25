@@ -47486,6 +47486,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-25T07:07:29.428Z"
+      },
+      {
+        "id": "2227",
+        "title": "Conformance: handle Option&lt;TraitObject&gt; and collection-typed trait params at call sites",
+        "description": "Call-site conformance checking in crates/reify-compiler/src/conformance/mod.rs:152-157 only fires when a callee param's declared type is exactly `Type::TraitObject`. If the param is `Option<TraitObject>` or a collection wrapping a trait (e.g. `Vec<TraitObject>`, `Map<_, TraitObject>`), the check is silently skipped.\n\nThe existing TODO marks this as \"known gap, not forgotten\":\n```\n// TODO(follow-up): handle Option<TraitObject> and collection-typed trait params —\n// wrapping a trait type in Option or a collection currently bypasses call-site\n// conformance silently (known gap, not forgotten).\n```\n\nDone: call-site conformance walks into Option<T> and collection types, applying the trait-bound check to the inner T. New tests cover Option<MyTrait>, Vec<MyTrait>, and any other collection types Reify supports.\n\nmemory_hints:\n- search: \"TraitObject conformance call-site\"\n- entity: \"TraitObject\"\n- entity: \"ConformanceCtx\"",
+        "details": "## Files\n- crates/reify-compiler/src/conformance/mod.rs:152 (the TODO site)\n- crates/reify-compiler/src/conformance/checker.rs (where the actual check runs)\n\n## Approach sketch\nMatch on the param type and recurse into Option/collection variants before the bail-out:\n\n```rust\nlet inner_trait = match &cell.cell_type {\n    Type::TraitObject(t) => Some(t),\n    // Option<TraitObject>, Vec<TraitObject>, etc.\n    Type::Generic { name, args } if is_optional_or_collection(name) => {\n        args.first().and_then(|t| if let Type::TraitObject(t) = t { Some(t) } else { None })\n    }\n    _ => None,\n};\nlet Some(required_trait) = inner_trait else { return; };\n```\n\nThen the checker needs to walk one level into the arg's type to match (e.g. `Some(value)` → check value, `[a, b, c]` → check each element).\n\n## Verification\n- Add positive tests: Option<MyTrait> with conforming and non-conforming args\n- Add positive tests: Vec<MyTrait> with mixed arg types\n- Existing conformance tests must continue to pass",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -47497,7 +47508,8 @@
         "master"
       ],
       "created": "2026-04-25T07:07:37.882Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-25T07:08:02.788Z"
     }
   }
 }
