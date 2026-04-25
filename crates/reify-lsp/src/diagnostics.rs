@@ -110,11 +110,18 @@ pub fn compute_diagnostics_with_state(
 
     // Capture eval-time diagnostics from eval() / eval_cached().
     //
-    // eval/eval_cached can emit non-checker diagnostics that are NOT reflected
-    // in check_snapshot()'s CheckResult: circular let-binding dependencies,
-    // sub-component lookup failures, param_override type/dimension mismatches,
-    // solver Infeasible / NoProgress warnings. We capture them here and merge
-    // them through the same `violated_messages` dedup filter below.
+    // Only the cold-start eval() path currently emits non-checker diagnostics
+    // (circular let-binding dependencies, sub-component lookup failures,
+    // param_override type/dimension mismatches, solver Infeasible / NoProgress).
+    // These are NOT reflected in check_snapshot()'s CheckResult and would be
+    // silently dropped without this capture.
+    //
+    // eval_cached() today constructs an immutable `let diagnostics = Vec::new()`
+    // (engine_eval.rs:1179) and never appends to it — a known limitation meaning
+    // eval_time errors disappear on repeat calls with unchanged content. The
+    // eval_cached capture below is forward-defensive: it is a no-op today but
+    // will surface diagnostics automatically once eval_cached is fixed, without
+    // requiring further LSP changes.
     //
     // On the rare check_snapshot → None fallback we drop the captured copy
     // because check() internally re-runs eval() and prepends those diagnostics
@@ -169,8 +176,13 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Merge eval-time diagnostics (circular let-bindings, solver warnings, etc.)
-    // through the same violated_messages filter for symmetry.
+    // Merge eval-time diagnostics (circular let-bindings, solver warnings, etc.).
+    // Defensive: eval diagnostics never use the "constraint {id} violated" format
+    // (those originate in the constraint dispatch layer via check/check_snapshot),
+    // so this filter is a no-op today. Routing through violated_messages provides
+    // forward compatibility — if eval ever emits a constraint-style message on a
+    // future eager-check path, it won't double-emit alongside the span-aware
+    // violation generated below.
     for diag in &eval_diagnostics {
         if !violated_messages.contains(&diag.message) {
             diagnostics.push(convert::convert_diagnostic(diag, source, uri));
@@ -562,9 +574,7 @@ mod tests {
     /// dependency that is NOT detected at compile time (only geometry-let cycles
     /// are caught in the compiler). The engine catches it inside
     /// `evaluate_let_bindings` (engine_eval.rs:1529) and records it in
-    /// `EvalResult::diagnostics`. Today `compute_diagnostics_with_state` discards
-    /// that result with `let _ = ...`, so this test FAILS until step-2 wires the
-    /// merge.
+    /// `EvalResult::diagnostics` as "circular let-binding dependency in template S: [a, b]".
     #[test]
     fn eval_diagnostics_surfaced_in_stateful_pipeline() {
         let mut state = EvalState::new();
@@ -577,9 +587,9 @@ mod tests {
             .iter()
             .filter(|d| {
                 d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.to_lowercase().contains("circular")
-                    && d.message.contains('a')
-                    && d.message.contains('b')
+                    // Matches the exact engine message: "circular let-binding dependency in template S: [a, b]"
+                    && d.message.contains("circular let-binding dependency")
+                    && d.message.contains("in template S")
             })
             .collect();
         assert!(
@@ -587,6 +597,58 @@ mod tests {
             "eval-time circular let-binding diagnostic must be surfaced as an LSP ERROR; \
              got diagnostics: {:?}",
             result.diagnostics
+        );
+    }
+
+    /// Known limitation: on the eval_cached path (content unchanged), circular
+    /// let-binding diagnostics are NOT surfaced because `eval_cached()` always
+    /// returns an empty `diagnostics` Vec (engine_eval.rs:1179 — immutable
+    /// `let diagnostics = Vec::new()` that is never appended to).
+    ///
+    /// This test documents the current behavior. When eval_cached is fixed to
+    /// route through `evaluate_let_bindings` and emit cycle diagnostics, this
+    /// test should be updated to assert the diagnostic IS present on the second
+    /// call.
+    #[test]
+    fn eval_cached_path_does_not_surface_circular_let_binding_known_limitation() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+
+        // First call: cold-start eval() — must surface the circular let-binding diagnostic.
+        let result1 = compute_diagnostics_with_state(&mut state, source, &uri);
+        let has_circular_on_cold_start = result1.diagnostics.iter().any(|d| {
+            d.severity == Some(DiagnosticSeverity::ERROR)
+                && d.message.contains("circular let-binding dependency")
+                && d.message.contains("in template S")
+        });
+        assert!(
+            has_circular_on_cold_start,
+            "cold-start call must surface circular let-binding diagnostic; got: {:?}",
+            result1.diagnostics
+        );
+
+        // Second call: same source → content_unchanged=true → eval_cached path.
+        // eval_cached() returns empty diagnostics today, so the circular error disappears.
+        let result2 = compute_diagnostics_with_state(&mut state, source, &uri);
+        let circular_on_cached_path: Vec<_> = result2
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.contains("circular let-binding dependency")
+            })
+            .collect();
+        // Known limitation: eval_cached always returns empty diagnostics, so the
+        // circular let-binding diagnostic is absent on the second (cached) call.
+        // If this assertion fails, eval_cached has been fixed — update this test
+        // to assert the diagnostic IS present on both calls.
+        assert!(
+            circular_on_cached_path.is_empty(),
+            "Known limitation violated: circular let-binding diagnostic appeared on eval_cached \
+             path — eval_cached must have been fixed. Update this test to assert presence. \
+             Got: {:?}",
+            result2.diagnostics
         );
     }
 
