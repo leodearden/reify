@@ -42235,7 +42235,7 @@
         "description": "Delete the `phantom_let_advertisement_contract_for_future_parser_extension` integration test in `crates/reify-compiler/tests/trait_merge_tests.rs` (~1404-1522, ~120 lines).\n\nThe test is self-documented as non-distinguishing: \"all three assertions pass unconditionally today\" and \"cannot distinguish the patched binary from the unpatched one\". Behavioral assertions are tautologies against the current code — zero regression coverage for the Option B fix landed in task 1951. The in-crate unit test `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name` in conformance.rs is what gates the behavior.\n\nAssertion 3 is a pure wording pin on a diagnostic never emitted in the reachable universe, so it will continue to pass even if the Option B guard is deleted. Meanwhile the test locks in source-level details (trait/member/type names, compile-cleanly expectations) that can break for unrelated reasons.\n\nAction:\n- Delete the test function and any test-only imports it solely uses.\n- Leave a short breadcrumb comment in conformance.rs near the pass2_skipped guard pointing at the in-crate unit test.\n- When `RequirementKind::Let` becomes parser-reachable (see esc-1951-6 / task 1951's design_concern), write the regression test then in the reachable form.\n\nVerify: `cargo test -p reify-compiler`; clippy; fmt.\n\nOrigin: reviewer_comprehensive on task 1951 (esc-1951-20, suggestion 2). Test added in commit 7351ae1c0 on the task/1951 branch.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -42246,7 +42246,7 @@
             "crates/reify-compiler/tests/trait_merge_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-23T18:37:33.774Z"
+        "updatedAt": "2026-04-25T06:58:06.319Z"
       },
       {
         "id": "1991",
@@ -42414,11 +42414,11 @@
         "description": "Every call to `Engine::eval()` and `Engine::edit_param()` clones the entire merged function table (`self.functions: Vec<CompiledFunction>`). `CompiledFunction` contains boxed expression trees, so cost is O(|user_fns + prelude_fns| * avg_tree_size) per call — a significant allocation for modules with a large prelude.",
         "details": "Change `Engine::functions` from `Vec<CompiledFunction>` to `Arc<Vec<CompiledFunction>>` so the borrow-checker workaround clone in `eval()` and `edit_param()` becomes O(1).\n\nKey sites:\n- `crates/reify-eval/src/lib.rs` near `let functions: Vec<CompiledFunction> = self.functions.clone();` inside `eval()` (the PERFORMANCE NOTE comment describes the fix)\n- `crates/reify-eval/src/lib.rs` near line ~1548: `let functions = self.functions.clone();` inside `edit_param()` — same pattern\n- `crates/reify-eval/src/concurrent.rs`: `ConcurrentEditSetup::functions` field is typed `Vec<CompiledFunction>` and assigned via `functions: self.functions.clone()` — needs the type change to `Arc<Vec<CompiledFunction>>`\n\nThe desired end state:\n```rust\nself.functions = Arc::new({ let mut v = module.functions.clone(); v.extend(prelude); v });\nlet functions = Arc::clone(&self.functions);   // O(1)\n```\n\nThe `concurrent.rs` change is the blocker that prevented this fix in task 515 (it lies outside that task's scope lock). This task should scope both files together.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T07:09:53.101Z",
+        "updatedAt": "2026-04-25T06:58:06.456Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/lib.rs",
@@ -42719,7 +42719,7 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:298-310` implements `ModifyKind::Draft` by taking `step_handles.last()` as the plane reference instead of evaluating the `plane` argument expression. A comment acknowledges the placeholder.\n\nResult: Draft produces incorrect output whenever the plane argument doesn't happen to be the most recent step. The `target_id` is correctly resolved via `resolve_geom_ref`, but `plane_id` is hard-coded.\n\nFix:\n1. Plumb the plane argument through as a `GeomRef` (or full expression that evaluates to a face/plane reference), then resolve it via `resolve_geom_ref` like `target`.\n2. Add an integration test that draft-operates on a non-most-recent step to catch regression.\n\nAlso audit related ops in this file for the same placeholder pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42739,7 +42739,7 @@
             "crates/reify-test-support/src/helpers.rs"
           ]
         },
-        "updatedAt": "2026-04-23T17:27:14.346Z"
+        "updatedAt": "2026-04-25T06:58:06.592Z"
       },
       {
         "id": "2011",
@@ -44843,13 +44843,13 @@
         "description": "The role-flip probe in `Engine::edit_source` (crates/reify-eval/src/engine_edit.rs ~L1435) ends with `flipped || new_total != old_roles.len()`. `new_total` is a raw per-member iteration count (no dedup); `old_roles.len()` is a deduped HashMap len. When old and new guarded-groups each contain the same intra-group duplicate (same ValueCellId in both members and else_members of one group — an affirmatively-supported shape per `build_old_role_map`'s docstring), `new_total` counts it twice while `old_roles.len()` counts it once, so the probe falsely reports a role-flip and forces an unnecessary guard re-eval.\n\nSpotted by reviewer_comprehensive on task 2092 review (see Mem0 memory 092192b7-3d7d-417d-a2dc-81ebc18abc39).\n\nFix options (pick one):\n  (a) Track a HashSet<ValueCellId> of seen IDs during the new-groups walk; compare `seen.len() != old_roles.len()` after the loop (apples-to-apples dedup).\n  (b) Have `build_old_role_map` return `(map, pre_dedup_insert_count)` so the probe compares raw-vs-raw counts.\n\nAdd a regression test that constructs old and new graphs each containing the identical intra-group duplicate and asserts the probe does NOT report a role-flip (currently it would).\n\nmemory_hints:\n- search: \"build_old_role_map intra-group duplicate last-write-wins\"\n- entity: \"Engine\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2092"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-23T20:23:37.841Z",
+        "updatedAt": "2026-04-25T06:58:06.718Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -45484,7 +45484,7 @@
         "id": "2134",
         "title": "engine_edit tests: resolve symmetry-test redundancy and fix hardcoded line ref",
         "description": "Five doc-comment and test-quality cleanups across the reify-eval perf-lock and guard test suite — all caused by misleading, hardcoded, or stale references that drift as the file evolves.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "details": "1. **Symmetry-test redundancy** (engine_edit.rs:2423-2470): Delete `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values`; per-branch tests (`..._leaves_active_members_with_no_default_expr_untouched`, `..._absent_from_graph_untouched`, `..._activates_else_members_when_guard_false`) already give tighter failure localization and symmetry is implicit in having both guard=true and guard=false covered.\n\n2. **Hardcoded line reference in doc comment** (engine_edit.rs:2412-2414): Doc comment references `engine_edit.rs:68`; replace with landmark-style phrasing (e.g. \"the guard-elaboration loop\") or remove entirely if the symmetry test is deleted per item 1.\n\n3. **Drifted line-number cites in `reapply_guard_deactivations_post_wave2` docstring** (engine_edit.rs ~lines 114-163): The docstring pins specific line numbers (\"line 589\", \"line 593\", \"line 432-437\", \"line 564\", \"lines 833 / 1892\") that have already drifted. Replace all exact line-number citations with symbolic references (e.g. \"Phase 1 in edit_param\", \"the snapshot-to-value rewrite loop\") so the docstring remains accurate as the file evolves.\n\n4. **Loosen test counter comment in guard_eval.rs**: Post-merge review suggestion from task 2144 to replace a fragile counter-specific comment (referencing a fixed call count) with phrasing that will not become misleading if the count changes.\n\n5. **T2 perf-lock doc/fixture reconciliation** (edit_source.rs:2412-2431): The doc comment for `edit_source_added_member_in_unchanged_guard_group_forces_non_skip` describes the regression class as \"an added `let` on the inactive branch would silently retain a Determined value instead of being deactivated\", but the fixture puts the added member `b` on the ACTIVE branch (`where u { let a = 1mm; let b = 2mm }` with u=true). Fix the doc comment to accurately describe the fixture's actual active-branch scenario — or, if the intent was to exercise the inactive-branch path, adjust the fixture so `b` is placed on the inactive branch instead. Preserve the concrete symbol names `edit_source_added_member_in_unchanged_guard_group_forces_non_skip`, `has_added_in_group`, and the fixture parameter names verbatim.",
@@ -45500,7 +45500,7 @@
           "curator_justification": "The candidate is tiny (1 file, pure doc-comment fix) and shares the same root concern and module-lock key (reify-eval perf-lock test documentation) as Task 2134, which is already pending and combine_eligible. Task 2134 already addresses hardcoded line refs and misleading doc comments in the same crate's test infrastructure. Adding the T2 fixture-phrasing reconciliation brings Task 2134 to exactly 5 distinct concerns (within budget) and adds only edit_source.rs to the lock set — both files are in",
           "combined_at": "2026-04-23T20:25:09.430094+00:00"
         },
-        "updatedAt": "2026-04-24T07:17:20.467Z"
+        "updatedAt": "2026-04-25T06:58:06.923Z"
       },
       {
         "id": "2135",
@@ -47409,7 +47409,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:05.934Z",
+      "lastModified": "2026-04-25T06:58:06.923Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
