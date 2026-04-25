@@ -462,40 +462,19 @@ impl<'a> Lowering<'a> {
         bounds
     }
 
-    /// Find a trait_bound_list child and extract refinement entries as SpannedIdent values.
+    /// Find a trait_bound_list child and extract refinement entries as [`SpannedIdent`] values.
     ///
-    /// Modeled on `find_trait_bound_refs` / `lower_trait_bound_refs`, but without type_args,
-    /// since the grammar's trait refinements (`trait Derived : Base`) never carry type arguments.
+    /// Delegates to [`find_trait_bound_refs`] and projects each [`TraitBoundRef`] to a
+    /// [`SpannedIdent`] (dropping the unused `type_args`). This keeps the walking logic in one
+    /// place so grammar changes to `trait_bound_entry` shapes only need to be handled once.
     fn find_trait_refinement_list(&self, node: tree_sitter::Node) -> Vec<SpannedIdent> {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "trait_bound_list" {
-                return self.lower_trait_refinement_list(child);
-            }
-        }
-        vec![]
-    }
-
-    /// Extract SpannedIdent entries from a trait_bound_list node (refinement context).
-    fn lower_trait_refinement_list(&self, node: tree_sitter::Node) -> Vec<SpannedIdent> {
-        let mut entries = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "trait_bound_entry" {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    entries.push(SpannedIdent {
-                        name: self.node_text(name_node).to_string(),
-                        span: self.span(name_node),
-                    });
-                }
-            } else if child.kind() == "identifier" {
-                entries.push(SpannedIdent {
-                    name: self.node_text(child).to_string(),
-                    span: self.span(child),
-                });
-            }
-        }
-        entries
+        self.find_trait_bound_refs(node)
+            .into_iter()
+            .map(|tbr| SpannedIdent {
+                name: tbr.name,
+                span: tbr.span,
+            })
+            .collect()
     }
 
     /// Lower a type_expr node to a TypeExpr. Handles both bare identifiers and parameterized types.

@@ -472,3 +472,60 @@ fn deprecation_warning_message_format_contract() {
         "message format mismatch"
     );
 }
+
+// ── Multi-refinement span precision ──────────────────────────────────────────
+
+#[test]
+fn deprecated_trait_multi_refinement_each_warning_points_at_own_identifier() {
+    // Two deprecated parents; the label for each warning must highlight its own
+    // identifier, not the whole `trait D : B + C` declaration.  A regression to
+    // the old `trait_decl.span` behaviour would pass the single-refinement test
+    // but would produce identical (wrong) spans here.
+    let source = "@deprecated\ntrait B { param x : Real }\n@deprecated\ntrait C { param y : Real }\ntrait D : B + C { param z : Real }";
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns_b = deprecation_warnings(&module, "B");
+    assert!(
+        !warns_b.is_empty(),
+        "expected deprecation warning for B, got: {:?}",
+        warnings_only(&module)
+    );
+    assert!(
+        !warns_b[0].labels.is_empty(),
+        "expected at least one label on B warning"
+    );
+    let s_b = warns_b[0].labels[0].span;
+    assert_eq!(
+        &source[s_b.start as usize..s_b.end as usize],
+        "B",
+        "B warning label should highlight exactly 'B'"
+    );
+
+    let warns_c = deprecation_warnings(&module, "C");
+    assert!(
+        !warns_c.is_empty(),
+        "expected deprecation warning for C, got: {:?}",
+        warnings_only(&module)
+    );
+    assert!(
+        !warns_c[0].labels.is_empty(),
+        "expected at least one label on C warning"
+    );
+    let s_c = warns_c[0].labels[0].span;
+    assert_eq!(
+        &source[s_c.start as usize..s_c.end as usize],
+        "C",
+        "C warning label should highlight exactly 'C'"
+    );
+
+    // The two spans must be distinct — they point at different tokens.
+    assert_ne!(
+        s_b, s_c,
+        "B and C warning spans should be distinct (different tokens in the refinement list)"
+    );
+}
