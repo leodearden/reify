@@ -465,6 +465,50 @@ fn eval_honors_override_on_guarded_group_active_member_param() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// task-2154 step-3: guarded-group else-member (else_members loop) override survival
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// After an initial `eval()`, writing an override via `set_param_and_invalidate`
+/// on a guarded-group Param inside the `else { ... }` branch and calling `eval()`
+/// again must surface the overridden value — NOT the compiled module default.
+/// Currently FAILS because the cold-eval third pass else_members loop at
+/// engine_eval.rs:615-652 evaluates `cell.default_expr` directly without
+/// consulting `self.param_overrides`.
+#[test]
+fn eval_honors_override_on_guarded_group_else_member_param() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Scalar = 10mm } }",
+    );
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // Initial eval: guard is false so x is inactive (Undef), y is active (10mm = 0.01m).
+    let first = engine.eval(&module);
+    assert_eq!(
+        first.values.get(&x_id),
+        Some(&Value::Undef),
+        "pre-override eval: x must be Undef (guard is false, member inactive)"
+    );
+    assert_eq!(
+        first.values.get(&y_id),
+        Some(&length_scalar(0.01)),
+        "pre-override eval: y must be 10mm default (else_member active)"
+    );
+
+    // Establish override on the else-branch Param.
+    engine.set_param_and_invalidate(&y_id, length_scalar(0.012));
+
+    // Re-evaluate — the cold-eval else_members loop must now consult param_overrides.
+    let second = engine.eval(&module);
+    assert_eq!(
+        second.values.get(&y_id),
+        Some(&length_scalar(0.012)),
+        "post-override eval must surface the 0.012m override for the else-branch Param, not the 10mm default"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // task-2179 S4: rejected-override-with-no-default inserts Undef into result.values
 // ──────────────────────────────────────────────────────────────────────────────
 
