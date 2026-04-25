@@ -502,7 +502,8 @@ impl Engine {
                             //
                             // Asymmetry by design (NOT a bug):
                             //   - this arm (no override, no default)        → cell ABSENT from values
-                            //   - rejected-override-no-default arm (~L560)  → values gets (Undef, …)
+                            //   - rejected-override-no-default arm (search
+                            //     "REJECTED-OVERRIDE-NO-DEFAULT" below)  → values gets (Undef, …)
                             //   - guarded-group helper (eval_guarded_group_param_cell, L180-254)
                             //     → cell always Undef in values (both no-override and rejected paths)
                             //
@@ -561,9 +562,9 @@ impl Engine {
                                 .with_determinacy(&snapshot.values),
                         )
                     } else {
-                        // No override accepted and no default_expr. This is
-                        // only reachable if an override existed but was
-                        // rejected by the type-kind or dimension guard above.
+                        // REJECTED-OVERRIDE-NO-DEFAULT: no override accepted and no
+                        // default_expr. This is only reachable if an override existed
+                        // but was rejected by the type-kind or dimension guard above.
                         //
                         // Write (Undef, Undetermined) into both maps so that
                         // external readers of EvalResult.values see a

@@ -46,9 +46,10 @@ fn guarded_module(active: bool, x_type: &str, x_default: &str) -> CompiledModule
 }
 
 /// Sibling of `guarded_module` for shape-2 tests that exercise the `else { ... }` branch.
-/// The active-branch `param x : Scalar = 5mm` is invariant across all shape-2 sites in
-/// this file (and is exactly what gets tested when `active = true` re-eval re-surfaces an
-/// override after a transient mismatch); only the else-branch `param y` varies.
+/// All current call sites in this file pass `active = false`; the active-branch
+/// `param x : Scalar = 5mm` is invariant across those sites, so only the else-branch
+/// `param y` type and default vary. The `active` parameter is kept so future tests can
+/// activate the guarded group (e.g. to exercise re-eval after a transient mismatch).
 fn guarded_module_with_else(active: bool, y_type: &str, y_default: &str) -> CompiledModule {
     compile_source(&format!(
         "structure S {{ param active : Bool = {active}\n where active {{ param x : Scalar = 5mm }} else {{ param y : {y_type} = {y_default} }} }}"
