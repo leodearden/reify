@@ -47792,7 +47792,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T08:29:26.705Z"
+        "updatedAt": "2026-04-25T08:29:26.705Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "purpose_activation.rs",
+              "Severity",
+              "compiled_purposes"
+            ],
+            "queries": [
+              "purpose activation test fixture compile assertion pattern compiled_purposes",
+              "Severity Error diagnostic check in reify-eval test fixtures"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
@@ -47802,7 +47815,9 @@
       "completedCount": 1978,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-25T08:40:42.236Z",
+      "description": "Tasks for master context"
     }
   }
 }
