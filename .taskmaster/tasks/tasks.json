@@ -46204,7 +46204,7 @@
         "id": "2164",
         "title": "Strengthen pragma content_hash test coverage (variants + negation + block-pragma)",
         "description": "Expand pragma hash and diagnostic tests in `crates/reify-compiler` to pin all correctness invariants: format_pragma_value variant encoding, Bare/KV discriminator collisions, arg-count encoding, block-pragma propagation, and legacy warning absence.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "Five test additions spanning `crates/reify-compiler/src/compile_builder/hash.rs` (unit-level discriminator tests) and `crates/reify-compiler/tests/pragma_compile_tests.rs` (integration tests). Context: task 1163 commits 03cbc1e29, d17f0554a, 35bcc9dde; task 1505 added kind-tag discriminators at `hash_pragma_value` (str/ident/num/bool) — these tests build on that foundation.\n\n1. **format_pragma_value variant coverage** (hash.rs:111-120): Current determinism test only exercises KeyValue+Number. Add cases so each `format_pragma_value` encoding contributes distinctively:\n   - `#precision(bare_ident_a)` vs `#precision(bare_ident_b)` (Bare + Ident)\n   - `#flag(enabled=true)` vs `#flag(enabled=false)` (KeyValue + Bool)\n   - `#tag(name=\"a\")` vs `#tag(name=\"b\")` (KeyValue + String)\n   Assert each pair of different values produces different hashes.\n\n2. **Arg-level discriminator collision** (hash.rs): Assert `hash_pragma_arg(PragmaArg::Bare(v)) != hash_pragma_arg(PragmaArg::KeyValue { key: \"\".to_string(), value: v })` for the same `v` (e.g. `PragmaValue::Ident(\"x\".to_string())`). Under the new kind-tag scheme the \"bare\"/\"kv\" tags diverge, but the invariant deserves a regression test to guard against format-string regressions.\n\n3. **Pragma name/arg-count encoding** (hash.rs): The `hash_pragma` docstring calls out that argument count is encoded to prevent collisions between optional-absent and empty-present args. Pin this: assert that `Pragma { name: \"foo\", args: vec![] }` and `Pragma { name: \"foo\", args: vec![PragmaArg::Bare(PragmaValue::Ident(\"x\".to_string()))] }` produce distinct hashes.\n\n4. **Block-level pragma → module hash invariant** (hash.rs:69-81 / pragma_compile_tests.rs): `module_pragma_change_changes_module_content_hash` only exercises module-level pragmas. Add a sibling test that toggles a structure-level pragma (e.g. `structure S { #precision(bits=32) ... }` vs `bits=64`) and asserts different `compiled.content_hash`. Block pragmas reach the template via `structure.pragmas.to_vec()`; the invariant holds only if `TopologyTemplate::content_hash` folds `template.pragmas`. A passing test guards the invariant; a failing test reveals block pragmas are absent from template hashes and requires folding in `entity.rs`.\n\n5. **Pin absence of legacy generic warning** (pragma_compile_tests.rs:340-351): `no_prelude_on_structure_emits_module_only_warning` asserts the new \"only valid at module level\" message is present. Add `assert!(pragma_warnings(&module, \"unknown pragma\").is_empty())` to pin that the old generic unknown-pragma warning is absent.",
@@ -46223,7 +46223,7 @@
           "curator_justification": "The candidate adds 2 discriminator-collision regression tests (Bare vs KeyValue cross-type, arg-count encoding) for `hash_pragma_arg`/`hash_pragma` — the same pragma hash test layer as task 2164. Both touch only `crates/reify-compiler/src/compile_builder` and `crates/reify-compiler/tests/pragma_compile_tests.rs` (module lock unchanged). Combined concerns = 5 (≤ 5 limit), combined details ≈ 4 200 chars (≤ 8 000), no critical-path drag (both low priority). The candidate explicitly names 2164 as a ",
           "combined_at": "2026-04-23T20:51:05.306960+00:00"
         },
-        "updatedAt": "2026-04-25T06:58:07.882Z"
+        "updatedAt": "2026-04-25T06:58:23.195Z"
       },
       {
         "id": "2168",
@@ -47411,7 +47411,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:20.782Z",
+      "lastModified": "2026-04-25T06:58:23.195Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
