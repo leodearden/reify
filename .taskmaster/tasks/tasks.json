@@ -47394,7 +47394,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "review/briefing.yaml"
+          ],
+          "modules": [
+            "review"
+          ]
+        }
       }
     ],
     "metadata": {
