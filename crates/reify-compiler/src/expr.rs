@@ -1146,9 +1146,9 @@ pub(crate) fn compile_expr_guarded(
                 && !scope.is_entity_scope
             {
                 if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
-                    // Reflective aggregation placeholder — emits empty list so
-                    // `forall p in subject.<member>: ...` evaluates vacuously true.
-                    // Runtime expansion is deferred; see
+                    // FIXME(task-2199): reflective aggregation placeholder — emits
+                    // empty list so `forall p in subject.<member>: ...` evaluates
+                    // vacuously true. Runtime expansion is deferred; see
                     // `docs/notes/purpose-reflective-aggregation.md` for the three
                     // blockers (list population, quantifier identity carry-through,
                     // element-type lockstep) and the §8 characterization test in

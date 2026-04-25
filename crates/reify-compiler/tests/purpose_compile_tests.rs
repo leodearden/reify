@@ -1010,6 +1010,26 @@ purpose check(subject : Structure) {
          If this fails after a semantic-predicate refactor, see the test doc-comment.",
         no_member_errors
     );
+
+    // Guard against a false-green: if compilation bails out early (e.g., because
+    // `Structure` becomes reserved or the parser short-circuits on the name), no
+    // member-access code runs at all, so `no_member_errors` is trivially empty for
+    // the wrong reason.  A Severity::Error diagnostic from *any* cause would mean
+    // the member-access branch was never reached, making the assertion above
+    // meaningless.  Mirroring the defense in
+    // `compile_purpose_wildcard_occurrence_subject_bogus_member_still_silent`.
+    let error_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "expected zero Error diagnostics for user-declared `structure Structure` subject \
+         (compilation must reach the member-access path to make the no-member-error \
+         assertion meaningful), but got: {:#?}",
+        error_diags
+    );
 }
 
 /// Characterization test: a sub-component name on a concrete subject must NOT
