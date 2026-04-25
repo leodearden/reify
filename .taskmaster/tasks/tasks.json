@@ -47839,16 +47839,21 @@
         "description": "Test coverage for the new `eval_guarded_group_param_cell` helper is asymmetric:\n- members-loop: type-kind + dimension + override-survival tests\n- else_members-loop: type-kind + override-survival ONLY (no dimension test)\n\nDimension-mismatch on the else-branch goes through the same helper today, but a future change that special-cases members vs else_members inside the helper (e.g. branching on a new field) would not be caught.\n\nFix: add `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning` in crates/reify-eval/tests/eval_param_overrides.rs mirroring the members-branch dimension test (currently named `eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning`). Use the else-branch source pattern from `eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_warning` (active=false; param x in `where active { ... }`; test param y in `else { ... }`). Source: esc-2154-17 review_suggestion #3.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-25T08:54:38.696Z"
+        "updatedAt": "2026-04-25T08:57:42.154Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/eval_param_overrides.rs"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T08:54:53.337Z",
+      "lastModified": "2026-04-25T08:57:42.154Z",
       "taskCount": 2223,
       "completedCount": 1979,
       "tags": [
