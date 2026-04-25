@@ -47916,13 +47916,12 @@
           ],
           "memory_hints": {
             "entities": [
-              "eval_guarded_group_param_cell",
-              "engine_eval.rs",
-              "eval_param_overrides.rs"
+              "eval_guarded_group_param_cell"
             ],
             "queries": [
-              "eval_guarded_group_param_cell doc-comment numeric line references stable anchors",
-              "guarded-group Param override regression task 2154 engine_eval"
+              "eval_guarded_group_param_cell numeric line references stable anchors",
+              "replace fragile line-number references centralized constant",
+              "guarded group param cell override resolution helper"
             ]
           }
         }
