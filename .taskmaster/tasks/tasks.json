@@ -46993,11 +46993,11 @@
         "description": "In `crates/reify-compiler/src/geometry_modify.rs` around lines 394-415, the exhaustiveness sentinel closure in `single_geom_target_kinds()` only forces the author to extend the `match` arms when a new `ModifyKind` variant is added — it does NOT force them to add (or deliberately skip) the variant in `CASES`. A developer can silence the compile error by updating the match alone, silently leaving the new kind out of regression coverage. The doc comment (\"forcing an explicit classify-or-skip decision\") slightly oversells what the sentinel mechanically enforces.\n\nPick one:\n(a) Tighten the doc comment to reflect that the sentinel only forces acknowledgement of a new variant, not inclusion in CASES.\n(b) Replace/augment the sentinel with a `const _: () = assert!(CASES.len() == <variant_count>)` style check, requiring a `ModifyKind::VARIANT_COUNT` constant (or equivalent) so that adding a variant without updating CASES fails to compile.\n\nOption (b) is strictly stronger but requires a supporting constant; option (a) is a one-line comment tightening.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T10:13:32.958Z",
+        "updatedAt": "2026-04-25T06:58:09.584Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry_modify.rs",
@@ -47028,11 +47028,11 @@
         "description": "Tests currently assert substring matches on human-readable diagnostic messages (e.g. qualified_access_compile_tests.rs:281-298 pins the phrase \"does not implement trait\"). Any rewording of the conformance error breaks these tests without catching a behavioral regression. Introduce a `DiagnosticCode` enum (e.g. `TraitNotImplemented`, `ConflictingTraitRequirements`, etc.) attached to `Diagnostic`, then migrate tests from substring matching to `d.code == DiagnosticCode::TraitNotImplemented`. This is a cross-cutting infra change: define the enum and wire the most commonly asserted-on diagnostics first, then migrate tests incrementally. Note: only the canonical \"does not implement trait\" substring assertion is in place today (task 387); broader rollout comes as tests are touched.",
         "details": "<info added on 2026-04-24T11:33:19.237Z>\nArchitectural context discovered during implementation (2026-04-24): There are two `code` fields in the diagnostics pipeline that must be kept distinct. (1) `Diagnostic.code: Option<DiagnosticCode>` — the new typed enum this task introduces, attached to the internal runtime Diagnostic for test assertions. (2) `DiagnosticInfo.code: Option<String>` — an existing field in `crates/reify-types/src/diagnostics.rs` used on the serde/MCP wire boundary; populated from `crates/reify-cli/src/mcp_context.rs:228`. The mapping from the typed enum to the wire string must happen in `mcp_context.rs`. Do not collapse these two fields — they serve different layers.\n</info added on 2026-04-24T11:33:19.237Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-24T10:59:42.743Z",
+        "updatedAt": "2026-04-25T06:58:09.751Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -47410,7 +47410,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:09.394Z",
+      "lastModified": "2026-04-25T06:58:09.751Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
