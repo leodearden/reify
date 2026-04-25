@@ -47770,7 +47770,19 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_merge_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "pass1_param_skipped",
+              "annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped",
+              "ValueCellKind",
+              "trait_merge_tests.rs"
+            ],
+            "queries": [
+              "pass1_param_skipped conformance Param loser suppression reverse direction",
+              "ValueCellKind::Let assert cell kind type after loser suppression conformance test"
+            ]
+          }
         }
       },
       {
@@ -47858,7 +47870,9 @@
       "completedCount": 1979,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-25T08:58:37.271Z",
+      "description": "Tasks for master context"
     }
   }
 }
