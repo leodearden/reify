@@ -47743,13 +47743,11 @@
             "crates/reify-compiler/tests/import_warning_tests.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "reify-compiler",
-              "module resolution"
-            ],
+            "entities": [],
             "queries": [
-              "compiler module resolution not yet implemented import warning",
-              "single-module entry point reify compiler"
+              "module resolution not yet implemented import warning compiler",
+              "compile_with_stdlib single-module entry point LSP CLI",
+              "compiler import resolution warning cleanup"
             ]
           }
         }
