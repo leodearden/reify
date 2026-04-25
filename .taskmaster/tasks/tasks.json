@@ -47551,7 +47551,20 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-25T07:09:12.797Z"
+        "updatedAt": "2026-04-25T07:09:12.797Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "reify-debug MCP server",
+              "sidecar binary",
+              "resource_dir"
+            ],
+            "queries": [
+              "single command GUI launch sidecar build servers debug MCP",
+              "reify-debug MCP server engine_state click_element tools"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
