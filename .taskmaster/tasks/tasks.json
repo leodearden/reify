@@ -46880,7 +46880,18 @@
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/eval_param_overrides.rs",
             "crates/reify-runtime/src/concurrent.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "engine_eval.rs",
+              "eval_cached",
+              "CachedResult"
+            ],
+            "queries": [
+              "cache recording omitted rejected-override-no-default param path engine_eval",
+              "eval_cached try_fast_path cache semantics rejected override"
+            ]
+          }
         }
       },
       {
