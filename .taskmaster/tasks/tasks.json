@@ -46710,7 +46710,18 @@
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
             "crates/reify-eval/tests/collection_sub_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "engine_edit.rs",
+              "cache",
+              "edit_param Phase 4 collection sub"
+            ],
+            "queries": [
+              "cache invalidate NodeId Value scoped_id edit_param Phase 4 collection grow shrink regrow",
+              "task 2086 edit_source cache invalidation collection sub symmetric gap engine_edit"
+            ]
+          }
         }
       },
       {
