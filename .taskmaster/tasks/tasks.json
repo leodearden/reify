@@ -47510,23 +47510,21 @@
         "description": "Replace the current 4-step manual GUI launch with one command. Default to normal release mode (debug MCP off, no :3939 listener); include an easy way (flag or sibling subcommand) to start in dev mode (REIFY_DEBUG=1, vite dev server, dev-profile webview).\n\nToday, running reify-gui from a fresh checkout/worktree requires: (1) `npm install` in `gui/` and `gui/sidecar/`; (2) `bash gui/sidecar/build-sidecar.sh` to produce the embedded sidecar binary (tauri build.rs hard-fails late if missing); (3) `cargo build -p reify-gui --bin reify-gui --features gui` (must be set explicitly because the bin's `required-features = [\"gui\"]`); (4) at runtime: `LD_LIBRARY_PATH=\"/snap/freecad/current/usr/lib:...\" target/debug/reify-gui <file.ri>` plus a separate `npm run dev -- --port 1420` in `gui/` so the dev-profile webview can load (otherwise blank webview + \"Connection refused\"). Each step has its own silent failure mode; new users hit several in sequence.",
         "details": "**Default behaviour** (`reify gui <file.ri>` or `scripts/run-gui.sh <file.ri>`): normal release mode, debug MCP **disabled** (REIFY_DEBUG unset). No 127.0.0.1:3939 listener; minimum surface area. Release build means frontend is bundled into Tauri's `frontendDist`, no vite required at runtime.\n\n**Dev mode** (one of `--debug` flag, `--mcp` flag, `reify gui-debug <file.ri>` subcommand, or `scripts/run-gui-dev.sh <file.ri>`): debug MCP enabled (REIFY_DEBUG=1, listener on 127.0.0.1:3939), webview devtools enabled, dev-profile build with vite dev server on :1420 so HMR works.\n\n**Design questions to resolve during implementation**:\n- Where does the unified entrypoint live? Options: (a) extend `cmd_gui` in `crates/reify-cli/src/main.rs:252` with `--debug`; (b) wrapper script under `scripts/`; (c) a cargo xtask. The CLI already has a `gui` subcommand that just exec's the binary — extending it is the smallest change and cross-platform safest.\n- Should normal mode use a release build (no vite required) and dev mode use `cargo tauri dev` semantics (devUrl + vite)? Probably yes — release builds match what real users hit and skip the vite dependency entirely for non-developers.\n- LD_LIBRARY_PATH for OCCT (`/snap/freecad/current/usr/lib`) is currently set via `.cargo/run-with-occt.sh` for `cargo run` but **not** when invoking the built binary directly. The launch wrapper must set it for both modes. Distribution builds need a different OCCT story (rpath/bundled libs) — out of scope; see `tauri.conf.json` `bundle.resources` for the existing distribution plan.\n- Vite startup is async (~400-500ms cold). The dev-mode launcher must wait for `:1420` to respond before exec'ing reify-gui — otherwise the webview races vite and lands on the connection-refused page (observed 2026-04-23/24).\n- Sidecar build (`build-sidecar.sh`) is fast (~20ms tsup bundle + chmod) so it can always run unconditionally before `cargo build`. Or: have the cargo build-script invoke it when missing. Today it just hard-fails with \"resource path doesn't exist\".\n\n**Acceptance**:\n- Fresh clone (or fresh worktree) can run a single command and end up with a working GUI window with a .ri file loaded — no separate npm/vite/sidecar steps.\n- Dev-mode flag/subcommand activates REIFY_DEBUG=1 and (if dev profile) the vite server, with the launcher waiting for vite ready before launching the GUI.\n- Default mode does **not** open the :3939 port and does **not** require vite.\n- Documented in CLAUDE.md and/or the README's \"Local Dev Setup\" section.\n\n**Memory hints / context**:\n- Manual launch sequence used during 2026-04-23/24 sessions: see project_gui_dev_launch_requirements memory.\n- `gui/src-tauri/tauri.conf.json` has `beforeDevCommand: npm run dev -- --port 1420` and `devUrl: http://localhost:1420` — these only fire when running via `cargo tauri dev`, not via direct binary invocation.\n- `.cargo/run-with-occt.sh` exists as the LD_LIBRARY_PATH wrapper for `cargo run`.\n- Relevant binaries: `crates/reify-cli/src/main.rs::cmd_gui` (line 252) execs `target/debug/reify-gui` from the same dir as the cli binary, with PATH fallback.\n- Debug server architecture: project_debug_rpc_apr15 memory; runs on :3939 only when REIFY_DEBUG=1.\n\n**Source**: interactive session 2026-04-24, user request after several manual rebuild-and-restart cycles in this session exposed how brittle the current sequence is.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-25T07:09:12.797Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T07:09:02.540Z",
-      "taskCount": 2216,
+      "lastModified": "2026-04-25T07:09:12.797Z",
+      "taskCount": 2217,
       "completedCount": 1972,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-25T07:09:10.214Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-25T07:09:10.235Z"
+      ]
     }
   }
 }
