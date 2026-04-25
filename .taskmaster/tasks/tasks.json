@@ -47171,7 +47171,19 @@
           "modules": [
             "crates/reify-compiler/src/conformance",
             "crates/reify-compiler/tests/trait_merge_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "pass1_skipped",
+              "pass1_param_skipped",
+              "conformance checker.rs",
+              "check_phase_inject_defaults"
+            ],
+            "queries": [
+              "conformance pass1_skipped Param losers two-pass cell duplication fix",
+              "annotated_let_wins_param_loses known_asymmetry regression test trait_merge_tests"
+            ]
+          }
         }
       },
       {
