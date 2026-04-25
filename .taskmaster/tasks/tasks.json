@@ -46427,7 +46427,7 @@
         "description": "Add a CI-friendly integration test that walks `examples/*.ri` and runs each through parse + `compile_with_stdlib`, asserting no Error-severity diagnostics. Motivation: a class of regressions where a whole example file silently stops compiling is only caught today by per-file test wrappers (m5_integration.rs, m8_stdlib_integration.rs, m11_full_integration.rs, …), and only for examples that have such a wrapper. Files without a wrapper (e.g. `m5_geometry_flange.ri`, which hit \"unresolved type: Material\" until fixed in commit a0cef6273 / merge 11f60f057 on 2026-04-24) drift silently. Of 42 files in `examples/`, roughly half have no dedicated compile-regression safety net.",
         "details": "**Scope**: a single bulk integration test, not per-file. Suggested home: `crates/reify-eval/tests/examples_smoke.rs` — the common helper there already has `parse_and_compile_with_stdlib`.\n\n**Shape**:\n- `read_dir(examples/)`, filter `.ri`\n- For each: parse → assert `parsed.errors.is_empty()` → `compile_with_stdlib` → assert no `Severity::Error` diagnostics\n- Accumulate all failures and panic once at the end so a single run lists every broken file, not just the first\n\n**Design decisions during implementation**:\n- **Skip set**: `error_messages.ri` almost certainly contains intentionally ill-typed code. Use either a hardcoded list or a `// @smoke-skip` pragma. Every entry should have a one-line reason in a comment.\n- **Compile-only smoke**: default skips eval — OCCT-heavy files (io_export.ri, large_assembly.ri, m5_geometry_flange.ri) are slow. A separate `examples_eval_smoke` marked `#[ignore]` can opt into eval when run locally.\n- **Assertion granularity**: just \"no Error diagnostics\" for the smoke. Per-file semantic checks stay in the existing dedicated wrappers.\n\n**Motivating incident**: 2026-04-24, user opened `m5_geometry_flange.ri` via the GUI and got \"unresolved type: Material\". Root cause was the GUI calling empty-prelude `compile()` instead of `compile_with_stdlib()` (fixed in a0cef6273). Even after the GUI fix, `reify check examples/m5_geometry_flange.ri` still errors pending #2176 (LSP/CLI follow-up). A bulk smoke would have caught the original divergence at first CI run.\n\n**Acceptance**:\n- Passes on current main (evaluator-driven form works now regardless of #2176)\n- Uses `read_dir` discovery, not a hardcoded list — new examples auto-covered\n- Failure output lists every broken file + diagnostic messages (not first-fail abort)\n- Skip set (if any) short, documented, each skip linked to a reason\n\n**Dependencies**: soft — companion to #2176 (LSP/CLI stdlib prelude). Both tasks reduce the same risk from different angles; either can land first.\n\n**Memory hints**:\n- Precedent fix (GUI): commit `a0cef6273`, engine.rs:117 and :215, merge `11f60f057`\n- Parity test: `crates/reify-compiler/tests/prelude_context_tests.rs::compile_with_stdlib_parity_with_compile_with_prelude_stdlib`\n- `parse_and_compile_with_stdlib` helper in `crates/reify-eval/tests/common/mod.rs`\n<info added on 2026-04-24T07:06:17.469Z>\nGround-truth run on 2026-04-24 via an ad-hoc stdlib-aware smoke test revealed that 41 out of 42 examples were clean under `compile_with_stdlib`, with only `m5_purpose.ri` failing due to 5 \"member access not yet supported\" errors. This failure is tracked by task #2181 (purpose-body MemberAccess). Therefore, the bulk smoke test currently requires no skip set, and once #2181 is resolved, the \"no Error diagnostics\" assertion will pass across the entire directory. Dependency on #2181 was added on 2026-04-24 to eliminate the need for a defensive skip entry once #2181 is completed.\n</info added on 2026-04-24T07:06:17.469Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2176",
           "2181"
@@ -46442,7 +46442,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-25T06:58:08.275Z"
+        "updatedAt": "2026-04-25T06:58:14.241Z"
       },
       {
         "id": "2178",
@@ -47410,7 +47410,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:13.533Z",
+      "lastModified": "2026-04-25T06:58:14.242Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
