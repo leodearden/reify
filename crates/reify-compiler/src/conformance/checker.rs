@@ -957,6 +957,7 @@ pub(super) fn check_phase_inject_defaults(
     structure_constraint_labels: &HashSet<String>,
     mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr>,
     pass1_skipped: &HashSet<String>,
+    pass1_param_skipped: &HashSet<String>,
     pass2_skipped: &HashSet<String>,
     pass2_compile_errors: &HashSet<String>,
     scope: &mut CompilationScope,
@@ -978,6 +979,15 @@ pub(super) fn check_phase_inject_defaults(
                     .name
                     .as_deref()
                     .expect("DefaultKind::Param always has Some(name)");
+                // SYMMETRIC FIX (task 2208): Param losers in Pass 1 are recorded in
+                // `pass1_param_skipped` (the mirror of `pass1_skipped` for annotated-Let
+                // losers). When the Param's `register_if_absent` found the scope slot already
+                // claimed by an earlier annotated Let, the annotated Let will inject the
+                // definitive cell; skip emission here to prevent duplicate `(entity, member)`
+                // cells. Silent `continue` — before `compile_expr`, no cell, no diagnostic.
+                if pass1_param_skipped.contains(name) {
+                    continue;
+                }
                 if !structure_members.contains_key(name) {
                     // Inject default param into value_cells
                     let cell_id = ValueCellId {

@@ -84,6 +84,7 @@ pub(crate) fn check_trait_conformance(
         &structure_constraint_labels,
         inferred_let_exprs,
         &pass1_skipped,
+        &pass1_param_skipped,
         &pass2_skipped,
         &pass2_compile_errors,
         scope,
@@ -2983,6 +2984,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         let pass1_skipped: HashSet<String> = HashSet::new();
+        let pass1_param_skipped: HashSet<String> = HashSet::new();
         check_phase_inject_defaults(
             &ctx,
             &entity_ref,
@@ -2990,6 +2992,7 @@ mod tests {
             &structure_constraint_labels,
             inferred_let_exprs,
             &pass1_skipped,
+            &pass1_param_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
             &mut scope,
@@ -3115,6 +3118,7 @@ mod tests {
         // `check_phase_inject_defaults` to accept `pass1_skipped: &HashSet<String>`.
         let mut pass1_skipped: HashSet<String> = HashSet::new();
         pass1_skipped.insert("x".to_string());
+        let pass1_param_skipped: HashSet<String> = HashSet::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
         let mut scope = CompilationScope::new("S");
@@ -3130,6 +3134,7 @@ mod tests {
             &structure_constraint_labels,
             inferred_let_exprs,
             &pass1_skipped,
+            &pass1_param_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
             &mut scope,
