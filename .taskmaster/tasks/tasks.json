@@ -47225,14 +47225,13 @@
           ],
           "memory_hints": {
             "entities": [
-              "pass1_skipped",
+              "conformance.rs",
               "pass1_param_skipped",
-              "conformance checker.rs",
-              "check_phase_inject_defaults"
+              "two-pass pre-register"
             ],
             "queries": [
-              "conformance pass1_skipped Param losers two-pass cell duplication fix",
-              "annotated_let_wins_param_loses known_asymmetry regression test trait_merge_tests"
+              "conformance pass1 pass2 two-pass pre-register split structure",
+              "param losers reverse-direction cell duplication conformance"
             ]
           }
         }
