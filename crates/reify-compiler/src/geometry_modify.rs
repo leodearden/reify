@@ -391,9 +391,17 @@ mod tests {
     /// Returns the canonical test-table for all single-geometry-target modify kinds:
     /// `(ModifyKind, fn_name, tail_arg_names)`.
     ///
-    /// The exhaustiveness closure below has **no wildcard arm**.  Adding a new `ModifyKind`
-    /// variant will cause a compile error here, forcing an explicit classify-or-skip
-    /// decision before the new kind silently escapes regression coverage.
+    /// ## Exhaustiveness guarantees
+    ///
+    /// **First-line tripwire** — the no-wildcard closure below has no wildcard arm.  Adding a new
+    /// `ModifyKind` variant causes a compile error here, drawing the author's attention before
+    /// the new kind can silently escape regression coverage.
+    ///
+    /// **Compile-time coverage lock** — `const _: () = assert!(CASES.len() ==
+    /// ModifyKind::VARIANT_COUNT, ...)` immediately after the `CASES` declaration makes it a hard
+    /// compile error (caught at `cargo check`) to add a variant without also extending `CASES`.
+    /// The pattern follows `crates/reify-kernel-occt/src/lib.rs:36` which uses the same idiom to
+    /// pin a Rust/C++ floor-constant invariant.
     fn single_geom_target_kinds() -> &'static [(ModifyKind, &'static str, &'static [&'static str])] {
         static CASES: &[(ModifyKind, &str, &[&str])] = &[
             (ModifyKind::Chamfer, "chamfer", &["distance"]),
@@ -402,8 +410,15 @@ mod tests {
             (ModifyKind::Shell, "shell", &["thickness"]),
             (ModifyKind::Draft, "draft", &["angle", "plane"]),
         ];
-        // Exhaustiveness sentinel: no wildcard arm ensures a new ModifyKind variant
-        // causes a compile error here, requiring an explicit update to this table.
+        // Compile-time coverage lock: if CASES.len() ever falls out of step with
+        // ModifyKind::VARIANT_COUNT, `cargo check` fails here before any test runs.
+        const _: () = assert!(
+            CASES.len() == ModifyKind::VARIANT_COUNT,
+            "CASES table must cover every ModifyKind variant \
+             — bump ModifyKind::VARIANT_COUNT and add the new entry to CASES together"
+        );
+        // Exhaustiveness sentinel (first-line tripwire): no wildcard arm ensures a new
+        // ModifyKind variant causes a compile error here, requiring an explicit update.
         let _ = |k: ModifyKind| match k {
             ModifyKind::Chamfer
             | ModifyKind::Fillet
