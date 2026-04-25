@@ -47774,13 +47774,12 @@
           ],
           "memory_hints": {
             "entities": [
-              "check_trait_conformance",
-              "Type::TraitObject",
-              "conformance.rs"
+              "check_trait_conformance"
             ],
             "queries": [
-              "trait conformance Option TraitObject collection types reify-compiler",
-              "call site handling for collection-typed trait parameters"
+              "Option TraitObject collection-typed trait params conformance call sites",
+              "trait conformance conformance.rs check_trait_conformance",
+              "trait param types collection Option handling"
             ]
           }
         }
