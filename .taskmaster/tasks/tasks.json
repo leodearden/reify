@@ -42785,14 +42785,11 @@
             "crates/reify-test-support/src/helpers.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "geometry_ops.rs",
-              "Draft geometry op",
-              "step_handles"
-            ],
+            "entities": [],
             "queries": [
-              "Draft geometry op plane expression evaluation reify",
-              "step_handles last placeholder geometry ops"
+              "Draft geometry op plane expression step_handles last placeholder",
+              "geometry functions draft evaluate plane expression",
+              "geometry ops draft compile evaluate non-geom-target fallback"
             ]
           }
         },
