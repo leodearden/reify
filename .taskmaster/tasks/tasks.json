@@ -47584,12 +47584,12 @@
           ],
           "memory_hints": {
             "entities": [
-              "compile_with_stdlib",
-              "compile_with_prelude_refs"
+              "reify-compiler",
+              "module resolution"
             ],
             "queries": [
-              "module resolution not yet implemented import warning compiler",
-              "stdlib prelude compile_with_stdlib single module entry point"
+              "compiler module resolution not yet implemented import warning",
+              "single-module entry point reify compiler"
             ]
           }
         }
@@ -47611,7 +47611,18 @@
             "crates/reify-compiler/src/conformance",
             "crates/reify-compiler/src/entity.rs",
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "check_trait_conformance",
+              "Type::TraitObject",
+              "conformance.rs"
+            ],
+            "queries": [
+              "trait conformance Option TraitObject collection types reify-compiler",
+              "call site handling for collection-typed trait parameters"
+            ]
+          }
         }
       },
       {
