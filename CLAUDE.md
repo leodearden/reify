@@ -6,6 +6,18 @@ The orchestrator verify pipeline requires `sccache` on PATH (install via `cargo 
 
 This repo ships its git hooks under `hooks/` rather than `.git/hooks/`. `scripts/setup-dev.sh` configures `git config core.hooksPath hooks` so the post-commit tasks.json ID normalizer (`hooks/post-commit`) runs automatically. Re-run `setup-dev.sh` if you need to re-configure.
 
+### Single-command GUI launch
+
+From a clean checkout, two wrapper scripts collapse the full sidecar → npm install → npm build → cargo build → launch pipeline into a single command. Both scripts export `LD_LIBRARY_PATH` for OCCT's bundled snap shared libraries automatically — no need to set it yourself.
+
+- **`scripts/run-gui.sh <file.ri>`** — release-mode launch (default). Builds `gui/dist`, the cargo `--release` binary, and execs `target/release/reify-gui`. No vite, no devtools, no `:3939` debug listener — matches what end users will eventually run from a bundled distribution.
+- **`scripts/run-gui-dev.sh <file.ri>`** — dev-mode launch. Starts vite dev server on `:1420` (with HMR), waits for readiness, builds the cargo binary in debug profile, sets `REIFY_DEBUG=1`, and runs `target/debug/reify-gui` as a child process. `REIFY_DEBUG=1` opens an MCP debug listener on `127.0.0.1:3939` (see `gui/src-tauri/src/main.rs`). The script reaps the vite background process via an EXIT trap when reify-gui exits.
+
+If the `reify` binary is already built, two equivalent CLI entry points work without re-running the wrapper:
+
+- **`reify gui --debug <file.ri>`** — `--mcp` is accepted as an alias for `--debug`.
+- **`reify gui-debug <file.ri>`** — sugar for `gui --debug`; both route through the same code path and propagate `REIFY_DEBUG=1` to the spawned `reify-gui` subprocess.
+
 ## Memory Usage
 
 ### When to read memory
