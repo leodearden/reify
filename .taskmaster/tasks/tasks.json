@@ -47676,18 +47676,23 @@
         "description": "In `crates/reify-eval/src/engine_edit.rs`, edit_param Phase 3 uses `.expect(\"guard cell must have a value after initial evaluation\")` (~line 1011) while the symmetric edit_source Phase 3 (~line 2080) uses a defensive `let Some(guard_val) = ... else { continue; };`.\n\nAfter the `group_needs_phase3` refactor (task 2146), a guard cell can be classified `needs_phase3 = true` purely because `old_guard_val.is_some() && new_val.is_none()` — i.e. the guard cell disappeared from `values`. In that case edit_param will panic, while edit_source silently continues. This is a pre-existing asymmetry the recent refactor preserves rather than introduces, but the new code path makes it reachable in principle.\n\nFix options:\n- Replace `.expect(...)` in edit_param Phase 3 with `let Some(guard_val) = ... else { continue; };` matching edit_source.\n- Or add a `debug_assert!` plus graceful fallback so debug builds catch the invariant violation while release builds don't crash.\n\nEither both panic or both skip — pick one and apply symmetrically.\n\nSource: post-merge review suggestion on task 2146 (esc-2146-26, reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T08:12:44.298Z"
+        "updatedAt": "2026-04-25T08:12:48.484Z",
+        "metadata": {
+          "done_provenance": {
+            "note": "branch already on main at workflow start (pre-PLAN recovery)"
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T08:12:44.331Z",
+      "lastModified": "2026-04-25T08:12:48.495Z",
       "taskCount": 2218,
-      "completedCount": 1973,
+      "completedCount": 1974,
       "tags": [
         "master"
       ]
