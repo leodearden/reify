@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{ContentHash, ConstraintNodeId, ModulePath, Satisfaction, SourceSpan};
+use reify_types::{ContentHash, ConstraintNodeId, ModulePath, Satisfaction, SourceSpan, VersionId};
 use tower_lsp::lsp_types::{self, Url};
 
 use crate::analysis::module_name_from_uri;
@@ -96,15 +96,23 @@ pub fn compute_diagnostics_with_state(
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
 
-    // Cold-start eval (source text change invalidates all cached state)
+    // Eval: use incremental eval_cached when structure unchanged, else cold-start.
     state.version_counter += 1;
 
-    // Create a fresh Engine for each source change to ensure clean state.
-    // True source-level incrementality (diffing compiled modules) is future work.
-    let checker = SimpleConstraintChecker;
-    state.engine = reify_eval::Engine::new(Box::new(checker), None);
+    let structure_unchanged = state
+        .last_content_hash
+        .map(|h| h == compiled.content_hash)
+        .unwrap_or(false);
 
-    let _eval_result = state.engine.eval(&compiled);
+    if structure_unchanged && state.engine.is_initialized() {
+        let _ = state
+            .engine
+            .eval_cached(&compiled, VersionId(state.version_counter));
+    } else {
+        let checker = SimpleConstraintChecker;
+        state.engine = reify_eval::Engine::new(Box::new(checker), None);
+        let _ = state.engine.eval(&compiled);
+    }
 
     // Check constraints from snapshot, falling back to full check() if snapshot is absent
     let check_result = match state.engine.check_snapshot(&compiled) {
