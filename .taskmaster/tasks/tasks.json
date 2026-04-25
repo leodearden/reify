@@ -47226,11 +47226,11 @@
         "description": "Task 397 introduced the `pub(crate) eval_ctx_with_meta` helper in crates/reify-eval/src/lib.rs and converted the engine_eval.rs and engine_edit.rs call sites, but 8 inlined `EvalContext::new(values, functions).with_meta(meta_map)` call sites remain in sibling modules of the same crate. Convert them and fix a small related doc-comment truncation.",
         "details": "## Scope\n\n1. Convert the 8 remaining inlined call sites to `eval_ctx_with_meta(...)`:\n   - crates/reify-eval/src/unfold.rs: lines 88, 124, 316, 321, 549\n   - crates/reify-eval/src/geometry_ops.rs: lines 55, 124, 335\n   (concurrent.rs:467 uses a different values source — review case-by-case.)\n\n2. Fix the truncated doc comment on `eval_ctx_with_meta` in\n   crates/reify-eval/src/lib.rs:417-418. The final bullet currently ends\n   mid-sentence: \"...passed to `EvalContext::with_meta` so that `MetaAccess`\n   expressions resolve\" — finish the sentence.\n\n## Motivation\n\n`eval_ctx_with_meta` is documented as the \"Canonical construction point for\nan EvalContext with meta-map binding\" but 8 sibling call sites still use the\ninlined pattern, undermining the claim and allowing future drift if the\nhelper grows in scope.\n\n## Acceptance\n\n- `git grep \"EvalContext::new.*with_meta\" crates/reify-eval/src` returns only\n  the helper body itself (or explicitly-annotated exceptions).\n- cargo test -p reify-eval passes.\n- Doc comment terminates with a complete sentence and period.\n\n## Source\n\nFollow-up from task 397 review (esc-397-72 suggestions 1 and 3).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T14:12:16.741Z",
+        "updatedAt": "2026-04-25T06:58:10.303Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/concurrent.rs",
@@ -47247,11 +47247,11 @@
         "description": "The 5-line `Arc::new(module.templates.iter().filter(|t| !t.meta.is_empty()).map(|t| (t.name.clone(), t.meta.clone())).collect())` incantation is duplicated verbatim in three sibling modules after task 397's Arc refactor. Extract a helper so future meta_map shape changes (interning, filter rules) only land in one place.",
         "details": "## Scope\n\nAdd a small helper in crates/reify-eval/src/lib.rs alongside\n`eval_ctx_with_meta`:\n\n```rust\npub(crate) fn build_meta_map(\n    module: &CompiledModule,\n) -> Arc<HashMap<String, HashMap<String, String>>> {\n    Arc::new(\n        module\n            .templates\n            .iter()\n            .filter(|t| !t.meta.is_empty())\n            .map(|t| (t.name.clone(), t.meta.clone()))\n            .collect(),\n    )\n}\n```\n\nReplace the three duplicate call sites:\n- crates/reify-eval/src/engine_eval.rs ~line 203\n- crates/reify-eval/src/engine_eval.rs ~line 1062\n- crates/reify-eval/src/engine_edit.rs ~line 1442\n\n(Line numbers per escalation esc-397-72; verify against current HEAD.)\n\n## Acceptance\n\n- `git grep \"filter(|t| !t.meta.is_empty())\" crates/reify-eval/src` returns\n  only the helper.\n- cargo test -p reify-eval passes.\n\n## Source\n\nFollow-up from task 397 review (esc-397-72 suggestion 2).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T14:13:03.597Z",
+        "updatedAt": "2026-04-25T06:58:10.433Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -47283,11 +47283,11 @@
         "description": "Extract a small helper for the `Arc::new(module.templates.iter().filter(|t| !t.meta.is_empty()).map(|t| (t.name.clone(), t.meta.clone())).collect())` incantation now duplicated in three sites after task 397's Arc refactor.",
         "details": "Add `build_meta_map(module: &CompiledModule) -> Arc<HashMap<String, HashMap<String, String>>>` in crates/reify-eval/src/lib.rs next to `eval_ctx_with_meta`, and call it from:\n- crates/reify-eval/src/engine_eval.rs ~203\n- crates/reify-eval/src/engine_eval.rs ~1062\n- crates/reify-eval/src/engine_edit.rs ~1442\n\nAcceptance: only one occurrence of `filter(|t| !t.meta.is_empty())` across crates/reify-eval/src; cargo test -p reify-eval passes.\n\nSource: follow-up from task 397 review (esc-397-72 suggestion 2).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-24T14:14:21.861Z",
+        "updatedAt": "2026-04-25T06:58:10.557Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs",
@@ -47410,7 +47410,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-25T06:58:10.173Z",
+      "lastModified": "2026-04-25T06:58:10.557Z",
       "taskCount": 2213,
       "completedCount": 1966,
       "tags": [
