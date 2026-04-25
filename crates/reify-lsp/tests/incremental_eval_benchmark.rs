@@ -82,6 +82,9 @@ fn content_hash_changes_for_different_source() {
 }
 
 /// Timing baseline: 10 cold-start evals vs 10 incremental eval_cached calls.
+/// Asserts the relative-ordering invariant: the eval_cached path must be strictly faster
+/// than 10 cold starts. This catches silent regressions where eval_cached degenerates
+/// into a full cold-start without any correctness failure.
 /// Ignored in normal CI runs to avoid flakiness — run with `cargo test -- --ignored`.
 #[test]
 #[ignore]
@@ -117,7 +120,19 @@ fn timing_cold_start_vs_incremental_baseline() {
         "[timing] 10× cold-start: {:?}  |  10× incremental (eval_cached): {:?}",
         cold_start, incremental
     );
-    // No hard assertion — wall-clock timing is flaky in CI.
-    // This test exists as a diagnostic: run with `cargo test -p reify-lsp -- --ignored --nocapture`
-    // to observe the speedup.
+
+    // Loose sanity assertion: the eval_cached path must be strictly faster than 10 cold starts.
+    // This is categorical — it only fires if the cache-hit path degenerates to cold-start speed,
+    // not if it is merely "slower than expected by some ratio." No ratio is pinned because the
+    // exact speedup varies by machine; the ordering is what matters.
+    //
+    // The test remains #[ignore]d to keep wall-clock work out of normal CI runs (timing is
+    // inherently flaky on shared runners). Run with:
+    //   cargo test -p reify-lsp -- --ignored --nocapture
+    assert!(
+        incremental < cold_start,
+        "incremental eval_cached path must be faster than 10× cold-start; \
+         if not, eval_cached has likely degenerated into a cold-start. \
+         cold_start={cold_start:?}, incremental={incremental:?}",
+    );
 }
