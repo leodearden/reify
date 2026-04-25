@@ -47122,7 +47122,19 @@
           "modules": [
             "crates/reify-compiler/src/geometry_modify.rs",
             "crates/reify-compiler/src/types.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "ModifyKind",
+              "single_geom_target_kinds",
+              "CASES"
+            ],
+            "queries": [
+              "geometry_modify.rs exhaustiveness sentinel CASES table",
+              "ModifyKind variant count compile-time assert",
+              "single_geom_target_kinds CASES membership enforcement approach"
+            ]
+          }
         }
       },
       {
