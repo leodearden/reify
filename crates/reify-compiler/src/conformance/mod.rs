@@ -273,10 +273,8 @@ pub(crate) fn check_trait_arg_conformance(
 /// `conformance/checker.rs` emission site in `check_phase_resolve_structure_members`
 /// fires in both debug and release builds).
 ///
-/// **Closest integration-level siblings** that cover the *parser-reachable*
+/// **Closest integration-level sibling** that covers the *parser-reachable*
 /// scenarios:
-/// - `phantom_let_advertisement_contract_for_future_parser_extension`
-///   (`tests/trait_merge_tests.rs:1445`)
 /// - `reject_unresolved_type_in_trait_conformance`
 ///   (`tests/boundary1_consumer.rs:280`)
 ///
@@ -474,13 +472,12 @@ mod tests {
 
     /// Unit test for the Option B fix (task 1951).
     ///
-    /// This test exercises the code path the integration-level
-    /// `phantom_let_advertisement_contract_for_future_parser_extension` test in
-    /// `trait_merge_tests.rs` CANNOT reach: it hand-builds a `RequirementKind::Let`
-    /// requirement (not parseable from reify source today — see
-    /// `let_type_disambiguation_tests.rs:470-497` and esc-1951-6) and verifies that
-    /// the Option B guard in `available_defaults` suppresses the phantom
-    /// `(name, Let) -> Type::Real` entry for names recorded in `pass2_skipped`.
+    /// This test exercises a code path no `compile_source`-based integration test can
+    /// reach today: it hand-builds a `RequirementKind::Let` requirement (not parseable
+    /// from reify source — see `let_type_disambiguation_tests.rs:470-497` and
+    /// esc-1951-6) and verifies that the Option B guard in `available_defaults`
+    /// suppresses the phantom `(name, Let) -> Type::Real` entry for names recorded in
+    /// `pass2_skipped`.
     ///
     /// ## Scenario
     ///
