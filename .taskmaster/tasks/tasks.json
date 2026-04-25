@@ -47474,7 +47474,19 @@
             "crates/reify-eval/src/lib.rs",
             "crates/reify-eval/tests/edit_source.rs",
             "crates/reify-eval/tests/value_cell_type_invariants.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "ASSERT_MSG_PREFIX",
+              "engine_eval.rs",
+              "value_cell_type_invariants"
+            ],
+            "queries": [
+              "ASSERT_MSG_PREFIX constant pub crate visibility integration tests reify-eval",
+              "value cell TypeParam panic message grammar engine_eval cfg debug_assertions"
+            ]
+          },
+          "_causation_id": "6964b007-e4e0-4e06-a277-cb1ab4f1ea89"
         }
       },
       {
