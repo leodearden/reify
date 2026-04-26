@@ -47994,6 +47994,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T06:28:03.063Z"
+      },
+      {
+        "id": "2238",
+        "title": "Make ModifyKind::ALL private; expose iter() if needed",
+        "description": "In `crates/reify-compiler/src/types.rs:613`, `ModifyKind::ALL` is declared `pub(crate)` but workspace search shows only `VARIANT_COUNT` is consumed externally. Exposing `ALL` crate-wide invites unrelated callers to depend on the array's order/length, defeating its documented role as the single internal source of truth.\n\nFix: drop the `pub(crate)` modifier so `ALL` becomes a private associated const. Keep `VARIANT_COUNT` `pub` since the test in `geometry_modify` consumes it. If a future caller needs to iterate variants, expose a deliberately-ordered method (e.g. `pub fn iter() -> impl Iterator<Item = Self>`) rather than leaking the array.\n\nVerification: `cargo check -p reify-compiler` and `cargo test -p reify-compiler` should both pass — no current external consumers of `ALL` exist.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48003,7 +48014,10 @@
       "completedCount": 1981,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T06:34:14.020Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T06:34:14.043Z"
     }
   }
 }
