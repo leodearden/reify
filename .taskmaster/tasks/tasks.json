@@ -50314,6 +50314,15 @@
             "dependencies": [],
             "parentTaskId": 2324,
             "parentId": "undefined"
+          },
+          {
+            "id": "2",
+            "title": "FFI: point_on_shape membership",
+            "description": "[Sibling of 2324.1] OCCT FFI primitive only — tests whether a point lies on a face/edge/vertex within tolerance. Stdlib wiring stays at parent 2324.",
+            "details": "Scope: ONE FFI primitive only. NO stdlib registration, NO eval-pipeline wiring — parent 2324 retains those after all three FFI subtasks land.\n\nApproach: distance-based test using BRepExtrema_DistShapeShape — point_on_shape(P, S) ≡ distance(P, S) ≤ tol. Or use BRepClass_FaceClassifier directly. Pick one and document.\n\nFiles to touch:\n- crates/reify-kernel-occt/cpp/occt_wrapper.{h,cpp}\n- crates/reify-kernel-occt/src/ffi.rs\n- crates/reify-kernel-occt/src/lib.rs\n- crates/reify-kernel-occt/src/stubs.rs\n- crates/reify-kernel-occt/tests/\n\nTolerance: parameter, default Precision::Confusion().\n\nCONTEXT: Task 319 is marked done but its FFI is not in the codebase (grep confirmed). docs/prds/topology-selectors.md does not exist. Implement from scratch.\n\nMay share C wrapper with 2324.1 if distance-based.",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 2324
           }
         ],
         "updatedAt": "2026-04-26T20:17:21.929Z",
@@ -51022,7 +51031,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:22:51.845Z",
+      "description": "Tasks for master context"
     }
   }
 }
