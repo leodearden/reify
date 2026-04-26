@@ -11,3 +11,15 @@
 
 // f(p) = 300.0 + 50.0 * p  — linear temperature profile
 field def temperature_distribution : Real -> Real { source = analytical { |p| 300.0 + 50.0 * p } }
+
+// ── Sampled field ─────────────────────────────────────────────────────────────
+
+// Grid-based field with linear interpolation (runtime data pending).
+// The sampled lambda is Value::Undef until field-data infrastructure lands;
+// the source kind is verified via metadata only (not sampled at runtime).
+field def material_density : Real -> Real { source = sampled { resolution = 100  interpolation = linear } }
+
+// ── Composed field ────────────────────────────────────────────────────────────
+
+// f(p) = 2.0 * p + 1.0  — linear stiffness composition (self-contained lambda)
+field def composed_stiffness : Real -> Real { source = composed { |p| 2.0 * p + 1.0 } }
