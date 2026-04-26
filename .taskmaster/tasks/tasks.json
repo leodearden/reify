@@ -48688,7 +48688,13 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T09:43:33.660Z"
+        "updatedAt": "2026-04-26T09:43:33.660Z",
+        "metadata": {
+          "modules": [
+            "scripts/refresh_briefing_known_gaps.py",
+            "tests/infra/test_refresh_briefing_known_gaps.sh"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -48698,7 +48704,9 @@
       "completedCount": 2012,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T09:47:09.141Z",
+      "description": "Tasks for master context"
     }
   }
 }
