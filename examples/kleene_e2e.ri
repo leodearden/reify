@@ -12,4 +12,5 @@ structure def Foo {
 
     let p1 = a && b         // Kleene AND absorption: undef && false = false
     let p2 = a || true      // Kleene OR absorption: undef || true = true
+    let p3 = !b || a        // b implies a (de-Morgan); b=false makes the premise vacuously true → result Bool(true) regardless of a
 }
