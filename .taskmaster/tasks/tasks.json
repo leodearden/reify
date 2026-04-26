@@ -51022,6 +51022,19 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2367",
+        "title": "forall statement-form: LSP diagnostic surfaces element index on per-element failure",
+        "description": "Implement an LSP diagnostic for the forall statement-form that reports the element index on constraint violation.",
+        "details": "To implement this feature, modify the LSP diagnostic logic to include the index of the element in the source iteration when a constraint violation occurs in a forall statement-form. This requires updating the diagnostic generation code to capture and report the index of the failing element. Refer to the PRD document at docs/prds/forall-statement-form.md, specifically task 6 and acceptance criterion 10, for detailed requirements. Ensure that the diagnostic message format clearly indicates the element index and the nature of the violation.",
+        "testStrategy": "Create unit tests to verify that the diagnostic correctly reports the element index for various constraint violations in forall statements. Include tests with multiple elements to ensure the index is accurately reported for each failing element. Run the full test suite to confirm no regressions and that the new diagnostics integrate smoothly with existing LSP functionality.",
+        "status": "pending",
+        "dependencies": [
+          "63"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51033,7 +51046,8 @@
         "master"
       ],
       "created": "2026-04-26T20:22:51.845Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:22:57.705Z"
     }
   }
 }
