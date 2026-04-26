@@ -76,6 +76,61 @@ pub enum NodeCommitmentOverride {
     OnlyRunOnFinalInputs,
 }
 
+/// Per-node commitment policy overrides, settable per instance and per type.
+///
+/// Implements the precedence chain from architecture §7.3 (lines 751–767):
+///   1. **Instance override** — highest priority; set via [`set_instance`](Self::set_instance)
+///   2. **Type override** — applied by [`NodeKind`]; set via [`set_type`](Self::set_type)
+///   3. **Default** — [`NodeCommitmentOverride::CommitIfSlow`] (lowest priority)
+///
+/// The struct is freestanding — [`SchedulerConfig`] continues to use its own
+/// per-instance `HashMap<NodeId, NodeCommitmentOverride>` for now.  A follow-up
+/// task can refactor `SchedulerConfig` to consume `NodePolicyOverrides`.
+///
+/// [`SchedulerConfig`]: crate::concurrent::SchedulerConfig
+#[derive(Clone, Debug, Default)]
+pub struct NodePolicyOverrides {
+    instance_overrides: HashMap<NodeId, NodeCommitmentOverride>,
+    type_overrides: HashMap<NodeKind, NodeCommitmentOverride>,
+}
+
+impl NodePolicyOverrides {
+    /// Create a new, empty set of overrides (alias for [`Default::default`]).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set a per-instance override for `node_id`.
+    ///
+    /// Overwrites any previous value for this node.
+    pub fn set_instance(&mut self, node_id: NodeId, override_: NodeCommitmentOverride) {
+        self.instance_overrides.insert(node_id, override_);
+    }
+
+    /// Set a per-type override for all nodes of the given [`NodeKind`].
+    ///
+    /// Overwrites any previous value for this kind.
+    pub fn set_type(&mut self, kind: NodeKind, override_: NodeCommitmentOverride) {
+        self.type_overrides.insert(kind, override_);
+    }
+
+    /// Resolve the effective [`NodeCommitmentOverride`] for `node_id`.
+    ///
+    /// Precedence (highest → lowest):
+    /// 1. Instance override (if set for this exact node)
+    /// 2. Type override (if set for the node's [`NodeKind`])
+    /// 3. [`NodeCommitmentOverride::default()`] (`CommitIfSlow`)
+    pub fn resolve(&self, node_id: &NodeId) -> NodeCommitmentOverride {
+        if let Some(o) = self.instance_overrides.get(node_id) {
+            return *o;
+        }
+        if let Some(o) = self.type_overrides.get(&NodeKind::of(node_id)) {
+            return *o;
+        }
+        NodeCommitmentOverride::default()
+    }
+}
+
 /// Progress information for a running task, used by the commitment decision function.
 ///
 /// Captures elapsed time, optional self-reported progress, and optional
@@ -560,6 +615,30 @@ mod tests {
 
     fn make_resolution_node(entity: &str, idx: u32) -> NodeId {
         NodeId::Resolution(reify_types::ResolutionNodeId::new(entity, idx))
+    }
+
+    // --- NodePolicyOverrides tests ---
+
+    #[test]
+    fn node_policy_overrides_default_resolves_to_commit_if_slow() {
+        let overrides_new = NodePolicyOverrides::new();
+        let overrides_default = NodePolicyOverrides::default();
+        let node = make_node("x");
+
+        // Both constructors resolve to the default CommitIfSlow
+        assert_eq!(
+            overrides_new.resolve(&node),
+            NodeCommitmentOverride::CommitIfSlow
+        );
+        assert_eq!(
+            overrides_default.resolve(&node),
+            NodeCommitmentOverride::CommitIfSlow
+        );
+        // It should also equal NodeCommitmentOverride::default()
+        assert_eq!(
+            overrides_new.resolve(&node),
+            NodeCommitmentOverride::default()
+        );
     }
 
     // --- NodeKind tests ---
