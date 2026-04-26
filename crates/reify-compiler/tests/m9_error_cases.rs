@@ -185,7 +185,16 @@ structure def Vehicle : HasEngine {
 /// A structure passed as a trait-typed param argument that does not declare the
 /// required trait should produce "does not conform to trait" diagnostic.
 ///
-/// Exercises conformance/mod.rs check_trait_arg_conformance StructureRef arm.
+/// Exercises conformance/mod.rs check_trait_arg_conformance StructureRef arm
+/// (Type::StructureRef path, conformance/mod.rs:183).
+///
+/// Coverage note: the TraitObject arm (Type::TraitObject, mod.rs:205) is covered
+/// by `trait_object_arg_does_not_conform` below. The fallback `_` arm (mod.rs:225),
+/// which fires for non-structure/non-trait arguments such as bare numeric literals
+/// passed to trait-typed params, is not covered by an explicit test here; the arm's
+/// anti-cascade guard (suppresses when arg_type is Int/Real AND arg_call_name is
+/// Some) makes it hard to reach in isolation without risking a secondary "undefined
+/// function" diagnostic, so coverage is acknowledged-missing rather than attempted.
 #[test]
 fn type_does_not_conform_to_trait() {
     // Plain does not declare `: Material`, so passing Plain() where Material
@@ -221,6 +230,112 @@ structure def Top { sub h = Host(m: Plain()) }
     assert!(
         has_code,
         "expected DiagnosticCode::TypeNotConformingToTrait, got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let first = errors[0];
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+}
+
+/// A trait-object-typed parameter passed where a different (non-refining) trait
+/// is required should produce "does not conform to trait" diagnostic.
+///
+/// Exercises conformance/mod.rs check_trait_arg_conformance TraitObject arm
+/// (Type::TraitObject path, conformance/mod.rs:205).  `Electrical` does not
+/// refine `Mechanical`, so `trait_satisfies` returns false and the diagnostic
+/// fires with TypeNotConformingToTrait.
+#[test]
+fn trait_object_arg_does_not_conform() {
+    let source = r#"
+trait Mechanical {}
+trait Electrical {}
+structure def Host { param m : Mechanical }
+structure def Top {
+    param e : Electrical
+    sub h = Host(m: e)
+}
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for incompatible trait-object arg, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_msg = errors.iter().any(|d| {
+        d.message.contains("does not conform to trait") && d.message.contains("Mechanical")
+    });
+    assert!(
+        has_msg,
+        "expected 'does not conform to trait' mentioning 'Mechanical', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let has_code = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait));
+    assert!(
+        has_code,
+        "expected DiagnosticCode::TypeNotConformingToTrait, got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let first = errors[0];
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+}
+
+/// A trait with a let binding whose explicit type annotation is incompatible
+/// with the expression's inferred type should produce a TypeMismatchForTraitMember
+/// diagnostic when the default is injected into a conforming structure.
+///
+/// Exercises conformance/checker.rs check_phase_inject_defaults annotation
+/// cross-check (checker.rs line ~1176).  The annotation `Mass` is incompatible
+/// with the Real-typed literal `1.5`, so type_compatible(Mass, Real) returns
+/// false and the diagnostic fires.
+#[test]
+fn trait_let_annotation_type_mismatch() {
+    let source = r#"
+trait BadAnnotation {
+    let score : Mass = 1.5
+}
+structure def S : BadAnnotation { }
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for trait let annotation mismatch, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_msg = errors.iter().any(|d| {
+        d.message.contains("type mismatch for trait let") && d.message.contains("score")
+    });
+    assert!(
+        has_msg,
+        "expected 'type mismatch for trait let' mentioning 'score', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let has_code = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::TypeMismatchForTraitMember));
+    assert!(
+        has_code,
+        "expected DiagnosticCode::TypeMismatchForTraitMember, got: {:?}",
         errors
             .iter()
             .map(|d| (d.code, &d.message))
