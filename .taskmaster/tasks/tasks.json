@@ -51232,6 +51232,19 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2381",
+        "title": "Money dimension: cost-aggregation stdlib idiom + canonical example",
+        "description": "Design a helper trait or pattern to iterate over `Buy` occurrences and sum `unit_cost * quantity_produced` into a `Scalar<Money>`.",
+        "details": "Implement a helper trait or pattern in the stdlib that efficiently aggregates costs by iterating over `Buy` occurrences within a given scope. This trait should compute the total cost by multiplying `unit_cost` by `quantity_produced` for each occurrence and summing the results into a `Scalar<Money>`. Ensure the implementation is efficient and integrates seamlessly with existing stdlib components. Additionally, create a canonical example in `examples/cost_aggregation.ri` to demonstrate the usage of this idiom. Reference the PRD in `docs/prds/money-dimension.md`, specifically task 5 and specification section 11, to align with the project requirements.",
+        "testStrategy": "1. Write unit tests to verify that the trait correctly aggregates costs from multiple `Buy` occurrences. \n2. Ensure the example in `examples/cost_aggregation.ri` compiles and runs, demonstrating the correct aggregation of costs. \n3. Use `cargo test -p reify-compiler -- cost_aggregation` to run all relevant tests and ensure no regressions occur in related modules.",
+        "status": "pending",
+        "dependencies": [
+          "339"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51244,7 +51257,7 @@
       ],
       "created": "2026-04-26T20:24:27.194Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:24:35.466Z"
+      "updated": "2026-04-26T20:24:44.120Z"
     }
   }
 }
