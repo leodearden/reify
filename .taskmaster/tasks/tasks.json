@@ -49148,7 +49148,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T12:36:36.136Z"
+        "updatedAt": "2026-04-26T12:36:36.136Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "Engine::eval_cached"
+            ],
+            "queries": [
+              "eval-diagnostics regression-lock cluster task 2248 amend simplify remove Fixture struct",
+              "eval_diagnostics_never_use_constraint_violation_format negative invariant",
+              "per-emitter test split diagnostics.rs eval-diagnostics cluster"
+            ]
+          },
+          "_causation_id": "c33dfab8-7303-4c9c-b2df-2285b4d4b6e0"
+        }
       },
       {
         "id": "2276",
