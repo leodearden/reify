@@ -50306,6 +50306,28 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:01:17.420Z"
+      },
+      {
+        "id": "2330",
+        "title": "Freshness: implement Failed failure path with error realization event",
+        "description": "PRD docs/prds/freshness-4-variant.md. Implement the Failed { error: ErrorRef } path per arch §9.1-§9.2 (lines 868-890): catch evaluation failures (panic boundary, kernel error, out-of-bounds, missing-key map lookup) and produce Failed. Emit EventKind::error realization event. Add failure-injection tests asserting forced panic in a leaf node ⇒ leaf Failed + exactly one error event emitted. Constraint violations stay separate (§9.3) — produce cached `violated`, NOT Failed; pin this with a regression test. Should reference structured DiagnosticCode variants from #2253 once available.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2331",
+        "title": "Stdlib std.stock: standard_bolt_lengths and standard_sheet_thicknesses collections",
+        "description": "Add a new prelude file crates/reify-compiler/stdlib/standard_stock.ri exposing two Length collections that @solver_hint references can point at. (1) standard_bolt_lengths: ISO 4014/4017 length series 8-100mm at the standard increments (8, 10, 12, 14, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100 mm). (2) standard_sheet_thicknesses: common metal stock gauges in mm (0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0). Both must satisfy whatever collection trait the constraint-solver discrete_set/prefer_stock integration consumes (confirm during architect — do NOT invent a new trait). Wire into crates/reify-compiler/src/stdlib_loader.rs alongside std.units, std.materials_mechanical etc., recommended module path: std.stock. Doc comments mandatory on both — they surface in LSP hover and the doc generator. Tasks #275 (compiler) and #276 (solver integration) are done; this provides the payload data they reference. PRD: docs/prds/solver-hint-payloads.md item 1.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">275, 276",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50315,7 +50337,10 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:01:55.024Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:01:55.316Z"
     }
   }
 }
