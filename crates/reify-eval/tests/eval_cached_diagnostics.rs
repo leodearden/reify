@@ -897,3 +897,241 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
     let result_b2 = engine_b.eval_cached(&module, VersionId(2));
     assert_b_invariants("second eval_cached() call (VersionId(2))", &engine_b, &result_b2);
 }
+
+// ── task-2268: wording-parity locks ────────────────────────────────────────────
+
+/// Shared assertion helper for the eval-vs-eval_cached wording-parity tests below.
+///
+/// Asserts that exactly one diagnostic matching `predicate` is emitted by each
+/// path, and that the two messages are byte-identical.  Now that both paths route
+/// through a shared helper, divergence is mechanically impossible unless the helper
+/// itself is modified — at which point the count assertions still catch off-by-one
+/// regressions.
+fn assert_diag_parity<F>(
+    eval_diags: &[Diagnostic],
+    cached_diags: &[Diagnostic],
+    predicate: F,
+    label: &str,
+) where
+    F: Fn(&Diagnostic) -> bool,
+{
+    let msgs_eval: Vec<&str> = eval_diags
+        .iter()
+        .filter(|d| predicate(d))
+        .map(|d| d.message.as_str())
+        .collect();
+    let msgs_cached: Vec<&str> = cached_diags
+        .iter()
+        .filter(|d| predicate(d))
+        .map(|d| d.message.as_str())
+        .collect();
+
+    assert_eq!(
+        msgs_eval.len(),
+        1,
+        "eval() must emit exactly one {label} diagnostic; got: {eval_diags:?}",
+    );
+    assert_eq!(
+        msgs_cached.len(),
+        1,
+        "eval_cached() must emit exactly one {label} diagnostic; got: {cached_diags:?}",
+    );
+    assert_eq!(
+        msgs_eval[0],
+        msgs_cached[0],
+        "{label} must be byte-identical between eval() and eval_cached();\n\
+         eval():        {:?}\n\
+         eval_cached(): {:?}",
+        msgs_eval[0],
+        msgs_cached[0],
+    );
+}
+
+/// Pin the wording-parity contract for param_override rejection warnings.
+///
+/// Asserts that `eval()` and `eval_cached()` emit **byte-identical** warning
+/// messages for both `TypeKindMismatch` (Bool into Length) and
+/// `ScalarDimensionMismatch` (Mass scalar into Length).
+///
+/// These tests pass today (wording is already byte-identical at every call site)
+/// and will continue to pass after the step-2 refactor extracts the shared
+/// `emit_param_override_rejection_warning` helper.  They become regression guards:
+/// if a future fix changes the warning text at ONE call site without updating the
+/// shared helper, these assertions fire — catching the exact "future fix to one
+/// site silently fails to propagate" failure mode this task is designed to prevent.
+#[test]
+fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() {
+    // ── TypeKindMismatch: Bool override into a Length param ───────────────────
+    {
+        let x_id = ValueCellId::new("S", "x");
+
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "x",
+                Type::length(),
+                Some(CompiledExpr::literal(mm(1.0), Type::length())),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mut engine_a =
+            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine_a.set_param_and_invalidate(&x_id, Value::Bool(true));
+        let result_a = engine_a.eval(&module);
+
+        let mut engine_b =
+            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine_b.set_param_and_invalidate(&x_id, Value::Bool(true));
+        let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+        assert_diag_parity(
+            &result_a.diagnostics,
+            &result_b.eval_result.diagnostics,
+            |d| {
+                d.message.contains("param_override for")
+                    && d.message.contains("type-kind mismatch")
+            },
+            "TypeKindMismatch param_override rejection warning",
+        );
+    }
+
+    // ── ScalarDimensionMismatch: Mass-dimensioned override into a Length param ─
+    {
+        let x_id = ValueCellId::new("S", "x");
+
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "x",
+                Type::length(),
+                Some(CompiledExpr::literal(mm(1.0), Type::length())),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mass_val = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+
+        let mut engine_a =
+            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine_a.set_param_and_invalidate(&x_id, mass_val.clone());
+        let result_a = engine_a.eval(&module);
+
+        let mut engine_b =
+            Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        engine_b.set_param_and_invalidate(&x_id, mass_val);
+        let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+        assert_diag_parity(
+            &result_a.diagnostics,
+            &result_b.eval_result.diagnostics,
+            |d| {
+                d.message.contains("param_override for")
+                    && d.message.contains("dimension mismatch")
+            },
+            "ScalarDimensionMismatch param_override rejection warning",
+        );
+    }
+}
+
+/// Pin the wording-parity contract for circular let-binding diagnostics.
+///
+/// Asserts that `eval()` and `eval_cached()` emit **byte-identical** error
+/// messages for a template with two mutually-recursive let cells (`let a = b + 1.0`,
+/// `let b = a + 1.0`).
+///
+/// Passes today (wording is already identical at both call sites) and locks the
+/// contract: a future "improvement" of the error message at one site that
+/// forgets the other will cause this test to fail.
+#[test]
+fn eval_and_eval_cached_emit_byte_identical_circular_let_diagnostic() {
+    // Same cyclic fixture as eval_cached_emits_circular_let_binding_diagnostic
+    let expr_a = binop(
+        BinOp::Add,
+        value_ref_typed("S", "b", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+    let expr_b = binop(
+        BinOp::Add,
+        value_ref_typed("S", "a", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .let_binding("S", "a", Type::Real, expr_a)
+        .let_binding("S", "b", Type::Real, expr_b)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine_a =
+        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result_a = engine_a.eval(&module);
+
+    let mut engine_b =
+        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+    assert_diag_parity(
+        &result_a.diagnostics,
+        &result_b.eval_result.diagnostics,
+        |d| d.message.contains("circular let-binding dependency"),
+        "circular let-binding diagnostic",
+    );
+}
+
+/// Pin the wording-parity contract for solver `NoProgress` warnings.
+///
+/// Asserts that `eval()` and `eval_cached()` emit **byte-identical** warning
+/// messages when the constraint solver returns `SolveResult::NoProgress`.
+///
+/// Passes today (both paths format `"Constraint solver made no progress: {}"`
+/// identically) and locks the contract: a future fix at one site that forgets
+/// the other will cause this test to fail.
+///
+/// The `Infeasible` variant is not separately locked here: both paths forward
+/// solver-supplied diagnostics verbatim via `diagnostics.extend(solver_diags)`,
+/// so wording parity for `Infeasible` reduces to whatever `MockConstraintSolver`
+/// was constructed with — there is no format string to keep in sync.
+#[test]
+fn eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning() {
+    let solver_a = MockConstraintSolver::new_no_progress("iteration limit reached");
+    let solver_b = MockConstraintSolver::new_no_progress("iteration limit reached");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(1.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine_a =
+        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+            .with_solver(Box::new(solver_a));
+    let result_a = engine_a.eval(&module);
+
+    let mut engine_b =
+        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+            .with_solver(Box::new(solver_b));
+    let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+    assert_diag_parity(
+        &result_a.diagnostics,
+        &result_b.eval_result.diagnostics,
+        |d| d.message.contains("Constraint solver made no progress"),
+        "solver NoProgress warning",
+    );
+}

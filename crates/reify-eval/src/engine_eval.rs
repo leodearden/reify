@@ -280,6 +280,159 @@ fn record_eval_completed(
     });
 }
 
+/// Builds and topologically sorts the let-cell dependency graph for `template`,
+/// pushes a `Diagnostic::error` if a cycle is detected, and returns the three
+/// artefacts both call sites need.
+///
+/// Centralises the let-cycle logic so that a future fix to the error message or
+/// the cycle-detection algorithm propagates to both `evaluate_let_bindings` (the
+/// `eval()` path) and the `eval_cached()` second-pass setup simultaneously.
+///
+/// The `sorted_set` for cycle filtering is allocated **lazily** inside the
+/// `if sorted_lets.len() < let_node_ids.len()` block — mirroring the pattern in
+/// `evaluate_let_bindings` and removing the stale unconditional allocation that
+/// existed in the `eval_cached()` path before this refactor.
+fn detect_let_cycle<'a>(
+    template: &'a reify_compiler::TopologyTemplate,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (
+    HashMap<NodeId, &'a reify_types::CompiledExpr>,
+    HashMap<NodeId, DependencyTrace>,
+    Vec<NodeId>,
+) {
+    let let_cells: HashMap<NodeId, &'a reify_types::CompiledExpr> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.kind == ValueCellKind::Let)
+        .filter_map(|c| {
+            c.default_expr
+                .as_ref()
+                .map(|expr| (NodeId::Value(c.id.clone()), expr))
+        })
+        .collect();
+
+    let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
+    let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
+        .iter()
+        .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+        .collect();
+
+    let sorted_lets = topological_sort(&let_node_ids, &let_traces);
+
+    // Detect cyclic let-binding dependencies: if topological_sort dropped nodes
+    // (Kahn's algorithm silently omits nodes in cycles), report them.
+    if sorted_lets.len() < let_node_ids.len() {
+        // Build the set lazily here — sorted_lets is still iterable below.
+        let sorted_set: HashSet<&NodeId> = sorted_lets.iter().collect();
+        let mut cyclic_members: Vec<&str> = let_node_ids
+            .iter()
+            .filter(|nid| !sorted_set.contains(nid))
+            .filter_map(|nid| match nid {
+                NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                _ => None,
+            })
+            .collect();
+        cyclic_members.sort();
+        diagnostics.push(Diagnostic::error(format!(
+            "circular let-binding dependency in template {}: [{}]",
+            template.name,
+            cyclic_members.join(", "),
+        )));
+    }
+
+    (let_cells, let_traces, sorted_lets)
+}
+
+/// Builds the `ResolutionProblem` for the constraint solver from `template`'s
+/// auto-param cells and constraints, returning `None` when there are no auto
+/// cells (signalling "skip solver invocation").
+///
+/// Centralises the problem-construction logic so that both `eval()` and
+/// `eval_cached()` build identical inputs to the solver.  Each caller retains its
+/// own `match solve_result` handling because the `Solved` arm semantics diverge
+/// intentionally: `eval()`'s `Solved` arm performs snapshot/cache/journal updates
+/// while `eval_cached()`'s `Solved` arm is an intentional no-op (pinned by
+/// `eval_cached_solver_solved_arm_is_intentional_noop`).
+fn build_solver_problem(
+    template: &reify_compiler::TopologyTemplate,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> Option<ResolutionProblem> {
+    // Collect auto cells once; derive both the id-set (for constraint
+    // filtering) and the AutoParam list from the same filtered slice to
+    // avoid walking value_cells twice.
+    let auto_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|cell| cell.kind.is_auto())
+        .collect();
+
+    if auto_cells.is_empty() {
+        return None;
+    }
+
+    let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
+
+    let filtered_constraints: Vec<_> = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            let trace = extract_dependency_trace(&c.expr);
+            trace.reads.iter().any(|r| auto_ids.contains(r))
+        })
+        .map(|c| (c.id.clone(), c.expr.clone()))
+        .collect();
+
+    let auto_param_list: Vec<AutoParam> = auto_cells
+        .iter()
+        .map(|cell| AutoParam {
+            id: cell.id.clone(),
+            param_type: cell.cell_type.clone(),
+            bounds: None,
+            free: cell.kind.is_auto_free(),
+        })
+        .collect();
+
+    Some(ResolutionProblem {
+        auto_params: auto_param_list,
+        constraints: filtered_constraints,
+        current_values: values.clone(),
+        objective: template.objective.clone(),
+        functions: functions.to_vec(),
+    })
+}
+
+/// Centralises the rejection-warning vocabulary for param_override validation
+/// so that adding a future `ParamOverrideRejection` variant only requires
+/// updating this one function.
+///
+/// Call whenever `validate_param_override` returns `Err(rejection)` to push
+/// the appropriate `Diagnostic::warning` onto the accumulated diagnostics list.
+/// Replaces the three former inline match-arm blocks in `eval()`,
+/// `eval_cached()`'s unconditional pre-check, and `eval_guarded_group_param_cell`.
+fn emit_param_override_rejection_warning(
+    diagnostics: &mut Vec<Diagnostic>,
+    cell_id: &ValueCellId,
+    cell_type: &reify_types::Type,
+    override_val: &Value,
+    rejection: &ParamOverrideRejection,
+) {
+    match rejection {
+        ParamOverrideRejection::TypeKindMismatch => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
+                cell_id, cell_type, override_val
+            )));
+        }
+        ParamOverrideRejection::ScalarDimensionMismatch { expected, got } => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
+                cell_id, expected, got
+            )));
+        }
+    }
+}
+
 /// Resolve and write the effective value for a guarded-group Param cell,
 /// consulting `param_overrides`, validating any stored override, falling back
 /// to `cell.default_expr`, and handling the no-override / rejected-override
@@ -350,18 +503,14 @@ fn eval_guarded_group_param_cell(
         }
         Some(v) => match validate_param_override(v, &cell.cell_type) {
             Ok(()) => Some(v.clone()),
-            Err(ParamOverrideRejection::TypeKindMismatch) => {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                    cell.id, cell.cell_type, v
-                )));
-                None
-            }
-            Err(ParamOverrideRejection::ScalarDimensionMismatch { expected, got }) => {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                    cell.id, expected, got
-                )));
+            Err(ref rejection) => {
+                emit_param_override_rejection_warning(
+                    diagnostics,
+                    &cell.id,
+                    &cell.cell_type,
+                    v,
+                    rejection,
+                );
                 None
             }
         },
@@ -636,21 +785,14 @@ impl Engine {
                         }
                         Some(v) => match validate_param_override(v, &cell.cell_type) {
                             Ok(()) => Some(v.clone()),
-                            Err(ParamOverrideRejection::TypeKindMismatch) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                                    cell.id, cell.cell_type, v
-                                )));
-                                None
-                            }
-                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
-                                expected,
-                                got,
-                            }) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                                    cell.id, expected, got
-                                )));
+                            Err(ref rejection) => {
+                                emit_param_override_rejection_warning(
+                                    &mut diagnostics,
+                                    &cell.id,
+                                    &cell.cell_type,
+                                    v,
+                                    rejection,
+                                );
                                 None
                             }
                         },
@@ -1052,51 +1194,14 @@ impl Engine {
                 }
             }
             for template in &module.templates {
-                // Collect auto param IDs for this template
-                let auto_ids: std::collections::HashSet<ValueCellId> = template
-                    .value_cells
-                    .iter()
-                    .filter(|cell| cell.kind.is_auto())
-                    .map(|cell| cell.id.clone())
-                    .collect();
-
-                if auto_ids.is_empty() {
+                // Build the ResolutionProblem; returns None when there are no auto cells.
+                // `build_solver_problem` deref-clones `functions` from the Arc — this path
+                // only runs when the constraint solver is invoked (not on every eval), so
+                // the allocation cost is acceptable.
+                let Some(problem) =
+                    build_solver_problem(template, &values, &functions)
+                else {
                     continue;
-                }
-
-                // Find constraints whose dependency traces reference auto params
-                let filtered_constraints: Vec<_> = template
-                    .constraints
-                    .iter()
-                    .filter(|c| {
-                        let trace = extract_dependency_trace(&c.expr);
-                        trace.reads.iter().any(|r| auto_ids.contains(r))
-                    })
-                    .map(|c| (c.id.clone(), c.expr.clone()))
-                    .collect();
-
-                // Build AutoParam list from template value cells
-                let auto_param_list: Vec<AutoParam> = template
-                    .value_cells
-                    .iter()
-                    .filter(|cell| cell.kind.is_auto())
-                    .map(|cell| AutoParam {
-                        id: cell.id.clone(),
-                        param_type: cell.cell_type.clone(),
-                        bounds: None,
-                        free: cell.kind.is_auto_free(),
-                    })
-                    .collect();
-
-                // Build ResolutionProblem
-                let problem = ResolutionProblem {
-                    auto_params: auto_param_list.clone(),
-                    constraints: filtered_constraints,
-                    current_values: values.clone(),
-                    objective: template.objective.clone(),
-                    // ResolutionProblem.functions is Vec<CompiledFunction>; deref-clone
-                    // extracts the inner Vec from the Arc. Solver-only path, off hot path.
-                    functions: (*functions).clone(),
                 };
 
                 let parent_snap_id = snapshot.id;
@@ -1163,7 +1268,7 @@ impl Engine {
 
                         // Emit warning for free auto params when solution is non-unique
                         if !unique {
-                            for ap in &auto_param_list {
+                            for ap in &problem.auto_params {
                                 if ap.free {
                                     diagnostics.push(Diagnostic::warning(format!(
                                         "Parameter `{}` resolved via auto(free) \
@@ -1421,25 +1526,14 @@ impl Engine {
                     // returns the cached fallback, and the validation warning is silently dropped.
                     // See regression tests: eval_cached_repeat_call_re_emits_param_override_*
                     // (task-2267 step-1 / step-3).
-                    if let Some((ref override_val, ref rejection)) = override_check {
-                        match rejection {
-                            Ok(()) => {}
-                            Err(ParamOverrideRejection::TypeKindMismatch) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: type-kind mismatch (expected {}, got value {})",
-                                    cell.id, cell.cell_type, override_val
-                                )));
-                            }
-                            Err(ParamOverrideRejection::ScalarDimensionMismatch {
-                                expected,
-                                got,
-                            }) => {
-                                diagnostics.push(Diagnostic::warning(format!(
-                                    "param_override for `{}` skipped: dimension mismatch (expected {:?}, got {:?})",
-                                    cell.id, expected, got
-                                )));
-                            }
-                        }
+                    if let Some((ref override_val, Err(ref rej))) = override_check {
+                        emit_param_override_rejection_warning(
+                            &mut diagnostics,
+                            &cell.id,
+                            &cell.cell_type,
+                            override_val,
+                            rej,
+                        );
                     }
 
                     // Check version fast path
@@ -1555,52 +1649,20 @@ impl Engine {
             }
 
             // Cycle detection + topological ordering for the second (Let) pass.
-            // Building sorted_lets here and threading it into the second pass mirrors
-            // evaluate_let_bindings() ordering, fixing forward-reference resolution in
+            // `detect_let_cycle` builds let_cells, let_traces, and sorted_lets, emitting
+            // the circular-dependency diagnostic if any cycle is found.  Mirroring
+            // evaluate_let_bindings() ordering fixes forward-reference resolution in
             // eval_cached (previously let cells evaluated in declaration order only).
-            let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
-                .value_cells
-                .iter()
-                .filter(|c| c.kind == ValueCellKind::Let)
-                .filter_map(|c| {
-                    c.default_expr
-                        .as_ref()
-                        .map(|expr| (NodeId::Value(c.id.clone()), expr))
-                })
-                .collect();
-
-            let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-            let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
-                .iter()
-                .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
-                .collect();
-
-            let sorted_lets = topological_sort(&let_node_ids, &let_traces);
-            // Owned set so sorted_lets is still iterable for second-pass ordering below
-            let sorted_set: HashSet<NodeId> = sorted_lets.iter().cloned().collect();
-
-            if sorted_lets.len() < let_node_ids.len() {
-                let mut cyclic_members: Vec<&str> = let_node_ids
-                    .iter()
-                    .filter(|nid| !sorted_set.contains(nid))
-                    .filter_map(|nid| match nid {
-                        NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                cyclic_members.sort();
-                diagnostics.push(Diagnostic::error(format!(
-                    "circular let-binding dependency in template {}: [{}]",
-                    template.name,
-                    cyclic_members.join(", "),
-                )));
-            }
+            // `let_traces` is reused in the cache-miss arm below to avoid recomputing
+            // `extract_dependency_trace` for each let cell; `_let_cells` is unused here
+            // (eval_cached uses `cell.default_expr` directly).
+            let (_let_cells, let_traces, sorted_lets) =
+                detect_let_cycle(template, &mut diagnostics);
 
             // Second pass: evaluate Let bindings in topological order.
-            // Mirrors evaluate_let_bindings(): iterate sorted_lets only.
-            // Cyclic cells (not in sorted_set) are intentionally skipped — the
-            // diagnostic emitted above is the only effect of cycle detection.
-            // Forward-reference lookups for cyclic cells would produce
+            // Cyclic cells (absent from sorted_lets) are intentionally skipped — the
+            // diagnostic emitted by detect_let_cycle is the only effect of cycle
+            // detection. Forward-reference lookups for cyclic cells would produce
             // Undef-derived garbage that, if persisted, would corrupt the cache
             // fast-path on subsequent calls and diverge eval_result.values from
             // eval()'s shape.
@@ -1675,8 +1737,10 @@ impl Engine {
                         &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
                     );
 
-                    // Build dependency trace from expression refs
-                    let trace = extract_dependency_trace(expr);
+                    // Reuse the trace already built by detect_let_cycle; fall back to
+                    // recomputing only if the cell was not in the trace map (defensive).
+                    let trace = let_traces.get(&node_id).cloned()
+                        .unwrap_or_else(|| extract_dependency_trace(expr));
 
                     let cached_result =
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
@@ -1725,55 +1789,16 @@ impl Engine {
             // "Solver Solved arm in eval_cached is intentionally empty"). Only the
             // Infeasible and NoProgress arms matter for this task's diagnostic-emission goal.
             if let Some(solver) = &self.solver {
-                let auto_ids: std::collections::HashSet<ValueCellId> = template
-                    .value_cells
-                    .iter()
-                    .filter(|cell| cell.kind.is_auto())
-                    .map(|cell| cell.id.clone())
-                    .collect();
-
-                // Invoke the solver unconditionally (when auto cells exist), mirroring
-                // eval()'s solver invocation pattern. The solver must run on every
-                // eval_cached call — even when all auto cells hit the cache — so that
-                // Infeasible/NoProgress diagnostics surface on every LSP keystroke.
-                // See step-10/step-11 regression tests. Cycle detection and sub-component
-                // validation in the same loop body also run unconditionally; the solver
-                // was the only outlier.
-                if !auto_ids.is_empty() {
-                    let filtered_constraints: Vec<_> = template
-                        .constraints
-                        .iter()
-                        .filter(|c| {
-                            let trace = extract_dependency_trace(&c.expr);
-                            trace.reads.iter().any(|r| auto_ids.contains(r))
-                        })
-                        .map(|c| (c.id.clone(), c.expr.clone()))
-                        .collect();
-
-                    let auto_param_list: Vec<AutoParam> = template
-                        .value_cells
-                        .iter()
-                        .filter(|cell| cell.kind.is_auto())
-                        .map(|cell| AutoParam {
-                            id: cell.id.clone(),
-                            param_type: cell.cell_type.clone(),
-                            bounds: None,
-                            free: cell.kind.is_auto_free(),
-                        })
-                        .collect();
-
-                    let problem = ResolutionProblem {
-                        auto_params: auto_param_list,
-                        constraints: filtered_constraints,
-                        current_values: values.clone(),
-                        objective: template.objective.clone(),
-                        // ResolutionProblem.functions is Vec<CompiledFunction> (defined in
-                        // reify-types, out of scope for this task). Deref-clone extracts the
-                        // inner Vec from the Arc; this path only runs when the constraint
-                        // solver is invoked (not on every eval), so the cost is acceptable.
-                        functions: (*self.functions).clone(),
-                    };
-
+                // Build the ResolutionProblem; returns None when there are no auto cells.
+                // `build_solver_problem` centralises construction so both eval() and
+                // eval_cached() build identical inputs to the solver (pinned by the
+                // `eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning` test).
+                // The solver must run on every eval_cached call — even when all auto cells hit
+                // the cache — so that Infeasible/NoProgress diagnostics surface on every LSP
+                // keystroke. See step-10/step-11 regression tests.
+                if let Some(problem) =
+                    build_solver_problem(template, &values, &self.functions)
+                {
                     let solve_result = solver.solve(&problem);
 
                     match solve_result {
@@ -1826,44 +1851,8 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
-            .value_cells
-            .iter()
-            .filter(|c| c.kind == ValueCellKind::Let)
-            .filter_map(|c| {
-                c.default_expr
-                    .as_ref()
-                    .map(|expr| (NodeId::Value(c.id.clone()), expr))
-            })
-            .collect();
-
-        let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-        let mut let_traces: HashMap<NodeId, DependencyTrace> = let_cells
-            .iter()
-            .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
-            .collect();
-
-        let sorted_lets = topological_sort(&let_node_ids, &let_traces);
-
-        // Detect cyclic let-binding dependencies: if topological_sort dropped nodes
-        // (Kahn's algorithm silently omits nodes in cycles), report them.
-        if sorted_lets.len() < let_node_ids.len() {
-            let sorted_set: HashSet<&NodeId> = sorted_lets.iter().collect();
-            let mut cyclic_members: Vec<&str> = let_node_ids
-                .iter()
-                .filter(|nid| !sorted_set.contains(nid))
-                .filter_map(|nid| match nid {
-                    NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                    _ => None,
-                })
-                .collect();
-            cyclic_members.sort();
-            diagnostics.push(Diagnostic::error(format!(
-                "circular let-binding dependency in template {}: [{}]",
-                template.name,
-                cyclic_members.join(", "),
-            )));
-        }
+        let (let_cells, mut let_traces, sorted_lets) =
+            detect_let_cycle(template, diagnostics);
 
         for node_id in sorted_lets {
             let expr = let_cells[&node_id];
