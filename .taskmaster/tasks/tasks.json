@@ -48387,23 +48387,21 @@
         "description": "Doc-only nit at `crates/reify-eval/src/engine_eval.rs:663-680`. Add a sentence to the rationale comment explicitly noting that the `Completed` event's `EvalOutcome` is now whatever `cache.record_evaluation` returns (typically `New` on first eval), no longer hardcoded `Unchanged`.",
         "details": "Task-2195 introduced `cache.record_evaluation` on the S4 (rejected-override-no-default) top-level Param branch. Before that change, the `EvalEvent { kind: EventKind::Completed { outcome } }` record on this path hardcoded `EvalOutcome::Unchanged`; now `outcome` is whatever `cache.record_evaluation` returns — `New` on first eval, `Unchanged` only on identical re-record.\n\nAny downstream consumer that pattern-matches on the old fixed `Unchanged` outcome for this path will now see a different variant. The existing rationale comment at `engine_eval.rs:663-680` (which acknowledges the deferred-cache reversal) and the doc-comment on `record_eval_completed` should call out this Completed-outcome shape change so a future bisect ties the journal-shape diff to task-2195.\n\nNo code change required — comment only. Add roughly:\n\n```text\n// Note: the `Completed` event's `EvalOutcome` is now whatever\n// cache.record_evaluation returns (typically `New` on first eval,\n// `Unchanged` only on identical re-record), no longer hardcoded\n// `Unchanged` as it was before task-2195.\n```\n\nSource: review of task-2195 by reviewer_comprehensive (esc-2195-45).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T08:11:30.541Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T08:07:16.367Z",
-      "taskCount": 2240,
+      "lastModified": "2026-04-26T08:11:30.542Z",
+      "taskCount": 2241,
       "completedCount": 2003,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T08:11:02.313Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T08:11:20.075Z"
+      ]
     }
   }
 }
