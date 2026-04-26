@@ -1872,10 +1872,11 @@ mod tests {
 
         // Freshness should now be Pending with last_substantive
         let entry = store.get(&node).unwrap();
+        use reify_types::ResultRef;
         assert_eq!(
             entry.freshness,
             Freshness::Pending {
-                last_substantive: Some(original_hash)
+                last_substantive: ResultRef::of_hash(original_hash)
             }
         );
     }

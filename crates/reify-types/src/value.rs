@@ -2617,7 +2617,7 @@ mod tests {
     #[test]
     fn test_freshness_pending_none() {
         let f = Freshness::Pending {
-            last_substantive: None,
+            last_substantive: ResultRef::none(),
         };
         let f2 = f.clone();
         assert_eq!(f, f2);
@@ -2631,24 +2631,27 @@ mod tests {
     fn test_freshness_pending_some() {
         let hash = ContentHash::of(b"test");
         let f = Freshness::Pending {
-            last_substantive: Some(hash),
+            last_substantive: ResultRef::of_hash(hash),
         };
         let f2 = f.clone();
         assert_eq!(f, f2);
         match &f {
-            Freshness::Pending { last_substantive } => assert_eq!(*last_substantive, Some(hash)),
+            Freshness::Pending { last_substantive } => {
+                assert_eq!(last_substantive.content_hash(), Some(hash))
+            }
             _ => panic!("expected Pending"),
         }
     }
 
     #[test]
     fn test_freshness_failed() {
-        let err = EvalError("type mismatch".to_string());
-        let f = Freshness::Failed { error: err.clone() };
+        let f = Freshness::Failed {
+            error: ErrorRef::new("type mismatch"),
+        };
         let f2 = f.clone();
         assert_eq!(f, f2);
         match &f {
-            Freshness::Failed { error } => assert_eq!(error.0, "type mismatch"),
+            Freshness::Failed { error } => assert_eq!(error.message(), "type mismatch"),
             _ => panic!("expected Failed"),
         }
     }
