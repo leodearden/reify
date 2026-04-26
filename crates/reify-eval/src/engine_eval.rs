@@ -21,7 +21,7 @@ use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
-    eval_ctx_with_meta, guard_state_fingerprint,
+    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
 };
 
 /// Sentinel substring included in every panic raised by
@@ -392,14 +392,7 @@ impl Engine {
         self.active_objective_map.clear();
         // Build meta_map: template name → meta key/value pairs.
         // Only includes templates with non-empty meta blocks.
-        self.meta_map = Arc::new(
-            module
-                .templates
-                .iter()
-                .filter(|t| !t.meta.is_empty())
-                .map(|t| (t.name.clone(), t.meta.clone()))
-                .collect(),
-        );
+        self.meta_map = build_meta_map(module);
         // Use the merged function table (user functions prepended before prelude functions) so
         // that EvalContext has the full dispatch set — both user-defined overloads AND
         // non-shadowed prelude functions. This matches the SHADOWING INVARIANT: first-match-wins
@@ -1298,14 +1291,7 @@ impl Engine {
         // Build meta_map from module templates (same logic as eval()).
         // This ensures MetaAccess expressions resolve correctly even when
         // eval_cached is called without a prior eval().
-        self.meta_map = Arc::new(
-            module
-                .templates
-                .iter()
-                .filter(|t| !t.meta.is_empty())
-                .map(|t| (t.name.clone(), t.meta.clone()))
-                .collect(),
-        );
+        self.meta_map = build_meta_map(module);
 
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
