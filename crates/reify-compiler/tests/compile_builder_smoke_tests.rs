@@ -52,7 +52,7 @@ trait Measurable {
     param width : Length
 }
 
-field def temp : Point3 -> Scalar { source = analytical { |p| p } }
+field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }
 
 constraint def MinWall {
     param wall: Length

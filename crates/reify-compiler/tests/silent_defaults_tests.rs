@@ -40,7 +40,7 @@ fn compile_field_returns_direct_value() {
     // in compiled.fields, both before and after the Option removal refactor.
     let source = r#"
         field def temp : Point3 -> Scalar {
-            source = analytical { |p| p }
+            source = analytical { |p| 1.0m }
         }
     "#;
     let module = compile_source(source);

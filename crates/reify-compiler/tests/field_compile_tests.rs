@@ -9,8 +9,9 @@ use reify_types::DiagnosticCode;
 
 #[test]
 fn compile_field_analytical() {
-    let module =
-        compile_source("field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
+    let module = compile_source(
+        "field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }",
+    );
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -79,8 +80,8 @@ fn compile_field_compose_type_check_valid() {
     // Result should be Field<Point3, Scalar>.
     let module = compile_source(
         r#"
-field def f1 : Point3 -> Scalar { source = analytical { |p| p } }
-field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
+field def f1 : Point3 -> Scalar { source = analytical { |p| 1.0m } }
+field def f2 : Scalar -> Scalar { source = analytical { |x| 1.0m } }
 field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
 "#,
     );

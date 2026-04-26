@@ -27,7 +27,7 @@ fn all_declaration_types_order_independent() {
             }
         }
 
-        field def temp : Point3 -> Scalar { source = analytical { |p| p } }
+        field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }
 
         structure S : Measurable {
             param width : Length = 80mm
@@ -176,7 +176,7 @@ fn function_before_enum_match_compiles() {
 #[test]
 fn field_before_function_compiles() {
     let source = r#"
-        field def temp : Point3 -> Scalar { source = analytical { |p| scale(p) } }
+        field def temp : Point3 -> Real { source = analytical { |p| scale(p) } }
 
         fn scale(x: Real) -> Real { x + x }
     "#;
