@@ -49267,6 +49267,28 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T13:58:00.210Z"
+      },
+      {
+        "id": "2280",
+        "title": "Conformance: profile compiled_arg.clone() cost and consider Rc&lt;CompiledExpr&gt; in PendingBoundCheck::TraitArgConformance",
+        "description": "Investigate eager `compiled_arg.clone()` at crates/reify-compiler/src/entity.rs:949. The clone is now performed for every named arg of every sub-component, and CompiledExpr can carry deeply-nested literal trees (e.g. `List<Option<...>>` with hundreds of elements). The previous design only cloned `result_type` (cheap) plus an Option&lt;String&gt; name.",
+        "details": "For workloads with large-literal-heavy designs, this is an O(literal-tree-size) per arg allocation that previously did not exist; the cloned expr is also retained until the post-pass dispatch.\n\nPlan:\n1. Add benchmark or profile a representative large-literal design (e.g. List with hundreds of Option<TraitObject> elements).\n2. If hot, switch `PendingBoundCheck::TraitArgConformance` to hold `Rc<CompiledExpr>` (or borrow into a CompilationCtx-owned arena if one exists), since the walker only reads.\n3. Otherwise, leave as-is and document the rationale.\n\nSource: review suggestion on task 2227 (esc-2227-7).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "2281",
+        "title": "Compiler: emit shape-mismatch diagnostic for wrapper/leaf param-arg pairs (Option&lt;T&gt; vs leaf, List vs Option, etc.)",
+        "description": "The fallback `_` arms in `walk_param_against_arg` (mod.rs:269) and `walk_param_against_arg_type` (mod.rs:436-440) silently swallow wrapper-shape mismatches such as `(Option<T>, TraitObject)` (e.g. passing a bare `Steel()` to an `Option<MaterialSpec>` slot) and `(List<T>, Option<T>)`.",
+        "details": "In tandem with the equally silent `_` arm in `walk_param_against_arg`, the practical effect is that the user-facing diagnostic for *any* shape mismatch around a wrapped trait-object param is suppressed when the arg is a non-literal.\n\nThis is intentionally out of scope for task 2227 (which only widens trait-bound checking through wrappers), but should be tracked so it doesn't become invisible technical debt.\n\nPlan:\n- Audit existing arg/param shape-checking in the compiler. If a general pass already exists, ensure wrapped-trait params are covered there.\n- If no general shape-check pass exists today, at minimum emit `TypeNotConformingToTrait` (or a new shape-mismatch diagnostic code) when `param_type` is `Type::Option/List/Set/Map` and `arg_type` is a leaf type that cannot satisfy the wrapper shape.\n- Add tests for: bare leaf passed to `Option<T>` slot, `List<T>` arg passed to `Option<T>` slot, `Map<K,V>` arg passed to `List<T>` slot.\n\nSource: review suggestion on task 2227 (esc-2227-7).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49276,7 +49298,10 @@
       "completedCount": 2038,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T13:58:39.733Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T13:58:40.692Z"
     }
   }
 }
