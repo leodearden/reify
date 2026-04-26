@@ -51158,6 +51158,21 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2376",
+        "title": "match-block decls: union typing + narrowing + variant-pipe + collision tests",
+        "description": "Develop tests for the GuardedDeclGroup feature focusing on union typing, narrowing under guards, variant-pipe arms, and collision diagnostics.",
+        "details": "Implement a comprehensive suite of tests for the GuardedDeclGroup feature in match-blocks. Focus on verifying union typing where types from different arms are combined. Test narrowing behavior both under individual arm guards and the outer match expression. Include tests for member-access on fields that are common across all arms versus those specific to certain arms. Ensure that the exhaustiveness of match arms is preserved and correctly diagnosed. Additionally, test variant-pipe arms to ensure they function as expected, and implement diagnostics for collisions outside the match block. Reference the PRD document at docs/prds/match-block-decls.md task 5 for detailed requirements.",
+        "testStrategy": "1. Create unit tests to verify union typing across match arms, ensuring correct type resolution.\n2. Develop tests for narrowing under arm guards and the outer match expression, confirming that types are correctly narrowed.\n3. Test member-access on fields, distinguishing between common and arm-specific fields.\n4. Ensure exhaustiveness is preserved by testing various match scenarios.\n5. Implement tests for variant-pipe arms to verify their behavior.\n6. Add diagnostic tests for outside-match collisions, ensuring correct error reporting.\n7. Run the full test suite to confirm no regressions in existing functionality.",
+        "status": "pending",
+        "dependencies": [
+          "2372",
+          "2373",
+          "2375"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51170,7 +51185,7 @@
       ],
       "created": "2026-04-26T20:24:07.914Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:24:11.629Z"
+      "updated": "2026-04-26T20:24:15.940Z"
     }
   }
 }
