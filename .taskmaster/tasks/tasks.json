@@ -51144,6 +51144,20 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2375",
+        "title": "match-block decls: exhaustiveness gate + outside-match collision diagnostic",
+        "description": "Implement an exhaustiveness gate for GuardedDeclGroup formation in match-blocks and ensure duplicate/shadow errors for same-name declarations outside the match.",
+        "details": "Introduce logic to ensure that a GuardedDeclGroup only forms when match arms exhaustively cover the discriminant. If not exhaustive, maintain separate declaration flows for each arm and trigger existing exhaustiveness errors. Additionally, ensure that any same-name declarations outside the match block trigger duplicate or shadow errors. Update the parser and symbol table logic to enforce these rules. Reference the specification in docs/prds/match-block-decls.md task 4 for detailed requirements.",
+        "testStrategy": "1. Create unit tests to verify that GuardedDeclGroup only forms when match arms are exhaustive.\n2. Add tests to ensure that non-exhaustive match arms trigger the correct exhaustiveness errors.\n3. Verify that same-name declarations outside the match block result in duplicate or shadow errors.\n4. Run the full test suite to ensure no regressions and that all new logic is correctly integrated.",
+        "status": "pending",
+        "dependencies": [
+          "2372",
+          "2373"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51153,7 +51167,10 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:24:07.914Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:24:11.629Z"
     }
   }
 }
