@@ -6,6 +6,8 @@
 //! `CompiledModule` whose `content_hash` differs from the current one and
 //! re-evaluates only the dependency cones touched by the structural diff.
 
+mod common;
+
 use std::collections::HashSet;
 
 use reify_constraints::SimpleConstraintChecker;
@@ -18,6 +20,8 @@ use reify_types::{
     ConstraintNodeId, RealizationNodeId, Satisfaction, SnapshotProvenance, Value, ValueCellId,
     ValueMap,
 };
+
+use common::ten_bool_guarded_groups;
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
@@ -62,6 +66,31 @@ fn run_eval_then_edit_source(
 fn fresh_eval(module_b: &CompiledModule) -> EvalResult {
     let mut engine = fresh_engine();
     engine.eval(module_b)
+}
+
+/// Run a role-flip probe scenario end-to-end: parse both sources, run
+/// `eval(A) + edit_source(B)` on one fresh engine, run cold `eval(B)` on
+/// another fresh engine, cross-check the two value maps agree, and return
+/// `(cold_result, probes)` for the caller's per-test positive-anchor and
+/// perf-lock assertions.
+#[allow(dead_code)]
+fn run_probe_scenario(src_a: &str, src_b: &str) -> (EvalResult, usize) {
+    let module_a = parse_and_compile(src_a);
+    let module_b = parse_and_compile(src_b);
+
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+    let probes = incremental.last_role_flip_probes();
+
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    assert_values_match(&incr.values, &cold_result.values);
+
+    (cold_result, probes)
 }
 
 // ── Precondition tests ─────────────────────────────────────────────────────
@@ -1271,26 +1300,23 @@ structure S {
     }
 }
 
-// ── Task 2086 amendment: Fix 2 direct coverage (entirely-removed sub) ─────────
-
-/// Regression test for Fix 2: `edit_source(B)` where Module B *entirely removes*
-/// the `sub bolts : List<Bolt>` declaration must invalidate cache entries for
-/// `S.bolts[i].diameter` that were established by `eval(A)`.
+/// Regression test (Step 9 path): `edit_source(B)` where Module B *entirely removes*
+/// the `sub bolts` declaration must not leave stale cache entries for
+/// `S.bolts[i].diameter` established by `eval(A)`.
 ///
-/// This exercises the entirely-removed-collection_sub sweep at the top of Phase 4.
-/// Phase 4's main loop iterates only NEW `collection_subs`, so a sub absent from
-/// `new_snapshot.graph.collection_subs` is never visited by the main loop.  Fix 2's
-/// sweep catches it by diffing `eval_state.snapshot.graph.collection_subs` against
-/// `new_snapshot.graph.collection_subs` and collecting scoped-cell IDs to invalidate.
+/// Mechanism: Step (9) of `edit_source` diffs `old_snapshot.graph.value_cells`
+/// against `new_snapshot.graph.value_cells` by content_hash.  Scoped cells
+/// present in the old graph but absent from the new graph (because the whole sub
+/// was removed) appear in `diff_value_cells.removed`, and Step (9) calls
+/// `self.cache.invalidate` for each.  Phase 4's main loop iterates only NEW
+/// `collection_subs` and never visits removed subs, so Step (9) is the sole
+/// responsible path here.
 ///
-/// Note: Step (9)'s `diff_value_cells.removed` also invalidates these cells in the
-/// normal flow, so this test validates the *behavior* (no stale entries) rather than
-/// isolating Fix 2 as the sole mechanism.  The value is code coverage: it exercises
-/// the `!new_sub_keys.contains(...)` branch, the `old_count` lookup against
-/// `old_snapshot_values`, and the IDs-collection/invalidation loop.
+/// This test pins that behavior independent of any Fix-2 sweep so future changes
+/// to Phase 4 cannot silently regress the entirely-removed-sub case.
 #[test]
-fn edit_source_phase4_invalidates_cache_for_entirely_removed_collection_sub() {
-    // Module A: S has a 4-instance bolt sub with cache entries at V_A.
+fn edit_source_step9_invalidates_cache_for_entirely_removed_collection_sub() {
+    // Module A: S has a 4-instance bolt sub; eval populates cache at V_A.
     let module_a_src = r#"
 structure Bolt { param diameter : Scalar = 10mm }
 structure S {
@@ -1299,9 +1325,7 @@ structure S {
     constraint bolts.count == n
 }
 "#;
-    // Module B: `sub bolts` is entirely removed.  `new_snapshot.graph.collection_subs`
-    // will have no entry for bolts, so Phase 4's main loop skips it entirely.
-    // Fix 2's sweep must collect and invalidate the 4 scoped cache entries.
+    // Module B: `sub bolts` is entirely removed; no scoped cells in new graph.
     let module_b_src = r#"
 structure Bolt { param diameter : Scalar = 10mm }
 structure S { param n : Int = 4 }
@@ -1313,8 +1337,9 @@ structure S { param n : Int = 4 }
     let mut engine = fresh_engine();
     engine.eval(&module_a);
 
-    // Pre-edit: confirm all 4 bolt cache entries are present at V_A so the
-    // post-edit assertion is meaningful (not trivially satisfied by an empty cache).
+    // Pre-edit: all 4 bolt cache entries must be present at V_A so the
+    // post-edit assertion is meaningful (not trivially satisfied by an empty
+    // cache).
     let v_a = engine.snapshot().expect("snapshot after eval(A)").version;
     for i in 0..4_usize {
         let bolt_node = NodeId::Value(ValueCellId::new(format!("S.bolts[{}]", i), "diameter"));
@@ -1334,8 +1359,10 @@ structure S { param n : Int = 4 }
         .edit_source(&module_b)
         .expect("edit_source to B (remove sub bolts entirely) must succeed");
 
-    // Post-edit: no stale V_A entries may survive — either None (invalidated and
-    // not repopulated) or Some(fresh) at the new version.
+    // Post-edit: Step (9) must have invalidated all old scoped-cell cache
+    // entries via diff_value_cells.removed.  Each entry must be absent or
+    // fresh at the new snapshot version — a Some(entry) at V_A is a stale
+    // artifact that would cause correctness failures if the sub is re-added.
     let current_version = engine
         .snapshot()
         .expect("snapshot after edit_source")
@@ -1346,7 +1373,7 @@ structure S { param n : Int = 4 }
             assert_eq!(
                 entry.basis_version,
                 current_version,
-                "S.bolts[{}].diameter cache entry must be absent or fresh after sub removal; \
+                "S.bolts[{}].diameter must be absent or fresh after sub removal via Step 9; \
                  got stale basis_version {:?}, expected {:?}",
                 i,
                 entry.basis_version,
@@ -1593,6 +1620,132 @@ structure def Widget {
         cold_result.values.get(&tag_id),
         Some(&Value::String("A gadget".to_string())),
         "cold Widget.tag should also be 'A gadget'"
+    );
+}
+
+// ── Arc refactor regression: meta_map stability across edit_source + edit_param ──
+
+/// Integration regression: `edit_source` followed by `edit_param` must both
+/// read the *updated* meta map installed by the Arc refactor (task 397, step-2).
+///
+/// The Arc refactor changed `Engine.meta_map` from `HashMap<...>` to
+/// `Arc<HashMap<...>>`, replacing it wholesale at the three write-sites
+/// (`engine_eval.rs:203`, `:1065`, `engine_edit.rs:1443`).  The risk is that a
+/// subtle bug could cause `edit_source`'s `self.meta_map = Arc::new(...)` to
+/// NOT install a fresh Arc (e.g. by accidentally cloning the old Arc instead
+/// of constructing a new one), so that `desc` / `tag` in module B would still
+/// read module A's stale meta value.
+///
+/// Note: `meta.key` access expressions hash entity+key only (NOT the meta
+/// value), so an existing reading cell's content_hash does not change when only
+/// the meta value is updated.  Module A therefore has NO reading cells — only
+/// a meta block and a param.  The reading cells (`desc`, `tag`) are ADDED in
+/// module B, guaranteeing that they receive fresh evaluation against the new
+/// meta_map Arc.  This matches the convention documented in
+/// `edit_source_refreshes_meta_map_against_cold_eval`.
+///
+/// Additional coverage over the existing meta-refresh test: after `edit_source`
+/// a subsequent `edit_param(width, Undef)` exercises the full incremental
+/// pipeline against the newly-installed Arc.  `desc` and `tag` (which don't
+/// depend on `width`) carry over their values from `edit_source` — they must
+/// still reflect the B meta map ("A gadget"), not the A map ("A widget").
+///
+/// Also serves as a safety net for step-6 and step-7 (call-site conversions in
+/// engine_eval.rs / engine_edit.rs): if any conversion accidentally drops the
+/// `.with_meta(meta_map)` chain the `desc` / `tag` assertions catch it.
+#[test]
+fn edit_source_meta_map_arc_stability() {
+    // Module A: Widget with meta description="A widget" and a Length param
+    // `width`.  NO reading cells — per the established convention, adding
+    // reading cells in module B forces their fresh evaluation against the
+    // refreshed meta_map (meta-value changes do not dirty existing cells).
+    let module_a_src = r#"
+structure def Widget {
+    meta {
+        description = "A widget"
+    }
+    param width : Length = 10mm
+}
+"#;
+    // Module B: meta value changed to "A gadget"; `width` param unchanged;
+    // two reading cells `desc` and `tag` ADDED so they evaluate against the
+    // freshly-installed meta_map Arc.
+    let module_b_src = r#"
+structure def Widget {
+    meta {
+        description = "A gadget"
+    }
+    param width : Length = 10mm
+    let desc : String = meta.description
+    let tag : String = meta.description
+}
+"#;
+    let module_a = parse_and_compile(module_a_src);
+    let module_b = parse_and_compile(module_b_src);
+
+    // ── incremental path ──────────────────────────────────────────────────────
+    let mut incremental = fresh_engine();
+    incremental.eval(&module_a);
+    let incr = incremental
+        .edit_source(&module_b)
+        .expect("edit_source must succeed after eval");
+
+    // Subsequent edit_param on `width` (unchanged between A and B) exercises the
+    // full incremental edit pipeline after edit_source has replaced self.meta_map.
+    // desc and tag do not depend on width, so their values carry over from the
+    // edit_source result — they must still reflect the B meta map ("A gadget"),
+    // not the A meta map ("A widget") that was active before edit_source.
+    let width_id = ValueCellId::new("Widget", "width");
+    let after_edit_param = incremental
+        .edit_param(width_id, Value::Undef)
+        .expect("edit_param(width, Undef) must succeed after edit_source");
+
+    // ── cold path ─────────────────────────────────────────────────────────────
+    let mut cold = fresh_engine();
+    let cold_result = cold.eval(&module_b);
+
+    // (a) edit_source result must match cold eval entry-for-entry.
+    assert_values_match(&incr.values, &cold_result.values);
+
+    let desc_id = ValueCellId::new("Widget", "desc");
+    let tag_id = ValueCellId::new("Widget", "tag");
+
+    // (b) Both desc and tag must resolve to the module_b meta value across
+    // all phases.  If the Arc refactor's write-site at edit_source accidentally
+    // retained the A snapshot, these would read "A widget" instead.
+    // Note: the `edit_param(width, Undef)` result carries the added cells from
+    // `edit_source` unchanged (desc/tag don't depend on width), so checking
+    // them individually (rather than via assert_values_match against cold) is
+    // correct — `width` itself is Undef in the override path but 10mm in cold.
+    for (label, values) in [
+        ("edit_source", &incr.values),
+        ("edit_param", &after_edit_param.values),
+        ("cold", &cold_result.values),
+    ] {
+        assert_eq!(
+            values.get(&desc_id),
+            Some(&Value::String("A gadget".to_string())),
+            "Widget.desc must be 'A gadget' after {} (Arc refactor correctness); \
+             got {:?} — likely edit_source did not install a fresh meta_map Arc",
+            label,
+            values.get(&desc_id)
+        );
+        assert_eq!(
+            values.get(&tag_id),
+            Some(&Value::String("A gadget".to_string())),
+            "Widget.tag (added cell) must be 'A gadget' after {}; \
+             got {:?} — added cells must evaluate against the refreshed meta_map",
+            label,
+            values.get(&tag_id)
+        );
+    }
+
+    // (c) No diagnostics on the edit_param path (no error cascade from a stale
+    // or dropped meta_map Arc).
+    assert!(
+        after_edit_param.diagnostics.is_empty(),
+        "edit_param must not emit diagnostics; got {:?}",
+        after_edit_param.diagnostics
     );
 }
 
@@ -2196,57 +2349,15 @@ fn edit_source_modified_realization_content_hash_change_matches_cold_eval() {
 /// Task 2142 — cross-phase dedup via `phase1_reelaborated` set.
 #[test]
 fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
-    let module_a_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where u3 { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
+    let module_a_src = ten_bool_guarded_groups("u3");
     // Module B: identical except group 3's guard expression is negated.
     // With u3=true, `!u3` evaluates to false → x3 deactivates to Undef.
     // The guard cell for group 3 has a different expression text (content_hash
     // changes), so `has_dirty_guards` fires Phase 1; the guard value also
     // changes (true → false), so `guard_changed` fires Phase 3.
-    let module_b_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where !u3 { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
-    let module_a = parse_and_compile(module_a_src);
-    let module_b = parse_and_compile(module_b_src);
+    let module_b_src = ten_bool_guarded_groups("!u3");
+    let module_a = parse_and_compile(&module_a_src);
+    let module_b = parse_and_compile(&module_b_src);
 
     // Incremental: eval(A) then edit_source(B).
     let mut incremental = fresh_engine();
@@ -2323,57 +2434,15 @@ fn edit_source_phase1_and_3_skip_unchanged_guarded_groups() {
 #[test]
 fn edit_source_phase1_fires_but_skips_when_guard_expr_text_changes_value_unchanged() {
     // Module A: 10 groups, each with a trivial `uN` guard expression.
-    let module_a_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where u3 { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
+    let module_a_src = ten_bool_guarded_groups("u3");
     // Module B: identical except group 3's guard is `u3 && true` instead of
     // `u3`. Expression text differs → content_hash of __guard_3 changes →
     // has_dirty_guards fires Phase 1. But `u3 && true` evaluates to the same
     // Bool(true) as plain `u3` when u3=true → per-group skip applies for all
     // 10 groups → no group is re-elaborated.
-    let module_b_src = r#"structure S {
-    param u0: Bool = true
-    param u1: Bool = true
-    param u2: Bool = true
-    param u3: Bool = true
-    param u4: Bool = true
-    param u5: Bool = true
-    param u6: Bool = true
-    param u7: Bool = true
-    param u8: Bool = true
-    param u9: Bool = true
-    where u0 { let x0 = 1mm }
-    where u1 { let x1 = 1mm }
-    where u2 { let x2 = 1mm }
-    where u3 && true { let x3 = 1mm }
-    where u4 { let x4 = 1mm }
-    where u5 { let x5 = 1mm }
-    where u6 { let x6 = 1mm }
-    where u7 { let x7 = 1mm }
-    where u8 { let x8 = 1mm }
-    where u9 { let x9 = 1mm }
-}"#;
-    let module_a = parse_and_compile(module_a_src);
-    let module_b = parse_and_compile(module_b_src);
+    let module_b_src = ten_bool_guarded_groups("u3 && true");
+    let module_a = parse_and_compile(&module_a_src);
+    let module_b = parse_and_compile(&module_b_src);
 
     // Incremental: eval(A) then edit_source(B).
     let mut incremental = fresh_engine();
@@ -3385,5 +3454,309 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
          for role-flip triggers); if >=4, per-group skip in Phase 3 regressed; \
          if <2, Phase 1 counter increment dropped for one of the trigger paths",
         counter,
+    );
+}
+
+// ── Role-flip probe deferred behind short-circuit (task 2094) ───────────────
+
+/// `detect_role_flip` builds two O(N) `HashMap`s over `guarded_groups` on
+/// every call. On hot edits where a cheaper trigger (`sc_dirty` or
+/// `has_added_guard_member`) already fires `has_dirty_guards`, paying that
+/// cost is wasted work.
+///
+/// This test targets the scenario where:
+/// - `sc_dirty = true` (every guard param `uN` changed → every `__guard_N` in
+///   dirty_cone via `structure_controlling`).
+/// - For every group, `guard_value_unchanged = false` (Bool(true) → Bool(false))
+///   → the per-group skip check short-circuits before reaching the role-flip
+///   branch.
+///
+/// Expected after the deferred-probe refactor (task 2094 step-2):
+/// `last_role_flip_probes() == 0` — `sc_dirty` fires the outer trigger, and
+/// the per-group skip never needs to consult the role-flip result, so
+/// `detect_role_flip` is never called.
+///
+/// Correctness is pinned by task-2084's lock
+/// `edit_source_role_flipped_guard_member_matches_cold_eval` (:945) and its
+/// symmetric counterpart `_inactive_to_active_matches_cold_eval` (:1027),
+/// which remain unaffected by the timing change.
+///
+/// Task 2094 — deferred role-flip probe perf lock.
+#[test]
+fn edit_source_role_flip_probe_deferred_when_every_guard_value_changes() {
+    // Module A: 2 guarded groups, each guard param defaulting to `true`.
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    where u0 {
+        let x0 = 1mm
+    }
+    where u1 {
+        let x1 = 1mm
+    }
+}"#;
+    // Module B: identical structure, but guard params default to `false`.
+    // Every `uN` cell is in `changed_set` (default_expr differs) →
+    // every `__guard_N` is in dirty_cone (structure_controlling) →
+    // `sc_dirty = true`. Guard VALUES flip from Bool(true) to Bool(false),
+    // so `guard_value_unchanged = false` for every group → per-group skip
+    // short-circuits before the role-flip branch is consulted.
+    let module_b_src = r#"structure S {
+    param u0: Bool = false
+    param u1: Bool = false
+    where u0 {
+        let x0 = 1mm
+    }
+    where u1 {
+        let x1 = 1mm
+    }
+}"#;
+    let (cold_result, probes) = run_probe_scenario(module_a_src, module_b_src);
+
+    // (b) Positive anchor: x0 and x1 must be Undef in cold (guards now false).
+    // Prevents a "both wrong" false-pass on the counter assertion below.
+    let x0_id = ValueCellId::new("S", "x0");
+    let x1_id = ValueCellId::new("S", "x1");
+    assert!(
+        matches!(cold_result.values.get(&x0_id), Some(Value::Undef)),
+        "x0 must be Undef after guard u0 flips to false (inactive branch); \
+         got {:?}",
+        cold_result.values.get(&x0_id)
+    );
+    assert!(
+        matches!(cold_result.values.get(&x1_id), Some(Value::Undef)),
+        "x1 must be Undef after guard u1 flips to false (inactive branch); \
+         got {:?}",
+        cold_result.values.get(&x1_id)
+    );
+
+    // (c) Performance lock: detect_role_flip must NOT be called when sc_dirty
+    // fires the outer trigger and every group's guard VALUE changed.
+    //
+    // Regression catalogue:
+    // == 1 → eager call regressed: detect_role_flip invoked unconditionally
+    //         on every edit_source (the pre-refactor behaviour that task 2094
+    //         eliminates; probe is back behind sc_dirty short-circuit failure).
+    // >  1 → memoization broke: detect_role_flip called more than once per edit.
+    assert_eq!(
+        probes,
+        0,
+        "expected 0 detect_role_flip probes (sc_dirty fires the outer trigger; \
+         all groups' guard VALUES changed so per-group skip short-circuits before \
+         the role-flip branch); \
+         got {} — \
+         if 1, eager call regressed (detect_role_flip invoked unconditionally); \
+         if >1, memoization broke",
+        probes
+    );
+}
+
+/// Tests the `has_added_guard_member` short-circuit path of the deferred
+/// role-flip probe (task 2094 amendment).
+///
+/// When a new `let` is inserted into an existing `where` group without
+/// touching the guard param (`sc_dirty = false`, `has_added_guard_member =
+/// true`), the outer `||` chain fires at the `has_added_guard_member` arm —
+/// the role-flip deferred block is never entered and `last_role_flip_probes`
+/// stays at 0.
+///
+/// This exercises the second "0 probes" short-circuit path promised by task
+/// 2094. A regression that mistakenly placed `has_added_guard_member` inside
+/// the deferred-probe block (instead of before it) would produce probes == 1.
+///
+/// Task 2094 — has_added_guard_member short-circuit perf lock.
+#[test]
+fn edit_source_role_flip_probe_skipped_when_guard_member_added() {
+    // Module A: one guarded group, single member x0.
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    where u0 {
+        let x0 = 1mm
+    }
+}"#;
+    // Module B: same guard param (u0 default unchanged → u0 not in changed_set
+    // → __guard_0 not in dirty_cone → sc_dirty = false), new member x1 added to
+    // the group (x1 in added ∩ group.members → has_added_guard_member = true).
+    let module_b_src = r#"structure S {
+    param u0: Bool = true
+    where u0 {
+        let x0 = 1mm
+        let x1 = 2mm
+    }
+}"#;
+    let (cold_result, probes) = run_probe_scenario(module_a_src, module_b_src);
+
+    // (b) Positive anchor: x1 must be a determined Scalar in cold (u0=true
+    // activates the where-branch). Prevents a "both wrong" false-pass.
+    let x1_id = ValueCellId::new("S", "x1");
+    assert!(
+        matches!(cold_result.values.get(&x1_id), Some(Value::Scalar { .. })),
+        "x1 must be a determined Scalar when guard u0=true activates it; \
+         got {:?}",
+        cold_result.values.get(&x1_id)
+    );
+
+    // (c) Performance lock: detect_role_flip must NOT be called when
+    // has_added_guard_member fires the outer trigger (sc_dirty = false,
+    // has_added_guard_member = true → short-circuits before role-flip block).
+    //
+    // Regression catalogue:
+    // == 1 → has_added_guard_member was placed inside the deferred-probe block
+    //         rather than before it; detect_role_flip invoked when only the
+    //         added-member trigger fires.
+    // >  1 → memoization broke.
+    assert_eq!(
+        probes,
+        0,
+        "expected 0 detect_role_flip probes (has_added_guard_member fires the \
+         outer trigger without entering the role-flip block); \
+         got {} — \
+         if 1, has_added_guard_member short-circuit regressed; \
+         if >1, memoization broke",
+        probes
+    );
+}
+
+/// Tests that role-flip memoization limits `detect_role_flip` to exactly one
+/// call even when multiple guarded groups reach the per-group skip check
+/// (task 2094 amendment).
+///
+/// Scenario: two guarded groups, both with unchanged guard VALUES (`sc_dirty =
+/// false`, `has_added_guard_member = false`). A role-flip in group 1 causes
+/// the outer deferred-probe block to fire: `detect_role_flip` returns true,
+/// probe count = 1, `role_flip_memo = Some(true)`. Both groups then reach the
+/// per-group skip check (`guard_value_unchanged = true`, no added members) and
+/// read from the memoised result — no additional `detect_role_flip` calls.
+///
+/// Expected: `last_role_flip_probes() == 1`.
+///
+/// Correctness remains pinned by the task-2084 lock
+/// `edit_source_role_flipped_guard_member_matches_cold_eval` (:945) and its
+/// symmetric counterpart `_inactive_to_active_matches_cold_eval` (:1027).
+///
+/// Task 2094 — memo reuse across multiple groups perf lock.
+#[test]
+fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
+    // Module A: two guarded groups; `moving` is on the active where-branch of
+    // group 1 (guarded by u0). Group 2 (guarded by u1) is stable.
+    let module_a_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    where u0 {
+        let x0 = 1mm
+        let moving = 2mm
+    }
+    where u1 {
+        let y0 = 3mm
+    }
+}"#;
+    // Module B: `moving` (same id, same expr → same content_hash → not in
+    // `added`) relocates to the inactive else-branch of group 1. Group 2 is
+    // unchanged. Both u0 and u1 default to true in A and B:
+    //   → neither u0 nor u1 is in changed_set
+    //   → __guard_0 and __guard_1 are not in dirty_cone → sc_dirty = false.
+    //   → `moving` has the same content_hash → has_added_guard_member = false.
+    // The outer deferred-probe block evaluates, finds role_flip = true (probe
+    // #1, memo = Some(true)). Both groups reach the per-group skip check with
+    // guard_value_unchanged = true and no added members; both read the memo
+    // without a second probe.
+    let module_b_src = r#"structure S {
+    param u0: Bool = true
+    param u1: Bool = true
+    where u0 {
+        let x0 = 1mm
+    } else {
+        let moving = 2mm
+    }
+    where u1 {
+        let y0 = 3mm
+    }
+}"#;
+    let (cold_result, probes) = run_probe_scenario(module_a_src, module_b_src);
+
+    // (b) Positive anchor: `moving` must be Undef in cold (relocated to
+    // else-branch, which is inactive when u0=true). Prevents a "both wrong"
+    // false-pass on the counter assertion.
+    let moving_id = ValueCellId::new("S", "moving");
+    assert!(
+        matches!(cold_result.values.get(&moving_id), Some(Value::Undef)),
+        "moving must be Undef after role-flip to else-branch (u0=true, \
+         else-branch inactive); got {:?}",
+        cold_result.values.get(&moving_id)
+    );
+
+    // (c) Performance lock: exactly one detect_role_flip call (from the outer
+    // deferred-probe block); both per-group iterations read the memoised
+    // Some(true) without triggering a second probe.
+    //
+    // Regression catalogue:
+    // == 0 → outer probe incorrectly skipped (sc_dirty or has_added_guard_member
+    //         short-circuited when they should not have).
+    // >= 2 → memoization broke: the per-group None arm called detect_role_flip
+    //         again for a group that should have read role_flip_memo.
+    assert_eq!(
+        probes,
+        1,
+        "expected exactly 1 detect_role_flip probe (outer deferred-probe block \
+         fires once; per-group loop reads memo for both groups); \
+         got {} — \
+         if 0, outer probe was incorrectly skipped; \
+         if >=2, memoization broke (per-group arm probed again)",
+        probes
+    );
+}
+
+// ── Invariant-check tests ──────────────────────────────────────────────────
+
+/// `edit_source` must panic (in debug builds) on a malformed module whose
+/// `ValueCellDecl.cell_type` is `Type::TypeParam`, an unrepresentable variant
+/// that has no `Value` counterpart.
+///
+/// This mirrors the defensive invariant already present on the `Engine::eval`
+/// cold-start path (engine_eval.rs:247-249).  Without the corresponding fix in
+/// engine_edit.rs the call either returns normally or panics later with an
+/// unrelated message — the assertion must fire immediately after
+/// `Snapshot::from_compiled_module`.
+#[test]
+#[cfg(debug_assertions)]
+fn edit_source_panics_on_unrepresentable_cell_type() {
+    use std::panic;
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+    use reify_types::{ModulePath, Type};
+
+    // edit_source requires an Initialized engine — seed one first with a valid eval.
+    let mut engine = fresh_engine();
+    let good = bracket_compiled_module();
+    engine.eval(&good);
+
+    // Build a malformed module that bypasses the compiler: a single ValueCellDecl
+    // whose cell_type = Type::TypeParam("T"), a variant that has no Value
+    // counterpart and triggers the invariant assertion.
+    let bad_module = CompiledModuleBuilder::new(ModulePath::single("bad"))
+        .template(
+            TopologyTemplateBuilder::new("Bad")
+                .param("Bad", "x", Type::TypeParam("T".into()), None)
+                .build(),
+        )
+        .build();
+
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let _ = engine.edit_source(&bad_module);
+    }));
+    assert!(
+        result.is_err(),
+        "expected edit_source to panic on unrepresentable cell_type but it returned normally",
+    );
+    let err = result.unwrap_err();
+    let msg = err
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic>");
+    // The literal mirrors `crate::engine_eval::ASSERT_MSG_PREFIX` (pub(crate) — not
+    // importable from an integration-test binary, so the substring is spelled out here).
+    assert!(
+        msg.contains("unrepresentable cell_type"),
+        "panic message did not contain expected substring \"unrepresentable cell_type\": {msg}",
     );
 }

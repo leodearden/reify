@@ -13,17 +13,14 @@ use super::*;
 pub(crate) fn compile_curve_op(
     name: &str,
     compiled_args: Vec<CompiledExpr>,
+    expr_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
     mut sub_ops: Vec<CompiledGeometryOp>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     match name {
         // line_segment(x1, y1, z1, x2, y2, z2)
         "line_segment" => {
-            if compiled_args.len() != 6 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "line_segment() expects 6 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("line_segment", compiled_args.len(), 6, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -42,11 +39,7 @@ pub(crate) fn compile_curve_op(
         }
         // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
         "arc" => {
-            if compiled_args.len() != 9 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "arc() expects 9 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("arc", compiled_args.len(), 9, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -68,11 +61,7 @@ pub(crate) fn compile_curve_op(
         }
         // helix(radius, pitch, height)
         "helix" => {
-            if compiled_args.len() != 3 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "helix() expects 3 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("helix", compiled_args.len(), 3, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -89,10 +78,14 @@ pub(crate) fn compile_curve_op(
         // interp(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
         "interp" => {
             if compiled_args.len() < 6 || !compiled_args.len().is_multiple_of(3) {
-                diagnostics.push(Diagnostic::error(format!(
-                    "interp() expects coordinate triples (at least 6 args for 2 points), got {}",
-                    compiled_args.len()
-                )));
+                push_labeled_arg_count_error(
+                    format!(
+                        "interp() expects coordinate triples (at least 6 args for 2 points), got {}",
+                        compiled_args.len()
+                    ),
+                    expr_span,
+                    diagnostics,
+                );
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
@@ -109,10 +102,14 @@ pub(crate) fn compile_curve_op(
         // bezier(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
         "bezier" => {
             if compiled_args.len() < 6 || !compiled_args.len().is_multiple_of(3) {
-                diagnostics.push(Diagnostic::error(format!(
-                    "bezier() expects coordinate triples (at least 6 args for 2 points), got {}",
-                    compiled_args.len()
-                )));
+                push_labeled_arg_count_error(
+                    format!(
+                        "bezier() expects coordinate triples (at least 6 args for 2 points), got {}",
+                        compiled_args.len()
+                    ),
+                    expr_span,
+                    diagnostics,
+                );
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
@@ -128,11 +125,7 @@ pub(crate) fn compile_curve_op(
         }
         // nurbs — minimum: degree(1) + n_points(1) + 2×3 coords(6) + 2 weights(2) = 10
         "nurbs" => {
-            if compiled_args.len() < 10 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "nurbs() expects at least 10 arguments (degree + n_points + coords + weights), got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_at_least("nurbs", compiled_args.len(), 10, expr_span, diagnostics) {
                 return None;
             }
             let args: Vec<(String, CompiledExpr)> = compiled_args
@@ -162,7 +155,7 @@ mod tests {
     fn compile_curve_op_line_segment_direct() {
         let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_curve_op("line_segment", args.clone(), &mut diagnostics, vec![]);
+        let result = compile_curve_op("line_segment", args.clone(), SourceSpan::new(0, 0), &mut diagnostics, vec![]);
         assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
         let ops = result.expect("compile_curve_op line_segment should return Some");
         assert_eq!(ops.len(), 1);
@@ -177,12 +170,22 @@ mod tests {
     }
 
     #[test]
-    fn compile_curve_op_wrong_arg_count() {
+    fn compile_curve_op_wrong_arg_count_with_label() {
+        // line_segment expects 6 args; pass 3 — span must appear on the diagnostic label
         let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
+        let span = SourceSpan::new(10, 20);
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_curve_op("line_segment", args, &mut diagnostics, vec![]);
+        let result = compile_curve_op("line_segment", args, span, &mut diagnostics, vec![]);
         assert!(result.is_none(), "expected None for wrong arg count");
-        assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected at least one label on arg-count diagnostic"
+        );
+        assert_eq!(
+            diagnostics[0].labels[0].span, span,
+            "label span must match the expr_span passed in"
+        );
     }
 
     #[test]
@@ -193,7 +196,7 @@ mod tests {
         }];
         let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_curve_op("line_segment", args, &mut diagnostics, marker_sub_ops);
+        let result = compile_curve_op("line_segment", args, SourceSpan::new(0, 0), &mut diagnostics, marker_sub_ops);
         assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
         let ops = result.expect("compile_curve_op line_segment should return Some");
         assert_eq!(ops.len(), 2);

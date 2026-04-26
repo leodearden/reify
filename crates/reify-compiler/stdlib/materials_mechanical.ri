@@ -2,12 +2,55 @@
 // Provides core trait definitions for engineering material characterization.
 // All dimensioned quantities use Real (dimensionless) pending Pressure/Density
 // type system extensions in a future task.
+//
+// ── BREAKING CHANGE (task 1876) ──────────────────────────────────────────────
+// The identifier `Material` changed meaning in this release:
+//   - OLD: `Material` was a trait (`trait Material { param density : Real; param name : String }`).
+//   - NEW: `Material` is a canonical first-class STRUCT (see below), and the
+//          former trait has been renamed to `MaterialSpec`.
+//
+// Migration for external `.ri` sources that referenced the old trait:
+//   - `trait Foo : Material`              →  `trait Foo : MaterialSpec`
+//   - `structure def Bar : Material`      →  `structure def Bar : MaterialSpec`
+//   - `param m : Material` used as a      →  `param m : MaterialSpec`
+//       trait-object (existential) type       (keeps trait-typed-param behavior)
+//   - `param m : Material` intended as a  →  unchanged (now resolves to the
+//       concrete value slot                    canonical struct)
+//
+// No deprecation alias is provided: a trait and a struct cannot share the
+// same identifier in Reify, so the old name could not be retained alongside
+// the new struct. Consumers that depended on the old trait under the name
+// `Material` will see a compile error at the refinement or type-annotation
+// site; the mechanical replacement above resolves it.
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ── Base material trait ──────────────────────────────────────────────────────
 
-trait Material {
+// MaterialSpec is the trait-level contract every material-like structure
+// must satisfy. The canonical first-class `Material` struct (below) provides
+// a concrete value type for callers that want to supply a material by
+// construction — e.g., `Material(name: "steel", ...)`. Use the trait when
+// you want any material-conforming structure (trait-typed params); use the
+// struct when you want a concrete first-class value.
+//
+// Note: prior to task 1876 this trait was named `Material`; see the
+// BREAKING CHANGE block at the top of this file for migration guidance.
+trait MaterialSpec {
     param density : Real
     param name : String
+}
+
+// Material is the canonical first-class material value type. It carries the
+// minimal set of properties needed to reference a material from a design:
+// a name for identification, density for mass computations, and Young's
+// modulus for elastic-response computations. Callers must supply values at
+// construction; there are no defaults. The MaterialSpec trait above remains
+// available for structures that want to conform to the material contract
+// without carrying a concrete Material instance.
+structure def Material {
+    param name : String
+    param density : Real
+    param youngs_modulus : Real
 }
 
 // ── Elasticity ───────────────────────────────────────────────────────────────

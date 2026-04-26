@@ -900,9 +900,11 @@ pub fn annotated_module() -> CompiledModule {
 
 // ─── shared stdlib test constants ──────────────────────────────────────
 
-/// Material traits defined in `materials_mechanical.ri`.
+/// Material traits defined in `materials_mechanical.ri`. The base contract
+/// trait is named `MaterialSpec`; the name `Material` is reserved for the
+/// first-class canonical struct defined alongside these traits.
 pub const EXPECTED_MATERIAL_TRAITS: &[&str] = &[
-    "Material",
+    "MaterialSpec",
     "Elastic",
     "Strong",
     "Hard",
@@ -935,10 +937,10 @@ structure def Steel : Strong {
 "#
 }
 
-/// Steel:Material+Elastic conformance source — 5 params for both traits.
+/// Steel:MaterialSpec+Elastic conformance source — 5 params for both traits.
 pub fn steel_material_elastic_source() -> &'static str {
     r#"
-structure def Steel : Material + Elastic {
+structure def Steel : MaterialSpec + Elastic {
     param density : Real = 7800.0
     param name : String = "A36"
     param youngs_modulus : Real = 200.0

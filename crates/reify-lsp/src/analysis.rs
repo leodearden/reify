@@ -61,7 +61,7 @@ impl AnalysisContext {
     pub fn new(source: &str, uri: &Url) -> Self {
         let module_name = module_name_from_uri(uri);
         let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
-        let compiled = reify_compiler::compile(&parsed);
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
         let check_result = engine.check(&compiled);
@@ -353,6 +353,19 @@ mod tests {
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
     }
+
+    /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
+    /// Shared across all task-2176 stdlib-resolution tests to avoid tripling the literal.
+    const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
+    param density: Real = 7850
+    param name: String = "steel"
+    param volume: Real = 1.0
+    param centroid_x: Real = 0.0
+    param centroid_y: Real = 0.0
+    param centroid_z: Real = 0.0
+    param moment_of_inertia: Real = 1.0
+    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+}"#;
 
     // --- module_name_from_uri tests ---
 
@@ -1605,6 +1618,28 @@ mod tests {
         assert!(
             result.is_none(),
             "param at 33 levels of nesting should NOT be found (depth limit exceeded)"
+        );
+    }
+
+    // --- task-2176 step-7: AnalysisContext resolves stdlib types ---
+
+    #[test]
+    fn analysis_context_resolves_stdlib_types() {
+        // Source references Rigid trait and Material struct from stdlib.
+        // With the empty-prelude compile() these produce ERROR diagnostics;
+        // after swapping to compile_with_stdlib the module must be error-free.
+        let uri = Url::parse("file:///test.ri").unwrap();
+        let ctx = AnalysisContext::new(STDLIB_PROBE_SRC, &uri);
+        let errors: Vec<_> = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_types::Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "AnalysisContext: stdlib source should compile without errors; \
+             got: {errors:?}"
         );
     }
 }

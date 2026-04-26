@@ -173,7 +173,7 @@ impl Engine {
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
             functions: self.functions.clone(),
-            meta_map: Arc::new(self.meta_map.clone()),
+            meta_map: Arc::clone(&self.meta_map),
             objective: self.objectives.get(&cell.entity).cloned(),
         })
     }

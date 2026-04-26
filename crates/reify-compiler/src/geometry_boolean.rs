@@ -19,15 +19,7 @@ pub(crate) fn compile_boolean_op(
 ) -> Option<Vec<CompiledGeometryOp>> {
     match name {
         "union" | "intersection" | "difference" => {
-            if args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "{}() expects 2 arguments, got {}",
-                        name,
-                        args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
+            if !check_arg_count_exact(name, args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
             let bool_op = match name {
@@ -99,15 +91,7 @@ pub(crate) fn compile_boolean_op(
             Some(all_ops)
         }
         "union_all" | "intersection_all" => {
-            if args.len() < 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "{}() expects at least 2 arguments, got {}",
-                        name,
-                        args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
+            if !check_arg_count_at_least(name, args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
             let bool_op = match name {

@@ -828,6 +828,35 @@ fn edit_param_dimension_mismatch_returns_error() {
     );
 }
 
+/// Pins all three fields of `EngineError::DimensionMismatch` for
+/// `edit_param Assembly.height` (Type::Scalar[LENGTH]) supplied kg(5.0) (Value::Scalar[MASS]).
+/// Pre-existing sibling `edit_param_dimension_mismatch_returns_error` checks the variant kind
+/// only; this test pins the fields to catch swap bugs during the task-2178 refactor.
+/// A buggy mapping that swaps `expected` ↔ `got` or drops `cell` would fail here.
+#[test]
+fn edit_param_dimension_mismatch_pins_cell_and_dimensions() {
+    let (mut engine, _initial) = make_eval_engine();
+    let height_id = ValueCellId::new("Assembly", "height");
+    // kg(5.0) produces Value::Scalar[MASS]; height is Type::Scalar[LENGTH].
+    let err = engine
+        .edit_param(height_id.clone(), kg(5.0))
+        .expect_err("edit_param with dimension mismatch should return Err");
+    let reify_eval::EngineError::DimensionMismatch { cell, expected, got } = err else {
+        panic!("expected EngineError::DimensionMismatch, got {err:?}");
+    };
+    assert_eq!(cell, height_id, "cell should be the height cell id");
+    assert_eq!(
+        expected,
+        reify_types::DimensionVector::LENGTH,
+        "expected dimension should be LENGTH (the cell's declared dimension)"
+    );
+    assert_eq!(
+        got,
+        reify_types::DimensionVector::MASS,
+        "got dimension should be MASS (from kg(5.0))"
+    );
+}
+
 /// edit_check Assembly.height (Type::Scalar[LENGTH]) with kg(5.0) (Value::Scalar[MASS])
 /// should return Err(EngineError::DimensionMismatch { .. }) (delegates to edit_param).
 #[test]

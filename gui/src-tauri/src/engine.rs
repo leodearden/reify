@@ -114,7 +114,7 @@ impl EngineSession {
         }
 
         // Compile
-        let compiled = reify_compiler::compile(&parsed);
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
         // Check for compile errors
         let has_errors = compiled
@@ -212,7 +212,7 @@ impl EngineSession {
             return Err(format!("Parse errors: {}", msgs.join("; ")));
         }
 
-        let compiled = reify_compiler::compile(&parsed);
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
         let has_errors = compiled
             .diagnostics

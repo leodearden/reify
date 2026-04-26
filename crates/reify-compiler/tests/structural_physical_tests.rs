@@ -128,7 +128,7 @@ fn all_eight_traits_present() {
 
 /// Step 5: Physical trait has correct required_members (volume, centroid_x,
 /// centroid_y, centroid_z as Real params), defaults include a Let named 'mass',
-/// and refinements contains 'Material'.
+/// and refinements contains 'MaterialSpec'.
 #[test]
 fn physical_trait_has_correct_members_and_refinements() {
     let module = load_stdlib_module();
@@ -139,10 +139,10 @@ fn physical_trait_has_correct_members_and_refinements() {
         .find(|t| t.name == "Physical")
         .expect("expected 'Physical' trait in compiled module");
 
-    // Refinements should contain "Material"
+    // Refinements should contain "MaterialSpec"
     assert!(
-        physical.refinements.contains(&"Material".to_string()),
-        "Physical should refine Material, got refinements: {:?}",
+        physical.refinements.contains(&"MaterialSpec".to_string()),
+        "Physical should refine MaterialSpec, got refinements: {:?}",
         physical.refinements
     );
 
@@ -165,7 +165,7 @@ fn physical_trait_has_correct_members_and_refinements() {
     // Physical's own params (volume, centroid_x/y/z) should be Real.
     // Only check these four by name — not ALL required_members — to avoid
     // false failures if the compiler ever flattens inherited members of
-    // different types (e.g., name:String from Material) into required_members.
+    // different types (e.g., name:String from MaterialSpec) into required_members.
     for param_name in &["volume", "centroid_x", "centroid_y", "centroid_z"] {
         let req = physical
             .required_members
@@ -743,15 +743,15 @@ fn load_stdlib_module_uses_production_path() {
 
 /// Step 19: Verify cross-module refinement chain works end-to-end through
 /// load_stdlib(). Compile a structure conforming to Rigid (which refines
-/// Physical, which refines Material from materials_mechanical.ri — a 3-level
+/// Physical, which refines MaterialSpec from materials_mechanical.ri — a 3-level
 /// chain spanning two stdlib modules). Assert no errors and verify requirements
 /// from ALL three levels are inherited: moment_of_inertia from Rigid,
-/// volume/centroid_x/y/z from Physical, and density/name from Material.
+/// volume/centroid_x/y/z from Physical, and density/name from MaterialSpec.
 #[test]
 fn rigid_cross_module_three_level_refinement_chain() {
     let source = r#"
 structure def Beam : Rigid {
-    // Material requirements (from materials_mechanical.ri)
+    // MaterialSpec requirements (from materials_mechanical.ri)
     param density : Real = 7850.0
     param name : String = "steel beam"
 
@@ -797,15 +797,15 @@ structure def Beam : Rigid {
         .map(|vc| vc.id.member.as_str())
         .collect();
 
-    // From Material (level 1, materials_mechanical.ri)
+    // From MaterialSpec (level 1, materials_mechanical.ri)
     assert!(
         cell_names.contains(&"density"),
-        "missing 'density' from Material, cells: {:?}",
+        "missing 'density' from MaterialSpec, cells: {:?}",
         cell_names
     );
     assert!(
         cell_names.contains(&"name"),
-        "missing 'name' from Material, cells: {:?}",
+        "missing 'name' from MaterialSpec, cells: {:?}",
         cell_names
     );
 

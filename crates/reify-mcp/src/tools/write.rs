@@ -1,4 +1,4 @@
-// Write tool stubs (5 tools)
+// Write tools (5 tools)
 
 use crate::registry::ToolRegistry;
 use crate::types::ToolError;

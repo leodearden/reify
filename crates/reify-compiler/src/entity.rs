@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use crate::compile_builder::hash::hash_pragma;
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
@@ -12,8 +13,6 @@ pub(crate) struct EntityDefRef<'a> {
     pub(crate) annotations: &'a [reify_syntax::Annotation],
     pub(crate) pragmas: &'a [reify_syntax::Pragma],
     pub(crate) span: SourceSpan,
-    #[allow(dead_code)]
-    pub(crate) content_hash: ContentHash,
 }
 
 impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
@@ -27,7 +26,6 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
             annotations: &s.annotations,
             pragmas: &s.pragmas,
             span: s.span,
-            content_hash: s.content_hash,
         }
     }
 }
@@ -43,7 +41,6 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             annotations: &o.annotations,
             pragmas: &o.pragmas,
             span: o.span,
-            content_hash: o.content_hash,
         }
     }
 }
@@ -223,6 +220,55 @@ pub(crate) fn substitute_expr(
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
+///
+/// # Two-pass compilation
+///
+/// The member list is walked twice:
+///
+/// **Pass 1** (pre-pass, the `known_geometry_lets` loop): registers every
+/// param, let, port, sub-component, and guarded-group name into
+/// `CompilationScope` with a best-effort type, and simultaneously builds the
+/// `known_geometry_lets: HashSet<&str>` accumulator. No expression is compiled
+/// in this pass — only name-to-type bindings are established.
+///
+/// **Pass 2** (main member loop, after the pre-pass): compiles expressions
+/// with the scope already fully populated. Because every name is registered
+/// before any expression is compiled, expressions may reference a param or let
+/// declared *later* in the member list — true forward references within the
+/// entity body. This is behaviourally pinned by
+/// `let_type_disambiguation_tests::unannotated_let_resolves_forward_reference_to_annotated_let`
+/// and `unannotated_let_resolves_forward_reference_to_annotated_param`.
+///
+/// # Ordering caveat: `known_geometry_lets`
+///
+/// Unlike scope name resolution (order-free by design), the
+/// `known_geometry_lets` accumulator is built **incrementally** during pass 1.
+/// When a let's value expression is an `Ident`, `is_geometry_let` can only
+/// classify it as a geometry let if the aliased name is already in the set at
+/// the moment that member is visited. An alias that appears before its referent
+/// in member order is therefore **not** classified as a geometry let, even
+/// though the referent will be inserted shortly after. This conservative
+/// behaviour is intentional and is pinned by
+/// `let_scope_tests::cyclic_ident_alias_does_not_crash`, whose inline comment
+/// notes "the forward-pass incremental set never adds either to
+/// known_geometry_lets". Forward alias chains that are ordered correctly
+/// (referent before alias) do propagate transitively.
+///
+/// Guarded groups follow the same two-pass + incremental-classification pattern
+/// via `register_guarded_names` and `compile_guarded_members` (guards.rs).
+///
+/// # Shadowing
+///
+/// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
+/// later same-named registration overwrites the earlier entry. `known_geometry_lets`
+/// being a `HashSet` follows the same idempotent-add convention (a name that is
+/// already geometry stays geometry; duplicate registration is harmless).
+///
+/// The separate shadow rule for the `functions: &[CompiledFunction]` parameter
+/// — user functions first, prelude appended without duplicates — is applied
+/// upstream by `merge_prelude_functions` (`lib.rs`). `is_geometry_let` queries
+/// `functions` via `.iter().any(…)` and is therefore order-independent with
+/// respect to that slice.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_entity(
     structure: &EntityDefRef<'_>,
@@ -230,6 +276,7 @@ pub(crate) fn compile_entity(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     field_registry: &HashMap<String, &CompiledField>,
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
@@ -295,13 +342,21 @@ pub(crate) fn compile_entity(
             .insert(field_name.clone(), (field_id, field_type, None));
     }
 
-    // First pass: register all param and let names into the scope so they can
-    // reference each other (forward references within the structure).
-    // We need types for the scope, so we resolve types in this pass as well.
-    // `known_geometry_lets` tracks names that are geometry lets (either direct
-    // geometry function calls or ident aliases to other geometry lets). Built
-    // incrementally as we encounter each Let declaration so that ident aliases
-    // are recognised transitively (e.g. `let b = a` after `let a = cylinder(...)`)
+    // First pass: register all param and let names (and ports, subs, guarded
+    // groups) into the scope so pass 2 expressions can reference any name in the
+    // entity body, regardless of declaration order (true forward references).
+    // Types are resolved here as well so the scope entries are usable in pass 2.
+    //
+    // `known_geometry_lets` tracks which let names resolve to geometry (either a
+    // direct geometry function call or an Ident alias to an already-known geometry
+    // let). It is built incrementally — each Let is classified using only the
+    // names already in the set at that point in the walk. An Ident alias that
+    // appears *before* its referent is therefore not classified as geometry, even
+    // though the referent will be inserted on the next visit. This ordering
+    // constraint is the dual of the forward-reference freedom enjoyed by pass 2:
+    // scope name resolution is order-free (whole-pass pre-registration), while
+    // geometry-let classification is order-sensitive (incremental accumulation).
+    // Pinned by `let_scope_tests::cyclic_ident_alias_does_not_crash`.
     let mut known_geometry_lets: HashSet<&str> = HashSet::new();
     for member in structure.members {
         match member {
@@ -312,6 +367,7 @@ pub(crate) fn compile_entity(
                         &type_param_names,
                         alias_registry,
                         diagnostics,
+                        structure_names,
                         trait_names,
                     ) {
                         Some(t) => t,
@@ -394,6 +450,7 @@ pub(crate) fn compile_entity(
                     diagnostics,
                     &type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     &mut known_geometry_lets,
                 );
@@ -404,6 +461,7 @@ pub(crate) fn compile_entity(
                     diagnostics,
                     &type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     &mut known_geometry_lets,
                 );
@@ -435,6 +493,7 @@ pub(crate) fn compile_entity(
                                     &type_param_names,
                                     alias_registry,
                                     diagnostics,
+                                    structure_names,
                                     trait_names,
                                 )
                                 .unwrap_or_else(|| {
@@ -534,6 +593,7 @@ pub(crate) fn compile_entity(
         check_trait_conformance(
             structure,
             trait_registry,
+            structure_names,
             trait_names,
             &mut scope,
             &mut value_cells,
@@ -619,19 +679,7 @@ pub(crate) fn compile_entity(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or_else(|| {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "internal compiler error: unresolved name '{}' in pass 2",
-                                param.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                param.span,
-                                "ICE: name should have been registered in pass 1",
-                            )),
-                        );
-                        Type::Real
-                    });
+                    .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &param.name, param.span, diagnostics));
 
                 // Solid-typed params with a geometry-call default are lowered as
                 // realizations (third pass), not as scalar ValueCellDecls.
@@ -711,6 +759,7 @@ pub(crate) fn compile_entity(
                     let_decl.type_expr.as_ref(),
                     &type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     diagnostics,
                 );
@@ -974,6 +1023,7 @@ pub(crate) fn compile_entity(
                     &mut constraint_index,
                     &type_param_names,
                     alias_registry,
+                    structure_names,
                     trait_names,
                     &known_geometry_lets,
                 );
@@ -1020,19 +1070,7 @@ pub(crate) fn compile_entity(
                             let cell_type = scope
                                 .resolve(&composite_name)
                                 .map(|(_, ty)| ty.clone())
-                                .unwrap_or_else(|| {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!(
-                                            "internal compiler error: unresolved name '{}' in pass 2",
-                                            composite_name
-                                        ))
-                                        .with_label(DiagnosticLabel::new(
-                                            param.span,
-                                            "ICE: name should have been registered in pass 1",
-                                        )),
-                                    );
-                                    Type::Real
-                                });
+                                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &composite_name, param.span, diagnostics));
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
@@ -1085,6 +1123,7 @@ pub(crate) fn compile_entity(
                                 let_decl.type_expr.as_ref(),
                                 &type_param_names,
                                 alias_registry,
+                                structure_names,
                                 trait_names,
                                 diagnostics,
                             );
@@ -1527,6 +1566,11 @@ pub(crate) fn compile_entity(
             [ContentHash::of_str(k), ContentHash::of_str(v)]
         });
 
+        // Block-level pragma hashes (in declaration order; span excluded as positional).
+        // Appended last so pragma-free templates retain identical hashes to pre-pragma-hashing
+        // compilations — mirrors the module-level convention in compile_builder/hash.rs:69-81.
+        let pragma_hashes = structure.pragmas.iter().map(hash_pragma);
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
@@ -1534,7 +1578,8 @@ pub(crate) fn compile_entity(
             .chain(guard_hashes)
             .chain(port_hashes)
             .chain(connection_hashes)
-            .chain(meta_hashes);
+            .chain(meta_hashes)
+            .chain(pragma_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -2100,6 +2145,7 @@ pub(crate) fn fixup_option_none_for_let(
     type_expr: Option<&reify_syntax::TypeExpr>,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -2110,6 +2156,7 @@ pub(crate) fn fixup_option_none_for_let(
             type_param_names,
             alias_registry,
             diagnostics,
+            structure_names,
             trait_names,
         )
         && matches!(&resolved, Type::Option(_))

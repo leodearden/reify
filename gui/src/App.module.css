@@ -37,6 +37,9 @@
 
 .sidePanel {
   display: grid;
+  /* Explicit column so panel contents shrink to the panel width instead of
+     growing to max-content and being clipped by overflow: hidden. */
+  grid-template-columns: minmax(0, 1fr);
   /* grid-template-rows set inline via style for resizable split */
   overflow: hidden;
 }

@@ -491,20 +491,23 @@ pub(crate) fn resolve_type_with_params(
     None
 }
 
-/// Resolve a type name, checking builtins, type parameters, then the alias
-/// registry, and finally trait names.
+/// Resolve a type name, checking builtins, type parameters, the alias
+/// registry, structure names, and finally trait names.
 ///
 /// This is the primary type resolution function when aliases are available.
-/// Falls through: builtins → type params → alias registry → trait names.
+/// Falls through: builtins → type params → alias registry → structure names → trait names.
 ///
-/// Trait-name resolution is LAST so existing sources that happened to reuse
-/// a name present in the builtin/alias/generic-param namespaces keep their
-/// prior resolution behavior; trait names only resolve when no earlier kind
-/// matches.
+/// Structure-name resolution runs BEFORE trait-name fallback so that a name
+/// bound to a concrete structure template (e.g. stdlib `Material`) resolves
+/// to `Type::StructureRef`, not `Type::TraitObject`. Trait-name resolution is
+/// LAST so existing sources that happened to reuse a name present in the
+/// builtin/alias/generic-param/structure namespaces keep their prior
+/// resolution behavior; trait names only resolve when no earlier kind matches.
 pub(crate) fn resolve_type_with_aliases(
     name: &str,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
 ) -> Option<Type> {
     if let Some(ty) = resolve_type_with_params(name, type_param_names) {
@@ -516,8 +519,15 @@ pub(crate) fn resolve_type_with_aliases(
     {
         return Some(resolved.clone());
     }
-    // Trait-name fallback (last in precedence): `param m : Material` where
-    // `Material` is a trait name resolves to Type::TraitObject("Material").
+    // Structure-name resolution (before trait fallback): `param material : Material`
+    // where `Material` is a structure def resolves to Type::StructureRef("Material").
+    // This takes precedence over trait-name fallback so that the canonical
+    // first-class Material struct wins over any same-named trait (task 1876).
+    if structure_names.contains(name) {
+        return Some(Type::StructureRef(name.to_string()));
+    }
+    // Trait-name fallback (last in precedence): `param m : MaterialSpec` where
+    // `MaterialSpec` is a trait name resolves to Type::TraitObject("MaterialSpec").
     if trait_names.contains(name) {
         return Some(Type::TraitObject(name.to_string()));
     }
@@ -596,6 +606,7 @@ pub(crate) fn resolve_type_alias_expr(
                 && !alias_entry.type_params.is_empty()
             {
                 let empty = HashSet::new();
+                let empty_structs = HashSet::new();
                 let empty_traits = HashSet::new();
                 let mut tmp_diags = Vec::new();
                 if let Some(ty) = resolve_parameterized_alias(
@@ -605,6 +616,7 @@ pub(crate) fn resolve_type_alias_expr(
                     alias_registry,
                     &mut tmp_diags,
                     0,
+                    &empty_structs,
                     &empty_traits,
                 ) {
                     return Some(ty);
@@ -613,8 +625,9 @@ pub(crate) fn resolve_type_alias_expr(
             }
             // Simple name: check builtins, then alias registry
             let empty = HashSet::new();
+            let empty_structs = HashSet::new();
             let empty_traits = HashSet::new();
-            resolve_type_with_aliases(name, &empty, alias_registry, &empty_traits)
+            resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
         }
     }
 }
@@ -673,6 +686,7 @@ pub(crate) fn resolve_type_expr_with_aliases(
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
 ) -> Option<Type> {
     let (name, type_args) = match &type_expr.kind {
@@ -689,9 +703,15 @@ pub(crate) fn resolve_type_expr_with_aliases(
         return Some(ty);
     }
 
-    // Simple name resolution (builtins, type params, non-parameterized aliases, trait names)
-    if let Some(ty) = resolve_type_with_aliases(name, type_param_names, alias_registry, trait_names)
-    {
+    // Simple name resolution (builtins, type params, non-parameterized aliases,
+    // structure names, trait names).
+    if let Some(ty) = resolve_type_with_aliases(
+        name,
+        type_param_names,
+        alias_registry,
+        structure_names,
+        trait_names,
+    ) {
         return Some(ty);
     }
 
@@ -706,6 +726,7 @@ pub(crate) fn resolve_type_expr_with_aliases(
             alias_registry,
             diagnostics,
             0,
+            structure_names,
             trait_names,
         );
     }
@@ -721,6 +742,7 @@ const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
 ///
 /// Builds a substitution map from param names to concrete types, then
 /// resolves the alias body with those substitutions applied.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_parameterized_alias(
     alias_entry: &TypeAliasEntry,
     type_args: &[reify_syntax::TypeExpr],
@@ -728,6 +750,7 @@ pub(crate) fn resolve_parameterized_alias(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
 ) -> Option<Type> {
     if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
@@ -777,6 +800,7 @@ pub(crate) fn resolve_parameterized_alias(
             type_param_names,
             alias_registry,
             diagnostics,
+            structure_names,
             trait_names,
         );
         if let Some(ty) = resolved {
@@ -912,13 +936,15 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 );
             }
             // Then builtins + alias registry.
-            // Trait-name resolution is not applied during alias-body resolution
-            // under substitution: alias bodies are resolved either during DFS
-            // (before traits exist) or during alias instantiation at a use site
-            // where the alias body itself should only refer to builtins/aliases.
+            // Trait and structure name resolution is not applied during
+            // alias-body resolution under substitution: alias bodies are resolved
+            // either during DFS (before traits/structures exist) or during alias
+            // instantiation at a use site where the alias body itself should
+            // only refer to builtins/aliases.
             let empty = HashSet::new();
+            let empty_structs = HashSet::new();
             let empty_traits = HashSet::new();
-            resolve_type_with_aliases(name, &empty, alias_registry, &empty_traits)
+            resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
         }
     }
 }

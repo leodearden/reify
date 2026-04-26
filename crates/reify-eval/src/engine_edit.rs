@@ -25,6 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledFunction, CompiledModule};
@@ -36,11 +37,12 @@ use reify_types::{
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
+use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
-    CheckResult, Engine, EngineError, EvalResult, GuardLookup, guard_state_fingerprint,
-    value_type_kind_matches,
+    CheckResult, Engine, EngineError, EvalResult, GuardLookup, eval_ctx_with_meta,
+    guard_state_fingerprint,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -68,7 +70,7 @@ pub(crate) fn deactivate_if_not_auto(
 ///
 /// - **Active branch** (`is_true` for `members`, `is_false` for `else_members`):
 ///   each cell's `default_expr` is evaluated with
-///   `EvalContext::new(values, functions).with_meta(meta_map)` and written into
+///   `eval_ctx_with_meta(values, functions, meta_map)` and written into
 ///   both `values` and `snapshot_values` with `DeterminacyState::Determined`.
 ///   Cells without a `default_expr` (or absent from the graph) are left
 ///   unchanged.
@@ -99,7 +101,7 @@ fn reelaborate_guarded_group(
                 {
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                        &eval_ctx_with_meta(values, functions, meta_map),
                     );
                     values.insert(mid.clone(), val.clone());
                     snapshot_values.insert(mid.clone(), (val, DeterminacyState::Determined));
@@ -264,12 +266,12 @@ fn group_needs_phase3(
 /// groups that have **different** `guard_cell`s, i.e. the cell is claimed by
 /// two distinct guards.  Intra-group duplicates (same `guard_cell`) are
 /// permitted and resolved by last-write-wins.
-fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (ValueCellId, u8)> {
+fn build_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (ValueCellId, u8)> {
     let capacity: usize = groups.iter().map(|g| g.members.len() + g.else_members.len()).sum();
-    let mut old_roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
+    let mut roles: HashMap<ValueCellId, (ValueCellId, u8)> = HashMap::with_capacity(capacity);
     for group in groups.iter() {
         for mid in &group.members {
-            let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
+            let prev = roles.insert(mid.clone(), (group.guard_cell.clone(), 0u8));
             debug_assert!(
                 prev.is_none_or(|(prev_guard, _)| prev_guard == group.guard_cell),
                 "ValueCellId {:?} appeared in multiple guarded-group roles",
@@ -277,7 +279,7 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
             );
         }
         for mid in &group.else_members {
-            let prev = old_roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
+            let prev = roles.insert(mid.clone(), (group.guard_cell.clone(), 1u8));
             debug_assert!(
                 prev.is_none_or(|(prev_guard, _)| prev_guard == group.guard_cell),
                 "ValueCellId {:?} appeared in multiple guarded-group roles",
@@ -285,7 +287,87 @@ fn build_old_role_map(groups: &[GuardedGroupInfo]) -> HashMap<ValueCellId, (Valu
             );
         }
     }
-    old_roles
+    roles
+}
+
+/// Detect whether any guarded-group member has changed its role (guard cell or
+/// branch) between the old and new evaluation graph.
+///
+/// Returns `true` if a role-flip is detected; `false` if the guard membership
+/// is structurally unchanged.
+///
+/// ## Correctness
+///
+/// Both `old_groups` and `new_groups` are reduced through the same
+/// [`build_role_map`] helper before comparison.  This applies the same
+/// last-write-wins semantics to both sides, so intra-group duplicates (a cell
+/// appearing in both `members` and `else_members` of the same group — an
+/// affirmatively supported pattern documented in `build_role_map`'s
+/// docstring) resolve identically on both sides.  `HashMap` equality then
+/// covers both the per-element role check **and** the dedup'd key-count check
+/// in a single comparison, eliminating the spurious mismatch that the old
+/// inline walk produced for that shape.
+///
+/// ## Performance
+///
+/// The empty-case fast path avoids allocating two empty `HashMap`s in the
+/// common no-guarded-groups case.  Otherwise two O(N) passes over the group
+/// lists are performed (one per side), followed by an O(N) map-equality check —
+/// same asymptotic cost as the previous short-circuit walk, with simpler code.
+/// The previous inline walk short-circuited on the first mismatch; this
+/// implementation always materialises both maps.  For the typical case of
+/// no-flip (maps equal) the cost is unchanged; for the flip case it loses the
+/// early exit.  If guarded-group counts grow large in practice, revisit: build
+/// `build_role_map(old_groups)` first, then iterate `new_groups` with an early
+/// exit against that map plus a running count check (symmetric for duplicates).
+fn detect_role_flip(old_groups: &[GuardedGroupInfo], new_groups: &[GuardedGroupInfo]) -> bool {
+    if old_groups.is_empty() && new_groups.is_empty() {
+        return false;
+    }
+    build_role_map(old_groups) != build_role_map(new_groups)
+}
+
+/// Returns `true` when the guard cell's value in the pre-edit snapshot equals
+/// `new_val`, meaning the guard has not changed and member re-elaboration can
+/// be skipped.
+///
+/// Accepts the snapshot `values` map directly (rather than the full
+/// `EvaluationState`) to keep callers and unit tests dependency-free.
+fn guard_value_unchanged(
+    snapshot_values: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+    guard_cell: &ValueCellId,
+    new_val: &Value,
+) -> bool {
+    snapshot_values
+        .and_then(|vs| vs.get(guard_cell))
+        .map(|(v, _)| v)
+        == Some(new_val)
+}
+
+/// Returns `true` when any guarded group's guard cell has a different value in
+/// `values` vs. the pre-edit snapshot, indicating that Phase 3
+/// re-elaboration is needed.
+///
+/// Accepts the snapshot `values` map directly (rather than the full
+/// `EvaluationState`) to keep callers and unit tests dependency-free.
+///
+/// Test-only: superseded by `group_needs_phase3`, which additionally accounts
+/// for Phase 1's `phase1_reelaborated` map (wave2 flip detection — task 2146).
+/// The unit tests below pin this helper's pure pass-through semantics so any
+/// future re-introduction at a callsite is still covered.
+#[cfg(test)]
+fn phase3_guard_changed(
+    groups: &[GuardedGroupInfo],
+    values: &ValueMap,
+    snapshot_values: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+) -> bool {
+    groups.iter().any(|group| {
+        let new_val = values.get(&group.guard_cell);
+        let old_val = snapshot_values
+            .and_then(|vs| vs.get(&group.guard_cell))
+            .map(|(v, _)| v);
+        new_val != old_val
+    })
 }
 
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
@@ -442,34 +524,25 @@ impl Engine {
             None => return Err(EngineError::CellNotFound { cell }),
         };
 
-        // Validate type-kind compatibility: reject cross-variant mismatches before
-        // the narrower dimension check below.  Value::Undef is always accepted
-        // (it is the Auto/no-value sentinel used extensively by the solver and
-        // compiler for unresolved params).
-        if !value_type_kind_matches(&new_value, &cell_node.cell_type) {
-            return Err(EngineError::TypeKindMismatch {
-                cell,
-                expected: Box::new(cell_node.cell_type.clone()),
-                got: Box::new(new_value),
-            });
-        }
-
-        // Validate dimension compatibility for Scalar cells.
-        // If the cell is Type::Scalar { dimension: expected } and the supplied
-        // value is Value::Scalar { dimension: got } where got != expected,
-        // reject the edit immediately rather than propagating a dimension-corrupt
-        // value through the eval graph.
-        if let reify_types::Type::Scalar {
-            dimension: expected,
-        } = cell_node.cell_type
-            && let reify_types::Value::Scalar { dimension: got, .. } = &new_value
-            && *got != expected
-        {
-            return Err(EngineError::DimensionMismatch {
-                cell,
-                expected,
-                got: *got,
-            });
+        // Validate type-kind + Scalar-dimension compatibility via the shared
+        // `validate_param_override` helper (see `engine_admin.rs`).  Kept in
+        // one place so a future third guard (Tensor shape, List element-type)
+        // lands once and is picked up by both the cold-start path in
+        // `Engine::eval` and the incremental path here.  `Value::Undef` is
+        // accepted as the Auto/no-value sentinel — `value_type_kind_matches`
+        // inside the helper handles that.
+        match validate_param_override(&new_value, &cell_node.cell_type) {
+            Ok(()) => {}
+            Err(ParamOverrideRejection::TypeKindMismatch) => {
+                return Err(EngineError::TypeKindMismatch {
+                    cell,
+                    expected: Box::new(cell_node.cell_type.clone()),
+                    got: Box::new(new_value),
+                });
+            }
+            Err(ParamOverrideRejection::ScalarDimensionMismatch { expected, got }) => {
+                return Err(EngineError::DimensionMismatch { cell, expected, got });
+            }
         }
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
@@ -561,7 +634,7 @@ impl Engine {
 
                 let val = reify_expr::eval_expr(
                     expr,
-                    &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map),
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                 );
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
@@ -648,9 +721,8 @@ impl Engine {
                         if let Some(ref expr) = node.default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_determinacy(&new_snapshot.values)
-                                    .with_meta(&self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_determinacy(&new_snapshot.values),
                             )
                         } else {
                             Value::Undef
@@ -663,11 +735,6 @@ impl Engine {
                     // and its members don't need re-elaboration. edit_param has no
                     // structural-add or role-flip trigger, so the skip condition is
                     // purely "guard value unchanged".
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
                     // Always write the guard cell value before the skip check.
                     // Phase 1 re-evaluates guards with a determinacy context that
                     // the main eval loop lacks; DeterminacyPredicate guards (e.g.
@@ -682,7 +749,11 @@ impl Engine {
                     new_snapshot
                         .values
                         .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
-                    if old_guard_val == Some(&guard_val) {
+                    if guard_value_unchanged(
+                        self.eval_state.as_ref().map(|s| &s.snapshot.values),
+                        &group.guard_cell,
+                        &guard_val,
+                    ) {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
@@ -865,8 +936,7 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &functions)
-                                .with_meta(&self.meta_map),
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                         );
                         values.insert(vcid.clone(), val.clone());
                         new_snapshot
@@ -921,15 +991,22 @@ impl Engine {
             });
 
             if guard_changed {
+                // Field-level borrow splitting: pre-bind `graph` so the loop can
+                // iterate `&graph.guarded_groups` (shared) while `&mut new_snapshot.values`
+                // (a disjoint field) remains exclusively borrowed inside the body.
+                // This matches the Phase 1 pattern at lines 647-708; no .clone() needed.
+                let graph = &new_snapshot.graph;
                 // Re-evaluate each guarded group based on current guard values
-                for group in new_snapshot.graph.guarded_groups.clone() {
+                for group in &graph.guarded_groups {
                     // Cross-phase dedup — see `group_needs_phase3` (tasks 2140 / 2146).
+                    // The unified predicate also handles the wave2 flip case where
+                    // Phase 1 recorded a different guard value than the current one.
                     let old_guard_val = self
                         .eval_state
                         .as_ref()
                         .and_then(|s| s.snapshot.values.get(&group.guard_cell))
                         .map(|(v, _)| v);
-                    if !group_needs_phase3(&group, &values, old_guard_val, &phase1_reelaborated) {
+                    if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
                         continue;
                     }
                     // Site 3: guard cell must be present — eval() has completed and populated all
@@ -940,8 +1017,8 @@ impl Engine {
                         .expect("guard cell must have a value after initial evaluation");
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
-                        &new_snapshot.graph,
-                        &group,
+                        graph,
+                        group,
                         &guard_val,
                         &mut values,
                         &mut new_snapshot.values,
@@ -1050,8 +1127,7 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_meta(&self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                             )
                         } else {
                             Value::Undef
@@ -1107,6 +1183,27 @@ impl Engine {
             diagnostics,
             resolved_params,
         })
+    }
+
+    /// Invoke [`detect_role_flip`] and bump `last_role_flip_probes` in one place.
+    ///
+    /// Both call sites in `edit_source` Phase 1 — the outer short-circuit block
+    /// and the per-group lazy-memo `None` arm — share the same three-line
+    /// pattern: build `old_groups` from `eval_state`, call `detect_role_flip`,
+    /// write the memo, increment the counter. Extracting that here ensures the
+    /// counter increment cannot be omitted if a third call site ever appears.
+    ///
+    /// `new_groups` is sliced from the freshly-built snapshot and does NOT
+    /// borrow `self`. NLL releases the `self.eval_state` borrow (used only as
+    /// an argument to `detect_role_flip`) before `self.last_role_flip_probes`
+    /// is mutated, so `&mut self` is unambiguous.
+    fn probe_role_flip(&mut self, new_groups: &[GuardedGroupInfo]) -> bool {
+        let result = detect_role_flip(
+            &self.eval_state.as_ref().unwrap().snapshot.graph.guarded_groups,
+            new_groups,
+        );
+        self.last_role_flip_probes += 1;
+        result
     }
 
     /// Incrementally re-evaluate after a structural source edit.
@@ -1176,6 +1273,9 @@ impl Engine {
         let version_id = self.next_version_id;
         self.next_version_id += 1;
         let mut new_snapshot = crate::snapshot::Snapshot::from_compiled_module(module);
+        // Invariant mirror of engine_eval.rs:248-249 — covers the edit-time recompile path.
+        #[cfg(debug_assertions)]
+        crate::engine_eval::assert_value_cell_types_representable(&new_snapshot.graph);
         new_snapshot.id = SnapshotId(snapshot_id);
         new_snapshot.version = VersionId(version_id);
 
@@ -1412,12 +1512,14 @@ impl Engine {
         self.functions
             .extend(self.prelude_functions.iter().cloned());
         self.compiled_purposes = module.compiled_purposes.clone();
-        self.meta_map = module
-            .templates
-            .iter()
-            .filter(|t| !t.meta.is_empty())
-            .map(|t| (t.name.clone(), t.meta.clone()))
-            .collect();
+        self.meta_map = Arc::new(
+            module
+                .templates
+                .iter()
+                .filter(|t| !t.meta.is_empty())
+                .map(|t| (t.name.clone(), t.meta.clone()))
+                .collect(),
+        );
         self.objectives.clear();
         for template in &module.templates {
             if let Some(obj) = &template.objective {
@@ -1475,7 +1577,7 @@ impl Engine {
 
                 let val = reify_expr::eval_expr(
                     expr,
-                    &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map),
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                 );
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
@@ -1556,6 +1658,10 @@ impl Engine {
         // is incremented for each group that is NOT skipped in Phase 1 or Phase 3;
         // it is exposed via last_guard_phase_group_evals() for test assertions.
         self.last_guard_phase_group_evals = 0;
+        // Reset the role-flip probe counter (task 2094). Counts detect_role_flip
+        // invocations on the hot path; exposed via last_role_flip_probes() for
+        // the deferred-probe perf-lock test.
+        self.last_role_flip_probes = 0;
 
         // Cross-phase dedup map (task 2142, 2146): maps guard_cell → guard_val for
         // every group that Phase 1 actually re-elaborated in this edit_source call.
@@ -1610,47 +1716,25 @@ impl Engine {
                 group.members.iter().any(|m| added.contains(m))
                     || group.else_members.iter().any(|m| added.contains(m))
             });
-            // Detect role flips with a short-circuiting probe: build one
-            // HashMap for the old graph keyed by ValueCellId → (guard_cell_id,
-            // branch_tag), then walk the new groups once, breaking as soon as
-            // any mismatch is found. Skip entirely when both sides are empty so
-            // the common no-guarded-group case is free. branch_tag 0 = members,
-            // 1 = else_members.
-            let eval_state = self.eval_state.as_ref().unwrap();
-            let old_groups = &eval_state.snapshot.graph.guarded_groups;
-            let new_groups = &graph.guarded_groups;
-            let has_role_flipped_guard_member = if old_groups.is_empty() && new_groups.is_empty() {
-                false
-            } else {
-                // Build old role map once.
-                let old_roles = build_old_role_map(old_groups);
-                // Walk new groups, short-circuit on first mismatch.
-                let mut new_total = 0usize;
-                let mut flipped = false;
-                'outer: for group in new_groups.iter() {
-                    for (mid, tag) in group
-                        .members
-                        .iter()
-                        .map(|m| (m, 0u8))
-                        .chain(group.else_members.iter().map(|m| (m, 1u8)))
-                    {
-                        new_total += 1;
-                        match old_roles.get(mid) {
-                            Some((gc, t)) if gc == &group.guard_cell && *t == tag => {}
-                            _ => {
-                                flipped = true;
-                                break 'outer;
-                            }
-                        }
-                    }
-                }
-                // Also flip if new graph has fewer members than old (a cell left a group).
-                flipped || new_total != old_roles.len()
-            };
-            let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
+            // Cheap check 1: structure_controlling dirtiness.
+            let sc_dirty = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
-            }) || has_added_guard_member
-                || has_role_flipped_guard_member;
+            });
+            // Lazy memo for role-flip (task 2094): `detect_role_flip` builds two
+            // O(N) HashMaps over guarded_groups. Defer behind the cheap checks —
+            // when sc_dirty or has_added_guard_member already fires, we skip the
+            // HashMap build entirely. The per-group skip below also needs this
+            // value; memoize so detect_role_flip is called at most once per edit.
+            // Correctness pinned by task-2084 locks. Counter tracked via
+            // `self.last_role_flip_probes` for the perf-lock test (task 2094).
+            // `probe_role_flip` centralises the detect_role_flip call and counter
+            // increment (task 2094 amendment — eliminates duplicate call sites).
+            let mut role_flip_memo: Option<bool> = None;
+            let has_dirty_guards = sc_dirty || has_added_guard_member || {
+                let result = self.probe_role_flip(&graph.guarded_groups);
+                role_flip_memo = Some(result);
+                result
+            };
 
             if has_dirty_guards {
                 for group in &graph.guarded_groups {
@@ -1659,9 +1743,8 @@ impl Engine {
                         if let Some(ref expr) = node.default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_determinacy(&new_snapshot.values)
-                                    .with_meta(&self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_determinacy(&new_snapshot.values),
                             )
                         } else {
                             Value::Undef
@@ -1671,15 +1754,13 @@ impl Engine {
                     };
                     // Per-group skip: if this group's guard value is unchanged vs.
                     // the pre-edit snapshot, AND no members of this group were
-                    // added in this edit, AND no role-flip was detected (role-flip
-                    // suppresses all per-group skips because we can't identify
-                    // which groups were affected without a second full walk), then
-                    // skip the member re-elaboration for this group.
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
+                    // added in this edit, AND no role-flip was detected. Role-flip
+                    // suppresses the skip because we can't identify which groups
+                    // were affected without a full role-map walk. The role-flip
+                    // check is evaluated lazily via role_flip_memo (task 2094):
+                    // consult detect_role_flip only when both cheaper conditions
+                    // pass. Gives zero detect_role_flip calls when sc_dirty fires
+                    // the outer trigger AND every group's guard VALUE changed.
                     let has_added_in_group = group.members.iter().any(|m| added.contains(m))
                         || group.else_members.iter().any(|m| added.contains(m));
                     // Always write the guard cell value before the skip check.
@@ -1696,11 +1777,27 @@ impl Engine {
                     new_snapshot
                         .values
                         .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
-                    if old_guard_val == Some(&guard_val)
-                        && !has_added_in_group
-                        && !has_role_flipped_guard_member
+                    if guard_value_unchanged(
+                        self.eval_state.as_ref().map(|s| &s.snapshot.values),
+                        &group.guard_cell,
+                        &guard_val,
+                    ) && !has_added_in_group
                     {
-                        continue;
+                        // Lazy role-flip check (task 2094): populate role_flip_memo
+                        // on first query, reuse on subsequent groups.
+                        // probe_role_flip centralises the counter increment and
+                        // the detect_role_flip call (task 2094 amendment).
+                        let flipped = match role_flip_memo {
+                            Some(v) => v,
+                            None => {
+                                let result = self.probe_role_flip(&graph.guarded_groups);
+                                role_flip_memo = Some(result);
+                                result
+                            }
+                        };
+                        if !flipped {
+                            continue;
+                        }
                     }
                     self.last_guard_phase_group_evals += 1;
                     // Record guard_cell → guard_val so Phase 3 can detect a
@@ -1723,8 +1820,7 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
@@ -1743,8 +1839,7 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
@@ -1915,8 +2010,7 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &functions)
-                                .with_meta(&self.meta_map),
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                         );
                         values.insert(vcid.clone(), val.clone());
                         new_snapshot
@@ -1975,16 +2069,25 @@ impl Engine {
             });
 
             if guard_changed {
-                for group in new_snapshot.graph.guarded_groups.clone() {
+                // Field-level borrow splitting: pre-bind `graph` so the loop can
+                // iterate `&graph.guarded_groups` (shared) while `&mut new_snapshot.values`
+                // (a disjoint field) remains exclusively borrowed inside the body.
+                // This matches the Phase 1 pattern and the edit_param Phase 3 fix; no .clone() needed.
+                let graph = &new_snapshot.graph;
+                for group in &graph.guarded_groups {
                     // Cross-phase dedup — see `group_needs_phase3` (tasks 2142 / 2146).
-                    // Phase 3 has no added-member or role-flip exception (those
-                    // are Phase 1 concerns only).
+                    // The unified predicate handles three cases: (a) Phase 1 with
+                    // matching guard value → skip; (b) Phase 1 with different guard
+                    // value (wave2 flip) → re-elaborate unconditionally; (c) Phase 1
+                    // did not fire → fall back to old-vs-new skip. Phase 3 has no
+                    // added-member or role-flip exception (those are Phase 1 concerns
+                    // only).
                     let old_guard_val = self
                         .eval_state
                         .as_ref()
                         .and_then(|s| s.snapshot.values.get(&group.guard_cell))
                         .map(|(v, _)| v);
-                    if !group_needs_phase3(&group, &values, old_guard_val, &phase1_reelaborated) {
+                    if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
                         continue;
                     }
                     // Phase 1 (the dirty-cone-triggered branch above) guarantees
@@ -2004,13 +2107,12 @@ impl Engine {
 
                     for member_id in &group.members {
                         if guard_is_true {
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                            if let Some(node) = graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot
@@ -2019,7 +2121,7 @@ impl Engine {
                             }
                         } else {
                             deactivate_if_not_auto(
-                                &new_snapshot.graph,
+                                graph,
                                 member_id,
                                 &mut values,
                                 &mut new_snapshot.values,
@@ -2029,13 +2131,12 @@ impl Engine {
 
                     for member_id in &group.else_members {
                         if guard_is_false {
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                            if let Some(node) = graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot
@@ -2044,7 +2145,7 @@ impl Engine {
                             }
                         } else {
                             deactivate_if_not_auto(
-                                &new_snapshot.graph,
+                                graph,
                                 member_id,
                                 &mut values,
                                 &mut new_snapshot.values,
@@ -2054,12 +2155,11 @@ impl Engine {
                 }
 
                 let guard_state_hash = guard_state_fingerprint(
-                    &new_snapshot.graph.guarded_groups,
+                    &graph.guarded_groups,
                     &values,
                     GuardLookup::Strict,
                 );
-                new_snapshot.topology_fingerprint = new_snapshot
-                    .graph
+                new_snapshot.topology_fingerprint = graph
                     .topology_fingerprint()
                     .combine(guard_state_hash);
             }
@@ -2069,61 +2169,6 @@ impl Engine {
         // If any structure_controlling count cell's value changed vs. the
         // pre-edit snapshot, add/remove instances to match the new count.
         {
-            // Task 2086: Invalidate cache entries for scoped cells of entirely-removed
-            // collection_subs. Phase 4's main loop below iterates only NEW
-            // collection_subs, so a sub present in eval_state.snapshot.graph.collection_subs
-            // but absent from new_snapshot.graph.collection_subs never has its scoped
-            // cells visited. This sweep is defense-in-depth alongside Step (9)'s
-            // diff_value_cells.removed invalidations — symmetric with Fix 1 above, it
-            // keeps all collection-scoped cache hygiene concentrated in Phase 4.
-            let scoped_ids_to_invalidate: Vec<ValueCellId> = {
-                if let Some(eval_state_ref) = self.eval_state.as_ref() {
-                    let old_subs = &eval_state_ref.snapshot.graph.collection_subs;
-                    let old_snapshot_values = &eval_state_ref.snapshot.values;
-                    let new_sub_keys: HashSet<(String, String)> = new_snapshot
-                        .graph
-                        .collection_subs
-                        .iter()
-                        .map(|s| (s.parent_entity.clone(), s.sub_name.clone()))
-                        .collect();
-                    let mut ids = Vec::new();
-                    for old_sub in old_subs {
-                        if new_sub_keys
-                            .contains(&(old_sub.parent_entity.clone(), old_sub.sub_name.clone()))
-                        {
-                            continue;
-                        }
-                        // Silent-zero for non-Int/non-Undef values is intentional:
-                        // this sub is *being removed* so emitting a warning about a
-                        // now-gone count cell would be noisy. `resolve_count` below
-                        // emits diagnostics only for *surviving* subs where an
-                        // unexpected count type would actually affect the result.
-                        let old_count = old_snapshot_values
-                            .get(&old_sub.count_cell)
-                            .map(|(v, _)| match v {
-                                Value::Int(n) => *n,
-                                _ => 0,
-                            })
-                            .unwrap_or(0);
-                        for i in 0..old_count {
-                            let scoped_entity = format!(
-                                "{}.{}[{}]",
-                                old_sub.parent_entity, old_sub.sub_name, i
-                            );
-                            for (member, _, _, _) in &old_sub.child_value_cells {
-                                ids.push(ValueCellId::new(&scoped_entity, member));
-                            }
-                        }
-                    }
-                    ids
-                } else {
-                    Vec::new()
-                }
-            };
-            for scoped_id in scoped_ids_to_invalidate {
-                self.cache.invalidate(&NodeId::Value(scoped_id));
-            }
-
             let collection_subs = new_snapshot.graph.collection_subs.clone();
             for col_sub in &collection_subs {
                 let new_count_val = values
@@ -2169,10 +2214,33 @@ impl Engine {
                         new_snapshot.graph.value_cells.remove(&scoped_id);
                         new_snapshot.values.remove(&scoped_id);
                         values.remove(&scoped_id);
-                        // Task 2086: invalidate cache so a subsequent edit that
-                        // re-adds a scoped cell at the same index evaluates freshly
-                        // instead of returning a stale CachedResult from a prior
-                        // incarnation.
+                        // Task 2086 Fix 1: invalidate cache so a subsequent edit
+                        // that re-adds a scoped cell at the same (parent, sub,
+                        // index, member) key evaluates freshly instead of returning
+                        // a stale CachedResult from a prior incarnation.
+                        // Scope: this loop iterates `0..old_count` using the NEW
+                        // `col_sub.child_value_cells` (the surviving shape), so it
+                        // only covers members present in the new shape.  Scoped cells
+                        // for members absent from the new shape are invalidated by
+                        // Step (9)'s `diff_value_cells.removed` path (those cells are
+                        // absent from `new_snapshot.graph.value_cells` and therefore
+                        // classified as `removed` by `diff_value_cells`).
+                        // Why Phase 4 still needs this despite Step (9): Step (9)
+                        // catches index-count reductions (old index absent from new
+                        // graph) and entirely-removed subs via `diff_value_cells`.
+                        // This Fix 1 path catches same-index re-incarnation: when
+                        // count shrinks from n to m, the surviving indices 0..m have
+                        // an identical content_hash in both old and new snapshots
+                        // (same scoped_id string + same default_expr from unchanged
+                        // child template), so `diff_value_cells` classifies them as
+                        // UNCHANGED and Step (9) does NOT invalidate them.  Phase 4's
+                        // remove loop tears them down and its create loop re-inserts
+                        // them without calling cache.record_evaluation; without this
+                        // explicit invalidation the stale cache entry at V_A would
+                        // survive and a later edit_source that re-expands the sub
+                        // would short-circuit via `basis_version` and return wrong
+                        // cached values (pinned by the grow→shrink→regrow regression
+                        // test).
                         self.cache.invalidate(&NodeId::Value(scoped_id));
                     }
                 }
@@ -2207,8 +2275,7 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_meta(&self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                             )
                         } else {
                             Value::Undef
@@ -2308,7 +2375,7 @@ mod tests {
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{deactivate_if_not_auto, reelaborate_guarded_group};
+    use super::{deactivate_if_not_auto, guard_value_unchanged, phase3_guard_changed, reelaborate_guarded_group};
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -2434,12 +2501,12 @@ mod tests {
     /// Happy-path characterization: two valid groups with non-overlapping
     /// members produce the expected four-entry role map.
     #[test]
-    fn build_old_role_map_returns_expected_map_for_valid_groups() {
+    fn build_role_map_returns_expected_map_for_valid_groups() {
         use std::collections::HashMap;
 
         use crate::graph::GuardedGroupInfo;
 
-        use super::build_old_role_map;
+        use super::build_role_map;
 
         let g1 = ValueCellId::new("E1", "guard");
         let g2 = ValueCellId::new("E2", "guard");
@@ -2463,7 +2530,7 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_old_role_map(&[group1, group2]);
+        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_role_map(&[group1, group2]);
 
         assert_eq!(map.len(), 4);
         assert_eq!(map.get(&a), Some(&(g1.clone(), 0u8)));
@@ -2481,10 +2548,10 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "appeared in multiple guarded-group roles")]
     #[test]
-    fn build_old_role_map_panics_on_duplicate_member() {
+    fn build_role_map_panics_on_duplicate_member() {
         use crate::graph::GuardedGroupInfo;
 
-        use super::build_old_role_map;
+        use super::build_role_map;
 
         let g1 = ValueCellId::new("E1", "guard");
         let g2 = ValueCellId::new("E2", "guard");
@@ -2506,25 +2573,25 @@ mod tests {
         };
 
         // Must panic: `shared` appears in two groups.
-        build_old_role_map(&[group1, group2]);
+        build_role_map(&[group1, group2]);
     }
 
     /// A ValueCellId in both `members` and `else_members` of the *same* group
     /// must NOT panic: intra-group duplicates are permitted and resolved by
     /// last-write semantics (else_members entry wins).
     ///
-    /// This exercises the second `insert` call-site in `build_old_role_map` and
+    /// This exercises the second `insert` call-site in `build_role_map` and
     /// pins the observable behavior for callers: the cell ends up mapped to
     /// `(guard_cell, 1u8)` (the else-branch tag) when it appears in both
     /// branches.  Real compiled modules can produce this pattern (e.g. an
     /// "effective" output cell that is active in both guard branches).
     #[test]
-    fn build_old_role_map_intra_group_duplicate_last_write_wins() {
+    fn build_role_map_intra_group_duplicate_last_write_wins() {
         use std::collections::HashMap;
 
         use crate::graph::GuardedGroupInfo;
 
-        use super::build_old_role_map;
+        use super::build_role_map;
 
         let g1 = ValueCellId::new("E1", "guard");
         let shared = ValueCellId::new("E1", "shared");
@@ -2539,11 +2606,102 @@ mod tests {
             else_constraints: vec![],
         };
 
-        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_old_role_map(&[group]);
+        let map: HashMap<ValueCellId, (ValueCellId, u8)> = build_role_map(&[group]);
 
         // One entry; else_members (branch 1) overwrites members (branch 0).
         assert_eq!(map.len(), 1);
         assert_eq!(map.get(&shared), Some(&(g1.clone(), 1u8)));
+    }
+
+    /// `detect_role_flip` must return `false` when old and new have the same
+    /// intra-group duplicate shape: a cell appearing in both `members` and
+    /// `else_members` of the same group on both sides.
+    ///
+    /// This pins the bug fix: the old inline probe would spuriously return `true`
+    /// for this shape because `build_role_map` last-write-wins maps the cell
+    /// to tag=1, but the new-graph walk sees tag=0 first (members iterated first),
+    /// causing a per-element mismatch before the count check.  Symmetric
+    /// `build_role_map` on both sides resolves identically → maps equal →
+    /// no flip.
+    #[test]
+    fn detect_role_flip_identical_intra_group_duplicate_returns_false() {
+        use crate::graph::GuardedGroupInfo;
+
+        use super::detect_role_flip;
+
+        let g1 = ValueCellId::new("E1", "guard");
+        let shared = ValueCellId::new("E1", "shared");
+
+        // Both old and new have the identical intra-group duplicate shape.
+        let make_group = || GuardedGroupInfo {
+            guard_cell: g1.clone(),
+            members: vec![shared.clone()],
+            else_members: vec![shared.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+
+        let old_groups = [make_group()];
+        let new_groups = [make_group()];
+
+        // Identical shapes → no role flip.
+        assert!(
+            !detect_role_flip(&old_groups, &new_groups),
+            "detect_role_flip must return false for identical intra-group duplicate shapes"
+        );
+    }
+
+    /// `detect_role_flip` must return `true` when branches are swapped between
+    /// old and new: old has `members=[x], else_members=[y]` and new has
+    /// `members=[y], else_members=[x]`.
+    ///
+    /// This is the positive-direction lock: it ensures the symmetric-map
+    /// comparison doesn't over-relax.  If someone future-refactors the helper
+    /// to return `false` unconditionally, or compares only key sets (ignoring
+    /// branch tags), this test catches it.
+    #[test]
+    fn detect_role_flip_returns_true_for_cross_branch_swap() {
+        use crate::graph::GuardedGroupInfo;
+
+        use super::detect_role_flip;
+
+        let g = ValueCellId::new("E", "guard");
+        let x = ValueCellId::new("E", "x");
+        let y = ValueCellId::new("E", "y");
+
+        let old_groups = [GuardedGroupInfo {
+            guard_cell: g.clone(),
+            members: vec![x.clone()],
+            else_members: vec![y.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        }];
+        // New graph swaps the branches.
+        let new_groups = [GuardedGroupInfo {
+            guard_cell: g.clone(),
+            members: vec![y.clone()],
+            else_members: vec![x.clone()],
+            constraints: vec![],
+            else_constraints: vec![],
+        }];
+
+        assert!(
+            detect_role_flip(&old_groups, &new_groups),
+            "detect_role_flip must return true when member branches are swapped"
+        );
+    }
+
+    /// `detect_role_flip` must return `false` for two empty slices — the empty
+    /// fast-path in the helper avoids allocating two empty `HashMap`s and must
+    /// return the correct answer.
+    #[test]
+    fn detect_role_flip_returns_false_for_empty_groups() {
+        use super::detect_role_flip;
+
+        assert!(
+            !detect_role_flip(&[], &[]),
+            "detect_role_flip must return false for two empty slices"
+        );
     }
 
     /// When `guard_val = Bool(true)`, `reelaborate_guarded_group` must:
@@ -2933,5 +3091,140 @@ mod tests {
                 Some(&(Value::Undef, DeterminacyState::Undetermined))
             );
         }
+    }
+
+    // ── guard_value_unchanged ─────────────────────────────────────────────
+
+    /// (a) Snapshot contains guard_cell with Bool(true); new_val is Bool(true)
+    /// → guard is unchanged → returns true.
+    #[test]
+    fn guard_value_unchanged_returns_true_when_value_matches() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+
+        assert!(guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(true)));
+    }
+
+    /// (b) Snapshot contains guard_cell with Bool(true); new_val is Bool(false)
+    /// → guard changed → returns false.
+    #[test]
+    fn guard_value_unchanged_returns_false_when_value_differs() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+
+        assert!(!guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(false)));
+    }
+
+    /// (c) Snapshot does NOT contain guard_cell → old value is absent → returns false.
+    #[test]
+    fn guard_value_unchanged_returns_false_when_cell_absent_from_snapshot() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        assert!(!guard_value_unchanged(Some(&snapshot), &guard_cell, &Value::Bool(true)));
+    }
+
+    /// (d) snapshot_values is None (no prior eval state) → returns false.
+    #[test]
+    fn guard_value_unchanged_returns_false_when_snapshot_is_none() {
+        let guard_cell = ValueCellId::new("E", "guard");
+
+        assert!(!guard_value_unchanged(None, &guard_cell, &Value::Bool(true)));
+    }
+
+    // ── phase3_guard_changed ──────────────────────────────────────────────
+
+    /// (a) Empty groups slice → no guard to diff → returns false.
+    #[test]
+    fn phase3_guard_changed_returns_false_for_empty_groups() {
+        let values = ValueMap::default();
+        let snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        assert!(!phase3_guard_changed(&[], &values, Some(&snapshot)));
+    }
+
+    /// (b) One group, values and snapshot both contain guard_cell = Bool(true)
+    /// → unchanged → returns false.
+    #[test]
+    fn phase3_guard_changed_returns_false_when_guard_unchanged() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true));
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+
+        assert!(!phase3_guard_changed(&[group], &values, Some(&snapshot)));
+    }
+
+    /// (c) One group, values has Bool(true) and snapshot has Bool(false)
+    /// → changed → returns true.
+    #[test]
+    fn phase3_guard_changed_returns_true_when_guard_value_differs() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true));
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(false), DeterminacyState::Determined));
+
+        assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
+    }
+
+    /// (d) One group, values has Bool(true) and snapshot_values = None
+    /// → Some(&Bool(true)) != None → returns true.
+    #[test]
+    fn phase3_guard_changed_returns_true_when_snapshot_is_none() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true));
+
+        assert!(phase3_guard_changed(&[group], &values, None));
+    }
+
+    /// (e) One group, values does NOT contain guard_cell but snapshot does
+    /// → None != Some(&Bool(true)) → returns true.
+    #[test]
+    fn phase3_guard_changed_returns_true_when_new_val_absent_but_old_present() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let values = ValueMap::default(); // guard_cell not present in new values
+        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+
+        assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
     }
 }

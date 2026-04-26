@@ -68,7 +68,7 @@ structure def DimensionalTolerance {
 //   tolerance_band = 0.05mm - (-0.05mm) = 0.1mm = 0.0001m
 
 structure def ExportPart : Physical + Elastic + Strong {
-    // ── Material (via Physical) ────────────────────────────────────────────
+    // ── MaterialSpec (via Physical) ─────────────────────────────────────────
     param name    : String = "Steel AISI 1020"
     param density : Real   = 7850.0
 

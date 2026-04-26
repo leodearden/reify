@@ -412,3 +412,594 @@ purpose check(subject : Widget) {
         errors
     );
 }
+
+// ── Step 1 (task-2181): reflective aggregation compiles as empty list ─────────
+
+/// Shared helper for all `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS` tests.
+///
+/// Compiles `forall p in subject.<member>: determined(p)` in a purpose body
+/// and asserts the three acceptance criteria:
+/// (a) no "member access not yet supported" diagnostic,
+/// (b) `collection.result_type == Type::List(Box::new(Type::Real))`,
+/// (c) `collection.kind` is an empty `ListLiteral`.
+///
+/// Using a single helper avoids duplicating ~60 lines per member name and
+/// naturally extends to cover every entry in `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS`
+/// (currently `params`, `geometric_params`, `material_params`).
+fn assert_reflective_member_compiles_empty(member: &str) {
+    let source = format!(
+        r#"
+structure Part {{
+    param length : Length = 100mm
+}}
+
+purpose check_part(part : Structure) {{
+    constraint forall p in part.{member}: determined(p)
+}}
+"#
+    );
+    let module = compile_module_with_diagnostics(&source);
+
+    // (a) No "member access not yet supported" diagnostic
+    let unsupported: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .collect();
+    assert!(
+        unsupported.is_empty(),
+        "expected no 'member access not yet supported' diagnostics for member '{}', got: {:?}",
+        member,
+        unsupported
+    );
+
+    // (b) and (c): constraint is a Quantifier whose collection is an empty
+    // ListLiteral with result_type == Type::List(Box::new(Type::Real)).
+    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => {
+            // (b) collection result_type must be List<Real>
+            assert_eq!(
+                collection.result_type,
+                Type::List(Box::new(Type::Real)),
+                "expected collection result_type to be List<Real> for member '{}', got {:?}",
+                member,
+                collection.result_type
+            );
+            // (c) collection kind must be an empty ListLiteral
+            match &collection.kind {
+                CompiledExprKind::ListLiteral(elements) => {
+                    assert!(
+                        elements.is_empty(),
+                        "expected empty ListLiteral for subject.{}, got {} elements",
+                        member,
+                        elements.len()
+                    );
+                }
+                other => panic!(
+                    "expected ListLiteral collection for member '{}', got {:?}",
+                    member, other
+                ),
+            }
+        }
+        other => panic!(
+            "expected Quantifier constraint expression for member '{}', got {:?}",
+            member, other
+        ),
+    }
+}
+
+/// `subject.params` compiles to an empty ListLiteral (step 1, task-2181).
+///
+/// RED before step-2 impl: catch-all at `expr.rs` fires and emits
+/// "member access not yet supported: .params".
+#[test]
+fn compile_purpose_reflective_params_compiles_as_empty_list() {
+    assert_reflective_member_compiles_empty("params");
+}
+
+/// `part.geometric_params` compiles to an empty ListLiteral (step 1, task-2181).
+///
+/// RED before step-2 impl: analogous to the params test above.
+#[test]
+fn compile_purpose_reflective_geometric_params_compiles_as_empty_list() {
+    assert_reflective_member_compiles_empty("geometric_params");
+}
+
+/// `subject.material_params` compiles to an empty ListLiteral (task-2181).
+///
+/// `material_params` is the third entry in `PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS`
+/// and previously had no dedicated compile-time coverage.
+#[test]
+fn compile_purpose_reflective_material_params_compiles_as_empty_list() {
+    assert_reflective_member_compiles_empty("material_params");
+}
+
+// ── Amendment (task-2181 review-1): entity-scope StructureRef regression ──────
+
+/// Regression guard: entity-scope `StructureRef` member access must NOT be
+/// silently routed through the purpose-subject branch.
+///
+/// When two structures are compiled together, `param material : Material` in an
+/// entity body registers `material` as `Type::StructureRef("Material")` (because
+/// `Material` is a known structure name).  The purpose-subject branch in
+/// `expr.rs` is gated by `!scope.is_entity_scope`; without that guard,
+/// `material.density > 0` in a structure constraint would silently emit
+/// `ValueRef(entity_name, "density")` — a dangling ref to a non-existent cell —
+/// instead of the correct "member access not yet supported" error.
+#[test]
+fn entity_scope_structureref_member_access_still_errors() {
+    // Two structures in the same compilation unit so `Material` lands in
+    // `structure_names` and `param material : Material` resolves to
+    // `Type::StructureRef("Material")` rather than falling back to Type::Real.
+    let source = r#"
+structure Material {
+    param density : Real = 7850.0
+}
+
+structure Widget {
+    param material : Material = Material(density: 7850.0)
+    constraint material.density > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // The "member access not yet supported" diagnostic must still fire.
+    // If the purpose-subject branch misfired, this would be empty.
+    let unsupported: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .collect();
+    assert!(
+        !unsupported.is_empty(),
+        "expected 'member access not yet supported' for entity-scope StructureRef member \
+         access, but no such diagnostic was emitted.\n\
+         This likely means the purpose-subject branch misfired in entity scope.\n\
+         All diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+// ── Step 3 (task-2181): regular member access on StructureRef subject ────────
+
+/// Test that `subject.mass` in a purpose body compiles to a remappable `ValueRef`.
+///
+/// Fixture: `purpose lightweight(subject : Structure) { constraint subject.mass > 0
+///           minimize subject.mass }`.
+///
+/// Assertions:
+/// (a) no "member access not yet supported" diagnostic is emitted;
+/// (b) `constraints[0].expr` is a `BinOp(Gt, left, _)` where `left` is a
+///     `ValueRef(id)` with `id.entity == "lightweight"` (purpose name, pre-remap)
+///     and `id.member == "mass"`, and `left.result_type == Type::Real`;
+/// (c) `objective` is `Some(Minimize(expr))` where `expr.kind` is
+///     `ValueRef(id)` with `id.entity == "lightweight"` and `id.member == "mass"`.
+///
+/// RED: fails before step 4 because the catch-all emits "member access not yet supported".
+#[test]
+fn compile_purpose_regular_member_compiles_as_remappable_valueref() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose lightweight(subject : Structure) {
+    constraint subject.mass > 0
+    minimize subject.mass
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // (a) No "member access not yet supported" diagnostic
+    let unsupported: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .collect();
+    assert!(
+        unsupported.is_empty(),
+        "expected no 'member access not yet supported' diagnostics, got: {:?}",
+        unsupported
+    );
+
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "lightweight");
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    // (b) constraint is BinOp(Gt, ValueRef(lightweight.mass : Real), _)
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(
+                *op,
+                BinOp::Gt,
+                "expected BinOp::Gt for 'subject.mass > 0', got {:?}",
+                op
+            );
+            // left must be ValueRef with entity == purpose name and member == "mass"
+            match &left.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.entity, "lightweight",
+                        "ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                        id.entity
+                    );
+                    assert_eq!(
+                        id.member, "mass",
+                        "ValueRef member must be 'mass', got {:?}",
+                        id.member
+                    );
+                    assert_eq!(
+                        left.result_type,
+                        Type::Real,
+                        "expected result_type == Type::Real for subject.mass, got {:?}",
+                        left.result_type
+                    );
+                }
+                other => panic!(
+                    "expected ValueRef for left side of constraint BinOp, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "expected BinOp constraint expression, got {:?}",
+            other
+        ),
+    }
+
+    // (c) objective is Some(Minimize(ValueRef(lightweight.mass)))
+    match &purpose.objective {
+        Some(OptimizationObjective::Minimize(expr)) => {
+            match &expr.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.entity, "lightweight",
+                        "objective ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                        id.entity
+                    );
+                    assert_eq!(
+                        id.member, "mass",
+                        "objective ValueRef member must be 'mass', got {:?}",
+                        id.member
+                    );
+                }
+                other => panic!(
+                    "expected ValueRef for minimize objective expr, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "expected Some(Minimize(_)) for objective, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── Step 5 (task-2181): m5_purpose.ri acceptance gate ────────────────────────
+
+/// Acceptance test: `examples/m5_purpose.ri` must compile with zero Error
+/// diagnostics under `compile_with_stdlib` (the "41/42 → 42/42 clean" gate).
+///
+/// Also asserts that exactly 3 purposes are compiled (manufacturing_ready,
+/// lightweight, dimensionally_valid) as a secondary sanity check that none
+/// were silently dropped.
+///
+/// RED: fails before step 6 when any of the five member-access sites in
+/// m5_purpose.ri still hit the catch-all "member access not yet supported".
+#[test]
+fn m5_purpose_example_compiles_under_stdlib_with_zero_errors() {
+    const M5_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/m5_purpose.ri"
+    );
+    let src = std::fs::read_to_string(M5_PATH)
+        .expect("failed to read examples/m5_purpose.ri — check CARGO_MANIFEST_DIR resolution");
+
+    let parsed = reify_syntax::parse(&src, ModulePath::single("m5_purpose"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in m5_purpose.ri: {:?}",
+        parsed.errors
+    );
+
+    let module = reify_compiler::compile_with_stdlib(&parsed);
+
+    // Primary acceptance gate: zero Error-severity diagnostics.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics compiling m5_purpose.ri under stdlib, got:\n{:#?}",
+        errors
+    );
+
+    // Secondary check: all three purposes must be present.
+    assert_eq!(
+        module.compiled_purposes.len(),
+        3,
+        "expected 3 compiled purposes (manufacturing_ready, lightweight, dimensionally_valid), got: {:?}",
+        module.compiled_purposes.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+}
+
+// ── Task-2200: concrete-subject member validation ────────────────────────────
+
+/// RED test: accessing a non-existent member on a concrete (non-wildcard) subject type
+/// must produce an Error diagnostic containing "has no member" and the member name.
+///
+/// Source: `Widget` structure with a `mass` param; purpose accesses `subject.bogus`
+/// (a member that does not exist on Widget). Today this compiles silently and
+/// produces a ValueRef to a non-existent cell. After implementation it must
+/// emit a `Severity::Error` diagnostic.
+///
+/// RED: fails before step-4 impl because the current code emits no diagnostic
+/// for member access on concrete subjects and silently returns a ValueRef.
+#[test]
+fn compile_purpose_concrete_subject_unknown_member_errors() {
+    let source = r#"
+structure Widget {
+    param mass : Mass = 5kg
+}
+
+purpose check(subject : Widget) {
+    constraint subject.bogus > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // Must have at least one Error diagnostic mentioning "has no member" and "bogus".
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("has no member")
+                && d.message.contains("bogus")
+        })
+        .collect();
+
+    assert!(
+        !no_member_errors.is_empty(),
+        "expected a Severity::Error diagnostic containing 'has no member' and 'bogus', \
+         but none was emitted.\nAll diagnostics: {:#?}",
+        module.diagnostics
+    );
+
+    // Also verify the diagnostic mentions the structure name "Widget".
+    let mentions_widget = no_member_errors
+        .iter()
+        .any(|d| d.message.contains("Widget"));
+    assert!(
+        mentions_widget,
+        "expected the 'has no member' diagnostic to mention 'Widget', but got: {:#?}",
+        no_member_errors
+    );
+
+    // Anti-cascade: `make_poison_literal` returns Type::Error, which suppresses
+    // cascading type-mismatch diagnostics from the `> 0` comparison.  Pin this
+    // contract by asserting the total Error count stays small.
+    let all_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        all_errors.len() <= 2,
+        "anti-cascade: expected ≤ 2 Error diagnostics (1 'has no member' + at most 1 other), \
+         got {}: {:#?}",
+        all_errors.len(),
+        all_errors
+    );
+}
+
+/// GREEN test: accessing an existing member on a concrete (non-wildcard) subject type
+/// must NOT produce a "has no member" error and must emit a ValueRef.
+///
+/// Source: `Widget` structure with a `mass` param; purpose accesses `subject.mass`
+/// (a member that DOES exist on Widget). The validation must pass.
+///
+/// Assertions:
+/// (a) No "has no member" diagnostic;
+/// (b) The constraint expression is BinOp(Gt, ValueRef(check.mass : Real), _).
+#[test]
+fn compile_purpose_concrete_subject_valid_member_compiles_cleanly() {
+    let source = r#"
+structure Widget {
+    param mass : Mass = 5kg
+}
+
+purpose check(subject : Widget) {
+    constraint subject.mass > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // (a) No "has no member" diagnostic.
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for valid member 'mass', got: {:#?}",
+        no_member_errors
+    );
+
+    // (b) Compiled purpose exists with one constraint.
+    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "check");
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    // Constraint must be BinOp(Gt, ValueRef(check.mass : Real), _).
+    let constraint = &purpose.constraints[0];
+    match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(*op, BinOp::Gt, "expected BinOp::Gt for 'subject.mass > 0'");
+            match &left.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.entity, "check",
+                        "ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                        id.entity
+                    );
+                    assert_eq!(
+                        id.member, "mass",
+                        "ValueRef member must be 'mass', got {:?}",
+                        id.member
+                    );
+                    assert_eq!(
+                        left.result_type,
+                        Type::Real,
+                        "result_type must be Type::Real (compile-time fallback), got {:?}",
+                        left.result_type
+                    );
+                }
+                other => panic!("expected ValueRef for left of BinOp, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp constraint expression, got {:?}", other),
+    }
+}
+
+/// Characterization test: the generic `Structure` wildcard subject must NOT trigger
+/// a "has no member" error even when a non-existent member is accessed.
+///
+/// This pins the documented limitation: the wildcard form binds to any structure at
+/// activation time, so there is no static template against which to validate members.
+///
+/// Ensures no future over-reach (e.g., adding a synthetic "Structure" template to
+/// the registry) silently breaks this invariant.
+#[test]
+fn compile_purpose_wildcard_structure_subject_bogus_member_still_silent() {
+    let source = r#"
+purpose check(subject : Structure) {
+    constraint subject.bogus > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // The wildcard case must NOT produce "has no member" diagnostics.
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for wildcard Structure subject, \
+         but got: {:#?}\n(Wildcard subjects have no static template to validate against.)",
+        no_member_errors
+    );
+}
+
+/// Characterization test: an `Occurrence` wildcard subject must NOT trigger
+/// a "has no member" error even when a non-existent member is accessed.
+///
+/// Sibling to `compile_purpose_wildcard_structure_subject_bogus_member_still_silent`.
+/// The `Occurrence` entity kind is not registered in the template registry,
+/// so the registry-miss guard in `compile_expr_guarded` applies — the compiler
+/// skips member validation entirely (see wildcard-path comments in
+/// `compile_expr_guarded`).
+///
+/// No `structure Occurrence` or `occurrence def Occurrence` is declared here
+/// because registering a template named "Occurrence" would defeat the test by
+/// taking the member-known branch instead of the registry-miss path.
+///
+/// Ensures no future change (e.g., adding a stdlib `Occurrence` template)
+/// silently removes this silent-fallthrough guarantee without a test failure.
+#[test]
+fn compile_purpose_wildcard_occurrence_subject_bogus_member_still_silent() {
+    let source = r#"
+purpose check(subject : Occurrence) {
+    constraint subject.bogus > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // The registry-miss path must NOT produce "has no member" diagnostics.
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for wildcard Occurrence subject, \
+         but got: {:#?}\n(Unregistered wildcard kinds fall through silently via \
+         the registry-miss guard in `compile_expr_guarded`.)",
+        no_member_errors
+    );
+
+    // Confirm no error-severity diagnostics — ensures compilation reached the
+    // member-access path and did not bail out early (e.g., if a future change
+    // makes unregistered entity kinds a hard error before member access is
+    // evaluated, this assertion catches the regression rather than silently
+    // passing because `no_member_errors` would still be empty).
+    let error_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "expected zero Error diagnostics for wildcard Occurrence subject \
+         (registry-miss path should be fully silent), but got: {:#?}",
+        error_diags
+    );
+}
+
+/// Characterization test: a sub-component name on a concrete subject must NOT
+/// trigger a "has no member" diagnostic — sub_components are valid member
+/// kinds even though their type resolution is not yet implemented.
+///
+/// Pins the robustness guarantee added in the task-2200 amendment: the
+/// validation checks value_cells, ports, AND sub_components, so port/sub
+/// member access is not false-positively rejected.
+#[test]
+fn compile_purpose_concrete_subject_sub_component_no_false_positive() {
+    let source = r#"
+structure Motor {
+    param power : Mass = 100kg
+}
+
+structure Drone {
+    sub motor = Motor()
+}
+
+purpose check(subject : Drone) {
+    constraint subject.motor > 0
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // "motor" is a sub-component of Drone — must NOT produce "has no member".
+    let no_member_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("has no member"))
+        .collect();
+    assert!(
+        no_member_errors.is_empty(),
+        "expected no 'has no member' diagnostics for sub-component 'motor', \
+         got: {:#?}\n(sub_components are valid member kinds; \
+         type resolution for them is a separate follow-up task.)",
+        no_member_errors
+    );
+}

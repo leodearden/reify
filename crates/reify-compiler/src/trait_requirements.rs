@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use super::*;
 
 /// Maximum allowed depth for trait refinement chains to prevent stack overflow
@@ -49,6 +51,15 @@ pub(crate) struct MergeContext {
     seen_let_hashes: HashMap<String, (ContentHash, String)>,
     /// Let binding names that already have a conflict diagnostic (emit at most 1 per name).
     seen_let_conflict_names: HashSet<String>,
+    /// Sub requirement names already collected — maps name → (structure_name, originating trait).
+    ///
+    /// When the same sub-component name appears in two traits with the same `structure_name`,
+    /// the second occurrence is silently dropped (dedup, identical to `seen_names` for Param/Let).
+    /// When the same name appears with a *different* `structure_name` (e.g. `sub hole = Hole`
+    /// vs `sub hole = Rectangle`), a "conflicting trait sub requirements" diagnostic is emitted
+    /// — analogous to the Param/Let conflict block — and the second requirement is still dropped
+    /// so the checker sees exactly one entry for that sub-name.
+    seen_sub_names: HashMap<String, (String, String)>,
 }
 
 impl MergeContext {
@@ -111,35 +122,59 @@ pub(crate) fn collect_all_requirements(
 
     // Collect requirements from this trait, checking for conflicts.
     for req in &compiled_trait.required_members {
-        let expected_type = match &req.kind {
-            RequirementKind::Param(ty) | RequirementKind::Let(ty) => Some(ty.clone()),
-            _ => None,
-        };
-
-        if let Some(expected_type) = &expected_type {
-            if let Some((existing_type, existing_trait)) = ctx.seen_names.get(&req.name) {
-                if existing_type != expected_type {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
+        match &req.kind {
+            RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
+                if try_dedup_or_conflict(
+                    &mut ctx.seen_names,
+                    &req.name,
+                    expected_type,
+                    trait_name,
+                    span,
+                    |name, existing, existing_trait, new, new_trait| {
+                        format!(
                             "conflicting trait requirements for '{}': \
                              trait '{}' requires {}, trait '{}' requires {}",
-                            req.name, existing_trait, existing_type, trait_name, expected_type
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            span,
-                            format!("conflict between '{}' and '{}'", existing_trait, trait_name),
-                        )),
-                    );
+                            name, existing_trait, existing, new_trait, new
+                        )
+                    },
+                    diagnostics,
+                )
+                .is_break()
+                {
+                    continue;
                 }
-                continue; // Deduplicated
+                ctx.requirements.push(req.clone());
             }
-            ctx.seen_names.insert(
-                req.name.clone(),
-                (expected_type.clone(), trait_name.to_string()),
-            );
+            RequirementKind::Sub(structure_name) => {
+                // Dedup Sub requirements by name, following the `seen_names` pattern for
+                // Param/Let: if the same sub-component name was already collected:
+                //   - Same structure_name → identical requirement, silently skip.
+                //   - Different structure_name → conflicting requirements, emit a diagnostic
+                //     (e.g. `sub hole = Hole` vs `sub hole = Rectangle`) then skip so the
+                //     checker sees at most one entry per sub-name.
+                if try_dedup_or_conflict(
+                    &mut ctx.seen_sub_names,
+                    &req.name,
+                    structure_name,
+                    trait_name,
+                    span,
+                    |name, existing, existing_trait, new, new_trait| {
+                        format!(
+                            "conflicting trait sub requirements for '{}': \
+                             trait '{}' requires sub '{}', \
+                             trait '{}' requires sub '{}'",
+                            name, existing_trait, existing, new_trait, new
+                        )
+                    },
+                    diagnostics,
+                )
+                .is_break()
+                {
+                    continue;
+                }
+                ctx.requirements.push(req.clone());
+            }
         }
-
-        ctx.requirements.push(req.clone());
     }
 
     // Collect defaults from this trait, deduplicating by name.
@@ -250,6 +285,50 @@ pub(crate) fn collect_all_requirements(
     }
 }
 
+/// Deduplicates or reports a conflict for a single requirement/sub-requirement entry.
+///
+/// Looks up `name` in `seen`.
+/// - **Cache miss**: inserts `(value.clone(), trait_name.to_string())` and returns `Continue(())`.
+///   The caller should push the requirement.
+/// - **Cache hit, equal value**: returns `Break(())` silently (deduplicated).
+/// - **Cache hit, mismatched value**: builds the conflict message via `conflict_msg_builder`,
+///   emits a `Diagnostic::error` with a uniform label `"conflict between '…' and '…'"`,
+///   and returns `Break(())`. The caller should skip (do not push).
+///
+/// The caller pattern is:
+/// ```rust,ignore
+/// if try_dedup_or_conflict(&mut seen, name, value, trait_name, span, msg_fn, diags).is_break() {
+///     continue;
+/// }
+/// ctx.requirements.push(req.clone());
+/// ```
+fn try_dedup_or_conflict<V, F>(
+    seen: &mut HashMap<String, (V, String)>,
+    name: &str,
+    value: &V,
+    trait_name: &str,
+    span: SourceSpan,
+    conflict_msg_builder: F,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ControlFlow<()>
+where
+    V: PartialEq + Clone,
+    F: FnOnce(&str, &V, &str, &V, &str) -> String,
+{
+    if let Some((existing_value, existing_trait)) = seen.get(name) {
+        if existing_value != value {
+            let msg = conflict_msg_builder(name, existing_value, existing_trait, value, trait_name);
+            let label = format!("conflict between '{}' and '{}'", existing_trait, trait_name);
+            diagnostics.push(
+                Diagnostic::error(msg).with_label(DiagnosticLabel::new(span, label)),
+            );
+        }
+        return ControlFlow::Break(());
+    }
+    seen.insert(name.to_string(), (value.clone(), trait_name.to_string()));
+    ControlFlow::Continue(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,54 +395,18 @@ mod tests {
     /// Base is processed exactly once, so "b" appears exactly once in `ctx.requirements`.
     #[test]
     fn collect_all_requirements_dedups_diamond_refinement() {
-        let base = CompiledTrait {
-            name: "Base".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec![],
-            required_members: vec![TraitRequirement {
+        let base = make_compiled_trait(
+            "Base",
+            vec![],
+            vec![TraitRequirement {
                 name: "b".to_string(),
                 kind: RequirementKind::Param(Type::Real),
                 span: SourceSpan::empty(0),
             }],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-        let mid1 = CompiledTrait {
-            name: "Mid1".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Base".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-        let mid2 = CompiledTrait {
-            name: "Mid2".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Base".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
-        let top = CompiledTrait {
-            name: "Top".to_string(),
-            is_pub: false,
-            type_params: vec![],
-            refinements: vec!["Mid1".to_string(), "Mid2".to_string()],
-            required_members: vec![],
-            defaults: vec![],
-            content_hash: ContentHash(0),
-            annotations: vec![],
-            pragmas: vec![],
-        };
+        );
+        let mid1 = make_compiled_trait("Mid1", vec!["Base".to_string()], vec![]);
+        let mid2 = make_compiled_trait("Mid2", vec!["Base".to_string()], vec![]);
+        let top = make_compiled_trait("Top", vec!["Mid1".to_string(), "Mid2".to_string()], vec![]);
 
         let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
         trait_registry.insert("Base".to_string(), &base);
@@ -396,7 +439,174 @@ mod tests {
         );
     }
 
+    /// Verify that `collect_all_requirements` deduplicates `RequirementKind::Sub`
+    /// requirements via `seen_sub_names` when two sibling parent traits both declare
+    /// the same sub-component name and structure.
+    ///
+    /// Topology:
+    ///   ParentA (has sub "hole = Hole")
+    ///   ParentB (has sub "hole = Hole")
+    ///       \   /
+    ///       Child
+    ///
+    /// Unlike a diamond, both ParentA and ParentB are distinct nodes, so `visited` does
+    /// not short-circuit either. Both run through the Sub match arm. `seen_sub_names`
+    /// records ("hole", ("Hole", "ParentA")) on the first visit; the second visit
+    /// (ParentB) finds "hole" already present with the same structure name and continues
+    /// (deduplicated). Result: exactly one `hole` requirement, zero diagnostics.
+    ///
+    /// This is the canonical test for `seen_sub_names` dedup: the `visited` short-circuit
+    /// does not fire (ParentA ≠ ParentB), so `seen_sub_names` alone prevents the duplicate.
+    #[test]
+    fn collect_all_requirements_dedups_sibling_sub_requirements() {
+        let sub_hole = TraitRequirement {
+            name: "hole".to_string(),
+            kind: RequirementKind::Sub("Hole".to_string()),
+            span: SourceSpan::empty(0),
+        };
+        let parent_a = make_compiled_trait("ParentA", vec![], vec![sub_hole.clone()]);
+        let parent_b = make_compiled_trait("ParentB", vec![], vec![sub_hole]);
+        let child = make_compiled_trait(
+            "Child",
+            vec!["ParentA".to_string(), "ParentB".to_string()],
+            vec![],
+        );
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("ParentA".to_string(), &parent_a);
+        trait_registry.insert("ParentB".to_string(), &parent_b);
+        trait_registry.insert("Child".to_string(), &child);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Child",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        let hole_count = ctx
+            .requirements
+            .iter()
+            .filter(|r| r.name == "hole")
+            .count();
+        assert_eq!(
+            hole_count,
+            1,
+            "Expected exactly one 'hole' sub-requirement (dedup via seen_sub_names), got {}",
+            hole_count
+        );
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
+    }
+
+    /// Verify that two sibling parent traits declaring the same sub-component name with
+    /// *different* structure names emit exactly one conflict diagnostic.
+    ///
+    /// Topology:
+    ///   ParentA (has sub "hole = Hole")
+    ///   ParentB (has sub "hole = Rectangle")   ← different structure
+    ///       \   /
+    ///       Child
+    ///
+    /// The first visit records ("hole", ("Hole", "ParentA")) in `seen_sub_names`.
+    /// The second visit finds "hole" with structure "Rectangle" ≠ "Hole" and pushes a
+    /// conflict diagnostic, then continues. The first-seen requirement is kept so the
+    /// checker sees at most one entry per sub-name. Result: one conflict diagnostic, one
+    /// `hole` requirement in `ctx.requirements`.
+    #[test]
+    fn collect_all_requirements_sub_conflict_emits_diagnostic() {
+        let parent_a = make_compiled_trait(
+            "ParentA",
+            vec![],
+            vec![TraitRequirement {
+                name: "hole".to_string(),
+                kind: RequirementKind::Sub("Hole".to_string()),
+                span: SourceSpan::empty(0),
+            }],
+        );
+        let parent_b = make_compiled_trait(
+            "ParentB",
+            vec![],
+            vec![TraitRequirement {
+                name: "hole".to_string(),
+                kind: RequirementKind::Sub("Rectangle".to_string()),
+                span: SourceSpan::empty(0),
+            }],
+        );
+        let child = make_compiled_trait(
+            "Child",
+            vec!["ParentA".to_string(), "ParentB".to_string()],
+            vec![],
+        );
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("ParentA".to_string(), &parent_a);
+        trait_registry.insert("ParentB".to_string(), &parent_b);
+        trait_registry.insert("Child".to_string(), &child);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Child",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected exactly one sub-conflict diagnostic, got: {:?}",
+            diags
+        );
+        // The first-seen 'hole' requirement (Hole, from ParentA) is kept; the conflicting
+        // one (Rectangle, from ParentB) is dropped after the diagnostic fires.
+        let hole_count = ctx
+            .requirements
+            .iter()
+            .filter(|r| r.name == "hole")
+            .count();
+        assert_eq!(
+            hole_count,
+            1,
+            "Expected one 'hole' requirement kept (first-seen wins), got {}",
+            hole_count
+        );
+    }
+
     // ---- helpers for the additional branch tests below ----
+
+    /// Minimal `CompiledTrait` fixture with no defaults, type params, annotations, or
+    /// pragmas. Use this to keep test scaffolding lean; only the structurally relevant
+    /// fields (`name`, `refinements`, `required_members`) need to vary per test.
+    fn make_compiled_trait(
+        name: &str,
+        refinements: Vec<String>,
+        required_members: Vec<TraitRequirement>,
+    ) -> CompiledTrait {
+        CompiledTrait {
+            name: name.to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements,
+            required_members,
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
 
     /// Minimal `LetDecl` fixture; only `content_hash` varies between callers.
     fn make_let_decl(name: &str, hash_val: u128) -> reify_syntax::LetDecl {
@@ -580,6 +790,91 @@ mod tests {
                 diags
             );
         }
+    }
+
+    /// Cache-hit with mismatched value: emits exactly one `Error` diagnostic with the
+    /// builder-provided message and a uniform `"conflict between '…' and '…'"` label;
+    /// returns `Break(())`; the map is unchanged.
+    #[test]
+    fn try_dedup_or_conflict_emits_diagnostic_on_mismatch() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        map.insert("x".to_string(), (7_i32, "TraitA".to_string()));
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &9_i32, // different value → conflict
+            "TraitB",
+            SourceSpan::empty(0),
+            |name, existing, existing_trait, new, new_trait| {
+                format!(
+                    "BOOM '{}': {} vs {} (traits '{}' and '{}')",
+                    name, existing, new, existing_trait, new_trait
+                )
+            },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        // Map must remain unchanged (conflict does NOT overwrite)
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert_eq!(diags.len(), 1, "Expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(
+            diags[0].message,
+            "BOOM 'x': 7 vs 9 (traits 'TraitA' and 'TraitB')"
+        );
+        assert_eq!(diags[0].labels.len(), 1);
+        assert_eq!(
+            diags[0].labels[0].message,
+            "conflict between 'TraitA' and 'TraitB'"
+        );
+    }
+
+    /// Cache-hit with equal value: returns `Break(())` silently; the map is unchanged and
+    /// no diagnostic is emitted. The conflict closure must not be invoked (guarded by
+    /// `unreachable!`).
+    #[test]
+    fn try_dedup_or_conflict_dedups_silently_on_equal_value() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        map.insert("x".to_string(), (7_i32, "TraitA".to_string()));
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &7_i32, // same value as already present
+            "TraitB",
+            SourceSpan::empty(0),
+            |_, _, _, _, _| -> String { unreachable!("no closure on equal-value dedup") },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        // Map must not be overwritten (still TraitA, not TraitB)
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert!(diags.is_empty(), "Expected no diagnostics on dedup, got: {:?}", diags);
+    }
+
+    /// Cache-miss path of `try_dedup_or_conflict`: calling with a name not in the map
+    /// inserts `(value, trait_name)` and returns `Continue(())`. The conflict closure is
+    /// never invoked.
+    #[test]
+    fn try_dedup_or_conflict_inserts_on_cache_miss() {
+        use std::ops::ControlFlow;
+        let mut map: HashMap<String, (i32, String)> = HashMap::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = try_dedup_or_conflict(
+            &mut map,
+            "x",
+            &7_i32,
+            "TraitA",
+            SourceSpan::empty(0),
+            |_, _, _, _, _| -> String { unreachable!("not on cache miss") },
+            &mut diags,
+        );
+        assert_eq!(result, ControlFlow::Continue(()));
+        assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
+        assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
     }
 
     /// Param/Constraint cross-interference: two traits each providing a named default

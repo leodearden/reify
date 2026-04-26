@@ -5,7 +5,7 @@ structure def BoltFlange : Rigid {
     param bolt_circle_radius : Length = 45mm
     param hole_radius : Length = 4mm
 
-    // Material trait requirements
+    // MaterialSpec trait requirements (density + name, inherited via Physical)
     param density : Real = 7850
     param name : String = "steel"
 
@@ -18,8 +18,9 @@ structure def BoltFlange : Rigid {
     // Rigid trait requirements
     param moment_of_inertia : Real = 0.000001
 
-    // Material reference (trait-typed param — supplied at instantiation)
-    param material : Material
+    // Canonical Material struct — concrete default supplied here, callers may
+    // override at instantiation by passing a different `Material(...)` value.
+    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
 
     constraint outer_radius > bolt_circle_radius
     constraint hole_count > 0

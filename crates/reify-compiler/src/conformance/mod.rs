@@ -7,6 +7,7 @@ use super::*;
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     scope: &mut CompilationScope,
     value_cells: &mut Vec<ValueCellDecl>,
@@ -17,25 +18,40 @@ pub(crate) fn check_trait_conformance(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let (structure_members, structure_constraint_labels) = check_phase_resolve_structure_members(
-        structure,
-        trait_names,
-        enum_defs,
-        alias_registry,
-        diagnostics,
-    );
+    let (structure_param_members, structure_let_members, structure_constraint_labels) =
+        check_phase_resolve_structure_members(
+            structure,
+            structure_names,
+            trait_names,
+            enum_defs,
+            alias_registry,
+            diagnostics,
+        );
+
+    // Build a combined name→type view for phases that only need to know whether the
+    // structure declares a member by name (conflict-suppression, injection-skip, scope
+    // pre-registration). Phases that must distinguish param from let members use
+    // `structure_param_members` / `structure_let_members` directly (phase 5).
+    //
+    // If a name appears in both maps (no upstream diagnostic prevents it today),
+    // the param entry wins: let-first chain means param entries overwrite let entries.
+    let structure_all_members: HashMap<String, Type> = structure_let_members
+        .iter()
+        .chain(structure_param_members.iter())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     let ctx = check_phase_collect_trait_bounds(
         structure,
         trait_registry,
-        &structure_members,
+        &structure_all_members,
         diagnostics,
     );
 
-    let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+    let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
         check_phase_pre_register_default_types(
             &ctx,
-            &structure_members,
+            &structure_all_members,
             structure.name,
             scope,
             enum_defs,
@@ -46,6 +62,7 @@ pub(crate) fn check_trait_conformance(
     let available_defaults = check_phase_build_available_defaults_map(
         &ctx,
         &inferred_let_exprs,
+        &pass1_skipped,
         &pass2_skipped,
         &pass2_compile_errors,
     );
@@ -53,7 +70,8 @@ pub(crate) fn check_trait_conformance(
     check_phase_check_members_against_requirements(
         &ctx,
         structure,
-        &structure_members,
+        &structure_param_members,
+        &structure_let_members,
         &available_defaults,
         diagnostics,
     );
@@ -61,9 +79,10 @@ pub(crate) fn check_trait_conformance(
     check_phase_inject_defaults(
         &ctx,
         structure,
-        &structure_members,
+        &structure_all_members,
         &structure_constraint_labels,
         inferred_let_exprs,
+        &pass1_skipped,
         &pass2_skipped,
         &pass2_compile_errors,
         scope,
@@ -281,6 +300,7 @@ mod tests {
         let trait_registry: HashMap<String, &CompiledTrait> =
             traits.iter().map(|t| (t.name.clone(), t)).collect();
         let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let structure_names: HashSet<String> = HashSet::new();
         let mut scope = CompilationScope::new(&structure_def.name);
         let mut value_cells: Vec<ValueCellDecl> = vec![];
         let mut constraints: Vec<CompiledConstraint> = vec![];
@@ -292,6 +312,7 @@ mod tests {
         check_trait_conformance(
             &entity_ref,
             &trait_registry,
+            &structure_names,
             &trait_names,
             &mut scope,
             &mut value_cells,
@@ -776,15 +797,15 @@ mod tests {
         };
         let entity_ref = EntityDefRef::from(&structure_def);
 
-        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_all_members: HashMap<String, Type> = HashMap::new();
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         // --- Phase 3: pre-register default types ---
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
-                &structure_members,
+                &structure_all_members,
                 "S",
                 &mut scope,
                 &[],
@@ -806,15 +827,19 @@ mod tests {
         let available_defaults = check_phase_build_available_defaults_map(
             &ctx,
             &inferred_let_exprs,
+            &pass1_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
         );
 
-        // --- Phase 5: check members against requirements ---
+        // --- Phase 5: check members against requirements (no structure members) ---
+        let empty_param_members: HashMap<String, Type> = HashMap::new();
+        let empty_let_members: HashMap<String, Type> = HashMap::new();
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &empty_param_members,
+            &empty_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -1243,13 +1268,9 @@ mod tests {
         // never reached — the default IS present in available_defaults, just with an
         // incompatible type.
         assert!(
-            diagnostics
+            !diagnostics
                 .iter()
-                .filter(
-                    |d| d.message.contains("missing required member") && d.message.contains("'x'")
-                )
-                .count()
-                == 0,
+                .any(|d| d.message.contains("missing required member") && d.message.contains("'x'")),
             "negative case should hit the Some(default_type) arm, not the None arm; \
              got: {:?}",
             diagnostics
@@ -1328,13 +1349,15 @@ mod tests {
         };
 
         let entity_ref = EntityDefRef::from(&structure_def);
+        let structure_names: HashSet<String> = HashSet::new();
         let trait_names: HashSet<String> = HashSet::new();
         let alias_registry = TypeAliasRegistry::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (structure_members, structure_constraint_labels) =
+        let (structure_param_members, structure_let_members, structure_constraint_labels) =
             check_phase_resolve_structure_members(
                 &entity_ref,
+                &structure_names,
                 &trait_names,
                 &[],
                 &alias_registry,
@@ -1347,12 +1370,12 @@ mod tests {
             diagnostics
         );
         assert!(
-            structure_members.contains_key("width"),
-            "Expected 'width' in structure_members"
+            structure_param_members.contains_key("width"),
+            "Expected 'width' in structure_param_members"
         );
         assert!(
-            structure_members.contains_key("length"),
-            "Expected 'length' in structure_members"
+            structure_let_members.contains_key("length"),
+            "Expected 'length' in structure_let_members"
         );
         assert!(
             structure_constraint_labels.contains("bound"),
@@ -1458,7 +1481,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1477,6 +1500,14 @@ mod tests {
         assert!(
             inferred_let_exprs.is_empty(),
             "Expected no inferred_let_exprs for a param-only context"
+        );
+        // Negative control: a param-only fixture must never populate pass1_skipped
+        // (no annotated-Let losers can exist without an annotated Let in ctx.defaults).
+        assert!(
+            pass1_skipped.is_empty(),
+            "Expected pass1_skipped to be empty for a param-only context; \
+             got: {:?}",
+            pass1_skipped
         );
         assert!(
             pass2_skipped.is_empty(),
@@ -1533,7 +1564,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1548,6 +1579,15 @@ mod tests {
             diagnostics.is_empty(),
             "Expected no diagnostics for a simple number literal; got: {:?}",
             diagnostics
+        );
+        // Negative control: an unannotated-Let-only fixture must never populate
+        // pass1_skipped (no annotated-Let loser can exist without a competing
+        // annotated default earlier in ctx.defaults).
+        assert!(
+            pass1_skipped.is_empty(),
+            "Expected pass1_skipped to be empty for a unannotated-let-only context; \
+             got: {:?}",
+            pass1_skipped
         );
         assert!(
             pass2_skipped.is_empty(),
@@ -1557,82 +1597,6 @@ mod tests {
             pass2_compile_errors.is_empty(),
             "Expected no pass2_compile_errors for a successful compilation"
         );
-        assert!(
-            inferred_let_exprs.contains_key(&("y".to_string(), AvailableDefaultKind::Let)),
-            "Expected composite key ('y', Let) in inferred_let_exprs after Pass 2 compiled the unannotated let"
-        );
-        assert_eq!(
-            inferred_let_exprs[&("y".to_string(), AvailableDefaultKind::Let)].result_type,
-            Type::Real,
-            "Expected Type::Real for a floating-point number literal 2.5"
-        );
-    }
-
-    /// Cache-shape test: `inferred_let_exprs` uses a composite `(String, AvailableDefaultKind)`
-    /// key (task 1914 suggestion #2 — kind-keyed cache).
-    ///
-    /// Invariants #1 and #2 from the `check_phase_pre_register_default_types` doc comment
-    /// ("only `DefaultKind::Let { cell_type: None }` inserts" and "only the `DefaultKind::Let`
-    /// injection arm reads") are now structurally enforced by the composite tuple key: a
-    /// `Param`-named `x` and a `Let`-named `x` occupy different slots, so the invariants
-    /// cannot be violated without a type error. This test pins that composite-key shape by
-    /// asserting on `(&(name, AvailableDefaultKind::Let), ...)` — it will fail to compile
-    /// until step-4 changes the cache type from `HashMap<String, CompiledExpr>` to
-    /// `HashMap<(String, AvailableDefaultKind), CompiledExpr>`.
-    #[test]
-    fn check_phase_pre_register_default_types_cache_is_kind_keyed() {
-        let let_decl = reify_syntax::LetDecl {
-            name: "y".to_string(),
-            doc: None,
-            is_pub: false,
-            type_expr: None, // unannotated — must go through Pass 2 inference
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(2.5),
-                span: SourceSpan::empty(0),
-            },
-            where_clause: None,
-            annotations: vec![],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-        };
-
-        let mut ctx = MergeContext::new();
-        ctx.defaults = vec![TraitDefault {
-            name: Some("y".to_string()),
-            kind: DefaultKind::Let {
-                cell_type: None,
-                let_decl,
-            },
-            span: SourceSpan::empty(0),
-        }];
-
-        let structure_members: HashMap<String, Type> = HashMap::new();
-        let mut scope = CompilationScope::new("S");
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
-
-        assert!(
-            diagnostics.is_empty(),
-            "Expected no diagnostics for a simple number literal; got: {:?}",
-            diagnostics
-        );
-        assert!(pass2_skipped.is_empty(), "Expected no pass2_skipped");
-        assert!(
-            pass2_compile_errors.is_empty(),
-            "Expected no pass2_compile_errors"
-        );
-        // Assert composite key shape — this is the compile-tripwire:
-        // fails to compile until the cache type changes to HashMap<(String, AvailableDefaultKind), CompiledExpr>.
         assert!(
             inferred_let_exprs.contains_key(&("y".to_string(), AvailableDefaultKind::Let)),
             "Expected composite key ('y', Let) in inferred_let_exprs after Pass 2 compiled the unannotated let"
@@ -1706,7 +1670,7 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass2_skipped, pass2_compile_errors) =
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
             check_phase_pre_register_default_types(
                 &ctx,
                 &structure_members,
@@ -1728,9 +1692,466 @@ mod tests {
             pass2_skipped.contains("x"),
             "Expected 'x' in pass2_skipped after Pass 2 found its scope slot already claimed"
         );
+        // Negative control: an unannotated Let losing to a Param goes into pass2_skipped,
+        // NOT pass1_skipped. The two sets are mutually exclusive by cell_type predicate.
+        assert!(
+            pass1_skipped.is_empty(),
+            "Expected pass1_skipped to be empty: the unannotated-Let loser is recorded in \
+             pass2_skipped, not pass1_skipped; got: {:?}",
+            pass1_skipped
+        );
         assert!(
             pass2_compile_errors.is_empty(),
             "Expected no pass2_compile_errors for a successful compilation"
+        );
+    }
+
+    /// Phase-contract test: Pass 1 of `check_phase_pre_register_default_types` records
+    /// an annotated-Let loser in `pass1_skipped` (task 1952 step-2).
+    ///
+    /// ## Scenario (Pass 1 ↔ Pass 2 symmetry)
+    ///
+    /// Pass 2 has a symmetric guard: when an unannotated Let loses `register_if_absent` to a
+    /// Pass 1 annotated type, the name is recorded in `pass2_skipped` so the injection loop
+    /// skips Let-cell emission. This test pins the **annotated-Let mirror**: when a Pass 1
+    /// annotated-Let default loses `register_if_absent` to an earlier-in-ctx-defaults Param,
+    /// the name must be recorded in the NEW `pass1_skipped` set (not in `pass2_skipped`).
+    ///
+    /// ## Fixture
+    ///
+    /// `ctx.defaults = [Param "x":Length, annotated Let "x":Length]`
+    ///
+    /// Pass 1 processes both: the Param claims the scope slot first, then the annotated Let's
+    /// `register_if_absent` returns `Occupied`. The name "x" must be recorded in `pass1_skipped`.
+    ///
+    /// ## Assertions
+    ///
+    /// - `pass1_skipped.contains("x")`: the annotated-Let loser is recorded.
+    /// - `pass2_skipped.is_empty()`: no unannotated Let reached Pass 2 (nothing to skip there).
+    /// - `inferred_let_exprs.is_empty()`: no expression compiled (annotated Lets skip Pass 2).
+    /// - `pass2_compile_errors.is_empty()`: no compile errors (no Pass 2 expressions attempted).
+    /// - `diagnostics.is_empty()`: `register_if_absent` conflict is a debug-log only event.
+    ///
+    /// **COMPILE-TRIPWIRE**: this test fails to compile until step-3 changes
+    /// `check_phase_pre_register_default_types` to return a 4-tuple
+    /// `(inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors)`.
+    #[test]
+    fn check_phase_pre_register_default_types_records_collision_in_pass1_skipped() {
+        let param_decl = reify_syntax::ParamDecl {
+            name: "x".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+        // Annotated Let: cell_type = Some(Type::length()) encodes the resolved type directly.
+        // Pass 1 processes this because cell_type is Some(_); Pass 2 is bypassed.
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![
+            // Pass 1 claims the scope slot for "x" with Type::length()
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Param {
+                    cell_type: Type::length(),
+                    default_decl: param_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+            // Pass 1 also processes this annotated Let — finds "x" already claimed → pass1_skipped
+            TraitDefault {
+                name: Some("x".to_string()),
+                kind: DefaultKind::Let {
+                    cell_type: Some(Type::length()), // annotated → goes through Pass 1, not Pass 2
+                    let_decl,
+                },
+                span: SourceSpan::empty(0),
+            },
+        ];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        // COMPILE-TRIPWIRE: destructure as 4-tuple — fails to compile until step-3 changes the
+        // return type from (HashMap, HashSet, HashSet) to (HashMap, HashSet, HashSet, HashSet).
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+            check_phase_pre_register_default_types(
+                &ctx,
+                &structure_members,
+                "S",
+                &mut scope,
+                &[],
+                &[],
+                &mut diagnostics,
+            );
+
+        // The annotated-Let loser must be recorded in pass1_skipped.
+        assert!(
+            pass1_skipped.contains("x"),
+            "Expected 'x' in pass1_skipped after Pass 1 found the annotated Let's scope slot \
+             already claimed by the Param; got pass1_skipped = {:?}",
+            pass1_skipped
+        );
+        // No unannotated Let reached Pass 2, so pass2_skipped must be empty.
+        assert!(
+            pass2_skipped.is_empty(),
+            "Expected pass2_skipped to be empty — no unannotated Let was processed; \
+             got: {:?}",
+            pass2_skipped
+        );
+        // No expression was compiled (annotated Lets skip Pass 2).
+        assert!(
+            inferred_let_exprs.is_empty(),
+            "Expected inferred_let_exprs to be empty — annotated Lets do not go through \
+             Pass 2 inference; got: {:?}",
+            inferred_let_exprs.keys().collect::<Vec<_>>()
+        );
+        // No compile-error names (no Pass 2 compilation was attempted).
+        assert!(
+            pass2_compile_errors.is_empty(),
+            "Expected pass2_compile_errors to be empty; got: {:?}",
+            pass2_compile_errors
+        );
+        // register_if_absent conflicts are debug-log only — no diagnostic emitted.
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics — register_if_absent conflict is logged at debug \
+             level only; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Phase-contract test: Pass 2 treats a warning-only `compile_expr` result as success,
+    /// not as a compile error (task 2158 step-1, severity-safe detection).
+    ///
+    /// ## Scenario
+    ///
+    /// `let x = []` — an empty list literal — causes `compile_expr` to push a
+    /// `Severity::Warning` diagnostic ("cannot infer element type of empty list literal,
+    /// defaulting to Real") but emits **no** `Severity::Error`.  The expression compiles
+    /// successfully to `Type::List(Box::new(Type::Real))`.
+    ///
+    /// ## What this test locks in
+    ///
+    /// The len-based snapshot (`diagnostics.len() > diag_before`) used before task 2158
+    /// counted the warning as a compile failure, wrongly inserting `x` into
+    /// `pass2_compile_errors` and skipping both the `inferred_let_exprs` insert and the
+    /// scope registration.  After the severity-filter fix, only `Severity::Error` additions
+    /// are counted — the warning is tolerated and the expression is cached normally.
+    ///
+    /// Assertions:
+    ///   (a) Exactly 1 diagnostic, with `severity == Severity::Warning`.
+    ///   (b) `pass2_compile_errors` is empty — the warning must NOT be classified as failure.
+    ///   (c) `("x", Let)` is present in `inferred_let_exprs`.
+    ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::Real))`.
+    ///   (e) The scope slot for "x" is occupied after Pass 2 (a second `register_if_absent`
+    ///       call returns `Some(..)` indicating a conflict).
+    #[test]
+    fn check_phase_pre_register_default_types_treats_warning_only_compile_as_success() {
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // unannotated — must go through Pass 2 inference
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::ListLiteral(vec![]), // empty list → Warning, not Error
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Let {
+                cell_type: None,
+                let_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let mut scope = CompilationScope::new("S");
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let (inferred_let_exprs, pass1_skipped, pass2_skipped, pass2_compile_errors) =
+            check_phase_pre_register_default_types(
+                &ctx,
+                &structure_members,
+                "S",
+                &mut scope,
+                &[],
+                &[],
+                &mut diagnostics,
+            );
+
+        // (a) Exactly one Warning diagnostic emitted by compile_expr for the empty list.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected exactly 1 diagnostic (the empty-list-literal warning); got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            Severity::Warning,
+            "Expected the diagnostic to be a Warning, not an Error; got: {:?}",
+            diagnostics[0]
+        );
+
+        // (b) The warning must NOT be classified as a compile failure.
+        assert!(
+            pass2_compile_errors.is_empty(),
+            "Expected pass2_compile_errors to be empty — a Warning-only compile_expr result \
+             must be treated as success; got: {:?}",
+            pass2_compile_errors
+        );
+
+        // pass2_skipped should also be empty (no scope-slot collision).
+        assert!(
+            pass2_skipped.is_empty(),
+            "Expected pass2_skipped to be empty; got: {:?}",
+            pass2_skipped
+        );
+
+        // (c) The compiled expression must be cached in inferred_let_exprs.
+        assert!(
+            inferred_let_exprs.contains_key(&("x".to_string(), AvailableDefaultKind::Let)),
+            "Expected composite key ('x', Let) in inferred_let_exprs — Pass 2 must cache \
+             the compiled expression even when compile_expr emitted a Warning; \
+             got keys: {:?}",
+            inferred_let_exprs.keys().collect::<Vec<_>>()
+        );
+
+        // (d) The cached expression has the expected inferred type for an empty list literal.
+        assert_eq!(
+            inferred_let_exprs[&("x".to_string(), AvailableDefaultKind::Let)].result_type,
+            Type::List(Box::new(Type::Real)),
+            "Expected Type::List(Real) for an empty list literal (defaulting to Real element type)"
+        );
+
+        // (e) Scope slot for "x" is occupied: a second register_if_absent returns Some(..),
+        //     indicating the slot was claimed by Pass 2.
+        let conflict = scope.register_if_absent("x", Type::Int);
+        assert!(
+            conflict.is_some(),
+            "Expected 'x' to be registered in scope by Pass 2 (register_if_absent should find \
+             the slot occupied); got None, meaning Pass 2 failed to register the inferred type"
+        );
+    }
+
+    /// Phase-level guard test: chained-let `Type::Error` sentinel suppresses the
+    /// requirement-check cascade (task 2158 amendment #3).
+    ///
+    /// Companion to the integration test
+    /// `chained_unannotated_lets_with_unresolved_ref_do_not_cascade`
+    /// (`tests/let_type_disambiguation_tests.rs`), which pins the
+    /// absence-of-cascade at the "unresolved name" site.  This test locks in the
+    /// *downstream* consequence: the `Type::Error` sentinel propagated through
+    /// sibling `let c = a` lands in `available_defaults` as
+    /// `("c", Let) -> Type::Error`, and `implicitly_converts_to(Error, _) -> true`
+    /// (wildcard in `type_compat.rs`) absorbs the mismatch silently at the
+    /// requirement-check site.
+    ///
+    /// ## Why this is here and not in `let_type_disambiguation_tests.rs`
+    ///
+    /// `RequirementKind::Let` is not parser-reachable from reify source today
+    /// (see mod.rs:256-260).  The test hand-builds the requirement so we can
+    /// exercise `check_phase_check_members_against_requirements`' anti-cascade
+    /// path without an RFC-level API promotion.
+    ///
+    /// ## Scenario
+    ///
+    /// - Trait T provides `let a = b` (b undefined → compile error → `a` poisoned
+    ///   with `Type::Error` in scope) and `let c = a` (a resolves to `Type::Error`
+    ///   → c compiles silently to `Type::Error`, no new error diagnostic).
+    /// - Trait T also declares `require let c : Length`
+    ///   (`RequirementKind::Let(Type::length())` — hand-built).
+    /// - Structure S : T { } — no member overrides.
+    ///
+    /// ## Expected behavior
+    ///
+    /// Pass 2 records "a" in `pass2_compile_errors` (compile failure).  "c" is NOT
+    /// in `pass2_compile_errors` — `c = a` compiles successfully to `Type::Error`
+    /// via the scope sentinel.  `available_defaults` advertises
+    /// `("c", Let) -> Type::Error`.  The requirement-check calls
+    /// `implicitly_converts_to(Type::Error, Type::length())` → `true` → no
+    /// "type mismatch for trait member 'c'" cascade.
+    ///
+    /// The only expected diagnostic is the root-cause "unresolved name: b".
+    ///
+    /// ## Failure without task 2158 step-4 (scope-poison)
+    ///
+    /// Without the scope-poison fix, "a" is absent from scope when `c = a` is
+    /// compiled, emitting "unresolved name: a" and adding "c" to
+    /// `pass2_compile_errors`.  `available_defaults` then has no entry for
+    /// `("c", Let)`, and the requirement check emits "missing required member 'c'"
+    /// — a spurious secondary cascade on top of the root-cause "unresolved b".
+    #[test]
+    fn chained_unannotated_lets_error_sentinel_suppresses_requirement_check_cascade() {
+        // --- let a = b (b is undefined — will fail compile) ---
+        let let_decl_a = reify_syntax::LetDecl {
+            name: "a".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // unannotated
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::Ident("b".to_string()), // b is undefined
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        // --- let c = a (a resolves to Type::Error from the scope sentinel) ---
+        let let_decl_c = reify_syntax::LetDecl {
+            name: "c".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // unannotated
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::Ident("a".to_string()), // a → Type::Error sentinel
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        // --- Trait T: requires `let c : Length`; provides `let a = b`, `let c = a` ---
+        // `RequirementKind::Let` is hand-built because it is not parser-reachable today.
+        let trait_t = CompiledTrait {
+            name: "TraitT".to_string(),
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "c".to_string(),
+                kind: RequirementKind::Let(Type::length()),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![
+                TraitDefault {
+                    name: Some("a".to_string()),
+                    kind: DefaultKind::Let {
+                        cell_type: None,
+                        let_decl: let_decl_a,
+                    },
+                    span: SourceSpan::empty(0),
+                },
+                TraitDefault {
+                    name: Some("c".to_string()),
+                    kind: DefaultKind::Let {
+                        cell_type: None,
+                        let_decl: let_decl_c,
+                    },
+                    span: SourceSpan::empty(0),
+                },
+            ],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // --- Structure S : TraitT { } — no member overrides ---
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_syntax::TraitBoundRef {
+                name: "TraitT".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let diagnostics = run_conformance(&[trait_t], &structure_def, &[]);
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+
+        // (a) Root-cause "unresolved b" error must be present.
+        let has_unresolved_b = errors.iter().any(|d| {
+            d.message.contains("unresolved")
+                && (d.message.contains(": b")
+                    || d.message.contains("'b'")
+                    || d.message.contains("`b`"))
+        });
+        assert!(
+            has_unresolved_b,
+            "expected at least one diagnostic naming the unresolved identifier `b` \
+             (root cause); got: {:?}",
+            errors
+        );
+
+        // (b) No "type mismatch for trait member 'c'" cascade.
+        // After scope-poison, `c = a` compiles to Type::Error (a is in scope as
+        // the sentinel).  `implicitly_converts_to(Type::Error, Type::length())`
+        // returns true via the wildcard in `type_compat.rs`.
+        let cascade_mismatch: Vec<_> = errors
+            .iter()
+            .filter(|d| {
+                d.message.contains("type mismatch for trait member")
+                    && (d.message.contains("'c'") || d.message.contains("\"c\""))
+            })
+            .collect();
+        assert!(
+            cascade_mismatch.is_empty(),
+            "cascade 'type mismatch for trait member c' found — \
+             `implicitly_converts_to(Type::Error, Type::length())` should return true \
+             (wildcard in type_compat.rs), absorbing the poisoned type rather than \
+             emitting a mismatch.  Cascade diagnostics: {:?}",
+            cascade_mismatch
+        );
+
+        // (c) No "missing required member 'c'" cascade.
+        // Without scope-poison, `c = a` would also fail compile (a unresolved),
+        // putting "c" in pass2_compile_errors and leaving no entry in
+        // available_defaults — causing a spurious "missing required member 'c'".
+        let missing_c: Vec<_> = errors
+            .iter()
+            .filter(|d| {
+                d.message.contains("missing required member")
+                    && (d.message.contains("'c'") || d.message.contains("\"c\""))
+            })
+            .collect();
+        assert!(
+            missing_c.is_empty(),
+            "spurious 'missing required member c' found — without scope-poison, `c = a` \
+             would fail compile (a unresolved in scope) and c would be excluded from \
+             available_defaults entirely.  Diagnostics: {:?}",
+            missing_c
         );
     }
 
@@ -1782,12 +2203,14 @@ mod tests {
 
         let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
             HashMap::new();
+        let pass1_skipped: HashSet<String> = HashSet::new();
         let pass2_skipped: HashSet<String> = HashSet::new();
         let pass2_compile_errors: HashSet<String> = HashSet::new();
 
         let available_defaults = check_phase_build_available_defaults_map(
             &ctx,
             &inferred_let_exprs,
+            &pass1_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
         );
@@ -1806,6 +2229,104 @@ mod tests {
             available_defaults[&("x".to_string(), AvailableDefaultKind::Param)],
             Type::Real,
             "Expected Type::Real for key ('x', Param)"
+        );
+    }
+
+    /// Phase-contract test: `check_phase_build_available_defaults_map` excludes an
+    /// annotated-Let advertisement when its name is in `pass1_skipped` (task 1952 step-4).
+    ///
+    /// ## Invariant: advertisement mirrors injection
+    ///
+    /// The injection loop skips annotated-Let cell emission when `pass1_skipped.contains(name)`.
+    /// For correctness, the advertisement map must also omit the corresponding `(name, Let)`
+    /// entry — otherwise a `RequirementKind::Let` lookup could match a phantom advertisement
+    /// that has no injected cell backing it, producing a spurious "requirement satisfied"
+    /// answer.
+    ///
+    /// This test pins the suppression guard: `cell_type.is_some() && pass1_skipped.contains(name)`
+    /// returns `None` (excluded). The companion positive-control assertion below confirms that
+    /// the same fixture WITHOUT `pass1_skipped` DOES produce `Some(&Type::length())`, so the
+    /// test isolates exactly the new guard's effect.
+    ///
+    /// ## Fixture
+    ///
+    /// `ctx.defaults = [annotated Let "x":Length]` — the Let that Pass 1 would have skipped.
+    /// `pass1_skipped = {"x"}` — simulates the Pass 1 race loss.
+    ///
+    /// ## Assertions
+    ///
+    /// - With `pass1_skipped = {"x"}`: `available_defaults.get(("x", Let)) == None`.
+    /// - Positive control (empty pass1_skipped): `available_defaults.get(("x", Let)) == Some(&Length)`.
+    ///
+    /// **COMPILE-TRIPWIRE**: fails to compile until step-5 adds `pass1_skipped: &HashSet<String>`
+    /// as the new third parameter of `check_phase_build_available_defaults_map`.
+    #[test]
+    fn check_phase_build_available_defaults_map_excludes_annotated_let_for_pass1_skipped_name() {
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // type_expr not consulted — DefaultKind carries cell_type directly
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Let {
+                cell_type: Some(Type::length()), // annotated Let — Pass 1 processes this
+                let_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
+            HashMap::new();
+        // Positive control: without pass1_skipped, the annotated Let IS advertised.
+        let empty_pass1_skipped: HashSet<String> = HashSet::new();
+        let pass2_skipped: HashSet<String> = HashSet::new();
+        let pass2_compile_errors: HashSet<String> = HashSet::new();
+
+        // COMPILE-TRIPWIRE: `&empty_pass1_skipped` is the new 3rd parameter — fails to compile
+        // until step-5 adds `pass1_skipped: &HashSet<String>` to the function signature.
+        let positive_control = check_phase_build_available_defaults_map(
+            &ctx,
+            &inferred_let_exprs,
+            &empty_pass1_skipped,
+            &pass2_skipped,
+            &pass2_compile_errors,
+        );
+        assert_eq!(
+            positive_control.get(&("x".to_string(), AvailableDefaultKind::Let)),
+            Some(&Type::length()),
+            "positive control: without pass1_skipped, annotated Let 'x' must be advertised \
+             as Some(&Type::length()); the guard must not over-suppress"
+        );
+
+        // Negative test: with pass1_skipped = {"x"}, the annotated Let must be suppressed.
+        let mut pass1_skipped: HashSet<String> = HashSet::new();
+        pass1_skipped.insert("x".to_string());
+
+        let available_defaults = check_phase_build_available_defaults_map(
+            &ctx,
+            &inferred_let_exprs,
+            &pass1_skipped,
+            &pass2_skipped,
+            &pass2_compile_errors,
+        );
+        assert_eq!(
+            available_defaults.get(&("x".to_string(), AvailableDefaultKind::Let)),
+            None,
+            "annotated Let 'x' must be excluded from available_defaults when its name is \
+             in pass1_skipped — advertisement mirrors injection (no phantom entry for a \
+             cell that will not be injected)"
         );
     }
 
@@ -1838,14 +2359,16 @@ mod tests {
             span: SourceSpan::empty(0),
         }];
 
-        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_param_members: HashMap<String, Type> = HashMap::new();
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
         let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &structure_param_members,
+            &structure_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -1868,12 +2391,89 @@ mod tests {
         );
     }
 
+    /// Phase-contract test: a structure `param` member does NOT satisfy a `RequirementKind::Let`
+    /// requirement.
+    ///
+    /// `RequirementKind::Let` is not parser-reachable from reify source today — the parser maps
+    /// `let x = …` in a trait body to `DefaultKind::Let` (a default), not a requirement.  This
+    /// unit test hand-builds the fixture to lock down the kind-aware routing in
+    /// `check_phase_check_members_against_requirements`: when the requirement is `Let`, the
+    /// checker looks in `structure_let_members` (not `structure_param_members`), so a structure
+    /// `param x` does not satisfy it.
+    ///
+    /// This is the symmetric counterpart to the integration test
+    /// `structure_let_does_not_satisfy_param_requirement` in `trait_conformance_tests.rs`.
+    #[test]
+    fn param_member_does_not_satisfy_let_requirement() {
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        // Hand-built RequirementKind::Let — not reachable from the parser today.
+        ctx.requirements = vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Let(Type::length()),
+            span: SourceSpan::empty(0),
+        }];
+
+        // Structure provides `param x : Length` (in param map), NOT in let map.
+        let mut structure_param_members: HashMap<String, Type> = HashMap::new();
+        structure_param_members.insert("x".to_string(), Type::length());
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
+        let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_check_members_against_requirements(
+            &ctx,
+            &entity_ref,
+            &structure_param_members,
+            &structure_let_members,
+            &available_defaults,
+            &mut diagnostics,
+        );
+
+        // A param member must NOT satisfy a let requirement — the checker looks in
+        // structure_let_members for Let requirements, so it finds nothing and emits missing-member.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected 1 diagnostic: param 'x' must not satisfy let requirement 'x'; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0].message.contains("missing required member"),
+            "Expected 'missing required member' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("'x'"),
+            "Expected member name 'x' in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("let"),
+            "Expected kind 'let' mentioned in diagnostic; got: {}",
+            diagnostics[0].message
+        );
+    }
+
     /// Phase-contract test: `check_phase_check_members_against_requirements` emits a
     /// "type mismatch" diagnostic when the structure provides the required member but
     /// with the wrong type.
     ///
     /// Covers the `Some(actual_type)` arm where `implicitly_converts_to(actual, expected)`
-    /// is false — the mismatch path inside the `structure_members.get(&req.name)` match.
+    /// is false — the mismatch path inside the kind-routed map lookup.
     #[test]
     fn check_phase_check_members_against_requirements_emits_type_mismatch_for_wrong_member_type() {
         let structure_def = reify_syntax::StructureDef {
@@ -1897,16 +2497,18 @@ mod tests {
             span: SourceSpan::empty(0),
         }];
 
-        // Structure member "w" exists but has wrong type: Real, not Length
-        let mut structure_members: HashMap<String, Type> = HashMap::new();
-        structure_members.insert("w".to_string(), Type::Real);
+        // Structure param member "w" exists but has wrong type: Real, not Length
+        let mut structure_param_members: HashMap<String, Type> = HashMap::new();
+        structure_param_members.insert("w".to_string(), Type::Real);
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
         let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &structure_param_members,
+            &structure_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -1960,7 +2562,8 @@ mod tests {
         }];
 
         // No structure member "w", but there IS a same-kind (Param) default with wrong type
-        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_param_members: HashMap<String, Type> = HashMap::new();
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
         let mut available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         available_defaults.insert(
             ("w".to_string(), AvailableDefaultKind::Param),
@@ -1971,7 +2574,8 @@ mod tests {
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &structure_param_members,
+            &structure_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -2024,14 +2628,16 @@ mod tests {
             span: SourceSpan::empty(0),
         }];
 
-        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_param_members: HashMap<String, Type> = HashMap::new();
+        let structure_let_members: HashMap<String, Type> = HashMap::new();
         let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         check_phase_check_members_against_requirements(
             &ctx,
             &entity_ref,
-            &structure_members,
+            &structure_param_members,
+            &structure_let_members,
             &available_defaults,
             &mut diagnostics,
         );
@@ -2111,12 +2717,14 @@ mod tests {
         let mut constraint_index: u32 = 0;
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
+        let pass1_skipped: HashSet<String> = HashSet::new();
         check_phase_inject_defaults(
             &ctx,
             &entity_ref,
             &structure_members,
             &structure_constraint_labels,
             inferred_let_exprs,
+            &pass1_skipped,
             &pass2_skipped,
             &pass2_compile_errors,
             &mut scope,
@@ -2152,6 +2760,136 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "Expected no diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Phase-contract test: `check_phase_inject_defaults` skips annotated-Let cell injection
+    /// when the name is in `pass1_skipped` (task 1952 step-6).
+    ///
+    /// ## Invariant: annotated-Let injection is suppressed when name in pass1_skipped
+    ///
+    /// This is the mirror of the unannotated-Let / `pass2_skipped` suppression at
+    /// `checker.rs` (the `None`-cache-miss arm that calls `continue` when
+    /// `pass2_skipped.contains(name)`).  For annotated Lets, the new guard is:
+    ///
+    /// ```text
+    /// if cell_type.is_some() && pass1_skipped.contains(name) { continue; }
+    /// ```
+    ///
+    /// placed **before** `compile_expr` so the expression is never compiled for a
+    /// skipped name — no cell is pushed, no diagnostic is emitted.
+    ///
+    /// ## Fixture
+    ///
+    /// A single annotated Let default for "x" (cell_type = Some(Type::length())),
+    /// with pass1_skipped = {"x"}.  The injection loop must skip "x" entirely:
+    /// - `value_cells.is_empty()` — no Let cell emitted
+    /// - `constraints.is_empty()` — no constraint emitted
+    /// - `diagnostics.is_empty()` — no compile-error or any other diagnostic
+    ///
+    /// ## Cross-references
+    ///
+    /// - Step-7 adds `pass1_skipped: &HashSet<String>` to `check_phase_inject_defaults`
+    ///   (between `inferred_let_exprs` and `pass2_skipped`) and the guard in the
+    ///   `DefaultKind::Let { cell_type: Some(_), .. }` arm.
+    /// - Sibling test: `check_phase_inject_defaults_injects_param_cell_for_non_overridden_default`
+    ///   (the passthrough case, pass1_skipped = empty).
+    ///
+    /// **COMPILE-TRIPWIRE**: fails to compile until step-7 adds `pass1_skipped: &HashSet<String>`
+    /// as a parameter of `check_phase_inject_defaults` (between `inferred_let_exprs` and
+    /// `pass2_skipped`).
+    #[test]
+    fn check_phase_inject_defaults_skips_annotated_let_cell_for_pass1_skipped_name() {
+        // Annotated Let "x": Length = 80.0 — cell_type carried in DefaultKind, not type_expr.
+        let let_decl = reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None, // type_expr not consulted — DefaultKind::Let carries cell_type directly
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                span: SourceSpan::empty(0),
+            },
+            where_clause: None,
+            annotations: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+        };
+
+        let structure_def = reify_syntax::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+        let entity_ref = EntityDefRef::from(&structure_def);
+
+        let mut ctx = MergeContext::new();
+        ctx.defaults = vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Let {
+                cell_type: Some(Type::length()), // annotated — would be compiled if NOT in pass1_skipped
+                let_decl,
+            },
+            span: SourceSpan::empty(0),
+        }];
+
+        let structure_members: HashMap<String, Type> = HashMap::new();
+        let structure_constraint_labels: HashSet<String> = HashSet::new();
+        let inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
+            HashMap::new();
+        // COMPILE-TRIPWIRE: `&pass1_skipped` is the new parameter added by step-7 between
+        // `inferred_let_exprs` and `pass2_skipped`. Fails to compile until step-7 updates
+        // `check_phase_inject_defaults` to accept `pass1_skipped: &HashSet<String>`.
+        let mut pass1_skipped: HashSet<String> = HashSet::new();
+        pass1_skipped.insert("x".to_string());
+        let pass2_skipped: HashSet<String> = HashSet::new();
+        let pass2_compile_errors: HashSet<String> = HashSet::new();
+        let mut scope = CompilationScope::new("S");
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index: u32 = 0;
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        check_phase_inject_defaults(
+            &ctx,
+            &entity_ref,
+            &structure_members,
+            &structure_constraint_labels,
+            inferred_let_exprs,
+            &pass1_skipped,
+            &pass2_skipped,
+            &pass2_compile_errors,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
+
+        assert!(
+            value_cells.is_empty(),
+            "Expected no value cells: annotated Let 'x' is in pass1_skipped and must be \
+             suppressed by the injection loop; got: {:?}",
+            value_cells
+        );
+        assert!(
+            constraints.is_empty(),
+            "Expected no constraints; got: {:?}",
+            constraints
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics (pass1_skipped suppression must be silent); got: {:?}",
             diagnostics
         );
     }

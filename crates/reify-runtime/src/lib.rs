@@ -1,5 +1,3 @@
-// Stub — M1 implementation pending
-
 pub mod commitment;
 pub mod concurrent;
 pub mod concurrent_eval;

@@ -274,3 +274,139 @@ fn fillet_arg_count_diagnostic_has_span_label() {
         "fillet() expects 2 arguments",
     );
 }
+
+// ── translate() / rotate() / scale() / rotate_around() ─────────────────
+
+#[test]
+fn translate_arg_count_diagnostic_has_span_label() {
+    // translate() expects 4 arguments — passing 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let t = translate(1mm, 2mm)
+            }
+        "#,
+        "translate() expects 4 arguments",
+    );
+}
+
+#[test]
+fn rotate_arg_count_diagnostic_has_span_label() {
+    // rotate() expects 5 arguments — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let r = rotate(box(10mm, 10mm, 10mm), 0.0, 0.0)
+            }
+        "#,
+        "rotate() expects 5 arguments",
+    );
+}
+
+#[test]
+fn scale_arg_count_diagnostic_has_span_label() {
+    // scale() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let s = scale(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "scale() expects 2 arguments",
+    );
+}
+
+#[test]
+fn rotate_around_arg_count_diagnostic_has_span_label() {
+    // rotate_around() expects 8 arguments — passing 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let r = rotate_around(box(10mm, 10mm, 10mm), 1mm)
+            }
+        "#,
+        "rotate_around() expects 8 arguments",
+    );
+}
+
+// ── line_segment() / arc() / helix() ───────────────────────────────────
+
+#[test]
+fn line_segment_arg_count_diagnostic_has_span_label() {
+    // line_segment() expects 6 arguments — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = line_segment(0mm, 0mm, 0mm)
+            }
+        "#,
+        "line_segment() expects 6 arguments",
+    );
+}
+
+#[test]
+fn arc_arg_count_diagnostic_has_span_label() {
+    // arc() expects 9 arguments — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = arc(0mm, 0mm, 0mm)
+            }
+        "#,
+        "arc() expects 9 arguments",
+    );
+}
+
+#[test]
+fn helix_arg_count_diagnostic_has_span_label() {
+    // helix() expects 3 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = helix(10mm)
+            }
+        "#,
+        "helix() expects 3 arguments",
+    );
+}
+
+// ── interp() / bezier() / nurbs() ──────────────────────────────────────
+
+#[test]
+fn interp_arg_count_diagnostic_has_span_label() {
+    // interp() expects coordinate triples (at least 6 args) — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = interp(0mm, 0mm, 0mm)
+            }
+        "#,
+        "interp() expects coordinate triples",
+    );
+}
+
+#[test]
+fn bezier_arg_count_diagnostic_has_span_label() {
+    // bezier() expects coordinate triples (at least 6 args) — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = bezier(0mm, 0mm, 0mm)
+            }
+        "#,
+        "bezier() expects coordinate triples",
+    );
+}
+
+#[test]
+fn nurbs_arg_count_diagnostic_has_span_label() {
+    // nurbs() expects at least 10 arguments — passing 3 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = nurbs(0mm, 0mm, 0mm)
+            }
+        "#,
+        "nurbs() expects at least 10 arguments",
+    );
+}

@@ -21,35 +21,48 @@ use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
-    guard_state_fingerprint,
+    eval_ctx_with_meta, guard_state_fingerprint,
 };
+
+/// Sentinel substring included in every panic raised by
+/// [`assert_value_cell_types_representable`].  Used by the unit test
+/// (`invariant_tests::panics_on_unrepresentable_cell_types`) to assert the
+/// correct panic path fired without relying on an exact message match.
+#[cfg(debug_assertions)]
+pub(crate) const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
 /// evaluation graph has a `cell_type` that has a corresponding `Value`
-/// variant.  `Type::TypeParam`, `Type::StructureRef`, and `Type::Geometry`
-/// have no `Value` counterpart, so any non-Undef value against such a cell
-/// triggers `TypeKindMismatch` — see `value_type_kind_matches` in lib.rs.
+/// variant.  `Type::TypeParam` and `Type::Geometry` have no `Value`
+/// counterpart, so any non-Undef value against such a cell triggers
+/// `TypeKindMismatch` — see `value_type_kind_matches` in lib.rs.
+///
+/// `Type::StructureRef` is permitted (task 1876): user code may declare
+/// `param material : Material = Material(...)` where `Material` is a
+/// canonical struct. The struct-call default evaluates to `Value::Undef`
+/// (structure constructors are not builtins; `reify_stdlib::eval_builtin`
+/// returns Undef for unknown names), and Undef is accepted by the
+/// kind-match against any `Type` variant.
 ///
 /// Fully elided in release builds (cfg-gated, not debug_assert!-wrapped) to
 /// avoid the HashMap walk on the hot eval() path.  Tests run under
 /// cfg(debug_assertions) by default so the four unit tests in
 /// `invariant_tests` below see this function normally.
 ///
-/// Enforcement points: this call (runtime) and
-/// `crates/reify-eval/tests/value_cell_type_invariants.rs` (CI regression lock).
+/// Enforcement points: `engine_eval.rs` (eval cold-start), `engine_edit.rs:1207-1208`
+/// (edit-time recompile), and `crates/reify-eval/tests/value_cell_type_invariants.rs`
+/// (CI regression lock).
 #[cfg(debug_assertions)]
-fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) {
+pub(crate) fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) {
     use reify_types::Type;
     for (id, node) in graph.value_cells.iter() {
         assert!(
-            !matches!(
-                &node.cell_type,
-                Type::TypeParam(_) | Type::StructureRef(_) | Type::Geometry
-            ),
-            "value cell `{}` has unrepresentable cell_type {:?} post-compilation; \
+            !matches!(&node.cell_type, Type::TypeParam(_) | Type::Geometry),
+            "value cell `{}` has {} {:?} post-compilation; \
              value_type_kind_matches treats these variants as having no Value counterpart — \
              see crates/reify-eval/tests/value_cell_type_invariants.rs",
             id,
+            ASSERT_MSG_PREFIX,
             node.cell_type,
         );
     }
@@ -106,27 +119,34 @@ fn post_solver_re_eval_guard_cells(
 ) {
     for cell in cells {
         if is_active_branch {
-            if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let {
-                if let Some(ref expr) = cell.default_expr {
-                    let val = reify_expr::eval_expr(
-                        expr,
-                        &reify_expr::EvalContext::new(values, functions)
-                            .with_meta(meta_map)
-                            .with_determinacy(snapshot_values),
-                    );
-                    values.insert(cell.id.clone(), val.clone());
-                    snapshot_values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
-                } else {
-                    values.insert(cell.id.clone(), Value::Undef);
-                    snapshot_values.insert(
-                        cell.id.clone(),
-                        (Value::Undef, DeterminacyState::Undetermined),
-                    );
+            match cell.kind {
+                ValueCellKind::Param | ValueCellKind::Let => {
+                    if let Some(ref expr) = cell.default_expr {
+                        let val = reify_expr::eval_expr(
+                            expr,
+                            &eval_ctx_with_meta(values, functions, meta_map)
+                                .with_determinacy(snapshot_values),
+                        );
+                        values.insert(cell.id.clone(), val.clone());
+                        snapshot_values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
+                    } else {
+                        values.insert(cell.id.clone(), Value::Undef);
+                        snapshot_values.insert(
+                            cell.id.clone(),
+                            (Value::Undef, DeterminacyState::Undetermined),
+                        );
+                    }
+                }
+                ValueCellKind::Auto { .. } => {
+                    // Active-branch Auto: skip.
+                    // The solver already resolved these to concrete values;
+                    // overwriting with Undef here would destroy solver work.
+                    // An exhaustive match (rather than an implicit else-skip)
+                    // ensures a future ValueCellKind variant triggers a
+                    // compile error at this site, forcing a reviewed decision
+                    // instead of a silent skip.
                 }
             }
-            // Auto cells in the active branch: skip.
-            // The solver already resolved them to concrete values;
-            // overwriting with Undef here would destroy solver work.
         } else if !cell.kind.is_auto() {
             // Inactive non-Auto: write (Undef, Undetermined).
             // Auto cells: skip — lifecycle owned by the solver.
@@ -188,12 +208,14 @@ impl Engine {
         self.active_objective_map.clear();
         // Build meta_map: template name → meta key/value pairs.
         // Only includes templates with non-empty meta blocks.
-        self.meta_map = module
-            .templates
-            .iter()
-            .filter(|t| !t.meta.is_empty())
-            .map(|t| (t.name.clone(), t.meta.clone()))
-            .collect();
+        self.meta_map = Arc::new(
+            module
+                .templates
+                .iter()
+                .filter(|t| !t.meta.is_empty())
+                .map(|t| (t.name.clone(), t.meta.clone()))
+                .collect(),
+        );
         // Use the merged function table (user functions prepended before prelude functions) so
         // that EvalContext has the full dispatch set — both user-defined overloads AND
         // non-shadowed prelude functions. This matches the SHADOWING INVARIANT: first-match-wins
@@ -266,8 +288,7 @@ impl Engine {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr }
                 | reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx =
-                        reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map);
+                    let ctx = eval_ctx_with_meta(&values, &functions, &self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Arc::new(val)
                 }
@@ -344,9 +365,7 @@ impl Engine {
                         version: VersionId(version_id),
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
-                } else if cell.kind == ValueCellKind::Param
-                    && (cell.default_expr.is_some() || self.param_overrides.contains_key(&cell.id))
-                {
+                } else if cell.kind == ValueCellKind::Param {
                     // Param cells: an entry in `self.param_overrides` takes
                     // precedence over evaluating `default_expr`. This mirrors
                     // edit_source's seeding rule ("override wins for Param
@@ -355,27 +374,56 @@ impl Engine {
                     // subsequent `eval()` instead of being silently rebuilt
                     // from the module default.
                     //
-                    // If there is no default_expr we only enter this branch
-                    // when an override exists (so the cell gets seeded from
-                    // the override); this preserves the pre-task-2017
-                    // behaviour of silently skipping a no-default Param with
-                    // no override.
+                    // Single lookup: the `get` below is the single source of
+                    // truth for both the existence check and value retrieval.
+                    // This eliminates the earlier double-lookup pattern
+                    // (`contains_key` in the outer `else if` predicate + `get`
+                    // inside the match arm) — mirroring the same refactor
+                    // already applied in `engine_edit.rs`.
                     //
-                    // Validation mirrors Engine::edit_param via the shared
-                    // `validate_param_override` helper (task 2017 amend-pass):
-                    // type-kind and Scalar-dimension are both checked there.
-                    // On mismatch we emit a Warning diagnostic, retain the
-                    // entry in param_overrides (reverting the source edit
-                    // should resurrect it), and fall back to the default_expr
-                    // path.  `engine_edit.rs` still inlines the same guard
-                    // chain; a follow-up task will migrate that site onto
-                    // `validate_param_override` so any future third guard
-                    // (e.g. Tensor shape) lands in one place.
+                    // The `None` arm early-continues (BEFORE recording the
+                    // journal `Started` event) when there is also no
+                    // `default_expr`, preserving the pre-task-2017 silent-skip
+                    // semantics for untouched no-default Param cells.
+                    //
+                    // Validation mirrors `Engine::edit_param` via the shared
+                    // `validate_param_override` helper (task 2017 amend-pass +
+                    // task 2178 follow-up): type-kind and Scalar-dimension are
+                    // both checked there.  On mismatch we emit a Warning
+                    // diagnostic, retain the entry in param_overrides
+                    // (reverting the source edit should resurrect it), and fall
+                    // back to the default_expr path.  `Engine::edit_param`
+                    // translates the same rejection variants into an
+                    // `EngineError` instead.
                     //
                     // Orphan purging runs once, before this loop (see the
                     // retain call after Snapshot::from_compiled_module).
                     let override_val = match self.param_overrides.get(&cell.id) {
-                        None => None,
+                        None => {
+                            // No override stored: only proceed if a default
+                            // exists — otherwise silently skip this cell
+                            // (preserves the pre-task-2017 behaviour for
+                            // untouched no-default Param cells).
+                            //
+                            // NOTE — asymmetry with the rejected-override path:
+                            // When an override EXISTS but is rejected below, the
+                            // `else` branch (line ~446) writes (Undef,
+                            // Undetermined) into both maps so external callers
+                            // never see a missing key. But when NO override was
+                            // ever stored (this arm), the cell is still skipped
+                            // silently, leaving `values` without an entry for
+                            // that cell. This pre-task-2017 baseline is preserved
+                            // deliberately — extending it here would be a
+                            // cross-cutting behaviour change with broad blast
+                            // radius across existing tests. A follow-up task
+                            // should unify the two skip paths (either both insert
+                            // Undef, or document the invariant in EvalResult's
+                            // type doc so callers know when a key may be absent).
+                            if cell.default_expr.is_none() {
+                                continue;
+                            }
+                            None
+                        }
                         Some(v) => match validate_param_override(v, &cell.cell_type) {
                             Ok(()) => Some(v.clone()),
                             Err(ParamOverrideRejection::TypeKindMismatch) => {
@@ -413,19 +461,39 @@ impl Engine {
                     } else if let Some(ref expr) = cell.default_expr {
                         reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &functions)
-                                .with_meta(&self.meta_map)
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                 .with_determinacy(&snapshot.values),
                         )
                     } else {
                         // No override accepted and no default_expr. This is
-                        // only reachable if the override existed but was
-                        // rejected by the type-kind guard above. Skip the
-                        // cell — mirrors the pre-task-2017 behaviour and
-                        // avoids writing an invalid value into the snapshot.
-                        // Keep the journal well-formed by completing the
-                        // Started event with an Unchanged outcome (no value
-                        // was written; equivalent to a no-op).
+                        // only reachable if an override existed but was
+                        // rejected by the type-kind or dimension guard above.
+                        //
+                        // Write (Undef, Undetermined) into both maps so that
+                        // external readers of EvalResult.values see a
+                        // well-defined Undef instead of a missing key (which
+                        // would panic a caller that does `.get().unwrap()`).
+                        // The snapshot insert is defence-in-depth: the
+                        // pre-seed in Snapshot::from_compiled_module already
+                        // initialises every cell to (Undef, Undetermined),
+                        // but writing it explicitly here keeps the pattern
+                        // consistent with every other branch in this loop
+                        // and insulates us from future pre-seed changes.
+                        values.insert(cell.id.clone(), Value::Undef);
+                        snapshot.values.insert(
+                            cell.id.clone(),
+                            (Value::Undef, DeterminacyState::Undetermined),
+                        );
+                        // Cache recording is intentionally omitted here.
+                        // The pre-refactor code reached `continue` before any
+                        // `self.cache.record_evaluation(...)` call, so no cache
+                        // entry was ever written for this path. Adding one now
+                        // would change incremental-eval semantics: `try_fast_path`
+                        // in `eval_cached` could start serving this Undef entry
+                        // across subsequent versions, potentially masking the
+                        // underlying source-level problem (rejected override) or
+                        // triggering stale-cache paths on module re-edits. Cache
+                        // semantics for this path are deferred to a follow-up task.
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -468,7 +536,7 @@ impl Engine {
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
             {
-                let meta_map = self.meta_map.clone();
+                let meta_map = Arc::clone(&self.meta_map);
                 self.evaluate_let_bindings(
                     template,
                     &mut values,
@@ -487,8 +555,7 @@ impl Engine {
                 // Evaluate the guard cell expression
                 let guard_val = reify_expr::eval_expr(
                     &group.guard_expr,
-                    &reify_expr::EvalContext::new(&values, &functions)
-                        .with_meta(&self.meta_map)
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
                 values.insert(group.guard_value_cell.clone(), guard_val.clone());
@@ -513,8 +580,7 @@ impl Engine {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map)
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                         .with_determinacy(&snapshot.values),
                                 );
                                 values.insert(cell.id.clone(), val.clone());
@@ -553,8 +619,7 @@ impl Engine {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, &functions)
-                                        .with_meta(&self.meta_map)
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                         .with_determinacy(&snapshot.values),
                                 );
                                 values.insert(cell.id.clone(), val.clone());
@@ -719,7 +784,7 @@ impl Engine {
             // - regular subs create {parent}.{sub}.{member} cells via elaborate_child_instance
             // Both become available only after elaboration, so re-evaluate if any subs exist.
             if !template.sub_components.is_empty() {
-                let meta_map = self.meta_map.clone();
+                let meta_map = Arc::clone(&self.meta_map);
                 self.evaluate_let_bindings(
                     template,
                     &mut values,
@@ -873,7 +938,7 @@ impl Engine {
                         };
 
                         // Re-run let binding evaluation in topological order
-                        let meta_map = self.meta_map.clone();
+                        let meta_map = Arc::clone(&self.meta_map);
                         self.evaluate_let_bindings(
                             template,
                             &mut values,
@@ -919,8 +984,7 @@ impl Engine {
                 for group in &template.guarded_groups {
                     let guard_val = reify_expr::eval_expr(
                         &group.guard_expr,
-                        &reify_expr::EvalContext::new(&values, &functions)
-                            .with_meta(&self.meta_map)
+                        &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                             .with_determinacy(&snapshot.values),
                     );
                     values.insert(group.guard_value_cell.clone(), guard_val.clone());
@@ -1002,12 +1066,14 @@ impl Engine {
         // Build meta_map from module templates (same logic as eval()).
         // This ensures MetaAccess expressions resolve correctly even when
         // eval_cached is called without a prior eval().
-        self.meta_map = module
-            .templates
-            .iter()
-            .filter(|t| !t.meta.is_empty())
-            .map(|t| (t.name.clone(), t.meta.clone()))
-            .collect();
+        self.meta_map = Arc::new(
+            module
+                .templates
+                .iter()
+                .filter(|t| !t.meta.is_empty())
+                .map(|t| (t.name.clone(), t.meta.clone()))
+                .collect(),
+        );
 
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
@@ -1155,8 +1221,7 @@ impl Engine {
                     } else if let Some(ref expr) = cell.default_expr {
                         reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&values, &self.functions)
-                                .with_meta(&self.meta_map),
+                            &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
                         )
                     } else {
                         reify_types::Value::Undef
@@ -1251,8 +1316,7 @@ impl Engine {
 
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(&values, &self.functions)
-                            .with_meta(&self.meta_map),
+                        &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
                     );
 
                     // Build dependency trace from expression refs
@@ -1386,8 +1450,7 @@ impl Engine {
 
             let val = reify_expr::eval_expr(
                 expr,
-                &reify_expr::EvalContext::new(values, functions)
-                    .with_meta(meta_map)
+                &eval_ctx_with_meta(values, functions, meta_map)
                     .with_determinacy(&snapshot.values),
             );
             values.insert(cell_id.clone(), val.clone());
@@ -1438,17 +1501,19 @@ mod invariant_tests {
 
     /// Verify that `assert_value_cell_types_representable` panics with the
     /// expected message for every unrepresentable `Type` variant.  Uses
-    /// `catch_unwind` to check all three variants in a single test run,
-    /// avoiding three nearly-identical `#[should_panic]` tests that would
-    /// pass even if the variant list diverged from the function under test.
+    /// `catch_unwind` to check all variants in a single test run, avoiding
+    /// nearly-identical `#[should_panic]` tests that would pass even if the
+    /// variant list diverged from the function under test.
+    ///
+    /// `Type::StructureRef` is intentionally absent from this list (task
+    /// 1876): it is permitted on value cells so that user params like
+    /// `material : Material = Material(...)` can be represented; the
+    /// default expression evaluates to `Value::Undef`, which passes the
+    /// kind-match check for any type.
     #[test]
     fn panics_on_unrepresentable_cell_types() {
         use std::panic;
-        for ty in [
-            Type::TypeParam("T".into()),
-            Type::StructureRef("Bolt".into()),
-            Type::Geometry,
-        ] {
+        for ty in [Type::TypeParam("T".into()), Type::Geometry] {
             let mut graph = EvaluationGraph::default();
             let (id, node) = bad_node(ty);
             graph.value_cells.insert(id, node);
@@ -1463,8 +1528,9 @@ mod invariant_tests {
                 .or_else(|| err.downcast_ref::<&str>().copied())
                 .unwrap_or("<non-string panic>");
             assert!(
-                msg.contains("unrepresentable cell_type"),
-                "panic message did not contain expected substring: {msg}",
+                msg.contains(super::ASSERT_MSG_PREFIX),
+                "panic message did not contain expected substring {:?}: {msg}",
+                super::ASSERT_MSG_PREFIX,
             );
         }
     }

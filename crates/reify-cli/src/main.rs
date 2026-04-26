@@ -61,7 +61,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         return Err(ExitCode::FAILURE);
     }
 
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
     for diag in &compiled.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);

@@ -132,6 +132,7 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
 
   return (
     <div data-testid="chat-panel" class={styles.panel}>
+      <div class="panel-title" data-testid="panel-title-assistant">Assistant</div>
       <div ref={messageListRef} class={styles.messageList}>
         <Show when={props.store.state.messages.length === 0}>
           <div class={styles.emptyState}>Start a conversation</div>

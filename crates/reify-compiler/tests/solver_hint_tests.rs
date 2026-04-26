@@ -3,41 +3,14 @@
 //! Tests for `@solver_hint` annotations on param/let members compiling into
 //! `SolverHint` entries on `ValueCellDecl`.
 
-/// Helper: parse and compile source, return compiled module.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("solver_hint_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: return only error-severity diagnostics (ignoring warnings).
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect()
-}
-
-/// Helper: return only warning-severity diagnostics.
-fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning)
-        .collect()
-}
+use reify_test_support::{compile_source, errors_only, warnings_only};
 
 // ── Step 7: @solver_hint("discrete_set", ...) on param compiles ─────────────
 
 #[test]
 fn solver_hint_discrete_set_compiles() {
     let source = r#"structure S { @solver_hint("discrete_set", bolt_lengths) param length : Length = auto }"#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -69,7 +42,7 @@ fn solver_hint_discrete_set_compiles() {
 #[test]
 fn solver_hint_prefer_stock_compiles() {
     let source = r#"structure S { @solver_hint("prefer_stock", sheet_thicknesses) param width : Length = auto }"#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -96,7 +69,7 @@ fn solver_hint_prefer_stock_compiles() {
 #[test]
 fn solver_hint_on_let_compiles() {
     let source = r#"structure S { @solver_hint("discrete_set", gauges) let t : Length = 5mm }"#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -130,7 +103,7 @@ fn solver_hint_on_let_compiles() {
 fn solver_hint_invalid_kind_warns() {
     let source =
         r#"structure S { @solver_hint("invalid_kind", collection) param length : Length = auto }"#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -160,7 +133,7 @@ fn solver_hint_invalid_kind_warns() {
 #[test]
 fn solver_hint_missing_collection_warns() {
     let source = r#"structure S { @solver_hint("discrete_set") param length : Length = auto }"#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -190,7 +163,7 @@ fn solver_hint_missing_collection_warns() {
 #[test]
 fn solver_hint_zero_args_warns() {
     let source = r#"structure S { @solver_hint param x : Real = auto }"#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -226,7 +199,7 @@ fn solver_hint_in_guarded_block_compiles() {
             param width : Length = auto
         }
     }"#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -264,7 +237,7 @@ fn solver_hint_multiple_on_same_param() {
         @solver_hint("prefer_stock", b)
         param length : Length = auto
     }"#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",

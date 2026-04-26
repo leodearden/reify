@@ -148,6 +148,31 @@ fn build_integration_full_v01_compiles_without_panic() {
     }
 }
 
+// ── task-2176 step-1: m5_geometry_flange.ri resolves stdlib (Material, Rigid) ─
+
+#[test]
+fn check_m5_geometry_flange_resolves_stdlib() {
+    let path = common::example_path("m5_geometry_flange.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    assert!(
+        !stderr.contains("unresolved type: Material"),
+        "stdlib type Material should be resolved; stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unresolved trait"),
+        "stdlib traits (Rigid, Physical, MaterialSpec) should be resolved; stderr: {stderr}"
+    );
+    assert!(
+        status.success(),
+        "reify check should exit 0 for m5_geometry_flange.ri.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied") || stdout.contains("No constraints violated"),
+        "stdout should contain a passing check summary, got: {stdout}"
+    );
+}
+
 // ── step-7: all present new M11 examples pass reify check ────────────────────
 
 /// New M11 milestone example files.  Files created by sibling tasks are

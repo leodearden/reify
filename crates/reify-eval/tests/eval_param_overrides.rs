@@ -10,7 +10,7 @@ use reify_compiler::CompiledModule;
 use reify_eval::Engine;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_types::{DimensionVector, Severity, Value, ValueCellId};
+use reify_types::{DeterminacyState, DimensionVector, Severity, Value, ValueCellId};
 
 /// Build an Engine with an empty prelude for self-contained param-override tests.
 /// Uses `Engine::with_prelude(…, &[])` so the tests do not depend on stdlib state.
@@ -423,5 +423,170 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
         after_noop_clear.diagnostics.is_empty(),
         "eval after no-op clear must still not emit diagnostics, got: {:?}",
         after_noop_clear.diagnostics
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2179 S4: rejected-override-with-no-default inserts Undef into result.values
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// When an override is rejected (type-kind mismatch) AND the cell has no
+/// default_expr, `result.values` must contain `Value::Undef` for the cell
+/// rather than a missing key.  Without the S4 fix, `result.values.get(&p_id)`
+/// returns `None`, which would panic any caller that does `.get().unwrap()`.
+///
+/// Three-phase setup:
+///   A) Module with `param p: Scalar = 1mm` + `let q: Scalar = p` — set a
+///      Scalar[LENGTH] override (0.5 m) so it is stored in param_overrides.
+///   B) Module with `param p: Int` (NO default) + `let q: Int = p` — the
+///      stored Scalar override is now type-kind incompatible.
+///
+/// Assertions on result from evaluating module B:
+///   (a) `result.values.get(&p_id) == Some(&Value::Undef)` (the S4 discriminator;
+///       currently `None` — the test is expected to FAIL before the fix).
+///   (b) `result.values.get(&q_id) == Some(&Value::Undef)` — downstream Let
+///       propagates Undef without panic.
+///   (c) Exactly one Warning diagnostic mentions "S.p" and "type-kind".
+///   (d) `engine.snapshot().values[p] == (Value::Undef, Undetermined)` — orthogonal
+///       to (a): `EvalResult.values` and the persistent `Snapshot` are separate maps.
+#[test]
+fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
+    let mut engine = fresh_engine();
+    let p_id = ValueCellId::new("S", "p");
+    let q_id = ValueCellId::new("S", "q");
+
+    // Phase A: module with p: Scalar = 1mm. Set a valid Scalar[LENGTH] override.
+    let module_a = compile_source("structure S { param p: Scalar = 1mm\n let q: Scalar = p }");
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&p_id, length_scalar(0.5));
+
+    // Phase B: module with p: Int (no default). Scalar override is incompatible.
+    let module_b = compile_source("structure S { param p: Int\n let q: Int = p }");
+    let result_b = engine.eval(&module_b);
+
+    // (a) S4 assertion: rejected-override-no-default cell must be Undef, not absent.
+    assert_eq!(
+        result_b.values.get(&p_id),
+        Some(&Value::Undef),
+        "rejected-override-with-no-default param must be Undef in result.values, not missing (got None)"
+    );
+
+    // (b) Downstream Let q = p must propagate Undef without panic.
+    assert_eq!(
+        result_b.values.get(&q_id),
+        Some(&Value::Undef),
+        "let q = p must propagate Undef when p is Undef"
+    );
+
+    // (c) Exactly one Warning mentioning S.p and the word "type-kind".
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.p"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.p, got: {:?}",
+        result_b.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("type-kind"),
+        "warning should mention 'type-kind', got: {:?}",
+        warnings[0].message
+    );
+
+    // (d) Snapshot half: the persistent snapshot entry must also be
+    // (Undef, Undetermined).  Orthogonal to (a): `EvalResult.values` and the
+    // persistent `Snapshot` are separate maps.  See engine_eval.rs:469-479.
+    assert_eq!(
+        engine.snapshot().unwrap().values.get(&p_id),
+        Some(&(Value::Undef, DeterminacyState::Undetermined)),
+        "rejected-override-no-default path (engine_eval.rs:469-479): \
+         snapshot entry for p must be (Undef, Undetermined)"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2179 amend: dimension-mismatch path also inserts Undef
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Sibling of `eval_inserts_undef_for_no_default_param_with_rejected_override`
+/// that exercises the `ScalarDimensionMismatch` arm rather than `TypeKindMismatch`.
+///
+/// When an override is rejected via dimension mismatch AND the cell has no
+/// `default_expr`, `result.values` must contain `Value::Undef` for the cell
+/// rather than a missing key — the same S4 guarantee as the type-kind path.
+///
+/// Three-phase setup:
+///   A) Module with `param p: Scalar = 1mm` + `let q: Scalar = p` — set a
+///      Scalar[LENGTH] override (0.5 m).
+///   B) Module with `param p: Mass` (NO default) + `let q: Mass = p` — the
+///      stored LENGTH override is now dimension-incompatible with MASS.
+///
+/// Assertions on result from evaluating module B:
+///   (a) `result.values.get(&p_id) == Some(&Value::Undef)` (S4 discriminator).
+///   (b) `result.values.get(&q_id) == Some(&Value::Undef)` — downstream Let
+///       propagates Undef without panic.
+///   (c) Exactly one Warning diagnostic mentions "S.p" and "dimension".
+///   (d) `engine.snapshot().values[p] == (Value::Undef, Undetermined)` — orthogonal
+///       to (a): `EvalResult.values` and the persistent `Snapshot` are separate maps.
+#[test]
+fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
+    let mut engine = fresh_engine();
+    let p_id = ValueCellId::new("S", "p");
+    let q_id = ValueCellId::new("S", "q");
+
+    // Phase A: module with p: Scalar = 1mm. Set a valid Scalar[LENGTH] override.
+    let module_a = compile_source("structure S { param p: Scalar = 1mm\n let q: Scalar = p }");
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&p_id, length_scalar(0.5));
+
+    // Phase B: module with p: Mass (no default). LENGTH override is dimension-
+    // incompatible with MASS (same type-kind — both Scalar — so TypeKindMismatch
+    // does not fire, only ScalarDimensionMismatch).
+    let module_b = compile_source("structure S { param p: Mass\n let q: Mass = p }");
+    let result_b = engine.eval(&module_b);
+
+    // (a) S4 assertion: dimension-rejected-override-no-default must be Undef.
+    assert_eq!(
+        result_b.values.get(&p_id),
+        Some(&Value::Undef),
+        "dimension-rejected-override-with-no-default param must be Undef in result.values, not missing"
+    );
+
+    // (b) Downstream Let q = p must propagate Undef without panic.
+    assert_eq!(
+        result_b.values.get(&q_id),
+        Some(&Value::Undef),
+        "let q = p must propagate Undef when p is Undef (dimension-mismatch path)"
+    );
+
+    // (c) Exactly one Warning mentioning S.p and the word "dimension".
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.p"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.p, got: {:?}",
+        result_b.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("dimension"),
+        "warning should mention 'dimension', got: {:?}",
+        warnings[0].message
+    );
+
+    // (d) Snapshot half: the persistent snapshot entry must also be
+    // (Undef, Undetermined).  Orthogonal to (a): EvalResult.values and the
+    // persistent Snapshot are separate maps.  See engine_eval.rs:469-479.
+    assert_eq!(
+        engine.snapshot().unwrap().values.get(&p_id),
+        Some(&(Value::Undef, DeterminacyState::Undetermined)),
+        "rejected-override-no-default path (engine_eval.rs:469-479): \
+         snapshot entry for p must be (Undef, Undetermined) after dimension-mismatch rejection"
     );
 }

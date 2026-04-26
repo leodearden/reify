@@ -15,15 +15,7 @@ pub(crate) fn compile_modify_2arg(
     diagnostics: &mut Vec<Diagnostic>,
     mut sub_ops: Vec<CompiledGeometryOp>,
 ) -> Option<Vec<CompiledGeometryOp>> {
-    if compiled_args.len() != 2 {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "{}() expects 2 arguments, got {}",
-                name,
-                compiled_args.len()
-            ))
-            .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-        );
+    if !check_arg_count_exact(name, compiled_args.len(), 2, expr_span, diagnostics) {
         return None;
     }
     let mut it = compiled_args.into_iter();
@@ -59,14 +51,7 @@ pub(crate) fn compile_modify_op(
     match name {
         // shell(target, thickness, ...)
         "shell" => {
-            if compiled_args.len() < 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "shell() expects at least 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
+            if !check_arg_count_at_least("shell", compiled_args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -99,14 +84,7 @@ pub(crate) fn compile_modify_op(
         ),
         // draft(target, angle, plane)
         "draft" => {
-            if compiled_args.len() != 3 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "draft() expects 3 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
-                );
+            if !check_arg_count_exact("draft", compiled_args.len(), 3, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -338,76 +316,233 @@ mod tests {
         }
     }
 
-    #[test]
-    fn compile_modify_op_chamfer_non_geometry_target_fallback() {
-        // chamfer is registered in geometry_arg_indices() — so geom_ref(0) is used.
-        // When the first arg is a scalar param (not a geometry let), the resolution
-        // block finds no ops for it, so geom_ref(0) falls back to GeomRef::Step(step_offset).
-        // With no sub-ops, step_offset == 0, so the target is GeomRef::Step(0).
-        let source = r#"structure S {
-    param target: Scalar = 5mm
-    param dist: Scalar = 2mm
-    let result = chamfer(target, dist)
-}"#;
+    /// Assert that `fn_name(target, tail_arg_names[0], tail_arg_names[1], ...)` with a scalar
+    /// `target` param falls back to `GeomRef::Step(0)` (the step_offset when there are no
+    /// prior sub-ops). Each name in `tail_arg_names` becomes a `param <name>: Scalar` in the
+    /// generated source; the call is `fn_name(target, name0, name1, ...)`.
+    ///
+    /// Tail arg values are assigned uniform `Scalar = (i+2)mm` literals regardless of
+    /// real-world semantics (e.g. `draft`'s `angle` would normally be dimensionless and
+    /// `plane` would be a geometry).  This is intentional: the fallback path under test is
+    /// triggered by `target` not being a geometry ref; arg types for tail parameters do not
+    /// affect that path.
+    fn assert_non_geometry_target_fallback(
+        kind: ModifyKind,
+        fn_name: &str,
+        tail_arg_names: &[&str],
+    ) {
+        let param_decls: String = tail_arg_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("    param {name}: Scalar = {}mm\n", i + 2))
+            .collect();
+        let tail_call = tail_arg_names.join(", ");
+        let source = format!(
+            "structure S {{\n    param target: Scalar = 5mm\n{decls}    let result = {f}(target, {tail})\n}}",
+            f = fn_name,
+            decls = param_decls,
+            tail = tail_call,
+        );
         let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_chamfer_step0"),
+            &source,
+            reify_types::ModulePath::single(&format!("test_fallback_{}", fn_name)),
         );
         assert!(
             parsed.errors.is_empty(),
-            "parse errors: {:?}",
+            "{}(): parse errors: {:?}",
+            fn_name,
             parsed.errors
         );
         let compiled = crate::compile(&parsed);
         assert!(
             compiled.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
+            "{}(): unexpected diagnostics: {:?}",
+            fn_name,
             compiled.diagnostics
         );
         let ops = &compiled.templates[0].realizations[0].operations;
-        assert_eq!(ops.len(), 1);
+        assert_eq!(ops.len(), 1, "{}(): expected 1 op, got {}", fn_name, ops.len());
         match &ops[0] {
             CompiledGeometryOp::Modify {
-                kind: ModifyKind::Chamfer,
+                kind: op_kind,
                 target: op_target,
                 ..
             } => {
-                // Non-geometry target → geom_ref(0) falls back to GeomRef::Step(0)
+                assert_eq!(
+                    *op_kind,
+                    kind,
+                    "{}(): expected {:?}, got {:?}",
+                    fn_name,
+                    kind,
+                    op_kind
+                );
                 assert_eq!(
                     *op_target,
                     GeomRef::Step(0),
-                    "chamfer with non-geometry target should fall back to GeomRef::Step(0), got {:?}",
+                    "{}(): non-geometry target should fall back to GeomRef::Step(0), got {:?}",
+                    fn_name,
                     op_target
                 );
             }
-            other => panic!("expected Modify(Chamfer), got {:?}", other),
+            other => panic!("{}(): expected Modify({:?}), got {:?}", fn_name, kind, other),
+        }
+    }
+
+    /// Returns the canonical test-table for all single-geometry-target modify kinds:
+    /// `(ModifyKind, fn_name, tail_arg_names)`.
+    ///
+    /// The exhaustiveness closure below has **no wildcard arm**.  Adding a new `ModifyKind`
+    /// variant will cause a compile error here, forcing an explicit classify-or-skip
+    /// decision before the new kind silently escapes regression coverage.
+    fn single_geom_target_kinds() -> &'static [(ModifyKind, &'static str, &'static [&'static str])] {
+        static CASES: &[(ModifyKind, &str, &[&str])] = &[
+            (ModifyKind::Chamfer, "chamfer", &["distance"]),
+            (ModifyKind::Fillet, "fillet", &["radius"]),
+            (ModifyKind::Thicken, "thicken", &["offset"]),
+            (ModifyKind::Shell, "shell", &["thickness"]),
+            (ModifyKind::Draft, "draft", &["angle", "plane"]),
+        ];
+        // Exhaustiveness sentinel: no wildcard arm ensures a new ModifyKind variant
+        // causes a compile error here, requiring an explicit update to this table.
+        let _ = |k: ModifyKind| match k {
+            ModifyKind::Chamfer
+            | ModifyKind::Fillet
+            | ModifyKind::Thicken
+            | ModifyKind::Shell
+            | ModifyKind::Draft => (),
+        };
+        CASES
+    }
+
+    #[test]
+    fn compile_modify_op_non_geometry_target_fallback_all_single_geom_target_kinds() {
+        for &(kind, fn_name, tail) in single_geom_target_kinds() {
+            assert_non_geometry_target_fallback(kind, fn_name, tail);
+        }
+    }
+
+    /// Regression-lock helper: verify that `fn_name(target, tail_arg_names[0], ...)` with a
+    /// scalar `target` param nested inside `union(sphere(1mm), fn_name(target, ...))` falls back
+    /// to `GeomRef::Step(1)` (the step_offset after the sphere occupies step 0), NOT a
+    /// hardcoded `Step(0)` as was the pre-fix bug (task-612/task-1732).
+    ///
+    /// Each name in `tail_arg_names` becomes a `param <name>: Scalar` in the generated source.
+    /// Tail arg values are uniform `Scalar = (i+2)mm` literals — see
+    /// `assert_non_geometry_target_fallback` for the rationale (the fallback path is independent
+    /// of tail arg types).
+    /// The sphere compiles at step_offset=0 and emits 1 op; the modify call then compiles
+    /// at step_offset=1.  Expected ops: [Primitive(Sphere), Modify(<kind>, target=Step(1)),
+    /// Boolean(Union, left=Step(0), right=Step(1))].
+    fn assert_non_geometry_target_fallback_step_offset_nonzero(
+        kind: ModifyKind,
+        fn_name: &str,
+        tail_arg_names: &[&str],
+    ) {
+        let param_decls: String = tail_arg_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("    param {name}: Scalar = {}mm\n", i + 2))
+            .collect();
+        let tail_call = tail_arg_names.join(", ");
+        let source = format!(
+            "structure S {{\n    param target: Scalar = 5mm\n{decls}    let result = union(sphere(1mm), {f}(target, {tail}))\n}}",
+            f = fn_name,
+            decls = param_decls,
+            tail = tail_call,
+        );
+        let parsed = reify_syntax::parse(
+            &source,
+            reify_types::ModulePath::single(&format!("test_{}_step_offset_nonzero", fn_name)),
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "{}(): parse errors: {:?}",
+            fn_name,
+            parsed.errors
+        );
+        let compiled = crate::compile(&parsed);
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "{}(): unexpected diagnostics: {:?}",
+            fn_name,
+            compiled.diagnostics
+        );
+        let ops = &compiled.templates[0].realizations[0].operations;
+        assert_eq!(
+            ops.len(),
+            3,
+            "{}(): expected 3 ops [Primitive(Sphere), Modify({:?}), Boolean(Union)], got {}",
+            fn_name,
+            kind,
+            ops.len()
+        );
+        // ops[1] must be the modify op with target=Step(1), NOT Step(0).
+        // Step(1) proves the fallback uses step_offset (== 1 here), not a hardcoded 0.
+        match &ops[1] {
+            CompiledGeometryOp::Modify {
+                kind: op_kind,
+                target: op_target,
+                ..
+            } => {
+                assert_eq!(
+                    *op_kind,
+                    kind,
+                    "{}(): expected {:?} at ops[1], got {:?}",
+                    fn_name,
+                    kind,
+                    op_kind
+                );
+                assert_eq!(
+                    *op_target,
+                    GeomRef::Step(1),
+                    "{}(): non-geometry target should fall back to GeomRef::Step(step_offset=1), \
+                     not Step(0); Step(0) would indicate the pre-fix hardcoded-zero bug \
+                     (task-612/task-1732) has regressed",
+                    fn_name
+                );
+            }
+            other => panic!(
+                "{}(): expected Modify({:?}) at ops[1], got {:?}",
+                fn_name, kind, other
+            ),
+        }
+        // Sanity-check ops[2]: union with left=Step(0) right=Step(1), confirming
+        // the step_offset assignment that the modify call naturally fell back to.
+        match &ops[2] {
+            CompiledGeometryOp::Boolean { op, left, right } => {
+                assert_eq!(
+                    *op,
+                    BooleanOp::Union,
+                    "{}(): expected Union at ops[2]",
+                    fn_name
+                );
+                assert_eq!(
+                    *left,
+                    GeomRef::Step(0),
+                    "{}(): union left should be Step(0)",
+                    fn_name
+                );
+                assert_eq!(
+                    *right,
+                    GeomRef::Step(1),
+                    "{}(): union right should be Step(1)",
+                    fn_name
+                );
+            }
+            other => panic!(
+                "{}(): expected Boolean(Union) at ops[2], got {:?}",
+                fn_name, other
+            ),
         }
     }
 
     #[test]
-    fn compile_modify_op_fillet_preserves_step0() {
-        // fillet is registered in geometry_arg_indices() — so geom_ref(0) is used.
-        // When the first arg is a scalar param (not a geometry let), the resolution
-        // block finds no ops for it, so geom_ref(0) falls back to GeomRef::Step(step_offset).
-        // With no sub-ops, step_offset == 0, so the target is GeomRef::Step(0).
-        let source = r#"structure S {
-    param target: Scalar = 5mm
-    param r: Scalar = 2mm
-    let result = fillet(target, r)
-}"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fillet_step0"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-        let compiled = crate::compile(&parsed);
-        assert!(compiled.diagnostics.is_empty(), "unexpected diagnostics: {:?}", compiled.diagnostics);
-        let ops = &compiled.templates[0].realizations[0].operations;
-        assert_eq!(ops.len(), 1);
-        match &ops[0] {
-            CompiledGeometryOp::Modify { kind: ModifyKind::Fillet, target: op_target, .. } => {
-                // Non-geometry target → geom_ref(0) falls back to GeomRef::Step(0)
-                assert_eq!(*op_target, GeomRef::Step(0),
-                    "fillet with non-geometry target should fall back to GeomRef::Step(0), got {:?}", op_target);
-            }
-            other => panic!("expected Modify(Fillet), got {:?}", other),
+    fn compile_modify_op_non_geometry_target_fallback_step_offset_nonzero_all_single_geom_target_kinds(
+    ) {
+        // Regression-lock for all 5 single-geometry-target modify kinds — proves each
+        // uses step_offset from context rather than a hardcoded 0 (task-612/task-1732).
+        for &(kind, fn_name, tail) in single_geom_target_kinds() {
+            assert_non_geometry_target_fallback_step_offset_nonzero(kind, fn_name, tail);
         }
     }
 }

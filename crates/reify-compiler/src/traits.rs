@@ -4,6 +4,7 @@ pub(crate) fn compile_trait(
     trait_decl: &reify_syntax::TraitDecl,
     enum_defs: &[reify_types::EnumDef],
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledTrait {
@@ -28,6 +29,7 @@ pub(crate) fn compile_trait(
                             name,
                             &empty_params,
                             alias_registry,
+                            structure_names,
                             trait_names,
                         ) {
                             t
@@ -114,6 +116,7 @@ pub(crate) fn compile_trait(
                             name,
                             &empty_params,
                             alias_registry,
+                            structure_names,
                             trait_names,
                         ) {
                             Some(t) => Some(t),
@@ -224,6 +227,7 @@ pub(crate) fn compile_purpose(
     // Purpose params are registered so their members can be referenced.
     let mut scope = CompilationScope::new(purpose_name);
     scope.set_unit_registry(unit_registry);
+    scope.set_template_registry(template_registry);
 
     // Register purpose params as identifiers in scope.
     // Each param binds an entity reference (e.g., `subject : Structure`).

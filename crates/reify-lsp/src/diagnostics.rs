@@ -79,7 +79,7 @@ pub fn compute_diagnostics_with_state(
     }
 
     // Compile
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
     for diag in &compiled.diagnostics {
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
@@ -174,7 +174,7 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     }
 
     // Compile
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
     // Convert compiler diagnostics
     for diag in &compiled.diagnostics {
@@ -202,6 +202,19 @@ mod tests {
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
     }
+
+    /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
+    /// Shared across all task-2176 stdlib-resolution tests to avoid tripling the literal.
+    const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
+    param density: Real = 7850
+    param name: String = "steel"
+    param volume: Real = 1.0
+    param centroid_x: Real = 0.0
+    param centroid_y: Real = 0.0
+    param centroid_z: Real = 0.0
+    param moment_of_inertia: Real = 1.0
+    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+}"#;
 
     #[test]
     fn valid_bracket_source_no_errors() {
@@ -404,6 +417,42 @@ mod tests {
                 diag.severity
             );
         }
+    }
+
+    // --- task-2176 step-5: stateful diagnostics resolve stdlib types ---
+
+    #[test]
+    fn stateful_diagnostics_resolve_stdlib_material_and_rigid() {
+        // Drives the stateful compute_diagnostics_with_state() path.
+        // A known-good stdlib source must produce zero error-severity diagnostics.
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, STDLIB_PROBE_SRC, &test_uri());
+        let errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "stateful pipeline: stdlib source should compile without errors; got: {errors:?}"
+        );
+    }
+
+    // --- task-2176 step-3: stateless diagnostics resolve stdlib types ---
+
+    #[test]
+    fn compute_diagnostics_resolves_stdlib_material_and_rigid() {
+        // Drives the stateless compute_diagnostics() path.
+        // A known-good stdlib source must produce zero error-severity diagnostics.
+        let diags = compute_diagnostics(STDLIB_PROBE_SRC, &test_uri());
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "stdlib source should compile without errors; got: {errors:?}"
+        );
     }
 
     // --- constraint violation diagnostic range tests (step-31) ---

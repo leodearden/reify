@@ -11,6 +11,7 @@ use reify_types::{
 use crate::cache::{CacheStore, CachedResult, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
+use crate::eval_ctx_with_meta;
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
@@ -85,7 +86,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // Evaluate the guard in the local context.
     let guard_val = reify_expr::eval_expr(
         guard_expr,
-        &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
+        &eval_ctx_with_meta(&local_values, functions, meta_map),
     );
 
     // Differentiate guard outcomes: Bool(true) continues, Bool(false)/Undef terminate
@@ -121,7 +122,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         .map(|(name, arg_expr)| {
             let v = reify_expr::eval_expr(
                 arg_expr,
-                &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
+                &eval_ctx_with_meta(&local_values, functions, meta_map),
             );
             let ty = arg_expr.result_type.clone();
             (name.clone(), reify_types::CompiledExpr::literal(v, ty))
@@ -313,12 +314,12 @@ fn elaborate_child_params_only(
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
             reify_expr::eval_expr(
                 arg_expr,
-                &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                &eval_ctx_with_meta(values, functions, meta_map),
             )
         } else if let Some(ref default_expr) = cell.default_expr {
             reify_expr::eval_expr(
                 default_expr,
-                &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map),
+                &eval_ctx_with_meta(&child_values, functions, meta_map),
             )
         } else {
             Value::Undef
@@ -546,7 +547,7 @@ fn elaborate_child_lets_only<'t>(
 
         let val = reify_expr::eval_expr(
             expr,
-            &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map),
+            &eval_ctx_with_meta(&child_values, functions, meta_map),
         );
         child_values.insert(child_cell_id.clone(), val.clone());
 

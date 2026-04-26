@@ -213,3 +213,81 @@ structure def Outer {
         numeric
     );
 }
+
+// ── suggestion #16 ───────────────────────────────────────────────────────────
+
+/// Eval test: `A::size` and `B::size` both resolve to the same SI value (5mm)
+/// when a structure satisfies two traits that share a member name via disambiguation.
+///
+/// trait A { param size : Length }
+/// trait B { param size : Length }
+/// structure def S : A + B {
+///     param size : Length = 5mm
+///     let a_size : Length = A::size
+///     let b_size : Length = B::size
+/// }
+///
+/// Assert: both `a_size` and `b_size` evaluate to 0.005 SI (5mm in SI)
+/// and to each other — proving that both qualified accesses resolve to the
+/// same underlying `size` value cell.
+#[test]
+fn disambiguation_qualified_access_same_value() {
+    let source = r#"
+trait A {
+    param size : Length
+}
+
+trait B {
+    param size : Length
+}
+
+structure def S : A + B {
+    param size : Length = 5mm
+    let a_size : Length = A::size
+    let b_size : Length = B::size
+}
+"#;
+
+    let compiled = parse_compile_check(source);
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    let a_id = ValueCellId::new("S", "a_size");
+    let b_id = ValueCellId::new("S", "b_size");
+
+    let a_val = result
+        .values
+        .get(&a_id)
+        .unwrap_or_else(|| panic!("expected value for {:?} (A::size qualified access)", a_id));
+    let b_val = result
+        .values
+        .get(&b_id)
+        .unwrap_or_else(|| panic!("expected value for {:?} (B::size qualified access)", b_id));
+
+    let a_numeric = a_val
+        .as_f64()
+        .unwrap_or_else(|| panic!("expected numeric value for a_size, got {:?}", a_val));
+    let b_numeric = b_val
+        .as_f64()
+        .unwrap_or_else(|| panic!("expected numeric value for b_size, got {:?}", b_val));
+
+    // 5mm = 0.005 m (SI base unit)
+    assert!(
+        (a_numeric - 0.005).abs() < 1e-10,
+        "expected a_size == 0.005 (5mm in SI), got {}",
+        a_numeric
+    );
+    assert!(
+        (b_numeric - 0.005).abs() < 1e-10,
+        "expected b_size == 0.005 (5mm in SI), got {}",
+        b_numeric
+    );
+    assert!(
+        (a_numeric - b_numeric).abs() < 1e-10,
+        "expected A::size == B::size (both resolve to same cell value), got a={} b={}",
+        a_numeric,
+        b_numeric
+    );
+}

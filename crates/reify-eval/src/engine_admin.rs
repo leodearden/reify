@@ -10,6 +10,7 @@ use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Why an attempted param_override was rejected for a target value cell.
 /// Callers translate this into their own error channel:
@@ -18,12 +19,11 @@ use std::collections::HashMap;
 /// - `Engine::edit_param` returns the corresponding `EngineError`
 ///   variant (`TypeKindMismatch` / `DimensionMismatch`).
 ///
-/// Centralising the rejection vocabulary (task 2017 amend-pass) lets a
-/// future third guard (e.g. Tensor shape, List element-type check) land
-/// in one place rather than drifting between the cold-start and
-/// incremental paths.  `Engine::edit_param`'s adoption of this helper is
-/// a follow-up — the amend-pass scope did not include `engine_edit.rs`
-/// and that call site still inlines its guard chain for now.
+/// Centralising the rejection vocabulary (task 2017 amend-pass → completed
+/// under task 2178) lets a future third guard (e.g. Tensor shape, List
+/// element-type check) land in one place rather than drifting between the
+/// cold-start (`Engine::eval`) and incremental (`Engine::edit_param`) paths.
+/// Both call sites now route through this helper.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParamOverrideRejection {
     /// Value and cell type disagree at the type-kind level (Int vs
@@ -48,9 +48,7 @@ pub(crate) enum ParamOverrideRejection {
 ///    LENGTH value into a MASS cell).
 ///
 /// Any future refinement lands here and is picked up by every call site
-/// automatically.  See the type-level comment on
-/// [`ParamOverrideRejection`] for the parallel `engine_edit.rs` site
-/// that is slated to migrate onto this helper in a follow-up.
+/// automatically.
 pub(crate) fn validate_param_override(
     value: &reify_types::Value,
     cell_type: &reify_types::Type,
@@ -118,13 +116,14 @@ impl Engine {
             next_version_id: 0,
             last_eval_set: Vec::new(),
             last_guard_phase_group_evals: 0,
+            last_role_flip_probes: 0,
             journal: EventJournal::new(),
             functions: Vec::new(),
             compiled_purposes: Vec::new(),
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),
             objectives: HashMap::new(),
-            meta_map: HashMap::new(),
+            meta_map: Arc::new(HashMap::new()),
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
             optimization_registry: HashMap::new(),
@@ -334,6 +333,16 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_guard_phase_group_evals(&self) -> usize {
         self.last_guard_phase_group_evals
+    }
+
+    /// Returns the number of times `detect_role_flip` was invoked during the
+    /// most recent `edit_source` call. Reset to 0 at the start of each
+    /// `edit_source` call.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_role_flip_probes(&self) -> usize {
+        self.last_role_flip_probes
     }
 
     /// Access the event journal (for testing/inspection).

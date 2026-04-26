@@ -765,10 +765,13 @@ structure S : MutualLets {
 /// `inferred_let_exprs` entry was advertised as a valid default) and no
 /// "type mismatch for trait member 'a'" phantom from the same root cause.
 ///
-/// Note: this test does NOT assert an exact diagnostic count because unrelated
-/// upstream compiler phases (e.g. trait compilation in `traits.rs`) may also emit
-/// their own root-cause "unresolved name" diagnostic for the same identifier; only
-/// the absence of SECONDARY cascade diagnostics is pinned here.
+/// The error count is pinned at `<= 1` as a prose-independent backstop (check (d)):
+/// any new cascade diagnostic, regardless of wording, would push the count above 1
+/// and fail that check.  Empirically, today's compiler emits exactly one error for
+/// this input: `"unresolved name: b"` with label span `[26..27]`.  If a legitimate
+/// upstream phase ever begins emitting a second root-cause diagnostic for the same
+/// identifier, the bound may need to be relaxed — but any such relaxation must be
+/// audited to confirm the extra diagnostic is not a cascade.
 ///
 /// ## Pre-fix behaviour (task 1914 step-2 fixes this)
 ///
@@ -797,6 +800,35 @@ structure S : HasA {
          got: {:?}",
         errors
     );
+
+    // (a2) Span-based root-cause assertion (prose-independent).
+    // The span is the semantic anchor: it pins the exact source location of the
+    // unresolved identifier `b` regardless of any future rewording of the
+    // diagnostic message (e.g. "cannot resolve", "name lookup failed").
+    // `"b +"` is the unique disambiguating substring — the only `b` in the source
+    // that is immediately followed by ` +` — giving us the byte offset of the
+    // identifier reference in `let a = b + 1mm`.
+    {
+        let b_offset = source
+            .find("b +")
+            .expect("test source must contain 'b +'") as u32;
+        let has_span_on_b = errors.iter().any(|d| {
+            d.labels.iter().any(|label| {
+                label.span.start == b_offset
+                    && label.span.end == b_offset + 1
+                    && &source[label.span.start as usize..label.span.end as usize] == "b"
+            })
+        });
+        assert!(
+            has_span_on_b,
+            "expected at least one error diagnostic with a label whose span \
+             covers exactly the `b` identifier at byte offset {}..{}; \
+             got errors: {:?}",
+            b_offset,
+            b_offset + 1,
+            errors
+        );
+    }
 
     // (b) No cascade "available default has Real" diagnostic.
     // A phantom `("a", Let) -> Type::Real` advertisement would cause
@@ -829,6 +861,18 @@ structure S : HasA {
          this is a cascade from the failed compile_expr for the unannotated let \
          expression. Diagnostics: {:?}",
         trait_member_mismatch
+    );
+
+    // (d) Count backstop: cascade suppression means exactly the root-cause
+    // "unresolved `b`" diagnostic — nothing else. A count above 1 indicates
+    // either a new cascade surface (regardless of wording) or an unrelated
+    // regression. Prose-independent.
+    assert!(
+        errors.len() <= 1,
+        "expected at most one root-cause diagnostic after cascade suppression, \
+         got {}: {:?}",
+        errors.len(),
+        errors,
     );
 }
 
@@ -875,5 +919,100 @@ structure S : ReverseOrder {
          `mutual_unannotated_lets_documented_limitation` for the paired \
          expectation.  Got: {:?}",
         errors
+    );
+}
+
+/// Regression test: chained unannotated lets must not cascade a secondary
+/// "unresolved name" diagnostic for the failed let's own name (task 2158 step-3).
+///
+/// ## Scenario
+///
+/// `trait T { let a = b + 1mm; let c = a * 2mm }` — `a` depends on `b`, which is
+/// undefined.  Without scope poisoning, Pass 2 of `check_phase_pre_register_default_types`
+/// compiles `a`'s expression, gets an "unresolved name: b" error, records `a` in
+/// `pass2_compile_errors` — but does NOT register `a` in scope.  When it then compiles
+/// `c`'s expression, the scope lookup for `a` fails and emits a SECOND "unresolved name: a"
+/// cascade on top of the root-cause error.
+///
+/// ## What this test locks in (companion to `unannotated_let_with_unresolved_ref_does_not_cascade_type_mismatch`)
+///
+/// - **(a) Root-cause present**: at least one diagnostic names the unresolved `b`.
+/// - **(b) No cascade**: NO diagnostic names an unresolved `a`.  After task 2158's
+///   scope-poison fix (`register_if_absent(name, Type::Error)` in the compile-error branch),
+///   `c`'s `compile_expr` resolves `a` to `Type::Error` (the sentinel) rather than emitting
+///   a new unresolved-name diagnostic.
+/// - **(c) No phantom advertisement cascade**: no "available default has Real" and no
+///   "type mismatch for trait member 'a'" phantom diagnostics — mirroring the single-let
+///   companion test so both failure modes are pinned at the chained-let site.
+///
+/// This test FAILS before task 2158 step-4 (the scope-poison impl): assertion (b) fails
+/// because the unregistered `a` causes a cascade "unresolved name: a" when compiling `c`.
+#[test]
+fn chained_unannotated_lets_with_unresolved_ref_do_not_cascade() {
+    let source = r#"
+trait T {
+    let a = b + 1mm
+    let c = a * 2mm
+}
+structure S : T {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // (a) The root-cause "unresolved `b`" error must be present.
+    assert!(
+        diagnostic_names_unresolved(&errors, "b"),
+        "expected at least one diagnostic naming the unresolved identifier `b` \
+         (root cause); got: {:?}",
+        errors
+    );
+
+    // (b) No cascade "unresolved `a`" diagnostic.
+    // Without scope poisoning, compiling `c = a * 2mm` finds `a` unregistered
+    // in scope and emits a fresh "unresolved name: a" — a cascade on top of
+    // the root-cause "unresolved b" error.  After the fix, Pass 2 poisons `a`'s
+    // scope slot with Type::Error so the lookup for `a` succeeds (returning the
+    // sentinel) without emitting a new diagnostic.
+    assert!(
+        !diagnostic_names_unresolved(&errors, "a"),
+        "cascade diagnostic found naming unresolved identifier `a`: this indicates \
+         Pass 2's compile-failure branch did not register `a` as a Type::Error poison \
+         sentinel in scope, so compiling `c = a * 2mm` emitted a secondary unresolved-name \
+         diagnostic instead of silently propagating Type::Error.  \
+         All error diagnostics: {:?}",
+        errors
+    );
+
+    // (c) No cascade "available default has Real" diagnostic.
+    // A phantom `("a", Let) -> Type::Real` advertisement would cause
+    // check_phase_check_members_against_requirements to emit this substring.
+    let cascade_diags: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("available default") && d.message.contains("Real"))
+        .collect();
+    assert!(
+        cascade_diags.is_empty(),
+        "phantom cascade diagnostic found: a poisoned inferred-let entry was \
+         advertised in available_defaults, triggering a secondary type-mismatch \
+         on top of the root-cause 'unresolved b' error. \
+         Cascade diagnostics: {:?}",
+        cascade_diags
+    );
+
+    // (d) No "type mismatch for trait member 'a'" phantom diagnostic.
+    let trait_member_mismatch_a: Vec<_> = errors
+        .iter()
+        .filter(|d| {
+            d.message.contains("type mismatch for trait member")
+                && d.message.contains("'a'")
+        })
+        .collect();
+    assert!(
+        trait_member_mismatch_a.is_empty(),
+        "phantom 'type mismatch for trait member' diagnostic found for 'a'; \
+         this is a cascade from the failed compile_expr for the unannotated let \
+         expression. Diagnostics: {:?}",
+        trait_member_mismatch_a
     );
 }

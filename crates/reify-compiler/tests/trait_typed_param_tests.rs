@@ -1,22 +1,21 @@
 //! Trait-typed params — compilation tests for task 1874.
 //!
-//! Verify that `param m : Material` and related forms resolve to
-//! `Type::TraitObject("Material")` across structures, ports, guards,
+//! Verify that `param m : MaterialSpec` and related forms resolve to
+//! `Type::TraitObject("MaterialSpec")` across structures, ports, guards,
 //! traits, and conformance checks. Uses the stdlib-enabled helpers so
-//! the `Material` trait (from `stdlib/materials_mechanical.ri`) is in
-//! scope.
+//! the `MaterialSpec` trait (from `stdlib/materials_mechanical.ri`) is in
+//! scope. (Task 1876 renamed the trait from `Material` to `MaterialSpec`
+//! so the name `Material` could be reused for the canonical struct.)
 
 use reify_compiler::RequirementKind;
-use reify_test_support::{
-    compile_source, compile_source_with_stdlib, parse_and_compile_with_stdlib,
-};
+use reify_test_support::{compile_source, compile_source_with_stdlib};
 use reify_types::{Severity, Type};
 
-/// Structure member: `param m : Material` should resolve to `Type::TraitObject("Material")`.
+/// Structure member: `param m : MaterialSpec` should resolve to `Type::TraitObject("MaterialSpec")`.
 #[test]
 fn structure_param_with_trait_type_resolves_to_trait_object() {
     let source = r#"
-        structure def HasMaterial { param m : Material }
+        structure def HasMaterial { param m : MaterialSpec }
     "#;
     let module = compile_source_with_stdlib(source);
 
@@ -45,20 +44,20 @@ fn structure_param_with_trait_type_resolves_to_trait_object() {
 
     assert_eq!(
         m_cell.cell_type,
-        Type::TraitObject("Material".to_string()),
-        "param typed with trait name Material should resolve to Type::TraitObject(\"Material\")"
+        Type::TraitObject("MaterialSpec".to_string()),
+        "param typed with trait name MaterialSpec should resolve to Type::TraitObject(\"MaterialSpec\")"
     );
 }
 
-/// Guarded param: `where cond { param m : Material }` inside a structure should
-/// resolve the guarded member's type to `Type::TraitObject("Material")`.
+/// Guarded param: `where cond { param m : MaterialSpec }` inside a structure should
+/// resolve the guarded member's type to `Type::TraitObject("MaterialSpec")`.
 #[test]
 fn guarded_param_with_trait_type_resolves_to_trait_object() {
     let source = r#"
         structure def GuardedMaterial {
             param active : Bool = true
             where active {
-                param m : Material
+                param m : MaterialSpec
             }
         }
     "#;
@@ -92,17 +91,17 @@ fn guarded_param_with_trait_type_resolves_to_trait_object() {
 
     assert_eq!(
         m_member.cell_type,
-        Type::TraitObject("Material".to_string()),
-        "guarded param typed with trait name Material should resolve to Type::TraitObject(\"Material\")"
+        Type::TraitObject("MaterialSpec".to_string()),
+        "guarded param typed with trait name MaterialSpec should resolve to Type::TraitObject(\"MaterialSpec\")"
     );
 }
 
-/// Trait member: `trait Assembly { param m : Material }` should record the
-/// member's type as `Type::TraitObject("Material")` in required_members.
+/// Trait member: `trait Assembly { param m : MaterialSpec }` should record the
+/// member's type as `Type::TraitObject("MaterialSpec")` in required_members.
 #[test]
 fn trait_member_with_trait_type_resolves_to_trait_object() {
     let source = r#"
-        trait Assembly { param m : Material }
+        trait Assembly { param m : MaterialSpec }
     "#;
     let module = compile_source_with_stdlib(source);
 
@@ -132,20 +131,20 @@ fn trait_member_with_trait_type_resolves_to_trait_object() {
     match &m_req.kind {
         RequirementKind::Param(ty) => assert_eq!(
             *ty,
-            Type::TraitObject("Material".to_string()),
-            "trait member typed with trait name Material should resolve to Type::TraitObject(\"Material\")"
+            Type::TraitObject("MaterialSpec".to_string()),
+            "trait member typed with trait name MaterialSpec should resolve to Type::TraitObject(\"MaterialSpec\")"
         ),
         other => panic!("expected RequirementKind::Param, got {:?}", other),
     }
 }
 
 /// Conformance path: a structure that conforms to a trait with a trait-typed
-/// member must compile without `unresolved type in conformance check: Material`.
+/// member must compile without `unresolved type in conformance check: MaterialSpec`.
 #[test]
 fn structure_conforming_to_trait_with_trait_typed_member_compiles() {
     let source = r#"
-        trait HasMaterial { param material : Material }
-        structure def Part : HasMaterial { param material : Material }
+        trait HasMaterial { param material : MaterialSpec }
+        structure def Part : HasMaterial { param material : MaterialSpec }
     "#;
     let module = compile_source_with_stdlib(source);
 
@@ -174,50 +173,19 @@ fn structure_conforming_to_trait_with_trait_typed_member_compiles() {
 
     assert_eq!(
         material_cell.cell_type,
-        Type::TraitObject("Material".to_string()),
-        "Part.material should resolve to Type::TraitObject(\"Material\")"
+        Type::TraitObject("MaterialSpec".to_string()),
+        "Part.material should resolve to Type::TraitObject(\"MaterialSpec\")"
     );
 }
 
-/// Flange example: after the step-14 migration, `BoltFlange.material` should
-/// have type `Type::TraitObject("Material")` and the example should compile
-/// without errors.
-#[test]
-fn flange_example_material_param_is_trait_object() {
-    let source = std::fs::read_to_string(format!(
-        "{}/../../examples/m5_geometry_flange.ri",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .expect("examples/m5_geometry_flange.ri should exist");
-    let module = parse_and_compile_with_stdlib(&source);
-
-    let flange = module
-        .templates
-        .iter()
-        .find(|t| t.name == "BoltFlange")
-        .expect("BoltFlange template should be compiled");
-
-    let material_cell = flange
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "material")
-        .expect("BoltFlange.material should exist");
-
-    assert_eq!(
-        material_cell.cell_type,
-        Type::TraitObject("Material".to_string()),
-        "BoltFlange.material should resolve to Type::TraitObject(\"Material\") after step-14"
-    );
-}
-
-/// Port member: `port p : in PortType { param m : Material }` should resolve the
-/// port member's param type to `Type::TraitObject("Material")`.
+/// Port member: `port p : in PortType { param m : MaterialSpec }` should resolve the
+/// port member's param type to `Type::TraitObject("MaterialSpec")`.
 #[test]
 fn port_member_param_with_trait_type_resolves_to_trait_object() {
     let source = r#"
         trait PortType {}
         structure def HasPortMember {
-            port p : in PortType { param m : Material }
+            port p : in PortType { param m : MaterialSpec }
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -253,8 +221,8 @@ fn port_member_param_with_trait_type_resolves_to_trait_object() {
 
     assert_eq!(
         m_member.cell_type,
-        Type::TraitObject("Material".to_string()),
-        "port member typed with trait name Material should resolve to Type::TraitObject(\"Material\")"
+        Type::TraitObject("MaterialSpec".to_string()),
+        "port member typed with trait name MaterialSpec should resolve to Type::TraitObject(\"MaterialSpec\")"
     );
 }
 
@@ -338,9 +306,9 @@ fn alias_wins_over_trait_name_for_param_type() {
 /// user cares about. The test filters to `Severity::Error` to remain focused.
 #[test]
 fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
-    // NotAMaterial does NOT declare `: Material` — it just has `density : Real`.
+    // NotAMaterial does NOT declare `: MaterialSpec` — it just has `density : Real`.
     let source = r#"
-        structure def Host { param m : Material }
+        structure def Host { param m : MaterialSpec }
         structure def NotAMaterial { param density : Real = 1.0 }
         structure def Top {
             sub x = Host(m: NotAMaterial())
@@ -358,8 +326,8 @@ fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
         errors
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
-                && d.message.contains("Material")),
-        "expected a 'does not conform to trait Material' error, got: {:?}",
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error, got: {:?}",
         errors
     );
 }
@@ -367,17 +335,17 @@ fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
 /// Positive test: passing a conforming struct to a trait-typed param compiles
 /// without errors.
 ///
-/// `Steel` declares `: Material` and provides `density` and `name`. The host
-/// structure declares `param m : Material`. Passing `Steel()` at the call-site
+/// `Steel` declares `: MaterialSpec` and provides `density` and `name`. The host
+/// structure declares `param m : MaterialSpec`. Passing `Steel()` at the call-site
 /// should pass the conformance check.
 #[test]
 fn sub_component_arg_for_trait_typed_param_accepts_conforming_struct() {
     let source = r#"
-        structure def Steel : Material {
+        structure def Steel : MaterialSpec {
             param density : Real = 7850.0
             param name : String = "steel"
         }
-        structure def Host { param m : Material }
+        structure def Host { param m : MaterialSpec }
         structure def Top {
             sub x = Host(m: Steel())
         }
@@ -429,49 +397,14 @@ fn trait_object_arg_accepted_for_trait_typed_param_via_refinement() {
     );
 }
 
-/// End-to-end acceptance test: instantiate BoltFlange (from examples/m5_geometry_flange.ri)
-/// with a conforming `Steel` material struct via `sub f = BoltFlange(material: Steel())`.
-///
-/// This is the acceptance-criterion end-to-end test for task 1874. It verifies that
-/// the call-site conformance check allows `Steel : Material` to satisfy the `material : Material`
-/// typed param in BoltFlange.
-#[test]
-fn flange_instantiated_with_conforming_material_struct_compiles() {
-    let flange_source = std::fs::read_to_string(format!(
-        "{}/../../examples/m5_geometry_flange.ri",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .expect("examples/m5_geometry_flange.ri should exist");
-
-    // Append a Steel material struct that conforms to Material (density + name),
-    // and an Assembly that instantiates BoltFlange with Steel.
-    // All other BoltFlange params have defaults, so only material needs supplying.
-    let full_source = format!(
-        r#"{}
-structure def Steel : Material {{
-    param density : Real = 7850.0
-    param name : String = "steel"
-}}
-structure def Assembly {{
-    sub f = BoltFlange(material: Steel())
-}}
-"#,
-        flange_source
-    );
-
-    let module = parse_and_compile_with_stdlib(&full_source);
-
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no errors for BoltFlange(material: Steel()) where Steel : Material, got: {:?}",
-        errors
-    );
-}
+// NOTE: The task-1874 test
+// `flange_instantiated_with_conforming_material_struct_compiles` was removed
+// by task 1876. Its premise — passing a `Steel : Material` (trait-conforming)
+// struct to the flange's trait-typed `material` param — no longer holds
+// after 1876 promoted `Material` from a trait to a canonical struct. The
+// new end-to-end coverage for the flange lives in
+// `tests/material_struct_tests.rs::boltflange_compiles_with_material_default`
+// (step-9 of task 1876).
 
 /// Refinement test: a struct that conforms via a refinement chain is accepted.
 ///
@@ -527,7 +460,7 @@ fn sub_component_arg_conforming_via_refinement_chain_accepted() {
 #[test]
 fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error() {
     let source = r#"
-        structure def Host { param m : Material }
+        structure def Host { param m : MaterialSpec }
         structure def Top {
             sub x = Host(m: 1.0)
         }
@@ -544,8 +477,8 @@ fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error(
         errors
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
-                && d.message.contains("Material")),
-        "expected a 'does not conform to trait Material' error for Real literal arg, got: {:?}",
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for Real literal arg, got: {:?}",
         errors
     );
 }
@@ -559,11 +492,11 @@ fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error(
 #[test]
 fn sub_component_arg_structure_instantiation_with_args_accepted() {
     let source = r#"
-        structure def Steel : Material {
+        structure def Steel : MaterialSpec {
             param density : Real = 7850.0
             param name : String = "steel"
         }
-        structure def Host { param m : Material }
+        structure def Host { param m : MaterialSpec }
         structure def Top {
             sub x = Host(m: Steel(density: 1000.0))
         }

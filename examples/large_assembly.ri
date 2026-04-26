@@ -4,14 +4,14 @@
 // instantiation at scale (54 subs), and mass aggregation across the assembly.
 //
 // Structure types:
-//   SteelBeam      — Physical : Material (density=7850, volume=0.002)
-//   AluminumPlate  — Physical : Material (density=2700, volume=0.001)
-//   StiffenerBracket — Physical : Material (density=7850, volume=0.0005)
-//   BoltConnector  — Physical : Material (density=7850, volume=0.0001)
-//   MotorUnit      — Physical : Material (density=3000, volume=0.008)
-//   GearboxUnit    — Physical : Material (density=4000, volume=0.010)
-//   CoverPanel     — Physical : Material (density=2700, volume=0.0005)
-//   SensorPod      — Physical : Material (density=1500, volume=0.0003)
+//   SteelBeam      — Physical : MaterialSpec (density=7850, volume=0.002)
+//   AluminumPlate  — Physical : MaterialSpec (density=2700, volume=0.001)
+//   StiffenerBracket — Physical : MaterialSpec (density=7850, volume=0.0005)
+//   BoltConnector  — Physical : MaterialSpec (density=7850, volume=0.0001)
+//   MotorUnit      — Physical : MaterialSpec (density=3000, volume=0.008)
+//   GearboxUnit    — Physical : MaterialSpec (density=4000, volume=0.010)
+//   CoverPanel     — Physical : MaterialSpec (density=2700, volume=0.0005)
+//   SensorPod      — Physical : MaterialSpec (density=1500, volume=0.0003)
 //
 // Assembly: 54 sub-components = 16 beams + 8 plates + 8 stiffeners + 6 bolts
 //           + 4 motors + 4 gearboxes + 4 covers + 4 sensors

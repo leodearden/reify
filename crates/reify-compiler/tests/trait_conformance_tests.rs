@@ -1013,3 +1013,207 @@ structure def S : Safe {
         "expected constraint from trait default"
     );
 }
+
+/// Suggestion #17 (incomplete_coverage): A parent trait's default satisfies a child
+/// trait's inherited requirement via the refinement chain — no error expected.
+///
+/// trait Parent { param x : Length = 10mm }
+/// trait Child : Parent {}
+/// structure def S : Child {}
+///
+/// The parent provides a default for `x`; `Child` inherits the requirement.
+/// `collect_all_requirements` walks the refinement chain depth-first, so the
+/// default from `Parent` is visible when checking `S : Child`.
+/// Assert: no Error-severity diagnostics.
+#[test]
+fn parent_default_satisfies_child_requirement_via_refinement_chain() {
+    let source = r#"
+trait Parent {
+    param x : Length = 10mm
+}
+
+trait Child : Parent {}
+
+structure def S : Child {}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "parent default should satisfy child requirement via refinement chain; \
+         unexpected errors: {:?}",
+        errors
+    );
+}
+
+/// Suggestion #4 (semantic_gap_in_api): A structure `let` member must NOT silently
+/// satisfy a trait `param` requirement.
+///
+/// `param` in a trait means "an externally-settable slot"; `let` in a structure
+/// is a computed binding that cannot be set from outside. Accepting a let-in-structure
+/// as satisfying a param-in-trait requirement would allow consumers to treat a
+/// non-settable binding as a settable parameter, which is semantically wrong.
+///
+/// Source:
+///   trait A { param x : Length }
+///   structure def S : A { let x : Length = 5mm }
+///
+/// Expected: Error-severity diagnostic whose message mentions "missing required" and "x"
+/// (or explicitly mentions the param-vs-let kind mismatch).
+///
+/// NOTE: This test is expected to FAIL on current HEAD — `structure_members` currently
+/// stores both param and let entries under the same name→type key, so the let silently
+/// satisfies the param requirement. Step-8 implements the kind-aware lookup fix.
+#[test]
+fn structure_let_does_not_satisfy_param_requirement() {
+    let source = r#"
+trait A {
+    param x : Length
+}
+
+structure def S : A {
+    let x : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected an error: let x does not satisfy param x requirement, but got no errors"
+    );
+
+    let mentions_missing = errors
+        .iter()
+        .any(|d| d.message.contains("missing required member") && d.message.contains("'x'"));
+    assert!(
+        mentions_missing,
+        "error should mention missing required member 'x', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Also verify the diagnostic names the required kind so users can see WHY the
+    // let member didn't satisfy the param requirement (not just that it's missing).
+    let mentions_param_kind = errors
+        .iter()
+        .any(|d| d.message.contains("param") || d.message.contains("requires a"));
+    assert!(
+        mentions_param_kind,
+        "error should explain that a `param` slot is required (not just that the member is missing), \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// [#21 RED] Two traits A and B both declare `sub hole = Hole()`; structure S : A + B {}
+/// has no `sub hole` member. Currently (without the Sub dedup fix) TWO duplicate
+/// "missing required sub-component" errors fire because `collect_all_requirements`
+/// only deduplicates Param/Let requirements via `seen_names`, not Sub requirements.
+/// After the fix in step-2 (`seen_sub_names: HashSet<String>` added to `MergeContext`),
+/// exactly ONE error should fire.
+///
+/// Asserts `error_count == 1` — this will FAIL on current HEAD (before step-2's fix).
+#[test]
+fn duplicate_sub_requirement_emits_one_missing_error() {
+    let source = r#"
+structure def Hole {}
+
+trait A {
+    sub hole = Hole()
+}
+
+trait B {
+    sub hole = Hole()
+}
+
+structure def S : A + B {
+}
+"#;
+
+    let module = compile_source(source);
+
+    let missing_sub_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("missing required sub-component")
+                && d.message.contains("'hole'")
+        })
+        .collect();
+
+    assert_eq!(
+        missing_sub_errors.len(),
+        1,
+        "expected exactly 1 'missing required sub-component' error for 'hole' \
+         (Sub dedup via seen_sub_names), got {}: {:?}",
+        missing_sub_errors.len(),
+        missing_sub_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// [#21 conflict] Two traits A and B both declare a sub-component named `hole` but
+/// with *different* structure types: A requires `sub hole = Hole`, B requires
+/// `sub hole = Rectangle`. The dedup-by-name path in `collect_all_requirements`
+/// must detect the mismatch and emit a "conflicting trait sub requirements" diagnostic
+/// rather than silently dropping one of them.
+///
+/// This covers the regression gap identified in the amendment review: without
+/// `seen_sub_names` tracking (structure_name, trait_name), a structure satisfying A's
+/// `sub hole = Hole` would silently pass B's `sub hole = Rectangle` requirement.
+#[test]
+fn conflicting_sub_requirement_emits_conflict_error() {
+    let source = r#"
+structure def Hole {}
+structure def Rectangle {}
+
+trait A {
+    sub hole = Hole()
+}
+
+trait B {
+    sub hole = Rectangle()
+}
+
+structure def S : A + B {
+    sub hole = Hole()
+}
+"#;
+
+    let module = compile_source(source);
+
+    let conflict_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("conflicting trait sub requirements")
+                && d.message.contains("'hole'")
+        })
+        .collect();
+
+    assert!(
+        !conflict_errors.is_empty(),
+        "expected at least one 'conflicting trait sub requirements' error for 'hole' \
+         (different structure types in A vs B), got no matching errors. \
+         All diagnostics: {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}

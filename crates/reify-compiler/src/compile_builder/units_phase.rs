@@ -2,7 +2,9 @@
 //! module-local unit declaration.
 //!
 //! Prelude seeding runs first so module-local code can reference prelude
-//! units by name. Cross-prelude collisions produce a last-wins warning.
+//! units by name. Cross-prelude collisions produce a last-wins warning;
+//! the warning fires only for *genuine* cross-module pairs — intra-module
+//! duplicates are suppressed here because `compile()` rejects them earlier.
 //! Module-local duplicates produce an error keyed on the original
 //! registration's provenance (stdlib / user-module / module-local).
 
@@ -35,7 +37,12 @@ pub(crate) fn phase_units(
             if cu.is_pub {
                 // Detect cross-prelude collision before overwriting: if another
                 // prelude module already seeded this unit name, emit a warning.
-                if let Some(existing) = ctx.unit_registry.lookup(&cu.name) {
+                // Guard: only warn for genuine cross-module pairs. Intra-module
+                // duplicates (same source_module as current) are rejected earlier
+                // by compile() and must not produce "declared in both 'X' and 'X'".
+                if let Some(existing) = ctx.unit_registry.lookup(&cu.name)
+                    && existing.source_module.as_deref() != Some(&module_display[..])
+                {
                     let first_module: &str =
                         existing.source_module.as_deref().unwrap_or("<unknown>");
                     ctx.diagnostics.push(

@@ -9,17 +9,14 @@ pub(crate) fn compile_transform_op(
     name: &str,
     compiled_args: Vec<CompiledExpr>,
     target: GeomRef,
+    expr_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
     mut sub_ops: Vec<CompiledGeometryOp>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     match name {
         // translate(target, dx, dy, dz)
         "translate" => {
-            if compiled_args.len() != 4 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "translate() expects 4 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("translate", compiled_args.len(), 4, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -38,11 +35,7 @@ pub(crate) fn compile_transform_op(
         }
         // rotate(target, ax, ay, az, angle)
         "rotate" => {
-            if compiled_args.len() != 5 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "rotate() expects 5 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("rotate", compiled_args.len(), 5, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -62,11 +55,7 @@ pub(crate) fn compile_transform_op(
         }
         // scale(target, factor)
         "scale" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "scale() expects 2 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("scale", compiled_args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -83,11 +72,7 @@ pub(crate) fn compile_transform_op(
         }
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         "rotate_around" => {
-            if compiled_args.len() != 8 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "rotate_around() expects 8 arguments, got {}",
-                    compiled_args.len()
-                )));
+            if !check_arg_count_exact("rotate_around", compiled_args.len(), 8, expr_span, diagnostics) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -129,8 +114,14 @@ mod tests {
         let args: Vec<CompiledExpr> = (1..=4).map(|i| scalar_literal(i as f64)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(0);
-        let result =
-            compile_transform_op("translate", args, target.clone(), &mut diagnostics, vec![]);
+        let result = compile_transform_op(
+            "translate",
+            args,
+            target.clone(),
+            SourceSpan::new(0, 0),
+            &mut diagnostics,
+            vec![],
+        );
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",
@@ -161,6 +152,7 @@ mod tests {
             "translate",
             args,
             GeomRef::Step(0),
+            SourceSpan::new(10, 20),
             &mut diagnostics,
             vec![],
         );
@@ -168,6 +160,32 @@ mod tests {
         assert!(
             !diagnostics.is_empty(),
             "expected diagnostic for wrong arg count"
+        );
+    }
+
+    #[test]
+    fn compile_transform_op_wrong_arg_count_with_label() {
+        // translate expects 4 args; pass 2 — span must appear on the diagnostic label
+        let args: Vec<CompiledExpr> = (1..=2).map(|i| scalar_literal(i as f64)).collect();
+        let span = SourceSpan::new(10, 20);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_transform_op(
+            "translate",
+            args,
+            GeomRef::Step(0),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(result.is_none(), "expected None for wrong arg count");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected at least one label on arg-count diagnostic"
+        );
+        assert_eq!(
+            diagnostics[0].labels[0].span, span,
+            "label span must match the expr_span passed in"
         );
     }
 }

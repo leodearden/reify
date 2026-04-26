@@ -570,17 +570,24 @@ structure def S : Left + Right {
     );
 }
 
-/// Kind-aware dedup: TraitA provides `param x : Real = 1`, TraitB provides
-/// `let x : Real = 42`. Structure implements both with no override.
-/// The Let default must NOT be silently discarded by the Param default's
-/// name-only dedup in `seen_defaults`.
+/// Cross-kind collision (Param wins scope slot): TraitA provides `param x : Real = 1`,
+/// TraitB provides annotated `let x : Real = 42`. Structure implements both with no override.
 ///
-/// Expected: 2 value cells for 'x' (one Param from TraitA, one Let from TraitB).
-/// Before the fix, `seen_defaults["x"]` is populated by TraitA's Param (type Real),
-/// and TraitB's Let also has sentinel type Real — so the name-only dedup treats them
-/// as duplicates and discards the Let, producing only 1 cell.
+/// When `param x` from TraitA and annotated `let x : Real` from TraitB both appear in
+/// Pass 1 of `check_phase_pre_register_default_types`, TraitA's Param wins the
+/// `register_if_absent` scope slot. TraitB's annotated Let loses and is recorded in
+/// `pass1_skipped` (task 1952 Option A fix). The injection loop then skips the annotated-Let
+/// cell to prevent duplicate `(entity, "x")` cells with different kinds.
+///
+/// Expected: exactly 1 value cell for 'x' (the Param from TraitA). The annotated Let from
+/// TraitB is SUPPRESSED by `pass1_skipped` — the same mechanism that suppresses unannotated
+/// Let losers via `pass2_skipped`.
+///
+/// The test name reflects the post-fix semantics: the annotated Let IS suppressed/discarded.
+/// The reverse direction (annotated Let wins scope, Param loses) is a known remaining
+/// asymmetry — see `annotated_let_wins_param_loses_known_asymmetry` (ignored).
 #[test]
-fn let_default_not_discarded_by_param_default_same_name() {
+fn annotated_let_suppressed_by_pass1_skipped_when_param_wins_slot() {
     let source = r#"
 trait ProvidesParamX {
     param x : Real = 1.0
@@ -613,26 +620,16 @@ structure def S : ProvidesParamX + ProvidesLetX {
         .collect();
     assert_eq!(
         x_cells.len(),
-        2,
-        "expected 2 'x' value cells (one Param, one Let) but got {}; \
-         the Let default was silently discarded by the name-only seen_defaults dedup",
+        1,
+        "expected 1 'x' value cell (Param from ProvidesParamX; annotated-Let from \
+         ProvidesLetX suppressed by pass1_skipped, task 1952), got {}",
         x_cells.len()
     );
 
-    let param_cells: Vec<_> = x_cells
-        .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Param)
-        .collect();
-    assert_eq!(param_cells.len(), 1, "expected exactly 1 Param 'x' cell");
-
-    let let_cells: Vec<_> = x_cells
-        .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Let)
-        .collect();
     assert_eq!(
-        let_cells.len(),
-        1,
-        "expected exactly 1 Let 'x' cell (let_default_not_discarded)"
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single 'x' cell must be Param (from ProvidesParamX)"
     );
 }
 
@@ -675,6 +672,12 @@ structure def T : NeedsX + AlsoNeedsX {
 /// Guards against the `available_defaults` lookup regressing to name-only keying: if the
 /// key were just the name, the HashMap might store only the last-written kind (collision),
 /// causing the Param lookup to fail or return a Let type.
+///
+/// After task 1952's Pass 1 symmetry fix: the annotated Let from ProvidesLetDefault loses
+/// the Pass 1 `register_if_absent` scope race to the Param from ProvidesParamDefault and is
+/// recorded in `pass1_skipped`. The injection loop skips the annotated-Let cell. Only the
+/// Param cell is injected (1 cell, not 2). The Param requirement from NeedsParam is still
+/// satisfied by the `available_defaults` advertisement of ProvidesParamDefault's Param.
 #[test]
 fn param_requirement_still_satisfied_with_let_default_present() {
     let source = r#"
@@ -707,7 +710,8 @@ structure def S : NeedsParam + ProvidesParamDefault + ProvidesLetDefault {
         errors
     );
 
-    // Both the Param default and the Let default should be materialized.
+    // After task 1952: the annotated-Let loser is suppressed by pass1_skipped.
+    // Only the Param cell is materialized (no duplicate (entity, "x") cells).
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -715,10 +719,15 @@ structure def S : NeedsParam + ProvidesParamDefault + ProvidesLetDefault {
         .collect();
     assert_eq!(
         x_cells.len(),
-        2,
-        "expected 2 'x' cells (one Param from ProvidesParamDefault, one Let from \
-         ProvidesLetDefault), got {}",
+        1,
+        "expected 1 'x' cell (Param from ProvidesParamDefault; annotated-Let from \
+         ProvidesLetDefault suppressed by pass1_skipped per task 1952), got {}",
         x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single 'x' cell must be Param (requirement satisfaction)"
     );
 }
 
@@ -1006,6 +1015,179 @@ structure def S : TraitA + TraitB {
             dimension: DimensionVector::LENGTH,
         },
         "the `x` Param cell must carry type Length"
+    );
+}
+
+/// Integration test for the Pass 1 ↔ Pass 2 symmetry bug (task 1952).
+///
+/// # Problem
+///
+/// The two-pass pre-register split (task 1907) guards against duplicate cell injection
+/// when an **unannotated** Let loses its `register_if_absent` race to a Param: that case
+/// records the name in `pass2_skipped` and the injection loop skips the Let cell.
+///
+/// The **symmetric case** — a Param claiming the scope slot first, followed by an
+/// **annotated Let** (`DefaultKind::Let { cell_type: Some(_), .. }`) in the same Pass 1
+/// loop — is NOT currently guarded. Both defaults go through Pass 1; the annotated Let's
+/// `register_if_absent` returns `Occupied`, but the name is NOT added to any skip-set.
+/// The injection loop then injects BOTH a Param cell AND an annotated-Let cell for the
+/// same name — two `(entity, "x")` cells.
+///
+/// The `pass1_skipped: HashSet<String>` fix (task 1952 Option A) plugs this gap: the
+/// Pass 1 loop records the annotated-Let loser in `pass1_skipped`, and the injection
+/// loop skips annotated-Let cell emission for names in `pass1_skipped`. This test fails
+/// today at the cell-count assertion (2 cells produced, 1 expected) and passes after the
+/// fix.
+///
+/// # Fixture
+///
+/// ```text
+/// trait TraitA { param x : Length = 10mm; constraint x - 1mm > 0mm }
+/// trait TraitB { let x : Length = 80mm }   ← annotated Let (not unannotated)
+/// structure def S : TraitA + TraitB {}
+/// ```
+///
+/// Expected outcome: zero `Severity::Error` diagnostics, ≥1 constraint injected (from
+/// TraitA), exactly 1 `x` value cell with `kind == ValueCellKind::Param` and
+/// `cell_type == Type::Scalar { dimension: LENGTH }`.
+#[test]
+fn cross_kind_pre_registration_preserves_first_type_annotated_let() {
+    let source = r#"
+trait TraitA {
+    param x : Length = 10mm
+    constraint x - 1mm > 0mm
+}
+
+trait TraitB {
+    let x : Length = 80mm
+}
+
+structure def S : TraitA + TraitB {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: the constraint `x - 1mm > 0mm` should compile cleanly \
+         because x is registered as Length (not overwritten by the annotated Let default). \
+         Got errors: {:?}",
+        errors
+    );
+
+    // At least 1 constraint injected (from TraitA).
+    assert!(
+        !template.constraints.is_empty(),
+        "expected at least 1 constraint injected from TraitA, got {}",
+        template.constraints.len()
+    );
+
+    // Exactly 1 'x' value cell: the Param from TraitA.  TraitB's annotated `let x : Length = 80mm`
+    // is suppressed by `pass1_skipped` (task 1952): Pass 1 finds the scope slot already
+    // occupied by TraitA's Param and records `x` in `pass1_skipped`, so the injection loop
+    // skips annotated-Let cell emission for `x`.
+    //
+    // WITHOUT the fix (pass1_skipped not yet implemented): the injection loop emits BOTH a
+    // Param cell (TraitA) and an annotated-Let cell (TraitB), producing 2 cells.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected 1 'x' value cell (Param from TraitA only; annotated Let from TraitB \
+         suppressed by pass1_skipped), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single `x` cell must be Param (from TraitA)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the `x` Param cell must carry type Length"
+    );
+}
+
+/// Known asymmetry (task 1952 scope limitation): reverse-order annotated Let + Param.
+///
+/// # Problem
+///
+/// `pass1_skipped` (task 1952) tracks **annotated-Let losers** in Pass 1. It does NOT track
+/// **Param losers**. When the bound-list order puts the annotated Let *before* the Param
+/// (`S : TraitB + TraitA`), the annotated Let wins the scope slot and the Param loses — but
+/// the Param loser is not recorded anywhere, so the Param injection arm has no skip guard.
+/// The injection loop injects BOTH an annotated-Let cell (winner) AND a Param cell (loser),
+/// producing two `(entity, "x")` cells — the same duplicate-cell bug that task 1952 fixed for
+/// the reverse direction.
+///
+/// # Why it's not fixed here
+///
+/// Fixing the Param-loser direction requires tracking Param losers separately (e.g., a new
+/// `pass1_param_skipped: HashSet<String>`) and adding a skip guard in the
+/// `DefaultKind::Param` injection arm. This is outside the scope of task 1952.
+///
+/// # This test
+///
+/// This test is `#[ignore]`d and asserts the **correct** outcome (1 cell) to serve as a
+/// TODO regression guard. It will start passing once Param-loser tracking is implemented.
+/// Run `cargo test -- --ignored annotated_let_wins_param_loses_known_asymmetry` to confirm
+/// the current failure.
+#[test]
+#[ignore = "known asymmetry (task 1952 scope limitation): Param losers are not tracked \
+            by pass1_skipped; reverse-order [annotated Let, Param] still produces 2 cells"]
+fn annotated_let_wins_param_loses_known_asymmetry() {
+    // Reverse of cross_kind_pre_registration_preserves_first_type_annotated_let:
+    // TraitB (annotated Let) is listed first in the bound list.
+    let source = r#"
+trait TraitA {
+    param x : Length = 10mm
+    constraint x - 1mm > 0mm
+}
+
+trait TraitB {
+    let x : Length = 80mm
+}
+
+structure def S : TraitB + TraitA {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    // CURRENTLY FAILS: the Param loser (TraitA's `param x`) is not tracked in any
+    // skip-set, so the injection loop emits BOTH a Let cell (TraitB, winner) AND a
+    // Param cell (TraitA, loser), producing 2 cells.
+    // When Param-loser tracking is added, this assertion will pass.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' cell (annotated Let from TraitB wins scope; \
+         Param from TraitA should be suppressed once Param-loser tracking is added), \
+         got {}",
+        x_cells.len()
     );
 }
 

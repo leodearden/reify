@@ -10,35 +10,8 @@
 //!     `scope.resolve(member)` should return `CompiledExpr::literal(Value::Undef, Type::Real)`
 //!     rather than fabricating a `ValueCellId`.
 
+use reify_test_support::{compile_source, errors_only, warnings_only};
 use reify_types::{CompiledExprKind, Severity, Type, Value};
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("task_1570_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
-
-fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .collect()
-}
 
 // ── step-1: characterization test for entity.rs dedup refactor ───────────────
 
@@ -75,7 +48,7 @@ fn deprecated_sub_resolves_members_and_emits_warning() {
             let d = b.(MechTrait::diameter)
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // (a) Deprecation warning must be emitted for `OldBolt`.
     let deprecation_warns: Vec<_> = warnings_only(&module)
@@ -187,7 +160,7 @@ fn collection_sub_bare_identifier_populates_member_types() {
             let gs = parts
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // No errors — the collection sub should compile cleanly.
     let errs = errors_only(&module);
@@ -278,7 +251,7 @@ fn qualified_access_ice_fallback_returns_undef_literal() {
     "#;
     // `Bolt` conforms to `MechTrait` but does not define `diameter`, so
     // `scope.resolve("diameter")` returns None → ICE fallback.
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // At least one conformance error should exist (missing required member).
     let errs = errors_only(&module);

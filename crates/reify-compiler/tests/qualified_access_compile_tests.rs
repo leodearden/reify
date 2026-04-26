@@ -146,12 +146,14 @@ structure def S {
         "expected error diagnostic for unknown trait"
     );
 
-    let error_msg = format!("{:?}", errors);
-    let lower = error_msg.to_lowercase();
+    let mentions_expected_keywords = errors.iter().any(|d| {
+        let lower = d.message.to_lowercase();
+        lower.contains("trait") && (lower.contains("not found") || lower.contains("unknown"))
+    });
     assert!(
-        lower.contains("trait") && (lower.contains("not found") || lower.contains("unknown")),
-        "error should mention 'trait' and 'not found'/'unknown', got: {}",
-        error_msg
+        mentions_expected_keywords,
+        "error should mention 'trait' and 'not found'/'unknown', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -188,11 +190,13 @@ structure def S : A {
         "expected error diagnostic for missing trait member"
     );
 
-    let error_msg = format!("{:?}", errors);
+    let mentions_nonexistent = errors
+        .iter()
+        .any(|d| d.message.to_lowercase().contains("nonexistent"));
     assert!(
-        error_msg.contains("nonexistent"),
-        "error should mention 'nonexistent', got: {}",
-        error_msg
+        mentions_nonexistent,
+        "error should mention 'nonexistent', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -274,61 +278,23 @@ structure def Outer {
         !errors.is_empty(),
         "expected error diagnostic: Inner does not implement A"
     );
-}
 
-// ── step-13 ───────────────────────────────────────────────────────────────────
-
-/// `let y : Option<Length> = none` should compile with cell_type = Option<Length>,
-/// not the placeholder Option<Real> that the `none` keyword produces.
-///
-/// Source: `structure def S { let y : Option<Length> = none }`
-///
-/// Assert: no compile errors, value cell 'y' has type Option<Length> (not Option<Real>),
-/// and default_expr is OptionNone with matching result_type.
-#[test]
-fn let_none_with_typed_annotation_gets_correct_type() {
-    let source = r#"
-structure def S {
-    let y : Option<Length> = none
-}
-"#;
-
-    let (template, diagnostics) = compile_first_template(source);
-
-    let errors: Vec<_> = diagnostics
+    // Strengthen: at least one error must carry the canonical phrase produced by
+    // compile_instance_qualified_access_expr (expr.rs):
+    //   "does not implement trait 'A'"
+    // Anchoring to this single production-owned phrase avoids coupling to
+    // human-readable wording while still distinguishing a genuine conformance
+    // failure from an unrelated parse or type error.
+    let canonical_phrase = "does not implement trait";
+    let mentions_trait_conformance = errors
         .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
-
-    let y_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "y")
-        .expect("expected value cell 'y'");
-
-    let expected_type = Type::Option(Box::new(Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    }));
-    assert_eq!(
-        y_cell.cell_type, expected_type,
-        "cell_type for 'let y : Option<Length> = none' should be Option<Length>, got: {:?}",
-        y_cell.cell_type
-    );
-
-    // Also verify that the default_expr has been fixed up to have the correct type.
-    let default_expr = y_cell
-        .default_expr
-        .as_ref()
-        .expect("expected default_expr for let y");
-    assert_eq!(
-        default_expr.result_type, expected_type,
-        "default_expr.result_type should be Option<Length> after OptionNone fixup, got: {:?}",
-        default_expr.result_type
-    );
+        .any(|d| d.message.contains(canonical_phrase));
     assert!(
-        matches!(default_expr.kind, CompiledExprKind::OptionNone),
-        "default_expr.kind should be OptionNone, got: {:?}",
-        default_expr.kind
+        mentions_trait_conformance,
+        "expected at least one error containing {:?} \
+         (canonical conformance-failure phrase), got: {:?}",
+        canonical_phrase,
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+

@@ -1,6 +1,6 @@
 //! Expression compilation and the `Type::Error` anti-cascade sentinel.
 //!
-//! # Poison policy (task-448 / task-1912 / task-1921)
+//! # Poison policy (task-448 / task-1912 / task-1921 / task-1969)
 //!
 //! `Type::Error` is the poison-value sentinel for type-inference failure. Any
 //! producer site that emits a `Severity::Error` diagnostic for a truly
@@ -11,17 +11,17 @@
 //!
 //! ## Canonical producer helpers
 //!
-//! `make_poison_literal(diagnostics, pre_push_len)` wraps
-//! `CompiledExpr::literal(Value::Undef, Type::Error)` with a `debug_assert!`
-//! that at least one `Severity::Error` diagnostic was pushed at or after index
-//! `pre_push_len`.  Callers must capture `let n = diagnostics.len()` immediately
-//! before their `diagnostics.push(...)` and pass `n` as `pre_push_len`.  This
-//! catches the "dropped adjacent push" refactor regression — where an earlier
-//! diagnostic in the queue would silently satisfy a weaker queue-non-empty check.
+//! `make_poison_literal(diagnostics, diagnostic)` constructs the diagnostic,
+//! pushes it into the queue, and returns
+//! `CompiledExpr::literal(Value::Undef, Type::Error)`.  The "push paired with
+//! poison" invariant is enforced **by construction**: the caller passes the
+//! `Diagnostic` value directly so there is no separate push step to accidentally
+//! omit.  A `debug_assert!` on the diagnostic's severity catches callers that
+//! mistakenly pass a `Warning` or `Info` value.
 //!
-//! `make_poison_type(diagnostics, pre_push_len)` is the parallel helper for
+//! `make_poison_type(diagnostics, diagnostic)` is the parallel helper for
 //! ICE-path producer sites that assign a `Type` to a local variable rather than
-//! returning a `CompiledExpr`.  It carries the same `debug_assert!` invariant.
+//! returning a `CompiledExpr`.  It carries the same by-construction invariant.
 //! `grep "make_poison_"` finds every producer site uniformly.
 //!
 //! ## Consumer propagation helper
@@ -45,39 +45,8 @@
 
 use super::*;
 
-/// Shared precondition check for [`make_poison_literal`] and [`make_poison_type`].
-///
-/// Asserts (in debug builds) that at least one `Severity::Error` diagnostic was
-/// pushed **at or after index `pre_push_len`** in `diagnostics`.  Both poison
-/// helpers carry the same "dropped adjacent push" invariant; extracting it here
-/// means a future tightening of the check only needs one change, and a
-/// regression that weakens it will break both helpers simultaneously.
-///
-/// `#[track_caller]` ensures that a failing `debug_assert!` points to the call
-/// site inside `make_poison_literal` / `make_poison_type` rather than to this
-/// helper's body — making the panic location useful without re-duplicating the
-/// condition.
-#[track_caller]
-fn debug_assert_error_pushed_since(diagnostics: &[Diagnostic], pre_push_len: usize) {
-    // Slicing diagnostics[pre_push_len..] is always safe here: callers capture
-    // `let n = diagnostics.len()` immediately before their push, so
-    // `pre_push_len <= diagnostics.len()` is a pre-call invariant.  An empty
-    // slice returns `false` from `.any()`, which correctly triggers the
-    // debug_assert if nothing was pushed.
-    debug_assert!(
-        diagnostics[pre_push_len..]
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "make_poison_* requires a Severity::Error diagnostic pushed at or after index {}; \
-         this catches 'dropped adjacent push' refactor regressions \
-         (pre_push_len={pre_push_len}, current_len={})",
-        pre_push_len,
-        diagnostics.len(),
-    );
-}
-
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
-/// use at any producer site that has already pushed a `Severity::Error` diagnostic.
+/// use at any producer site that emits a `Severity::Error` diagnostic.
 ///
 /// # Anti-cascade contract (task-448 / task-1912 / task-1921)
 ///
@@ -87,42 +56,55 @@ fn debug_assert_error_pushed_since(diagnostics: &[Diagnostic], pre_push_len: usi
 /// `expr.rs` (aggregation, index-access, quantifier) short-circuit and avoid
 /// emitting cascading type-mismatch diagnostics on top of the root-cause error.
 ///
-/// # `debug_assert!` invariant
+/// # By-construction invariant (task-1969)
 ///
-/// Delegates to [`debug_assert_error_pushed_since`] (the shared precondition
-/// helper).  The assertion fires (in debug builds) if this function is called
-/// without a `Severity::Error` diagnostic having been pushed **at or after
-/// index `pre_push_len`** in the current diagnostic queue.  Callers must
-/// capture `let n = diagnostics.len()` immediately before their
-/// `diagnostics.push(...)` and pass `n` as `pre_push_len`.  This detects both
-/// producers that were never paired with a diagnostic and the subtler "dropped
-/// adjacent push" refactor regression where an earlier diagnostic in the queue
-/// would silently satisfy a weaker queue-non-empty check.
+/// The caller passes a pre-constructed `Diagnostic` directly; this helper
+/// pushes it into the queue and then returns the poison literal.  The
+/// "push paired with poison" invariant is therefore enforced **by construction**
+/// rather than by a post-hoc `debug_assert!` over queue indices.
 ///
-/// All producer sites that return `Type::Error` **and** have emitted their own
+/// A `debug_assert!` on the diagnostic's severity catches callers that
+/// mistakenly pass a `Warning` or `Info` diagnostic.  `#[track_caller]`
+/// ensures a failing assert points to the producer site, not this body.
+///
+/// All producer sites that return `Type::Error` **and** emit their own
 /// diagnostic should route through this helper.  Consumer sites that propagate
 /// an existing `Type::Error` without emitting a new diagnostic should use
 /// [`propagate_poison`] instead.  ICE-path producer sites that assign a `Type`
-/// to a local variable (range no bounds, match no arms, unresolved sub-member
-/// type) route through the parallel [`make_poison_type`] helper, which carries
-/// the same `pre_push_len`-based `debug_assert!` invariant via the same
-/// shared [`debug_assert_error_pushed_since`] call.
-fn make_poison_literal(diagnostics: &[Diagnostic], pre_push_len: usize) -> CompiledExpr {
-    debug_assert_error_pushed_since(diagnostics, pre_push_len);
+/// to a local variable route through the parallel [`make_poison_type`] helper.
+#[track_caller]
+fn make_poison_literal(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -> CompiledExpr {
+    debug_assert!(
+        diagnostic.severity == Severity::Error,
+        "make_poison_literal requires a Severity::Error diagnostic; \
+         got severity={:?} — did you pass a Warning or Info by mistake?",
+        diagnostic.severity,
+    );
+    diagnostics.push(diagnostic);
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
 /// Return a `Type::Error` poison sentinel for ICE-path producer sites that
 /// assign a `Type` to a local variable rather than returning a `CompiledExpr`.
 ///
-/// Mirrors [`make_poison_literal`] for the three ICE-path fallbacks
-/// (range-no-bounds, match-no-arms, unresolved-sub-member-type) so that all
-/// producer sites route through a helper with the same `pre_push_len`-based
-/// `debug_assert!` invariant.  Routing these sites through a helper also makes
-/// `grep "make_poison_"` find every producer site uniformly.  Both helpers
-/// delegate the shared assertion to [`debug_assert_error_pushed_since`].
-fn make_poison_type(diagnostics: &[Diagnostic], pre_push_len: usize) -> Type {
-    debug_assert_error_pushed_since(diagnostics, pre_push_len);
+/// Mirrors [`make_poison_literal`] for the Type-level ICE-path fallbacks
+/// (range-no-bounds, match-no-arms, unresolved-sub-member-type, non-collection
+/// iteration, non-collection index) so that all producer sites route through a
+/// helper and `grep "make_poison_"` finds every producer site uniformly.
+///
+/// Applies the same by-construction invariant as [`make_poison_literal`]: the
+/// caller passes the `Diagnostic` directly; this helper pushes it and returns
+/// `Type::Error`.  `debug_assert!` checks severity; `#[track_caller]` ensures
+/// a failing assert blames the producer site.
+#[track_caller]
+fn make_poison_type(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -> Type {
+    debug_assert!(
+        diagnostic.severity == Severity::Error,
+        "make_poison_type requires a Severity::Error diagnostic; \
+         got severity={:?} — did you pass a Warning or Info by mistake?",
+        diagnostic.severity,
+    );
+    diagnostics.push(diagnostic);
     Type::Error
 }
 
@@ -145,6 +127,26 @@ fn propagate_poison() -> CompiledExpr {
 /// rather than the indexed-access recommendation used for regular struct members.
 /// Also used by the general method-call path to infer result types for collection methods.
 const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "values"];
+
+/// Reflective aggregation member names for purpose subjects.
+///
+/// When a purpose body accesses `subject.<name>` where `subject` has type
+/// `StructureRef(_)` and `<name>` is in this list, the compiler emits an empty
+/// `ListLiteral` with `result_type = Type::List(Box::new(Type::Real))`.
+///
+/// Semantics:
+/// - Compile-time only: runtime expansion of the list elements against the bound
+///   entity's actual params is deferred to a follow-up task.
+/// - The empty list means `forall p in subject.params: ...` evaluates vacuously
+///   true at eval time, which is safe and anti-cascade-consistent.
+/// - `Type::Real` element type is future-proof; a later task can refine to
+///   `List<ParamRef>` without changing call-site patterns.
+///
+/// Deferred names (documented in `crates/reify-mcp/src/tools/chunks/purposes.md`
+/// but not yet exercised by `examples/m5_purpose.ri`): `sub_entities`, `ports`,
+/// `constraints`. Add them here and to the activation-time expansion when ready.
+const PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS: &[&str] =
+    &["params", "geometric_params", "material_params"];
 
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
@@ -333,13 +335,12 @@ pub(crate) fn compile_expr_guarded(
                     } else {
                         format!("unresolved name: {}", name)
                     };
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(msg)
                             .with_label(DiagnosticLabel::new(expr.span, "not found in scope")),
-                    );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    make_poison_literal(diagnostics, n)
+                    )
                 }
             }
         }
@@ -378,16 +379,15 @@ pub(crate) fn compile_expr_guarded(
                             pairs.push(CompiledExpr::binop(bin_op, lhs, rhs, result_type));
                         }
                         None => {
-                            let n = diagnostics.len();
-                            diagnostics.push(
+                            // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                            return make_poison_literal(
+                                diagnostics,
                                 Diagnostic::error(format!("unknown operator: {}", op_str))
                                     .with_label(DiagnosticLabel::new(
                                         expr.span,
                                         "unrecognized operator",
                                     )),
                             );
-                            // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                            return make_poison_literal(diagnostics, n);
                         }
                     }
                 }
@@ -474,13 +474,12 @@ pub(crate) fn compile_expr_guarded(
                     CompiledExpr::binop(bin_op, compiled_left, compiled_right, result_type)
                 }
                 None => {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!("unknown operator: {}", op))
                             .with_label(DiagnosticLabel::new(expr.span, "unrecognized operator")),
-                    );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    make_poison_literal(diagnostics, n)
+                    )
                 }
             }
         }
@@ -503,13 +502,12 @@ pub(crate) fn compile_expr_guarded(
                     CompiledExpr::unop(un_op, compiled_operand, result_type)
                 }
                 None => {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!("unknown unary operator: {}", op))
                             .with_label(DiagnosticLabel::new(expr.span, "unrecognized operator")),
-                    );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    make_poison_literal(diagnostics, n)
+                    )
                 }
             }
         }
@@ -581,16 +579,15 @@ pub(crate) fn compile_expr_guarded(
                 .or_else(|| compiled_upper.as_ref().map(|e| &e.result_type))
                 .cloned()
                 .unwrap_or_else(|| {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
+                    // from cascading into downstream type-mismatch errors.
+                    make_poison_type(
+                        diagnostics,
                         Diagnostic::error(
                             "internal compiler error: range has no bounds; cannot infer element type",
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "ICE: no lower or upper bound")),
-                    );
-                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
-                    // from cascading into downstream type-mismatch errors.
-                    make_poison_type(diagnostics, n)
+                    )
                 });
             let result_type = Type::range(element_type);
             CompiledExpr::range_constructor(
@@ -606,16 +603,15 @@ pub(crate) fn compile_expr_guarded(
             // some() is a language-level constructor, not a user-defined function.
             if name == "some" {
                 if args.len() != 1 {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!(
                             "some() requires exactly 1 argument, got {}",
                             args.len()
                         ))
                         .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
                 let inner = compile_expr_guarded(
                     &args[0],
@@ -679,8 +675,9 @@ pub(crate) fn compile_expr_guarded(
                     // Multiple user fns match — ambiguous call
                     let candidate_sigs: Vec<String> =
                         candidates.iter().map(|f| format_fn_signature(f)).collect();
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!(
                             "ambiguous function call: {} candidates match {}({}): {}",
                             candidates.len(),
@@ -693,9 +690,7 @@ pub(crate) fn compile_expr_guarded(
                             candidate_sigs.join(", ")
                         ))
                         .with_label(DiagnosticLabel::new(expr.span, "ambiguous call")),
-                    );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    make_poison_literal(diagnostics, n)
+                    )
                 }
                 OverloadResolution::NoMatch(named_candidates) => {
                     // User functions with this name exist, but none match — error with candidates
@@ -703,8 +698,9 @@ pub(crate) fn compile_expr_guarded(
                         .iter()
                         .map(|f| format_fn_signature(f))
                         .collect();
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!(
                             "no matching overload for {}({}), candidates: {}",
                             name,
@@ -716,9 +712,7 @@ pub(crate) fn compile_expr_guarded(
                             candidate_sigs.join(", ")
                         ))
                         .with_label(DiagnosticLabel::new(expr.span, "no matching overload")),
-                    );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    make_poison_literal(diagnostics, n)
+                    )
                 }
                 OverloadResolution::NoUserFunctions => {
                     // Determinacy predicate intrinsics — compiler transforms these
@@ -862,15 +856,14 @@ pub(crate) fn compile_expr_guarded(
                             return CompiledExpr::value_ref(id, ty);
                         }
                         None => {
-                            let n = diagnostics.len();
-                            diagnostics.push(
+                            // Anti-cascade (task-448/task-1921/task-1969): by-construction
+                            // invariant — make_poison_literal pushes the diagnostic and
+                            // returns the poison literal in one call.
+                            return make_poison_literal(
+                                diagnostics,
                                 Diagnostic::error(format!("unknown member '{}' on self", member))
                                     .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                             );
-                            // Anti-cascade (task-448/task-1921): route through
-                            // make_poison_literal so the debug_assert enforces
-                            // that the adjacent diagnostic is always present.
-                            return make_poison_literal(diagnostics, n);
                         }
                     }
                 }
@@ -960,16 +953,15 @@ pub(crate) fn compile_expr_guarded(
                     {
                         Some(ty) => ty,
                         None => {
-                            let n = diagnostics.len();
-                            diagnostics.push(
+                            // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                            return make_poison_literal(
+                                diagnostics,
                                 Diagnostic::error(format!(
                                     "unknown member '{}' on sub '{}'",
                                     member, sub_name
                                 ))
                                 .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                             );
-                            // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                            return make_poison_literal(diagnostics, n);
                         }
                     };
                     let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
@@ -988,13 +980,12 @@ pub(crate) fn compile_expr_guarded(
                     let ty = ty.clone();
                     return CompiledExpr::value_ref(id, ty);
                 } else {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!("port '{}' has no member '{}'", name, member))
                             .with_label(DiagnosticLabel::new(expr.span, "unknown port member")),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
             }
 
@@ -1015,17 +1006,16 @@ pub(crate) fn compile_expr_guarded(
                 {
                     Some(ty) => ty,
                     None => {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        // Anti-cascade (task-448/task-1921): return poison early rather than
+                        // synthesising a dangling ValueRef to a non-existent cell.
+                        return make_poison_literal(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "unknown member '{}' on collection sub '{}'",
                                 member, name
                             ))
                             .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                         );
-                        // Anti-cascade (task-448/task-1921): return poison early rather than
-                        // synthesising a dangling ValueRef to a non-existent cell.
-                        return make_poison_literal(diagnostics, n);
                     }
                 };
 
@@ -1113,6 +1103,122 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
+
+            // ── Purpose-subject member access (task-2181) ──────────────────────
+            //
+            // Trigger: compiled_obj is a ValueRef whose entity stamp equals the
+            // current scope's entity name (= the purpose name) AND its type is
+            // StructureRef(_) AND we are NOT in entity scope.
+            //
+            // The `!scope.is_entity_scope` guard prevents misfiring in entity
+            // bodies: `param material : Material` in a structure registers
+            // `material` as Type::StructureRef("Material") when Material is a
+            // known structure name.  Without the guard, `material.density` in a
+            // structure constraint would silently emit
+            // `ValueRef(entity_name, "density")` — a cell that doesn't exist —
+            // rather than the correct "member access not yet supported" error.
+            // Purpose scopes have is_entity_scope=false (traits.rs:228 uses
+            // CompilationScope::new); entity scopes set is_entity_scope=true
+            // (entity.rs:247).
+            //
+            // Combining the outer type-check with the inner ValueRef pattern into
+            // a single `if let` removes a statically infallible inner match and
+            // makes the control flow unambiguous — no implicit fall-through.
+            //
+            // Anti-cascade: this branch is placed AFTER the compile_obj call so
+            // the existing `is_error()` poison short-circuit below still fires
+            // for already-poisoned subjects.
+            if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind
+                && matches!(&compiled_obj.result_type, Type::StructureRef(_))
+                && id.entity == scope.entity_name
+                && !scope.is_entity_scope
+            {
+                if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                    // Reflective aggregation (e.g., `subject.params`):
+                    //   - Compile-time: emit an empty list so forall evaluates
+                    //     vacuously true.  Runtime expansion against the bound
+                    //     entity's actual params is deferred (follow-up task).
+                    //   - FIXME(task-2181 review-4): Type::Real element type is
+                    //     a compile-time placeholder.  Any follow-up task that
+                    //     populates the list at runtime MUST update this type in
+                    //     lockstep, or `forall p in subject.params: determined(p)`
+                    //     will typecheck `p` against the wrong type — silently,
+                    //     because the list is empty today.  Candidate refinement:
+                    //     Type::ParamRef once that variant is introduced.
+                    //   - Empty list satisfies the Quantifier arm's
+                    //     `List(elem) | Set(elem)` type check at forall compile.
+                    return CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+                } else {
+                    // Regular member access (e.g., `subject.mass`):
+                    //   - Emit a ValueRef whose entity stamp equals the purpose
+                    //     name (= scope.entity_name).  At activation time,
+                    //     `activate_purpose` calls `remap_entity(purpose_name,
+                    //     entity_ref)` which rewrites this ref to
+                    //     `ValueCellId(entity_ref, member)` — exactly the bound
+                    //     entity's member cell.
+                    //   - Concrete-subject validation (task-2200): when the subject
+                    //     type is a named structure (not the generic "Structure"
+                    //     wildcard) and template_registry is available, verify that
+                    //     `member` is declared in the template (value_cells, ports,
+                    //     or sub_components).  If not found in any, emit
+                    //     "has no member" and return a Type::Error poison so
+                    //     downstream checks (e.g., `subject.bogus > 0`) do not
+                    //     cascade.  Port/sub members fall through to the existing
+                    //     CompiledExpr::value_ref emit — their type resolution is a
+                    //     separate follow-up task.
+                    //   - Wildcard path: when entity_kind == "Structure" or registry
+                    //     lookup fails (no template by that name), fall through
+                    //     silently — the generic form binds at activation time and
+                    //     has no static template to validate against.
+                    //   - Belt-and-braces: `struct_name != "Structure"` makes the
+                    //     wildcard-skip intent explicit even though a registry miss
+                    //     (no template named "Structure") would also fall through.
+                    //     Both guards are intentional: the name guard protects
+                    //     against a hypothetical future stdlib "Structure" template;
+                    //     the registry-miss guard covers other unregistered wildcard
+                    //     kinds (e.g., "Occurrence").
+                    //   - Type::Real is a compile-time fallback; member-type
+                    //     resolution (e.g., Length vs. Mass) is a separate
+                    //     follow-up task and is NOT addressed here.
+                    let struct_name = match &compiled_obj.result_type {
+                        Type::StructureRef(name) => name.clone(),
+                        _ => unreachable!("outer guard ensures StructureRef"),
+                    };
+                    if struct_name != "Structure"
+                        && let Some(registry) = scope.template_registry
+                        && let Some(template) = registry.get(struct_name.as_str())
+                    {
+                        // Accept members from value_cells, ports, or sub_components.
+                        // Port/sub members are valid member kinds even if their type
+                        // resolution is not yet implemented — only truly undeclared
+                        // names get a "has no member" diagnostic.
+                        let member_known =
+                            template.value_cells.iter().any(|vc| vc.id.member == *member)
+                                || template.ports.iter().any(|p| p.name == *member)
+                                || template
+                                    .sub_components
+                                    .iter()
+                                    .any(|sc| sc.name == *member);
+                        if !member_known {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "structure '{}' has no member '{}'",
+                                    struct_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unknown member",
+                                )),
+                            );
+                        }
+                    }
+                    let member_id = ValueCellId::new(&id.entity, member);
+                    return CompiledExpr::value_ref(member_id, Type::Real);
+                }
+            }
+            // ── End purpose-subject member access ──────────────────────────────
+
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                 // Anti-cascade consumer (task-448 / task-1921 S4): if the object
                 // is already poisoned, propagate via propagate_poison() (a
@@ -1152,8 +1258,8 @@ pub(crate) fn compile_expr_guarded(
                             "COLLECTION_AGGREGATION_MEMBERS restricts member to \
                              count/sum/keys/values; extend the inner match when you extend the const"
                         );
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        make_poison_type(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "internal: unknown aggregation member '{}'; \
                                  expected one of count/sum/keys/values",
@@ -1163,8 +1269,7 @@ pub(crate) fn compile_expr_guarded(
                                 expr.span,
                                 "unknown aggregation member",
                             )),
-                        );
-                        make_poison_type(diagnostics, n)
+                        )
                     }
                 };
                 CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
@@ -1176,15 +1281,14 @@ pub(crate) fn compile_expr_guarded(
                 if compiled_obj.result_type.is_error() {
                     return propagate_poison();
                 }
-                let n = diagnostics.len();
-                diagnostics.push(
+                // Anti-cascade (task-448/task-1921/task-1969): by-construction
+                // invariant — make_poison_literal pushes the diagnostic and
+                // returns the poison literal in one call.
+                make_poison_literal(
+                    diagnostics,
                     Diagnostic::error(format!("member access not yet supported: .{}", member))
                         .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-                );
-                // Anti-cascade (task-448/task-1921): route through
-                // make_poison_literal so the debug_assert enforces that the
-                // adjacent diagnostic is always present.
-                make_poison_literal(diagnostics, n)
+                )
             }
         }
         reify_syntax::ExprKind::ListLiteral(elements) => {
@@ -1329,15 +1433,14 @@ pub(crate) fn compile_expr_guarded(
                     // Anti-cascade policy: Type::Error propagates downstream via existing
                     // is_error() guards so no cascade of type-mismatch errors follows.
                     _ => {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        make_poison_type(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "cannot index into non-collection type '{}': expected List<_> or Map<_,_>",
                                 compiled_obj.result_type
                             ))
                             .with_label(DiagnosticLabel::new(expr.span, "not indexable")),
-                        );
-                        make_poison_type(diagnostics, n)
+                        )
                     }
                 }
             };
@@ -1365,13 +1468,12 @@ pub(crate) fn compile_expr_guarded(
                     CompiledExpr::literal(Value::Undef, Type::Enum(type_name.clone()))
                 }
             } else {
-                let n = diagnostics.len();
-                diagnostics.push(
+                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                make_poison_literal(
+                    diagnostics,
                     Diagnostic::error(format!("unknown enum type '{}'", type_name))
                         .with_label(DiagnosticLabel::new(expr.span, "unknown enum")),
-                );
-                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                make_poison_literal(diagnostics, n)
+                )
             }
         }
         reify_syntax::ExprKind::Match { discriminant, arms } => {
@@ -1410,16 +1512,15 @@ pub(crate) fn compile_expr_guarded(
                 .first()
                 .map(|a| a.body.result_type.clone())
                 .unwrap_or_else(|| {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
+                    // from cascading into downstream type-mismatch errors.
+                    make_poison_type(
+                        diagnostics,
                         Diagnostic::error(
                             "internal compiler error: match expression has no arms; cannot infer result type",
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "ICE: match with no arms")),
-                    );
-                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
-                    // from cascading into downstream type-mismatch errors.
-                    make_poison_type(diagnostics, n)
+                    )
                 });
 
             // Exhaustiveness check: if discriminant is a known enum type,
@@ -1551,24 +1652,26 @@ pub(crate) fn compile_expr_guarded(
                         match resolve_type_name(name) {
                             Some(t) => t,
                             None => {
-                                let n = diagnostics.len();
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "unresolved type in lambda param '{}': {}",
-                                    param.name, name
-                                )));
                                 // Anti-cascade (task-1921): Type::Error propagates through body
                                 // via consumer guards in infer_binop_type / implicitly_converts_to.
-                                make_poison_type(diagnostics, n)
+                                make_poison_type(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "unresolved type in lambda param '{}': {}",
+                                        param.name, name
+                                    )),
+                                )
                             }
                         }
                     } else {
-                        let n = diagnostics.len();
-                        diagnostics.push(Diagnostic::error(format!(
-                            "unresolved type in lambda param '{}': {}",
-                            param.name, type_expr
-                        )));
                         // Anti-cascade (task-1921): same rationale as Named arm above.
-                        make_poison_type(diagnostics, n)
+                        make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "unresolved type in lambda param '{}': {}",
+                                param.name, type_expr
+                            )),
+                        )
                     }
                 } else {
                     Type::Real // default untyped params to Real
@@ -1657,15 +1760,14 @@ pub(crate) fn compile_expr_guarded(
                     // carries Type::Error; existing is_error() guards in the predicate suppress
                     // cascade (anti-cascade policy).
                     _ => {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        make_poison_type(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "cannot iterate over non-collection type '{}' in forall/exists: expected List<_> or Set<_>",
                                 compiled_collection.result_type
                             ))
                             .with_label(DiagnosticLabel::new(expr.span, "not iterable")),
-                        );
-                        make_poison_type(diagnostics, n)
+                        )
                     }
                 }
             };
@@ -1710,16 +1812,15 @@ pub(crate) fn compile_expr_guarded(
                 "point" => SelectorKind::Point,
                 "edge" => SelectorKind::Edge,
                 unknown => {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!(
                             "unknown selector kind '@{}'; expected face, point, or edge",
                             unknown
                         ))
                         .with_label(DiagnosticLabel::new(expr.span, "unknown selector")),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
             };
 
@@ -1727,8 +1828,9 @@ pub(crate) fn compile_expr_guarded(
             match selector_kind {
                 SelectorKind::Face | SelectorKind::Edge => {
                     if args.len() != 1 {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                        return make_poison_literal(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "@{} expects exactly 1 argument (a string name), got {}",
                                 selector,
@@ -1736,13 +1838,12 @@ pub(crate) fn compile_expr_guarded(
                             ))
                             .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
                         );
-                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                        return make_poison_literal(diagnostics, n);
                     }
                     // Check that the argument is a string literal (type check)
                     if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                        return make_poison_literal(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "@{} expects a string argument for the face/edge name, got a numeric type",
                                 selector
@@ -1752,22 +1853,19 @@ pub(crate) fn compile_expr_guarded(
                                 "expected string",
                             )),
                         );
-                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                        return make_poison_literal(diagnostics, n);
                     }
                 }
                 SelectorKind::Point => {
                     if args.len() != 3 {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                        return make_poison_literal(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "@point expects exactly 3 coordinate arguments, got {}",
                                 args.len()
                             ))
                             .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
                         );
-                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                        return make_poison_literal(diagnostics, n);
                     }
                 }
             }
@@ -1777,8 +1875,9 @@ pub(crate) fn compile_expr_guarded(
             if matches!(selector_kind, SelectorKind::Face | SelectorKind::Edge) {
                 let is_direct_port = matches!(&base.kind, reify_syntax::ExprKind::Ident(name) if scope.port_names.contains(name.as_str()));
                 if is_direct_port && !scope.has_geometry {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!(
                             "@{} requires the structure to have geometry, but no geometry declarations found",
                             selector
@@ -1788,8 +1887,6 @@ pub(crate) fn compile_expr_guarded(
                             "no geometry in this structure",
                         )),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
             }
 
@@ -1801,16 +1898,15 @@ pub(crate) fn compile_expr_guarded(
                 reify_syntax::ExprKind::Ident(name) => {
                     // Validate: must be a known port or a scope variable (e.g. forall var)
                     if !scope.port_names.contains(name.as_str()) && scope.resolve(name).is_none() {
-                        let n = diagnostics.len();
-                        diagnostics.push(
+                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                        return make_poison_literal(
+                            diagnostics,
                             Diagnostic::error(format!(
                                 "unresolved port or variable '{}' in ad-hoc selector",
                                 name
                             ))
                             .with_label(DiagnosticLabel::new(base.span, "unknown name")),
                         );
-                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                        return make_poison_literal(diagnostics, n);
                     }
                     CompiledExpr::literal(Value::String(name.clone()), Type::String)
                 }
@@ -1871,44 +1967,41 @@ pub(crate) fn compile_expr_guarded(
             let trait_name = match &qualifier.kind {
                 reify_syntax::ExprKind::Ident(name) => name.clone(),
                 _ => {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(
                             "unsupported qualified access: only 'TraitName::member' form is supported",
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "unsupported form")),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
             };
 
             // Validate trait existence.
             let members = match scope.trait_members.get(&trait_name) {
                 None => {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!("trait '{}' not found", trait_name))
                             .with_label(DiagnosticLabel::new(expr.span, "unknown trait")),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
                 Some(m) => m,
             };
 
             // Validate member existence in trait.
             if !members.contains(member.as_str()) {
-                let n = diagnostics.len();
-                diagnostics.push(
+                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                return make_poison_literal(
+                    diagnostics,
                     Diagnostic::error(format!(
                         "member '{}' not defined in trait '{}'",
                         member, trait_name
                     ))
                     .with_label(DiagnosticLabel::new(expr.span, "not in trait")),
                 );
-                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                return make_poison_literal(diagnostics, n);
             }
 
             // Resolve the member in the current scope (the structure should have it
@@ -1939,15 +2032,14 @@ pub(crate) fn compile_expr_guarded(
             let sub_name = match &object.kind {
                 reify_syntax::ExprKind::Ident(name) => name.clone(),
                 _ => {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(
                             "unsupported instance qualified access: object must be an identifier",
                         )
                         .with_label(DiagnosticLabel::new(object.span, "unsupported")),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
             };
 
@@ -1957,8 +2049,9 @@ pub(crate) fn compile_expr_guarded(
                     match &qualifier.kind {
                         reify_syntax::ExprKind::Ident(name) => (name.clone(), member.clone()),
                         _ => {
-                            let n = diagnostics.len();
-                            diagnostics.push(
+                            // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                            return make_poison_literal(
+                                diagnostics,
                                 Diagnostic::error(
                                     "unsupported qualified access in instance access",
                                 )
@@ -1967,14 +2060,13 @@ pub(crate) fn compile_expr_guarded(
                                     "unsupported form",
                                 )),
                             );
-                            // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                            return make_poison_literal(diagnostics, n);
                         }
                     }
                 }
                 _ => {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(
                             "expected 'Trait::member' form in instance qualified access",
                         )
@@ -1983,8 +2075,6 @@ pub(crate) fn compile_expr_guarded(
                             "expected qualified access",
                         )),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
             };
 
@@ -1992,13 +2082,12 @@ pub(crate) fn compile_expr_guarded(
             let structure_name = match scope.sub_component_types.get(&sub_name) {
                 Some(s) => s.clone(),
                 None => {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                    return make_poison_literal(
+                        diagnostics,
                         Diagnostic::error(format!("unknown sub-component '{}'", sub_name))
                             .with_label(DiagnosticLabel::new(expr.span, "unknown sub-component")),
                     );
-                    // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                    return make_poison_literal(diagnostics, n);
                 }
             };
 
@@ -2009,32 +2098,30 @@ pub(crate) fn compile_expr_guarded(
                 .cloned()
                 .unwrap_or_default();
             if !trait_bounds.contains(&trait_name) {
-                let n = diagnostics.len();
-                diagnostics.push(
+                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                return make_poison_literal(
+                    diagnostics,
                     Diagnostic::error(format!(
                         "sub-component '{}' (type '{}') does not implement trait '{}'",
                         sub_name, structure_name, trait_name
                     ))
                     .with_label(DiagnosticLabel::new(expr.span, "trait not implemented")),
                 );
-                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                return make_poison_literal(diagnostics, n);
             }
 
             // Optionally validate the member exists in the trait.
             if let Some(members) = scope.trait_members.get(&trait_name)
                 && !members.contains(member.as_str())
             {
-                let n = diagnostics.len();
-                diagnostics.push(
+                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+                return make_poison_literal(
+                    diagnostics,
                     Diagnostic::error(format!(
                         "member '{}' not defined in trait '{}'",
                         member, trait_name
                     ))
                     .with_label(DiagnosticLabel::new(expr.span, "not in trait")),
                 );
-                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                return make_poison_literal(diagnostics, n);
             }
 
             // Generate ValueCellId for the sub-component's member.
@@ -2051,8 +2138,10 @@ pub(crate) fn compile_expr_guarded(
                 .and_then(|m| m.get(&member))
                 .cloned()
                 .unwrap_or_else(|| {
-                    let n = diagnostics.len();
-                    diagnostics.push(
+                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
+                    // from cascading into downstream type-mismatch errors.
+                    make_poison_type(
+                        diagnostics,
                         Diagnostic::error(format!(
                             "internal compiler error: unresolved sub-member type for '{}.{}'",
                             sub_name, member
@@ -2061,10 +2150,7 @@ pub(crate) fn compile_expr_guarded(
                             expr.span,
                             "ICE: sub-member type not registered",
                         )),
-                    );
-                    // Anti-cascade (task-1921): Type::Error fallback keeps the ICE diagnostic
-                    // from cascading into downstream type-mismatch errors.
-                    make_poison_type(diagnostics, n)
+                    )
                 });
             CompiledExpr::value_ref(id, ty)
         }
@@ -2114,33 +2200,77 @@ mod tests {
         }
     }
 
-    /// `make_poison_literal` fires the `debug_assert!` when called with no
-    /// `Severity::Error` diagnostic pushed at or after `pre_push_len`.
+    /// `make_poison_literal` pushes the supplied `Diagnostic` into the vec and
+    /// returns `CompiledExpr::literal(Value::Undef, Type::Error)`.
     ///
-    /// This ensures the guard actually trips in debug builds — if someone strips
-    /// the adjacent `diagnostics.push(...)` at a producer site, the assertion
-    /// will fire rather than silently producing a poison literal with no
-    /// user-visible diagnostic.  Passing `pre_push_len=0` and an empty slice
-    /// tests the simplest case: the queue is empty and no error was ever pushed.
+    /// Verifies the new by-construction invariant: the helper is responsible for
+    /// the push, so callers no longer need the `let n = diagnostics.len()` /
+    /// `diagnostics.push(...)` / `make_poison_literal(diagnostics, n)` pattern.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "dropped adjacent push")]
-    fn make_poison_literal_panics_with_no_errors_in_queue() {
-        make_poison_literal(&[], 0);
+    fn make_poison_literal_pushes_error_diagnostic_and_returns_poison_literal() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = make_poison_literal(
+            &mut diagnostics,
+            Diagnostic::error("root cause")
+                .with_label(DiagnosticLabel::new(SourceSpan::prelude(), "here")),
+        );
+        // Diagnostic was pushed internally.
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert_eq!(diagnostics[0].message, "root cause");
+        // Returned expr is the poison literal.
+        assert_eq!(result.result_type, Type::Error);
+        assert!(
+            matches!(result.kind, CompiledExprKind::Literal(_)),
+            "expected Literal kind, got: {:?}",
+            result.kind
+        );
     }
 
-    /// `make_poison_type` fires the `debug_assert!` when called with no
-    /// `Severity::Error` diagnostic pushed at or after `pre_push_len`.
+    /// `make_poison_literal` fires the `debug_assert!` when given a diagnostic
+    /// whose severity is not `Severity::Error`.
     ///
-    /// Mirrors `make_poison_literal_panics_with_no_errors_in_queue` for the
-    /// parallel `make_poison_type` helper so both helpers have explicit panic-
-    /// contract coverage.  A regression that weakens one of the two assertions
-    /// (e.g. replacing `> pre_push_len` with `>= pre_push_len`) would be caught
-    /// by whichever test covers that helper.
+    /// The new API enforces the "push paired with poison" invariant by
+    /// construction: the helper itself pushes, so the only check left is that
+    /// callers don't accidentally pass a Warning or Info diagnostic.
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "dropped adjacent push")]
-    fn make_poison_type_panics_with_no_errors_in_queue() {
-        let _ = make_poison_type(&[], 0);
+    #[should_panic(expected = "severity")]
+    fn make_poison_literal_panics_with_non_error_severity_diagnostic() {
+        make_poison_literal(&mut vec![], Diagnostic::warning("not an error"));
+    }
+
+    /// `make_poison_type` pushes the supplied `Diagnostic` into the vec and
+    /// returns `Type::Error`.
+    ///
+    /// Mirrors `make_poison_literal_pushes_error_diagnostic_and_returns_poison_literal`
+    /// for the parallel `make_poison_type` helper so both helpers have explicit
+    /// positive-behavior coverage.
+    #[test]
+    fn make_poison_type_pushes_error_diagnostic_and_returns_type_error() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = make_poison_type(
+            &mut diagnostics,
+            Diagnostic::error("ICE: no bounds")
+                .with_label(DiagnosticLabel::new(SourceSpan::prelude(), "here")),
+        );
+        // Diagnostic was pushed internally.
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert_eq!(diagnostics[0].message, "ICE: no bounds");
+        // Returned type is the poison sentinel.
+        assert_eq!(result, Type::Error);
+    }
+
+    /// `make_poison_type` fires the `debug_assert!` when given a diagnostic
+    /// whose severity is not `Severity::Error`.
+    ///
+    /// Mirrors `make_poison_literal_panics_with_non_error_severity_diagnostic`
+    /// for the Type helper so both helpers have explicit panic-contract coverage.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "severity")]
+    fn make_poison_type_panics_with_non_error_severity_diagnostic() {
+        let _ = make_poison_type(&mut vec![], Diagnostic::info("wrong severity"));
     }
 }
