@@ -45,6 +45,34 @@ if [ ! -f "$TASKS_JSON" ]; then
     exit 0
 fi
 
+# (3.5) Optional: surface known_gap closures when a done-task auto-commit fires.
+#
+# Placed BEFORE step (4) so it fires on any commit whose message matches the
+# done-task pattern, including --allow-empty commits.  In real usage the
+# set_task_status auto-commit always touches tasks.json, but the check should
+# be independent of that: it reads tasks.json from disk (guaranteed to exist
+# after step 3) and the commit-message regex is the sole gate.
+#
+# Gate conditions:
+#   (a) Commit message matches set_task_status(NNN=done) — avoids spurious work
+#       on in-progress/pending transitions and plain source commits.
+#   (b) Both review/briefing.yaml and scripts/refresh_briefing_known_gaps.py
+#       exist in the worktree — silently no-ops if either is absent.
+#
+# STRICTLY INFORMATIONAL: never calls _loud_fail, never exits non-zero.
+# NOTE: no stdout/stderr redirection — the script's WARN lines go straight to
+# the hook's stderr (the developer's terminal), which is the intended UX.
+_commit_msg="$(git log -1 --format=%s 2>/dev/null || true)"
+if command -v python3 >/dev/null 2>&1 \
+    && echo "$_commit_msg" | grep -qE 'set_task_status\([0-9]+=done\)' \
+    && [ -f "$ROOT/review/briefing.yaml" ] \
+    && [ -f "$ROOT/scripts/refresh_briefing_known_gaps.py" ]; then
+    python3 "$ROOT/scripts/refresh_briefing_known_gaps.py" \
+        --briefing "$ROOT/review/briefing.yaml" \
+        --tasks "$TASKS_JSON" \
+        --quiet || true
+fi
+
 # (4) Exit early if this commit didn't touch tasks.json.
 # --root is required so that root (first) commits are compared against the
 # empty tree rather than producing no output (which would cause a false exit).
@@ -78,28 +106,6 @@ python3 "$ROOT/scripts/normalize_tasks_json.py" "$TASKS_JSON" || {
 if ! git diff --quiet -- "$TASKS_JSON"; then
     git add -- "$TASKS_JSON"
     _REIFY_TASKS_NORMALIZE_AMEND=1 git commit --amend --no-edit --no-verify -q
-fi
-
-# (6.5) Optional: surface known_gap closures when a done-task auto-commit fires.
-#
-# Gate on two conditions:
-#   (a) The just-committed message matches set_task_status(NNN=done)  — avoids
-#       spurious work on in-progress/pending transitions and plain source commits.
-#   (b) Both review/briefing.yaml and scripts/refresh_briefing_known_gaps.py
-#       exist in the worktree — silently no-ops if either is absent.
-#
-# This block is STRICTLY INFORMATIONAL: it never calls _loud_fail, never exits
-# non-zero, and its || true prevents the briefing script's exit code from leaking
-# back into the hook under set -eu.
-_commit_msg="$(git log -1 --format=%s 2>/dev/null || true)"
-if command -v python3 >/dev/null 2>&1 \
-    && echo "$_commit_msg" | grep -qE 'set_task_status\([0-9]+=done\)' \
-    && [ -f "$ROOT/review/briefing.yaml" ] \
-    && [ -f "$ROOT/scripts/refresh_briefing_known_gaps.py" ]; then
-    python3 "$ROOT/scripts/refresh_briefing_known_gaps.py" \
-        --briefing "$ROOT/review/briefing.yaml" \
-        --tasks "$TASKS_JSON" \
-        --quiet 2>&1 || true
 fi
 
 # (7) Clear any stale failure marker so it reflects only the *last* attempt.
