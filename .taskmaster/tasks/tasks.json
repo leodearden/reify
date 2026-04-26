@@ -49642,6 +49642,17 @@
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
           ]
         }
+      },
+      {
+        "id": "2291",
+        "title": "engine_eval: replace unwrap_or_else fallback with expect() at let_traces lookup",
+        "description": "Replace dead defensive fallback at `crates/reify-eval/src/engine_eval.rs:1742-1743` with an `.expect(...)` panic that surfaces invariant violations directly.",
+        "details": "In `crates/reify-eval/src/engine_eval.rs:1742-1743`:\n\n```rust\nlet trace = let_traces.get(&node_id).cloned()\n    .unwrap_or_else(|| extract_dependency_trace(expr));\n```\n\n`node_id` comes from `sorted_lets`, which `detect_let_cycle` produces as a strict subset of `let_node_ids = let_cells.keys() = let_traces.keys()`. The `unwrap_or_else` branch is structurally unreachable — Kahn's algorithm in `topological_sort` only emits nodes that were originally in the set, and `let_traces` contains a trace for every node in `let_cells`.\n\nThe \"defensive\" fallback masks any future bug where someone modifies `detect_let_cycle` to drop entries from `let_traces` while still returning them in `sorted_lets`. An `expect(...)` documenting the invariant would surface that immediately.\n\nFix:\n```rust\nlet trace = let_traces.get(&node_id).cloned()\n    .expect(\"sorted_lets ⊆ let_traces.keys() by detect_let_cycle invariant\");\n```\n\nDone means: code compiles; existing eval_cached tests (in `crates/reify-eval/tests/eval_cached_diagnostics.rs` and the engine_eval inline tests) pass. Spawned from review of task 2268 (esc-2268-4, suggestion 2).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49651,7 +49662,10 @@
       "completedCount": 2054,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:18:16.730Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:18:16.760Z"
     }
   }
 }
