@@ -48595,7 +48595,8 @@
           ],
           "modules": [
             "crates/reify-compiler/src/conformance",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler/tests/m9_error_cases.rs",
+            "crates/reify-types/src/diagnostics.rs"
           ]
         },
         "updatedAt": "2026-04-26T09:24:46.448Z"
