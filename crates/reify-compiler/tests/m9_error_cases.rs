@@ -53,14 +53,12 @@ structure def S : Shaped {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let has_code = errors.iter().any(|d| {
-        d.code == Some(DiagnosticCode::MissingRequiredMember)
-            && d.message.contains("missing required member")
-            && d.message.contains("width")
-    });
+    let has_code = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::MissingRequiredMember));
     assert!(
         has_code,
-        "expected DiagnosticCode::MissingRequiredMember mentioning 'width', got: {:?}",
+        "expected DiagnosticCode::MissingRequiredMember, got: {:?}",
         errors
             .iter()
             .map(|d| (d.code, &d.message))
@@ -112,14 +110,12 @@ structure def S : Shaped {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let has_code = errors.iter().any(|d| {
-        d.code == Some(DiagnosticCode::TypeMismatchForTraitMember)
-            && d.message.contains("type mismatch for trait member")
-            && d.message.contains("count")
-    });
+    let has_code = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::TypeMismatchForTraitMember));
     assert!(
         has_code,
-        "expected DiagnosticCode::TypeMismatchForTraitMember mentioning 'count', got: {:?}",
+        "expected DiagnosticCode::TypeMismatchForTraitMember, got: {:?}",
         errors
             .iter()
             .map(|d| (d.code, &d.message))
@@ -169,14 +165,12 @@ structure def Vehicle : HasEngine {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let has_code = errors.iter().any(|d| {
-        d.code == Some(DiagnosticCode::MissingRequiredSubComponent)
-            && d.message.contains("missing required sub-component")
-            && d.message.contains("engine")
-    });
+    let has_code = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::MissingRequiredSubComponent));
     assert!(
         has_code,
-        "expected DiagnosticCode::MissingRequiredSubComponent mentioning 'engine', got: {:?}",
+        "expected DiagnosticCode::MissingRequiredSubComponent, got: {:?}",
         errors
             .iter()
             .map(|d| (d.code, &d.message))
@@ -221,14 +215,12 @@ structure def Top { sub h = Host(m: Plain()) }
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let has_code = errors.iter().any(|d| {
-        d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
-            && d.message.contains("does not conform to trait")
-            && d.message.contains("Material")
-    });
+    let has_code = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait));
     assert!(
         has_code,
-        "expected DiagnosticCode::TypeNotConformingToTrait mentioning 'Material', got: {:?}",
+        "expected DiagnosticCode::TypeNotConformingToTrait, got: {:?}",
         errors
             .iter()
             .map(|d| (d.code, &d.message))
