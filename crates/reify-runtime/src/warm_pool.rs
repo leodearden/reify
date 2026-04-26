@@ -68,6 +68,16 @@ impl WarmStatePool {
     ///
     /// Falls back to [`DEFAULT_BUDGET_BYTES`] when the variable is unset.
     /// See [`from_env_value`](Self::from_env_value) for parse semantics.
+    ///
+    /// # Wiring note
+    /// This constructor is the intended entry point for runtime pool construction.
+    /// TODO: wire this into the runtime's pool construction site so that
+    /// `REIFY_WARM_STATE_BUDGET_BYTES` actually takes effect at runtime.
+    ///
+    /// # Unit-test coverage
+    /// This thin wrapper delegates entirely to `from_env_value` and is intentionally
+    /// not unit-tested with `std::env::set_var` (which is `unsafe` in Rust 2024 edition
+    /// and race-prone across parallel tests). Integration tests cover the real env-read path.
     pub fn from_env_or_default() -> Self {
         Self::from_env_value(std::env::var(BUDGET_ENV_VAR).ok().as_deref())
     }
@@ -84,6 +94,9 @@ impl WarmStatePool {
         let budget = match value {
             None => Some(DEFAULT_BUDGET_BYTES),
             Some(s) if s.eq_ignore_ascii_case("unlimited") => None,
+            // An empty string is a common shell artifact (`VAR=` exports "" rather than unset).
+            // Treat it the same as absent — use the default rather than emitting a spurious warn.
+            Some(s) if s.is_empty() => Some(DEFAULT_BUDGET_BYTES),
             Some(s) => match s.parse::<usize>() {
                 Ok(n) => Some(n),
                 Err(_) => {
@@ -113,6 +126,14 @@ impl WarmStatePool {
     /// still stored (over-budget by one item is acceptable). Unlimited pools (`budget_bytes`
     /// is `None`) skip eviction entirely.
     pub fn donate_with_cost(&mut self, node_id: NodeId, state: OpaqueState, cost_per_byte: f64) {
+        // Sanitize cost_per_byte: clamp NaN, ±inf, and negative values to 0.0 so that
+        // a future cost-weighted-LRU comparator can safely call `partial_cmp` without
+        // panicking on non-finite values or mishandling negative costs.
+        let cost_per_byte = if cost_per_byte.is_finite() && cost_per_byte >= 0.0 {
+            cost_per_byte
+        } else {
+            0.0
+        };
         let size = state.estimated_size_bytes();
 
         // If this node already has an entry, remove the old one first
@@ -182,6 +203,11 @@ impl WarmStatePool {
     }
 
     /// Configured memory budget in bytes, or `None` if the pool is unlimited.
+    ///
+    /// Note: the return type changed from `usize` to `Option<usize>` in this task
+    /// (task-2340). In-tree there are no other callers (verified via grep). Out-of-tree
+    /// consumers that pattern-matched the old `usize` will need to handle the `Option`.
+    #[must_use]
     pub fn budget_bytes(&self) -> Option<usize> {
         self.budget_bytes
     }
@@ -401,6 +427,9 @@ mod tests {
         assert_eq!(pool_b.budget_bytes(), None);
     }
 
+    // 32-bit targets cannot represent 5 GiB in a usize; gate the test so CI
+    // stays green if a 32-bit target is ever added.
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn unlimited_pool_does_not_evict() {
         // 5 items of 1 GiB each — would exceed the 2 GiB default but should
@@ -534,5 +563,44 @@ mod tests {
         assert!(pool.retrieve(&node_c).is_none(), "C should be LRU-evicted");
         assert!(pool.retrieve(&node_b).is_some(), "B should be retained (recently accessed)");
         assert!(pool.retrieve(&node_d).is_some(), "D should be retained (just added)");
+    }
+
+    // --- Amendment: robustness tests ---
+
+    #[test]
+    fn from_env_value_empty_string_uses_default() {
+        // `VAR=` in shell exports an empty string rather than unsetting the var.
+        // We must treat "" the same as absent rather than emitting a spurious warning.
+        let pool = WarmStatePool::from_env_value(Some(""));
+        assert_eq!(
+            pool.budget_bytes(),
+            Some(DEFAULT_BUDGET_BYTES),
+            "empty string should fall back to default, not trigger a warn"
+        );
+    }
+
+    #[test]
+    fn donate_with_cost_clamps_non_finite_cost() {
+        // NaN, ±inf, and negative costs must be clamped to 0.0 at entry so that
+        // the future cost-weighted-LRU comparator can safely call `partial_cmp`.
+        let mut pool = WarmStatePool::new(1024);
+        let node_nan = NodeId::Value(ValueCellId::new("T", "nan"));
+        let node_inf = NodeId::Value(ValueCellId::new("T", "inf"));
+        let node_neg_inf = NodeId::Value(ValueCellId::new("T", "neg_inf"));
+        let node_neg = NodeId::Value(ValueCellId::new("T", "neg"));
+
+        pool.donate_with_cost(node_nan.clone(), OpaqueState::new(0u8, 10), f64::NAN);
+        pool.donate_with_cost(node_inf.clone(), OpaqueState::new(0u8, 10), f64::INFINITY);
+        pool.donate_with_cost(
+            node_neg_inf.clone(),
+            OpaqueState::new(0u8, 10),
+            f64::NEG_INFINITY,
+        );
+        pool.donate_with_cost(node_neg.clone(), OpaqueState::new(0u8, 10), -1.0);
+
+        assert_eq!(pool.cost_per_byte_of(&node_nan), Some(0.0), "NaN clamped to 0.0");
+        assert_eq!(pool.cost_per_byte_of(&node_inf), Some(0.0), "+inf clamped to 0.0");
+        assert_eq!(pool.cost_per_byte_of(&node_neg_inf), Some(0.0), "-inf clamped to 0.0");
+        assert_eq!(pool.cost_per_byte_of(&node_neg), Some(0.0), "negative clamped to 0.0");
     }
 }
