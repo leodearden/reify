@@ -972,6 +972,76 @@ mod tests {
         assert_no_violation_format(&diags, "sub_component_unknown");
     }
 
+    /// Per-emitter regression lock — solver Infeasible pass-through path
+    /// (engine_eval.rs solver Infeasible pass-through).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the solver Infeasible emitter. Also verifies via `MockConstraintSolver::counter_handle()`
+    /// that the injected solver was actually dispatched.
+    #[test]
+    fn eval_diag_format_solver_infeasible() {
+        use std::sync::atomic::Ordering;
+
+        let source = "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+            "infeasible: x has no satisfying assignment",
+        )]);
+        let counter = solver.counter_handle();
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(solver));
+        let result = engine.eval(&compiled);
+
+        assert!(
+            counter.load(Ordering::Relaxed) > 0,
+            "solver_infeasible: MockConstraintSolver.solve() was never called; \
+             the 'auto' param + constraint source may not trigger solver dispatch"
+        );
+        assert!(
+            result.diagnostics.iter().any(|d| d.message.contains("infeasible: x has no satisfying assignment")),
+            "solver_infeasible: sanity check failed — engine_eval.rs solver Infeasible pass-through \
+             must forward the injected diagnostic; got: {:#?}",
+            result.diagnostics
+        );
+        assert_no_violation_format(&result.diagnostics, "solver_infeasible");
+    }
+
+    /// Per-emitter regression lock — solver NoProgress pass-through path
+    /// (engine_eval.rs solver NoProgress pass-through).
+    ///
+    /// Locks the invariant that `eval()` never emits the `"constraint ... violated"` format
+    /// from the solver NoProgress emitter. Also verifies via `MockConstraintSolver::counter_handle()`
+    /// that the injected solver was actually dispatched.
+    #[test]
+    fn eval_diag_format_solver_no_progress() {
+        use std::sync::atomic::Ordering;
+
+        let source = "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
+        let counter = solver.counter_handle();
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(solver));
+        let result = engine.eval(&compiled);
+
+        assert!(
+            counter.load(Ordering::Relaxed) > 0,
+            "solver_no_progress: MockConstraintSolver.solve() was never called; \
+             the 'auto' param + constraint source may not trigger solver dispatch"
+        );
+        assert!(
+            result.diagnostics.iter().any(|d| d.message.contains("made no progress")),
+            "solver_no_progress: sanity check failed — engine_eval.rs solver NoProgress pass-through \
+             must emit 'made no progress'; got: {:#?}",
+            result.diagnostics
+        );
+        assert_no_violation_format(&result.diagnostics, "solver_no_progress");
+    }
+
     /// Regression-lock cluster: `eval()` must never emit the `"constraint ... violated"`
     /// format (checked by inline `strip_prefix / strip_suffix / !contains(' ')`) from any
     /// of the known eval-time diagnostic emitters.
