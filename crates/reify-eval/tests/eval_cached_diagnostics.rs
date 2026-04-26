@@ -15,8 +15,8 @@ use reify_eval::cache::NodeId;
 use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
 use reify_test_support::*;
 use reify_types::{
-    BinOp, CompiledExpr, Diagnostic, DimensionVector, ModulePath, Type, Value, ValueCellId,
-    VersionId,
+    BinOp, CompiledExpr, Diagnostic, DimensionVector, ModulePath, Severity, Type, Value,
+    ValueCellId, VersionId,
 };
 
 // ── step-1: circular let-binding ────────────────────────────────────────────
@@ -861,12 +861,18 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
     );
 
     // ── diagnostic still emitted on eval_cached side (defensive) ─────────────
-    assert!(
-        result_b.eval_result.diagnostics.iter().any(|d| {
-            d.message.contains("circular let-binding dependency")
-                && d.message.contains("in template S")
-        }),
-        "eval_cached must still emit circular let-binding diagnostic after fix; got: {:?}",
+    // Assert structural shape only: exactly one error-severity diagnostic.
+    // Wording is already pinned by `eval_cached_emits_circular_let_binding_diagnostic`.
+    let error_count = result_b
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        error_count,
+        1,
+        "eval_cached must emit exactly one error-severity diagnostic for a cyclic-let module; got: {:?}",
         result_b.eval_result.diagnostics,
     );
 }
