@@ -36,6 +36,8 @@ case "$FILE" in
         ;;
 esac
 
+[ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
+
 # Resolve repo root from this script's path so the script works from any cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
