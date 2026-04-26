@@ -216,12 +216,17 @@ pub(crate) fn compile_field(
             // Codomain type-check: the lambda body's inferred type must implicitly
             // convert to the declared codomain. Skip the check when either type is
             // already poisoned (anti-cascade — task-1918).
+            //
+            // Also allows Int→Real widening: whole-number float literals (e.g. `42.0`,
+            // `300.0`) are typed as `Type::Int` by the expression compiler (matching
+            // the language spec's "whole numbers become Int" rule). When the declared
+            // codomain is `Real`, accepting an `Int` body avoids false-positive
+            // mismatches — this is the same widening coercion as `type_compatible`.
             if let reify_types::CompiledExprKind::Lambda { body, .. } = &compiled_expr.kind {
                 let body_ty = &body.result_type;
-                if !body_ty.is_error()
-                    && !codomain_type.is_error()
-                    && !implicitly_converts_to(body_ty, &codomain_type)
-                {
+                let body_matches_codomain = implicitly_converts_to(body_ty, &codomain_type)
+                    || matches!((body_ty, &codomain_type), (Type::Int, Type::Real));
+                if !body_ty.is_error() && !codomain_type.is_error() && !body_matches_codomain {
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "field '{}' codomain mismatch: declared codomain `{}`, \
