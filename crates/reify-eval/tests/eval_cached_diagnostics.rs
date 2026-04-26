@@ -10,7 +10,7 @@
 //! relevant diagnostic substring appears in `result.eval_result.diagnostics`.
 //! The tests are grouped with TDD step numbers in comments for traceability.
 
-use reify_eval::Engine;
+use reify_eval::{CachedEvalResult, Engine};
 use reify_eval::cache::NodeId;
 use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
 use reify_test_support::*;
@@ -818,9 +818,52 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
 
     // Engine B: eval_cached() path (the side under fix)
     let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+
+    // Helper: asserts the three engine_b-side invariants (cache parity, value-map parity,
+    // diagnostic count) for a single eval_cached call.  `eng` is passed explicitly rather
+    // than captured so it doesn't conflict with the mutable borrows inside the two
+    // eval_cached calls below.  `label` is used as a prefix in every failure message so
+    // the caller (first vs. second) is unambiguous in test output.
+    let assert_b_invariants = |label: &str, eng: &Engine, result: &CachedEvalResult| {
+        assert!(
+            eng.cache_store().get(&node_a).is_none(),
+            "{label}: engine must NOT have a cache entry for cyclic cell 'a'; got: {:?}",
+            eng.cache_store().get(&node_a),
+        );
+        assert!(
+            eng.cache_store().get(&node_b).is_none(),
+            "{label}: engine must NOT have a cache entry for cyclic cell 'b'; got: {:?}",
+            eng.cache_store().get(&node_b),
+        );
+        assert!(
+            result.eval_result.values.get(&cell_a).is_none(),
+            "{label}: result must NOT contain a value for cyclic cell 'a'; got: {:?}",
+            result.eval_result.values.get(&cell_a),
+        );
+        assert!(
+            result.eval_result.values.get(&cell_b).is_none(),
+            "{label}: result must NOT contain a value for cyclic cell 'b'; got: {:?}",
+            result.eval_result.values.get(&cell_b),
+        );
+        // Assert structural shape only: exactly one error-severity diagnostic.
+        // Wording is already pinned by `eval_cached_emits_circular_let_binding_diagnostic`.
+        let error_count: usize = result
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .count();
+        assert_eq!(
+            error_count,
+            1,
+            "{label}: must emit exactly one error-severity diagnostic for a cyclic-let module; got: {:?}",
+            result.eval_result.diagnostics,
+        );
+    };
+
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
-    // ── cache parity ─────────────────────────────────────────────────────────
+    // ── cache parity (eval() reference side) ─────────────────────────────────
     assert!(
         engine_a.cache_store().get(&node_a).is_none(),
         "eval() engine must NOT have a cache entry for cyclic cell 'a'; got: {:?}",
@@ -831,18 +874,8 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
         "eval() engine must NOT have a cache entry for cyclic cell 'b'; got: {:?}",
         engine_a.cache_store().get(&node_b),
     );
-    assert!(
-        engine_b.cache_store().get(&node_a).is_none(),
-        "eval_cached() engine must NOT have a cache entry for cyclic cell 'a'; got: {:?}",
-        engine_b.cache_store().get(&node_a),
-    );
-    assert!(
-        engine_b.cache_store().get(&node_b).is_none(),
-        "eval_cached() engine must NOT have a cache entry for cyclic cell 'b'; got: {:?}",
-        engine_b.cache_store().get(&node_b),
-    );
 
-    // ── value-map parity ──────────────────────────────────────────────────────
+    // ── value-map parity (eval() reference side) ──────────────────────────────
     assert!(
         result_a.values.get(&cell_a).is_none(),
         "eval() result must NOT contain a value for cyclic cell 'a'; got: {:?}",
@@ -853,71 +886,14 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
         "eval() result must NOT contain a value for cyclic cell 'b'; got: {:?}",
         result_a.values.get(&cell_b),
     );
-    assert!(
-        result_b.eval_result.values.get(&cell_a).is_none(),
-        "eval_cached() result must NOT contain a value for cyclic cell 'a'; got: {:?}",
-        result_b.eval_result.values.get(&cell_a),
-    );
-    assert!(
-        result_b.eval_result.values.get(&cell_b).is_none(),
-        "eval_cached() result must NOT contain a value for cyclic cell 'b'; got: {:?}",
-        result_b.eval_result.values.get(&cell_b),
-    );
 
-    // ── diagnostic still emitted on eval_cached side (defensive) ─────────────
-    // Assert structural shape only: exactly one error-severity diagnostic.
-    // Wording is already pinned by `eval_cached_emits_circular_let_binding_diagnostic`.
-    let error_count = result_b
-        .eval_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .count();
-    assert_eq!(
-        error_count,
-        1,
-        "eval_cached must emit exactly one error-severity diagnostic for a cyclic-let module; got: {:?}",
-        result_b.eval_result.diagnostics,
-    );
+    // ── eval_cached() first call invariants ───────────────────────────────────
+    assert_b_invariants("first eval_cached() call (VersionId(1))", &engine_b, &result_b);
 
     // ── second eval_cached call at bumped version: persistence invariant ──────
     // Models the LSP-keystroke pattern (VersionId increments per edit).  The fix
     // must hold across multiple calls; a regression that re-introduces caching only
     // on the second pass (e.g. via the cache fast-path) would be caught here.
     let result_b2 = engine_b.eval_cached(&module, VersionId(2));
-
-    assert!(
-        engine_b.cache_store().get(&node_a).is_none(),
-        "after second eval_cached() call (VersionId(2)): engine must NOT have a cache entry for cyclic cell 'a'; got: {:?}",
-        engine_b.cache_store().get(&node_a),
-    );
-    assert!(
-        engine_b.cache_store().get(&node_b).is_none(),
-        "after second eval_cached() call (VersionId(2)): engine must NOT have a cache entry for cyclic cell 'b'; got: {:?}",
-        engine_b.cache_store().get(&node_b),
-    );
-
-    assert!(
-        result_b2.eval_result.values.get(&cell_a).is_none(),
-        "after second eval_cached() call (VersionId(2)): result must NOT contain a value for cyclic cell 'a'; got: {:?}",
-        result_b2.eval_result.values.get(&cell_a),
-    );
-    assert!(
-        result_b2.eval_result.values.get(&cell_b).is_none(),
-        "after second eval_cached() call (VersionId(2)): result must NOT contain a value for cyclic cell 'b'; got: {:?}",
-        result_b2.eval_result.values.get(&cell_b),
-    );
-
-    let error_count_b2 = result_b2
-        .eval_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .count();
-    assert_eq!(
-        error_count_b2,
-        1,
-        "after second eval_cached() call (VersionId(2)): must emit exactly one error-severity diagnostic for a cyclic-let module; got: {:?}",
-        result_b2.eval_result.diagnostics,
-    );
+    assert_b_invariants("second eval_cached() call (VersionId(2))", &engine_b, &result_b2);
 }
