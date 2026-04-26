@@ -50752,6 +50752,28 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:14:47.342Z"
+      },
+      {
+        "id": "2359",
+        "title": "reify-doc HTML formatter: single self-contained file with embedded stylesheet",
+        "description": "Implement crates/reify-doc/src/fmt_html.rs rendering DocModel as a single self-contained HTML file (no external CSS, no JS, no external resource references). Sections mirror the markdown formatter: TOC nav with `position: sticky; top: 0;`, per-item `<section id=\"…\">` blocks, semantic HTML (`<table>` for params/ports, `<dl>` for meta, `<p>` for doc paragraphs, `<code>` for code spans). Hand-written embedded `<style>` block ≤100 lines: monospace fallback for code, max-width 900px on body, generous line-height. No syntax highlighting in v0.1. Snapshot test against examples/integration_full_v01.ri verifying the output renders in a browser (no external requests). PRD: docs/prds/reify-doc-tool.md slice 5.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2360",
+        "title": "Node-trait composition: wire PROGRESSIVE trait for intermediate emission semantics",
+        "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.6: PROGRESSIVE-tagged nodes emit intermediate results over time; scheduler expects multiple cache updates per evaluation. Cross-check with freshness-propagation: each intermediate emission updates the cache and triggers a freshness-only downstream walk (#2335). Integration test with a synthetic progressive node emitting 3 intermediates then Final, assert downstream sees Intermediate then Final transitions. Depends on Freshness PRD #2319, #2326, #2328, #2335.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50763,7 +50785,8 @@
         "master"
       ],
       "created": "2026-04-26T20:15:08.130Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:15:27.956Z"
     }
   }
 }
