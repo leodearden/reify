@@ -35,6 +35,29 @@ use crate::{
 /// release builds, can reference it as a single source of truth.
 pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 
+/// Returns `true` when `ty` may legitimately appear as the `cell_type` of a
+/// `ValueCellDecl` post-compilation. The two unrepresentable variants are
+/// `Type::TypeParam(_)` and `Type::Geometry` — neither has a corresponding
+/// `Value` variant, so any non-Undef value supplied to a cell of those types
+/// would fall through `value_type_kind_matches` (lib.rs) and trigger
+/// `EngineError::TypeKindMismatch`.
+///
+/// Single source of truth shared by the runtime invariant
+/// `assert_value_cell_types_representable` (this file) and the CI regression
+/// walker `assert_template_cells_representable`
+/// (`crates/reify-eval/tests/value_cell_type_invariants.rs`). Adding a third
+/// unrepresentable variant requires updating only this function.
+///
+/// `Type::StructureRef` is intentionally permitted (task 1876) — see
+/// `assert_value_cell_types_representable` doc below for the rationale.
+///
+/// Re-exported from the crate root with `#[doc(hidden)] pub use` so the
+/// integration test crate can reach it; not part of the documented public API.
+pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
+    use reify_types::Type;
+    !matches!(ty, Type::TypeParam(_) | Type::Geometry)
+}
+
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
 /// evaluation graph has a `cell_type` that has a corresponding `Value`
 /// variant.  `Type::TypeParam` and `Type::Geometry` have no `Value`
