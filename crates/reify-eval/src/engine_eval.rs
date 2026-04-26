@@ -1646,7 +1646,7 @@ impl Engine {
             // value/snapshot updates in eval_cached are a separate gap (see design decision:
             // "Solver Solved arm in eval_cached is intentionally empty"). Only the
             // Infeasible and NoProgress arms matter for this task's diagnostic-emission goal.
-            if self.solver.is_some() {
+            if let Some(solver) = &self.solver {
                 let auto_ids: std::collections::HashSet<ValueCellId> = template
                     .value_cells
                     .iter()
@@ -1685,7 +1685,7 @@ impl Engine {
                         functions: self.functions.clone(),
                     };
 
-                    let solve_result = self.solver.as_ref().unwrap().solve(&problem);
+                    let solve_result = solver.solve(&problem);
 
                     match solve_result {
                         SolveResult::Solved { .. } => {
