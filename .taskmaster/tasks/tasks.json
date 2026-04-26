@@ -48711,11 +48711,16 @@
         "description": "Two test-quality cleanups in `crates/reify-constraints/tests/solver_integration.rs` flagged on task 2255 review.",
         "details": "Follow-up to task 2255 (esc-2255-65, reviewer_comprehensive). Two suggestions in `crates/reify-constraints/tests/solver_integration.rs`:\n\n1. **Drop hardcoded line citation in companion-test doc comment** (lines 1759-1764).\n   The doc comment for `infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code` references `solver.rs:672-682` — a coordinate that will drift on the next edit and become misleading without affecting test behavior. Replace with a symbolic landmark (e.g. \"the shared `Infeasible` return after the residual check in `solve_core`\"). This matches the project-wide convention to prefer symbolic landmarks over line numbers in test docs (see commit `eb80a00afd docs(reify-eval): replace hardcoded line citations with symbolic landmarks`).\n\n2. **Strengthen residual-path test assertion** (lines 1772-1812).\n   The new residual-path test asserts only that `ConstraintUnsatisfiable` appears in the diagnostics — it does not verify the residual branch was actually exercised vs. the bounds-cap branch. A future refactor that routed contradictory equalities through the bounds-cap path would still pass this test, defeating the stated purpose of independently exercising the residual branch.\n\n   Pick one of:\n   (a) Tighten the assertion to also match a residual-style message substring (e.g. \"max absolute residual\" or whatever solver.rs emits on that branch). Confirm by reading the residual-branch emission site for the exact substring.\n   (b) Soften the framing: drop \"residual-only\" from the doc and add a comment that any path producing `ConstraintUnsatisfiable` is acceptable — accepting the test as a generic regression guard rather than a branch-discriminating one.\n\n   Prefer (a) if the residual emission has a stable, identifiable substring; otherwise (b).\n\nAcceptance:\n- Doc comment no longer cites `solver.rs:672-682` (or any line range).\n- Residual-path test either asserts on a residual-specific message substring, or its doc explicitly declines to discriminate branches.\n- All existing tests still pass.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T10:01:39.186Z"
+        "updatedAt": "2026-04-26T10:16:30.539Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "47221dd6a5691902943584b2ce952167d41bf132"
+          }
+        }
       },
       {
         "id": "2264",
@@ -48732,9 +48737,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T10:10:57.935Z",
+      "lastModified": "2026-04-26T10:16:30.539Z",
       "taskCount": 2253,
-      "completedCount": 2015,
+      "completedCount": 2016,
       "tags": [
         "master"
       ]
