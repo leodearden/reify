@@ -193,50 +193,26 @@ fn reapply_guard_deactivations_post_wave2(
     }
 }
 
-/// Phase 3 cross-phase dedup check (tasks 2140 / 2146).
-///
-/// Returns `true` if Phase 3 should **skip** re-elaborating the guarded group
-/// whose guard cell currently holds `guard_val` — i.e. Phase 1's work is still
-/// valid. Returns `false` if the group must be re-elaborated.
-///
-/// Three cases, in priority order:
-///
-/// (a) Phase 1 processed this group **with the same guard value** as `guard_val`
-///     → Phase 1's work is still valid → skip.
-/// (b) Phase 1 processed this group **with a different guard value** (wave2
-///     flipped the guard after Phase 1 ran) → the group is in an intermediate
-///     state; must re-elaborate unconditionally, regardless of what the old
-///     snapshot says (task 2146).
-/// (c) Phase 1 **did not** touch this group → apply the standard old-vs-new
-///     skip: skip only when `old_guard_val == Some(guard_val)`.
-///
-/// Called from both `edit_param` Phase 3 and `edit_source` Phase 3 so the
-/// tri-case logic lives in exactly one place.
-fn phase3_skip_group(
-    guard_cell: &ValueCellId,
-    guard_val: &Value,
-    phase1: &HashMap<ValueCellId, Value>,
-    old_guard_val: Option<&Value>,
-) -> bool {
-    match phase1.get(guard_cell) {
-        Some(p1_val) if p1_val == guard_val => true, // (a): Phase 1 still valid
-        Some(_) => false,                            // (b): wave2 flip → must re-elaborate
-        None => old_guard_val == Some(guard_val),    // (c): unchanged → skip
-    }
-}
-
-/// Returns `true` iff Phase 3 **must** re-elaborate a guarded group —
-/// the inverse of [`phase3_skip_group`], lifted to handle the case where
-/// the guard cell is absent from `values`.
+/// Returns `true` iff Phase 3 **must** re-elaborate a guarded group
+/// (tasks 2140, 2146).
 ///
 /// Used for **both** the `.any()` early-exit predicate (`guard_changed`) and
 /// the per-group `continue` inside the Phase 3 loop so both sites share a
-/// single source of truth (tasks 2140, 2146).
+/// single source of truth.
 ///
-/// When the guard cell is absent from `values` (post-eval invariant violation,
-/// defended against in `edit_source` Phase 3), the group is treated as needing
-/// Phase 3 iff there was a prior value — i.e. the guard cell disappeared,
-/// which is a structural change.
+/// Four cases, in priority order:
+///
+/// (absent) Guard cell is **absent** from `values` (post-eval invariant
+///     violation, defended against in `edit_source` Phase 3) → treat as
+///     needing Phase 3 iff there was a prior value (structural change).
+/// (a) Phase 1 processed this group **with the same guard value** as the
+///     current one → Phase 1's work is still valid → skip (return false).
+/// (b) Phase 1 processed this group **with a different guard value** (wave2
+///     flipped the guard after Phase 1 ran) → the group is in an intermediate
+///     state; must re-elaborate unconditionally, regardless of what the old
+///     snapshot says (task 2146) → return true.
+/// (c) Phase 1 **did not** touch this group → apply the standard old-vs-new
+///     check: re-elaborate only when `old_guard_val != Some(current)`.
 fn group_needs_phase3(
     group: &GuardedGroupInfo,
     values: &ValueMap,
@@ -245,7 +221,11 @@ fn group_needs_phase3(
 ) -> bool {
     match values.get(&group.guard_cell) {
         None => old_guard_val.is_some(),
-        Some(new_val) => !phase3_skip_group(&group.guard_cell, new_val, phase1, old_guard_val),
+        Some(new_val) => match phase1.get(&group.guard_cell) {
+            Some(p1_val) if p1_val == new_val => false, // (a) Phase 1 still valid → skip
+            Some(_) => true,                            // (b) wave2 flip → must re-elaborate
+            None => old_guard_val != Some(new_val),     // (c) old-vs-new skip
+        },
     }
 }
 
@@ -2382,8 +2362,7 @@ mod tests {
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
     use super::{
-        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, phase3_skip_group,
-        reelaborate_guarded_group,
+        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, reelaborate_guarded_group,
     };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
