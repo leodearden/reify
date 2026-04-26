@@ -47801,14 +47801,14 @@
           ],
           "memory_hints": {
             "entities": [
-              "check_trait_conformance"
+              "TraitConformance"
             ],
             "queries": [
-              "Option TraitObject collection-typed trait params conformance call sites",
-              "trait conformance conformance.rs check_trait_conformance",
-              "trait param types collection Option handling"
+              "trait conformance Option TraitObject collection-typed params call site check",
+              "conformance mod.rs TODO follow-up known gap trait params"
             ]
-          }
+          },
+          "_causation_id": "94644130-2f15-41ed-9dc9-f2551db2f971"
         }
       },
       {
