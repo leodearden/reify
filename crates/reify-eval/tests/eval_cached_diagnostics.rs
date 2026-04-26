@@ -408,6 +408,74 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
     );
 }
 
+/// Calling eval_cached multiple times on a param cell with a dimension-mismatched
+/// override must continue to surface the warning on EVERY call — including a
+/// same-version fast-path hit and a bumped-version repeat.
+///
+/// Locks the ScalarDimensionMismatch rejection variant independently — preventing
+/// a future regression where someone accidentally narrows the unconditional pre-check
+/// to only the TypeKindMismatch path. Should pass immediately after step-2 because
+/// both rejection variants flow through the same pre-check block.
+#[test]
+fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() {
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "x",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(1.0), Type::length())),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    // Push a Mass-dimensioned scalar into a Length param — dimension mismatch
+    engine.set_param_and_invalidate(
+        &x_id,
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        },
+    );
+
+    // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
+    let result1 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result1.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("param_override for") && d.message.contains("dimension mismatch")
+        }),
+        "first eval_cached call must warn about dimension mismatch; got: {:?}",
+        result1.eval_result.diagnostics,
+    );
+
+    // Second call — same version (fast-path hit). Must still surface the warning.
+    let result2 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result2.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("param_override for") && d.message.contains("dimension mismatch")
+        }),
+        "second eval_cached call (same version, fast-path hit) must also warn about \
+         dimension mismatch (must not drop on cache hit); got: {:?}",
+        result2.eval_result.diagnostics,
+    );
+
+    // Third call — bumped version. Must still surface the warning.
+    let result3 = engine.eval_cached(&module, VersionId(2));
+    assert!(
+        result3.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("param_override for") && d.message.contains("dimension mismatch")
+        }),
+        "third eval_cached call (bumped version) must also warn about dimension mismatch; \
+         got: {:?}",
+        result3.eval_result.diagnostics,
+    );
+}
+
 // ── step-10: repeat-call regression lock for solver diagnostics ──────────────
 
 /// Calling eval_cached twice on the same (unchanged) module must continue to
