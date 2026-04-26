@@ -642,6 +642,38 @@ mod tests {
     }
 
     #[test]
+    fn precedence_instance_wins_over_type_wins_over_default() {
+        let mut overrides = NodePolicyOverrides::new();
+        let n = make_node("n");
+        let m = make_node("m"); // same kind (Value), different node
+
+        // (a) Set a type override for Value kind and an instance override for n
+        overrides.set_type(NodeKind::Value, NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        overrides.set_instance(n.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+
+        // instance override wins over type override for n
+        assert_eq!(
+            overrides.resolve(&n),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "instance override must win over type override"
+        );
+        // m has no instance override → type override wins over default
+        assert_eq!(
+            overrides.resolve(&m),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "type override must win over default when no instance is set"
+        );
+
+        // (b) Constraint node with no type or instance override → default wins
+        let c = make_constraint_node("E", 0);
+        assert_eq!(
+            overrides.resolve(&c),
+            NodeCommitmentOverride::CommitIfSlow,
+            "default must win when no instance and no matching type override"
+        );
+    }
+
+    #[test]
     fn set_type_override_resolves_to_type_value_and_isolates_other_kinds() {
         let mut overrides = NodePolicyOverrides::new();
         let value_node = make_node("v");
