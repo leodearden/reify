@@ -41,8 +41,8 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
-    CheckResult, Engine, EngineError, EvalResult, GuardLookup, eval_ctx_with_meta,
-    guard_state_fingerprint,
+    CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
+    eval_ctx_with_meta, guard_state_fingerprint,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -192,6 +192,73 @@ fn reapply_guard_deactivations_post_wave2(
     }
 }
 
+/// Phase 3 cross-phase dedup check (tasks 2140 / 2146).
+///
+/// Returns `true` if Phase 3 should **skip** re-elaborating the guarded group
+/// whose guard cell currently holds `guard_val` — i.e. Phase 1's work is still
+/// valid. Returns `false` if the group must be re-elaborated.
+///
+/// Three cases, in priority order:
+///
+/// (a) Phase 1 processed this group **with the same guard value** as `guard_val`
+///     → Phase 1's work is still valid → skip.
+/// (b) Phase 1 processed this group **with a different guard value** (wave2
+///     flipped the guard after Phase 1 ran) → the group is in an intermediate
+///     state; must re-elaborate unconditionally, regardless of what the old
+///     snapshot says (task 2146).
+/// (c) Phase 1 **did not** touch this group → apply the standard old-vs-new
+///     skip: skip only when `old_guard_val == Some(guard_val)`.
+///
+/// Called from both `edit_param` Phase 3 and `edit_source` Phase 3 so the
+/// tri-case logic lives in exactly one place.
+fn phase3_skip_group(
+    guard_cell: &ValueCellId,
+    guard_val: &Value,
+    phase1: &HashMap<ValueCellId, Value>,
+    old_guard_val: Option<&Value>,
+) -> bool {
+    match phase1.get(guard_cell) {
+        Some(p1_val) if p1_val == guard_val => true, // (a): Phase 1 still valid
+        Some(_) => false,                            // (b): wave2 flip → must re-elaborate
+        None => old_guard_val == Some(guard_val),    // (c): unchanged → skip
+    }
+}
+
+/// Returns `true` iff Phase 3 **must** re-elaborate a guarded group —
+/// the inverse of [`phase3_skip_group`], lifted to handle the case where
+/// the guard cell is absent from `values`.
+///
+/// Used for **both** the `.any()` early-exit predicate (`guard_changed`) and
+/// the per-group `continue` inside the Phase 3 loop so both sites share a
+/// single source of truth (tasks 2140, 2146).
+///
+/// When the guard cell is absent from `values` (post-eval invariant violation,
+/// defended against in `edit_source` Phase 3), the group is treated as needing
+/// Phase 3 iff there was a prior value — i.e. the guard cell disappeared,
+/// which is a structural change.
+fn group_needs_phase3(
+    group: &GuardedGroupInfo,
+    values: &ValueMap,
+    old_guard_val: Option<&Value>,
+    phase1: &HashMap<ValueCellId, Value>,
+) -> bool {
+    match values.get(&group.guard_cell) {
+        None => old_guard_val.is_some(),
+        Some(new_val) => !phase3_skip_group(&group.guard_cell, new_val, phase1, old_guard_val),
+    }
+}
+
+/// Look up the pre-edit snapshot guard value for `gc` from the engine's
+/// `eval_state`, returning a borrowed `&Value` (lifetime tied to `eval_state`).
+///
+/// Used at the outer `.any(|group| group_needs_phase3(...))` predicate **and**
+/// the per-group `continue` check inside the Phase 3 loop in both `edit_param`
+/// and `edit_source` — four call sites total — so the extraction lives in one
+/// place rather than being repeated verbatim each time.
+fn old_guard_for<'a>(eval_state: Option<&'a EvaluationState>, gc: &ValueCellId) -> Option<&'a Value> {
+    eval_state.and_then(|s| s.snapshot.values.get(gc)).map(|(v, _)| v)
+}
+
 /// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
 /// probe in `Engine::edit_source`.
 ///
@@ -286,26 +353,6 @@ fn guard_value_unchanged(
         .and_then(|vs| vs.get(guard_cell))
         .map(|(v, _)| v)
         == Some(new_val)
-}
-
-/// Returns `true` when any guarded group's guard cell has a different value in
-/// `values` vs. the pre-edit snapshot, indicating that Phase 3
-/// re-elaboration is needed.
-///
-/// Accepts the snapshot `values` map directly (rather than the full
-/// `EvaluationState`) to keep callers and unit tests dependency-free.
-fn phase3_guard_changed(
-    groups: &[GuardedGroupInfo],
-    values: &ValueMap,
-    snapshot_values: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
-) -> bool {
-    groups.iter().any(|group| {
-        let new_val = values.get(&group.guard_cell);
-        let old_val = snapshot_values
-            .and_then(|vs| vs.get(&group.guard_cell))
-            .map(|(v, _)| v);
-        new_val != old_val
-    })
 }
 
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
@@ -639,20 +686,20 @@ impl Engine {
         // If any structure_controlling cell changed, re-evaluate guarded groups
         // to flip which branch is active/inactive, and recompute fingerprint.
         //
-        // Cross-phase dedup (task 2140): the set is non-empty only when Phase 1
-        // fires; the else arm returns an empty HashSet so no allocation is wasted
-        // when no guards are dirty. Phase 3 consults the set to skip groups
-        // already re-elaborated here. Reelaboration is idempotent for a given
-        // guard value — provided wave2 has not subsequently overwritten inactive
-        // members (the post-wave2 cleanup in the solver block re-deactivates them).
-        let phase1_reelaborated: HashSet<ValueCellId> = {
+        // Cross-phase dedup (task 2140, 2146): the map is non-empty only when
+        // Phase 1 fires; the else arm returns an empty HashMap so no allocation
+        // is wasted when no guards are dirty. Phase 3 consults the map to skip
+        // groups already re-elaborated here when the guard value is unchanged
+        // since Phase 1 — but falls through to full re-elaboration if wave2 has
+        // flipped the guard value after Phase 1 recorded it (task 2146 fix).
+        let phase1_reelaborated: HashMap<ValueCellId, Value> = {
             let graph = &new_snapshot.graph;
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             });
 
             if has_dirty_guards {
-                let mut set = HashSet::new();
+                let mut set = HashMap::new();
                 for group in &graph.guarded_groups {
                     // Re-evaluate the guard cell's expression
                     let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
@@ -695,8 +742,6 @@ impl Engine {
                         continue;
                     }
                     self.last_guard_phase_group_evals += 1;
-                    set.insert(group.guard_cell.clone());
-
                     reelaborate_guarded_group(
                         graph,
                         group,
@@ -706,6 +751,14 @@ impl Engine {
                         &functions,
                         &self.meta_map,
                     );
+                    // Record guard_cell → guard_val so Phase 3 can detect a
+                    // wave2 flip: if the current guard value differs from the
+                    // recorded value, Phase 3 falls through to full re-elaboration
+                    // (task 2146 fix). The `.insert` sits after the skip-continue
+                    // so only actually-processed groups land in the map.
+                    // guard_val is moved here (not cloned) — reelaborate_guarded_group
+                    // only borrows it by reference.
+                    set.insert(group.guard_cell.clone(), guard_val);
                 }
 
                 // Recompute topology fingerprint including guard states.
@@ -715,7 +768,7 @@ impl Engine {
                     graph.topology_fingerprint().combine(guard_state_hash);
                 set
             } else {
-                HashSet::new()
+                HashMap::new()
             }
         };
 
@@ -906,12 +959,17 @@ impl Engine {
         // re-evaluate affected guarded group members: activate the correct
         // branch (members or else_members) and deactivate the other.
         // Finally, recompute topology fingerprint to reflect guard state.
+        //
+        // `guard_changed` is also true when Phase 1 processed a group with a
+        // guard value that wave2 subsequently changed (flip-then-revert); in
+        // that case `group_needs_phase3` detects the inconsistency regardless
+        // of whether the final guard value matches the pre-edit snapshot
+        // (task 2146).
         {
-            let guard_changed = phase3_guard_changed(
-                &new_snapshot.graph.guarded_groups,
-                &values,
-                self.eval_state.as_ref().map(|s| &s.snapshot.values),
-            );
+            let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
+                let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
+                group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated)
+            });
 
             if guard_changed {
                 // Field-level borrow splitting: pre-bind `graph` so the loop can
@@ -921,30 +979,23 @@ impl Engine {
                 let graph = &new_snapshot.graph;
                 // Re-evaluate each guarded group based on current guard values
                 for group in &graph.guarded_groups {
-                    // Site 3: guard cell must be present — eval() has completed and populated all
-                    // guard cells into the values map. A missing guard cell here is a logic error.
+                    // Cross-phase dedup — see `group_needs_phase3` (tasks 2140 / 2146).
+                    // The unified predicate also handles the wave2 flip case where
+                    // Phase 1 recorded a different guard value than the current one.
+                    let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
+                    if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
+                        continue;
+                    }
+                    // `group_needs_phase3` only returns `true` here when `values` contains the
+                    // guard cell (the `None` arm returns `false` when `old_guard_val` is `None`,
+                    // so an absent guard cell with no prior snapshot value is always skipped).
+                    // A guard cell absent from `values` but present in the old snapshot is a
+                    // logic error (structural removal without going through Phase 1) — the
+                    // `.expect()` below surfaces it as a panic rather than silently skipping.
                     let guard_val = values
                         .get(&group.guard_cell)
                         .cloned()
                         .expect("guard cell must have a value after initial evaluation");
-                    // Cross-phase dedup: skip groups already re-elaborated by Phase 1
-                    // in this same edit_param call (task 2140). Reelaboration is
-                    // idempotent, so Phase 1's work is sufficient. The existing
-                    // old-vs-new skip below still covers groups where Phase 1 did NOT
-                    // fire (e.g. resolver-driven guard changes via auto params).
-                    if phase1_reelaborated.contains(&group.guard_cell) {
-                        continue;
-                    }
-                    // Per-group skip: if this group's guard value is unchanged vs.
-                    // the pre-edit snapshot, its activation state has not flipped
-                    // and its members don't need re-elaboration.
-                    if guard_value_unchanged(
-                        self.eval_state.as_ref().map(|s| &s.snapshot.values),
-                        &group.guard_cell,
-                        &guard_val,
-                    ) {
-                        continue;
-                    }
                     self.last_guard_phase_group_evals += 1;
                     reelaborate_guarded_group(
                         graph,
@@ -1598,16 +1649,18 @@ impl Engine {
         // the deferred-probe perf-lock test.
         self.last_role_flip_probes = 0;
 
-        // Cross-phase dedup set (task 2142): records guard_cell IDs for every
-        // group that Phase 1 actually re-elaborated in this edit_source call.
-        // Phase 3 consults this set and skips groups already covered by Phase 1.
-        // Reelaboration is idempotent for a given guard value — provided wave2
-        // has not subsequently overwritten inactive members (the post-wave2
-        // cleanup in the solver block re-deactivates them, mirroring task 2140).
-        // Declared at function scope because edit_source's Phase 1 is a large
-        // multi-step block (role-flip probe + composite has_dirty_guards); wrapping
-        // it as a block-expression would churn more lines than necessary.
-        let mut phase1_reelaborated: HashSet<ValueCellId> = HashSet::new();
+        // Cross-phase dedup map (task 2142, 2146): maps guard_cell → guard_val for
+        // every group that Phase 1 actually re-elaborated in this edit_source call.
+        // Phase 3 consults this map: it skips groups already covered by Phase 1 when
+        // the recorded guard value matches the current value, but falls through to
+        // full re-elaboration when wave2 has flipped the guard after Phase 1 recorded
+        // it (task 2146 fix). Reelaboration is idempotent for a given guard value —
+        // provided wave2 has not subsequently overwritten inactive members (the
+        // post-wave2 cleanup in the solver block re-deactivates them, mirroring
+        // task 2140). Declared at function scope because edit_source's Phase 1 is a
+        // large multi-step block (role-flip probe + composite has_dirty_guards);
+        // wrapping it as a block-expression would churn more lines than necessary.
+        let mut phase1_reelaborated: HashMap<ValueCellId, Value> = HashMap::new();
 
         // ── Phase 1: Guard re-elaboration (dirty-cone trigger) ───────────
         // If any structure_controlling cell is in the dirty cone or
@@ -1733,13 +1786,15 @@ impl Engine {
                         }
                     }
                     self.last_guard_phase_group_evals += 1;
-                    // Record this group as re-elaborated by Phase 1 so Phase 3
-                    // can skip it (cross-phase dedup, task 2142).  The insert
-                    // sits after the skip-continue so only actually-processed
-                    // groups land in the set — guard-flip, added-member, and
-                    // role-flip triggers all satisfy "Phase 1 re-elaborated this
-                    // group", which is precisely what Phase 3 needs to know.
-                    phase1_reelaborated.insert(group.guard_cell.clone());
+                    // Record guard_cell → guard_val so Phase 3 can detect a
+                    // wave2 flip: if the current guard value differs from the
+                    // recorded value, Phase 3 falls through to full re-elaboration
+                    // (task 2146 fix). The insert sits after the skip-continue so
+                    // only actually-processed groups land in the map — guard-flip,
+                    // added-member, and role-flip triggers all satisfy "Phase 1
+                    // re-elaborated this group", which is precisely what Phase 3
+                    // needs to know.
+                    phase1_reelaborated.insert(group.guard_cell.clone(), guard_val.clone());
 
                     let is_true = matches!(&guard_val, Value::Bool(true));
                     let is_false = matches!(&guard_val, Value::Bool(false));
@@ -1983,12 +2038,17 @@ impl Engine {
         // feeds the guard, or the dirty-cone path missed an edge (defensive).
         // Uses GuardLookup::Strict because eval() has populated every guard
         // cell by this point; a missing cell would be a logic error.
+        //
+        // `guard_changed` is also true when Phase 1 processed a group with a
+        // guard value that wave2 subsequently changed (flip-then-revert); in
+        // that case `group_needs_phase3` detects the inconsistency regardless
+        // of whether the final guard value matches the pre-edit snapshot
+        // (task 2146).
         {
-            let guard_changed = phase3_guard_changed(
-                &new_snapshot.graph.guarded_groups,
-                &values,
-                self.eval_state.as_ref().map(|s| &s.snapshot.values),
-            );
+            let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
+                let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
+                group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated)
+            });
 
             if guard_changed {
                 // Field-level borrow splitting: pre-bind `graph` so the loop can
@@ -1997,6 +2057,17 @@ impl Engine {
                 // This matches the Phase 1 pattern and the edit_param Phase 3 fix; no .clone() needed.
                 let graph = &new_snapshot.graph;
                 for group in &graph.guarded_groups {
+                    // Cross-phase dedup — see `group_needs_phase3` (tasks 2142 / 2146).
+                    // The unified predicate handles three cases: (a) Phase 1 with
+                    // matching guard value → skip; (b) Phase 1 with different guard
+                    // value (wave2 flip) → re-elaborate unconditionally; (c) Phase 1
+                    // did not fire → fall back to old-vs-new skip. Phase 3 has no
+                    // added-member or role-flip exception (those are Phase 1 concerns
+                    // only).
+                    let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
+                    if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
+                        continue;
+                    }
                     // Phase 1 (the dirty-cone-triggered branch above) guarantees
                     // that every guard_cell in structure_controlling has a value
                     // in `values`. But Phase 3 is separately gated on
@@ -2008,27 +2079,6 @@ impl Engine {
                     let Some(guard_val) = values.get(&group.guard_cell).cloned() else {
                         continue;
                     };
-                    // Cross-phase dedup (task 2142): skip groups already re-elaborated
-                    // by Phase 1 in this edit_source call. Reelaboration is idempotent
-                    // so Phase 1's work is sufficient. The existing old-vs-new skip
-                    // below still handles groups where Phase 1 did NOT fire (e.g.
-                    // resolver-driven guard changes via auto params), mirroring the
-                    // edit_param dedup at engine_edit.rs lines 782-789 (task 2140).
-                    if phase1_reelaborated.contains(&group.guard_cell) {
-                        continue;
-                    }
-                    // Per-group skip: if this group's guard value is unchanged
-                    // vs. the pre-edit snapshot, its activation state has not
-                    // flipped and its members don't need re-elaboration.
-                    // Phase 3 has no added-member or role-flip exception
-                    // (those are Phase 1 concerns only).
-                    if guard_value_unchanged(
-                        self.eval_state.as_ref().map(|s| &s.snapshot.values),
-                        &group.guard_cell,
-                        &guard_val,
-                    ) {
-                        continue;
-                    }
                     self.last_guard_phase_group_evals += 1;
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
@@ -2303,7 +2353,10 @@ mod tests {
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{deactivate_if_not_auto, guard_value_unchanged, phase3_guard_changed, reelaborate_guarded_group};
+    use super::{
+        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, phase3_skip_group,
+        reelaborate_guarded_group,
+    };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -3065,21 +3118,122 @@ mod tests {
         assert!(!guard_value_unchanged(None, &guard_cell, &Value::Bool(true)));
     }
 
-    // ── phase3_guard_changed ──────────────────────────────────────────────
+    // ── phase3_skip_group ─────────────────────────────────────────────────
 
-    /// (a) Empty groups slice → no guard to diff → returns false.
+    /// (a) Phase 1 recorded the **same** guard value as the current one
+    /// → Phase 1's work is still valid → skip (returns true).
+    /// The `old_guard_val` is irrelevant when Phase 1 touched the group.
     #[test]
-    fn phase3_guard_changed_returns_false_for_empty_groups() {
-        let values = ValueMap::default();
-        let snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-        assert!(!phase3_guard_changed(&[], &values, Some(&snapshot)));
+    fn phase3_skip_group_returns_true_when_phase1_recorded_same_value() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true));
+
+        // old = false, current = true (same as phase1 → case a)
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(true),
+            &phase1,
+            Some(&Value::Bool(false)),
+        );
+        assert!(result, "case (a): Phase 1 still valid → should skip");
     }
 
-    /// (b) One group, values and snapshot both contain guard_cell = Bool(true)
-    /// → unchanged → returns false.
+    /// (b) Phase 1 recorded a **different** guard value from the current one
+    /// (wave2 flipped the guard after Phase 1 ran) → must re-elaborate regardless
+    /// of what the old snapshot says → returns false.
+    ///
+    /// This is the regression-locking case for task 2146: the guard currently
+    /// matches the snapshot (both false), but Phase 1 had set it to true, so
+    /// Phase 3 must not skip this group.
     #[test]
-    fn phase3_guard_changed_returns_false_when_guard_unchanged() {
+    fn phase3_skip_group_returns_false_when_phase1_recorded_different_value() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true)); // Phase 1 evaluated to true
+
+        // Wave2 flipped back to false; old snapshot was also false.
+        // Even though current == old, Phase 1's record differs → case (b) → must re-elaborate.
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(false), // current (after wave2 flip)
+            &phase1,
+            Some(&Value::Bool(false)), // old snapshot
+        );
+        assert!(!result, "case (b): wave2 flip → must re-elaborate, not skip");
+    }
+
+    /// (c-skip) Phase 1 did NOT touch this group AND guard is unchanged
+    /// (current == old) → apply standard old-vs-new skip → returns true.
+    #[test]
+    fn phase3_skip_group_returns_true_when_phase1_empty_and_guard_unchanged() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(true),
+            &phase1,
+            Some(&Value::Bool(true)), // old == current → skip
+        );
+        assert!(result, "case (c): guard unchanged → skip");
+    }
+
+    /// (c-re-elaborate) Phase 1 did NOT touch this group AND guard changed
+    /// → must re-elaborate → returns false.
+    #[test]
+    fn phase3_skip_group_returns_false_when_phase1_empty_and_guard_changed() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(false), // current
+            &phase1,
+            Some(&Value::Bool(true)), // old ≠ current → must re-elaborate
+        );
+        assert!(!result, "case (c): guard changed → must re-elaborate");
+    }
+
+    /// (c-no-prior) Phase 1 did NOT touch this group AND there is no prior
+    /// guard value (None) → None ≠ Some(current) → returns false.
+    #[test]
+    fn phase3_skip_group_returns_false_when_phase1_empty_and_old_absent() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(true),
+            &phase1,
+            None, // no old value → None ≠ Some(Bool(true)) → must re-elaborate
+        );
+        assert!(!result, "case (c): no prior value → must re-elaborate");
+    }
+
+    /// (b-undef) Phase 1 recorded Bool(true) but current is Undef
+    /// → values differ → case (b) → must re-elaborate → returns false.
+    #[test]
+    fn phase3_skip_group_treats_undef_as_distinct_from_bool() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true)); // Phase 1 set Bool(true)
+
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Undef,            // current is Undef (distinct from Bool(true))
+            &phase1,
+            Some(&Value::Bool(true)), // old value (irrelevant in case b)
+        );
+        assert!(!result, "case (b): Phase1=Bool(true), current=Undef → must re-elaborate");
+    }
+
+    // ── group_needs_phase3 ────────────────────────────────────────────────
+
+    /// When guard_cell IS in values and phase3_skip_group says skip →
+    /// group_needs_phase3 returns false.
+    #[test]
+    fn group_needs_phase3_returns_false_when_skip_says_skip() {
         let guard_cell = ValueCellId::new("E", "guard");
         let group = GuardedGroupInfo {
             guard_cell: guard_cell.clone(),
@@ -3089,18 +3243,25 @@ mod tests {
             else_constraints: vec![],
         };
         let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true));
-        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+        values.insert(guard_cell.clone(), Value::Bool(true)); // current
 
-        assert!(!phase3_guard_changed(&[group], &values, Some(&snapshot)));
+        // phase1 recorded the same value → phase3_skip_group returns true → needs = false
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true));
+
+        let needs = group_needs_phase3(
+            &group,
+            &values,
+            Some(&Value::Bool(false)), // old
+            &phase1,
+        );
+        assert!(!needs, "skip_group=true → group_needs_phase3=false");
     }
 
-    /// (c) One group, values has Bool(true) and snapshot has Bool(false)
-    /// → changed → returns true.
+    /// When guard_cell IS in values and phase3_skip_group says must re-elaborate
+    /// (case b: wave2 flip) → group_needs_phase3 returns true.
     #[test]
-    fn phase3_guard_changed_returns_true_when_guard_value_differs() {
+    fn group_needs_phase3_returns_true_when_skip_says_must_re_elaborate() {
         let guard_cell = ValueCellId::new("E", "guard");
         let group = GuardedGroupInfo {
             guard_cell: guard_cell.clone(),
@@ -3110,18 +3271,25 @@ mod tests {
             else_constraints: vec![],
         };
         let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true));
-        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-        snapshot.insert(guard_cell.clone(), (Value::Bool(false), DeterminacyState::Determined));
+        values.insert(guard_cell.clone(), Value::Bool(false)); // current (wave2 flipped back)
 
-        assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
+        // phase1 recorded Bool(true) but current is Bool(false) → case (b) → must re-elaborate
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true));
+
+        let needs = group_needs_phase3(
+            &group,
+            &values,
+            Some(&Value::Bool(false)), // old == current but ≠ phase1 → must re-elaborate
+            &phase1,
+        );
+        assert!(needs, "wave2 flip: phase1≠current → group_needs_phase3=true");
     }
 
-    /// (d) One group, values has Bool(true) and snapshot_values = None
-    /// → Some(&Bool(true)) != None → returns true.
+    /// When guard_cell is ABSENT from values AND there is no prior value
+    /// → no structural change → group_needs_phase3 returns false.
     #[test]
-    fn phase3_guard_changed_returns_true_when_snapshot_is_none() {
+    fn group_needs_phase3_returns_false_when_guard_cell_absent_and_no_prior() {
         let guard_cell = ValueCellId::new("E", "guard");
         let group = GuardedGroupInfo {
             guard_cell: guard_cell.clone(),
@@ -3130,16 +3298,17 @@ mod tests {
             constraints: vec![],
             else_constraints: vec![],
         };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true));
+        let values = ValueMap::default(); // guard_cell absent
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
 
-        assert!(phase3_guard_changed(&[group], &values, None));
+        let needs = group_needs_phase3(&group, &values, None, &phase1);
+        assert!(!needs, "absent guard + no prior → group_needs_phase3=false");
     }
 
-    /// (e) One group, values does NOT contain guard_cell but snapshot does
-    /// → None != Some(&Bool(true)) → returns true.
+    /// When guard_cell is ABSENT from values but WAS present before
+    /// → structural change (guard cell disappeared) → group_needs_phase3 returns true.
     #[test]
-    fn phase3_guard_changed_returns_true_when_new_val_absent_but_old_present() {
+    fn group_needs_phase3_returns_true_when_guard_cell_disappears() {
         let guard_cell = ValueCellId::new("E", "guard");
         let group = GuardedGroupInfo {
             guard_cell: guard_cell.clone(),
@@ -3148,11 +3317,12 @@ mod tests {
             constraints: vec![],
             else_constraints: vec![],
         };
-        let values = ValueMap::default(); // guard_cell not present in new values
-        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
+        let values = ValueMap::default(); // guard_cell absent
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
 
-        assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
+        // guard_cell was present before (old_guard_val = Some)
+        let needs =
+            group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
+        assert!(needs, "guard cell disappeared → structural change → group_needs_phase3=true");
     }
 }
