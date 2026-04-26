@@ -16,7 +16,7 @@ use std::fmt;
 use std::sync::Mutex;
 
 use reify_types::{
-    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, Diagnostic,
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, Diagnostic, DiagnosticCode,
     DimensionVector, ResolutionProblem, Severity, SolveResult, Type, Value, ValueCellId, ValueMap,
 };
 
@@ -957,7 +957,7 @@ impl ConstraintSolver for SolveSpaceSolver {
                         failed_ids.len()
                     ),
                     labels: vec![],
-                    code: None,
+                    code: Some(DiagnosticCode::ConstraintUnsatisfiable),
                 }],
             },
             SlvsSolveResult::DidntConverge => SolveResult::NoProgress {
