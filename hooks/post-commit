@@ -65,6 +65,9 @@ fi
 # STRICTLY INFORMATIONAL: never calls _loud_fail, never exits non-zero.
 # NOTE: no stdout/stderr redirection — the script's WARN lines go straight to
 # the hook's stderr (the developer's terminal), which is the intended UX.
+# The `|| true` on the python3 call absorbs any non-zero exit before it can
+# leak back through `set -eu`. The if-condition arms (command -v, grep, test -f)
+# are exempt from set -e by shell semantics. No set +e / set -e wrapping needed.
 _commit_msg="$(git log -1 --format=%s 2>/dev/null || true)"
 if command -v python3 >/dev/null 2>&1 \
     && echo "$_commit_msg" | grep -qE 'set_task_status\([0-9]+=done\)' \
