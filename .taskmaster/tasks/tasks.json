@@ -49352,13 +49352,14 @@
           ],
           "memory_hints": {
             "entities": [
-              "walk_param_against_arg",
-              "TypeNotConformingToTrait",
-              "DiagnosticCode"
+              "WalkCtx",
+              "DiagnosticCode",
+              "DiagnosticInfo"
             ],
             "queries": [
-              "wrapper leaf shape mismatch diagnostic conformance Option List silent swallow",
-              "conformance fallback arm walk_param_against_arg shape mismatch suppressed diagnostic"
+              "shape-mismatch diagnostic compiler wrapper leaf Option List reify",
+              "WalkCtx conformance walk_param_against_arg extraction task 2279",
+              "DiagnosticCode variants conformance producer sites task 2258"
             ]
           },
           "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
