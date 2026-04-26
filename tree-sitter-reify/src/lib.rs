@@ -168,6 +168,47 @@ mod tests {
     }
 
     #[test]
+    fn test_forall_expression_form_unchanged() {
+        let mut parser = make_parser();
+        // The expression-form must still be parsed as quantifier_expression
+        // nested inside a constraint_declaration — not as a forall_statement.
+        let source = b"structure S { let items = [1, 2, 3] constraint forall x in items: x > 0 }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let kinds = collect_kinds(tree.root_node());
+
+        // (a) No parse errors
+        assert!(
+            !tree.root_node().has_error(),
+            "unexpected parse error in forall expression-form source: {kinds:?}"
+        );
+
+        // (b) quantifier_expression must appear
+        assert!(
+            kinds.contains(&"quantifier_expression".to_string()),
+            "expected quantifier_expression node, got: {kinds:?}"
+        );
+
+        // (c) forall_statement must NOT appear
+        assert!(
+            !kinds.contains(&"forall_statement".to_string()),
+            "forall_statement should not appear for expression-form, got: {kinds:?}"
+        );
+
+        // (d) quantifier_expression must be nested inside constraint_declaration
+        let constraint_node = find_node_by_kind(tree.root_node(), "constraint_declaration")
+            .expect("constraint_declaration not found in tree");
+        let expr_field = constraint_node
+            .child_by_field_name("expr")
+            .expect("constraint_declaration missing 'expr' field");
+        assert_eq!(
+            expr_field.kind(),
+            "quantifier_expression",
+            "expected constraint_declaration.expr to be quantifier_expression, got: {}",
+            expr_field.kind()
+        );
+    }
+
+    #[test]
     fn test_hash_not_parsed_as_comment() {
         let mut parser = make_parser();
         // # is not a valid comment in Reify; it should produce an ERROR node
