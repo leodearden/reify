@@ -222,4 +222,179 @@ mod tests {
         assert_eq!(real, back);
         assert_eq!(back.op_summaries.len(), 2);
     }
+
+    #[test]
+    fn item_doc_variants_serde_round_trip() {
+        // Structure variant — rich with children
+        let structure_item = ItemDoc::Structure {
+            name: "Board".to_string(),
+            doc: Some("Main PCB board.".to_string()),
+            is_pub: true,
+            annotations: vec![AnnotationDoc { name: "deprecated".to_string(), args: vec![] }],
+            pragmas: vec![PragmaDoc { name: "layout".to_string(), args: vec!["row".to_string()] }],
+            params: vec![ParamDoc {
+                name: "width".to_string(),
+                doc: None,
+                type_repr: "Length".to_string(),
+                default_repr: Some("100 mm".to_string()),
+                annotations: vec![],
+            }],
+            ports: vec![PortDoc {
+                name: "pwr".to_string(),
+                direction: "in".to_string(),
+                type_name: "Power".to_string(),
+                members: vec![],
+            }],
+            constraints: vec![ConstraintDoc {
+                label: None,
+                expr_repr: "width > 0 mm".to_string(),
+                annotations: vec![],
+            }],
+            sub_components: vec![SubComponentDoc {
+                name: "cpu".to_string(),
+                structure_name: "MCU".to_string(),
+                args: vec![],
+                annotations: vec![],
+            }],
+            realizations: vec![RealizationDoc {
+                name: "Schematic".to_string(),
+                op_summaries: vec!["place cpu".to_string()],
+            }],
+            meta: vec![("version".to_string(), "1.0".to_string())],
+        };
+        let json = serde_json::to_string(&structure_item).expect("serialize");
+        // Confirm the tagged shape has "kind": "structure"
+        assert!(json.contains("\"kind\":\"structure\""), "tag present in JSON: {json}");
+        let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(structure_item, back);
+
+        // Function variant — simple
+        let fn_item = ItemDoc::Function {
+            name: "compute".to_string(),
+            doc: None,
+            is_pub: false,
+            annotations: vec![],
+            pragmas: vec![],
+            signature: "fn compute(x: f64) -> f64".to_string(),
+        };
+        let json = serde_json::to_string(&fn_item).expect("serialize");
+        assert!(json.contains("\"kind\":\"function\""), "tag present: {json}");
+        let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(fn_item, back);
+
+        // Enum variant
+        let enum_item = ItemDoc::Enum {
+            name: "Color".to_string(),
+            doc: Some("Color choices.".to_string()),
+            is_pub: true,
+            annotations: vec![],
+            pragmas: vec![],
+            variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+        };
+        let json = serde_json::to_string(&enum_item).expect("serialize");
+        assert!(json.contains("\"kind\":\"enum\""), "tag present: {json}");
+        let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(enum_item, back);
+
+        // TypeAlias variant
+        let alias_item = ItemDoc::TypeAlias {
+            name: "Meters".to_string(),
+            doc: None,
+            is_pub: true,
+            annotations: vec![],
+            pragmas: vec![],
+            type_repr: "f64".to_string(),
+        };
+        let json = serde_json::to_string(&alias_item).expect("serialize");
+        assert!(json.contains("\"kind\":\"type_alias\""), "tag present: {json}");
+        let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(alias_item, back);
+    }
+
+    #[test]
+    fn module_doc_with_items_serde_round_trip() {
+        let module = ModuleDoc {
+            path: "electronics.board".to_string(),
+            doc: Some("Electronics board module.".to_string()),
+            items: vec![
+                ItemDoc::Structure {
+                    name: "Board".to_string(),
+                    doc: None,
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+                ItemDoc::Occurrence {
+                    name: "Connector".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    params: vec![],
+                    ports: vec![],
+                    constraints: vec![],
+                    sub_components: vec![],
+                    realizations: vec![],
+                    meta: vec![],
+                },
+                ItemDoc::Trait {
+                    name: "HasPower".to_string(),
+                    doc: None,
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    members: vec!["voltage: Voltage".to_string()],
+                },
+                ItemDoc::Field {
+                    name: "supply_voltage".to_string(),
+                    doc: None,
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    type_repr: "Voltage".to_string(),
+                    default_repr: None,
+                },
+                ItemDoc::Purpose {
+                    name: "minimize_area".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    expr_repr: "total_area".to_string(),
+                    direction: "minimize".to_string(),
+                },
+                ItemDoc::Unit {
+                    name: "Milliamp".to_string(),
+                    doc: None,
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    base_unit: "Ampere".to_string(),
+                    scale: "0.001".to_string(),
+                },
+                ItemDoc::ConstraintDef {
+                    name: "voltage_safe".to_string(),
+                    doc: None,
+                    is_pub: true,
+                    annotations: vec![],
+                    pragmas: vec![],
+                    expr_repr: "v <= 5.5 V".to_string(),
+                },
+            ],
+            annotations: vec![AnnotationDoc { name: "version".to_string(), args: vec!["\"1.0\"".to_string()] }],
+            pragmas: vec![PragmaDoc { name: "stability".to_string(), args: vec!["stable".to_string()] }],
+        };
+        let model = DocModel { modules: vec![module.clone()] };
+        let json = serde_json::to_string(&model).expect("serialize");
+        let back: DocModel = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.modules.len(), 1);
+        assert_eq!(back.modules[0], module);
+        assert_eq!(back.modules[0].items.len(), 7);
+    }
 }
