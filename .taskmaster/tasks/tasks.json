@@ -50703,11 +50703,13 @@
         "description": "Implement crates/reify-doc/src/cross_refs.rs producing CrossRefs from a slice of compiled topology templates. Two indices: (1) trait→conformers — for each TopologyTemplate, push its name onto each entry of trait_bounds; rendered under \"Implementations\" on each trait page. (2) entity→containers — for each TopologyTemplate.sub_components, record the parent's name; rendered under \"Used by\" on each structure/occurrence page. Both BTreeMap<String, Vec<String>> for deterministic ordering. Out of scope for v0.1: function call graphs, geometry op references, port-connection graphs. Tests over a synthetic module with multi-trait conformance and nested sub-components. PRD: docs/prds/reify-doc-tool.md slice 3.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
+        "status": "pending",
+        "dependencies": [
+          "2342"
+        ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:12:50.708Z"
+        "updatedAt": "2026-04-26T20:15:01.295Z"
       },
       {
         "id": "2356",
@@ -50748,7 +50750,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:14:47.347Z",
+      "lastModified": "2026-04-26T20:15:01.295Z",
       "taskCount": 2347,
       "completedCount": 2059,
       "tags": [
