@@ -132,12 +132,14 @@ pub(crate) fn collect_all_requirements(
                     expected_type,
                     trait_name,
                     span,
-                    DiagnosticCode::ConflictingTraitRequirements,
                     |name, existing, existing_trait, new, new_trait| {
-                        format!(
-                            "conflicting trait requirements for '{}': \
-                             trait '{}' requires {}, trait '{}' requires {}",
-                            name, existing_trait, existing, new_trait, new
+                        (
+                            format!(
+                                "conflicting trait requirements for '{}': \
+                                 trait '{}' requires {}, trait '{}' requires {}",
+                                name, existing_trait, existing, new_trait, new
+                            ),
+                            DiagnosticCode::ConflictingTraitRequirements,
                         )
                     },
                     diagnostics,
@@ -161,13 +163,15 @@ pub(crate) fn collect_all_requirements(
                     structure_name,
                     trait_name,
                     span,
-                    DiagnosticCode::ConflictingTraitSubRequirements,
                     |name, existing, existing_trait, new, new_trait| {
-                        format!(
-                            "conflicting trait sub requirements for '{}': \
-                             trait '{}' requires sub '{}', \
-                             trait '{}' requires sub '{}'",
-                            name, existing_trait, existing, new_trait, new
+                        (
+                            format!(
+                                "conflicting trait sub requirements for '{}': \
+                                 trait '{}' requires sub '{}', \
+                                 trait '{}' requires sub '{}'",
+                                name, existing_trait, existing, new_trait, new
+                            ),
+                            DiagnosticCode::ConflictingTraitSubRequirements,
                         )
                     },
                     diagnostics,
@@ -297,35 +301,40 @@ pub(crate) fn collect_all_requirements(
 /// - **Cache miss**: inserts `(value.clone(), trait_name.to_string())` and returns `Continue(())`.
 ///   The caller should push the requirement.
 /// - **Cache hit, equal value**: returns `Break(())` silently (deduplicated).
-/// - **Cache hit, mismatched value**: builds the conflict message via `conflict_msg_builder`,
-///   emits a `Diagnostic::error` with a uniform label `"conflict between '…' and '…'"`,
+/// - **Cache hit, mismatched value**: invokes `conflict_builder` to obtain the
+///   conflict message **and** the `DiagnosticCode` for this call site, emits a
+///   `Diagnostic::error` with a uniform label `"conflict between '…' and '…'"`,
 ///   and returns `Break(())`. The caller should skip (do not push).
+///
+/// The closure returns `(message, code)` so the conflict-only data lives together
+/// in one place — and is only constructed on the conflict branch. The non-conflict
+/// branches (cache miss, cache hit with equal value) never invoke the closure, so
+/// no placeholder code is needed at those call sites or in unit tests.
 ///
 /// The caller pattern is:
 /// ```rust,ignore
-/// if try_dedup_or_conflict(&mut seen, name, value, trait_name, span, msg_fn, diags).is_break() {
+/// if try_dedup_or_conflict(&mut seen, name, value, trait_name, span, builder, diags).is_break() {
 ///     continue;
 /// }
 /// ctx.requirements.push(req.clone());
 /// ```
-#[allow(clippy::too_many_arguments)]
 fn try_dedup_or_conflict<V, F>(
     seen: &mut HashMap<String, (V, String)>,
     name: &str,
     value: &V,
     trait_name: &str,
     span: SourceSpan,
-    code: DiagnosticCode,
-    conflict_msg_builder: F,
+    conflict_builder: F,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> ControlFlow<()>
 where
     V: PartialEq + Clone,
-    F: FnOnce(&str, &V, &str, &V, &str) -> String,
+    F: FnOnce(&str, &V, &str, &V, &str) -> (String, DiagnosticCode),
 {
     if let Some((existing_value, existing_trait)) = seen.get(name) {
         if existing_value != value {
-            let msg = conflict_msg_builder(name, existing_value, existing_trait, value, trait_name);
+            let (msg, code) =
+                conflict_builder(name, existing_value, existing_trait, value, trait_name);
             let label = format!("conflict between '{}' and '{}'", existing_trait, trait_name);
             diagnostics.push(
                 Diagnostic::error(msg)
@@ -810,7 +819,7 @@ mod tests {
     }
 
     /// Cache-hit with mismatched value: emits exactly one `Error` diagnostic with the
-    /// builder-provided message, the typed `DiagnosticCode` passed in by the caller,
+    /// builder-provided message, the typed `DiagnosticCode` returned by the closure,
     /// and a uniform `"conflict between '…' and '…'"` label; returns `Break(())`;
     /// the map is unchanged.
     #[test]
@@ -825,11 +834,13 @@ mod tests {
             &9_i32, // different value → conflict
             "TraitB",
             SourceSpan::empty(0),
-            DiagnosticCode::ConflictingTraitRequirements,
             |name, existing, existing_trait, new, new_trait| {
-                format!(
-                    "BOOM '{}': {} vs {} (traits '{}' and '{}')",
-                    name, existing, new, existing_trait, new_trait
+                (
+                    format!(
+                        "BOOM '{}': {} vs {} (traits '{}' and '{}')",
+                        name, existing, new, existing_trait, new_trait
+                    ),
+                    DiagnosticCode::ConflictingTraitRequirements,
                 )
             },
             &mut diags,
@@ -869,11 +880,11 @@ mod tests {
             &7_i32, // same value as already present
             "TraitB",
             SourceSpan::empty(0),
-            // Placeholder code: this path emits no diagnostic, so the value is
-            // never observed. Pass `ConflictingTraitRequirements` for parity
-            // with the production Param/Let call site.
-            DiagnosticCode::ConflictingTraitRequirements,
-            |_, _, _, _, _| -> String { unreachable!("no closure on equal-value dedup") },
+            // No code argument needed: the closure is the sole carrier of conflict-only
+            // data, and `unreachable!` proves the equal-value path never invokes it.
+            |_, _, _, _, _| -> (String, DiagnosticCode) {
+                unreachable!("no closure on equal-value dedup")
+            },
             &mut diags,
         );
         assert_eq!(result, ControlFlow::Break(()));
@@ -896,9 +907,10 @@ mod tests {
             &7_i32,
             "TraitA",
             SourceSpan::empty(0),
-            // Placeholder code: cache-miss path emits no diagnostic.
-            DiagnosticCode::ConflictingTraitRequirements,
-            |_, _, _, _, _| -> String { unreachable!("not on cache miss") },
+            // No code argument needed: cache-miss path never invokes the closure.
+            |_, _, _, _, _| -> (String, DiagnosticCode) {
+                unreachable!("not on cache miss")
+            },
             &mut diags,
         );
         assert_eq!(result, ControlFlow::Continue(()));
