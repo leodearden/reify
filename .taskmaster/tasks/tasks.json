@@ -51242,12 +51242,13 @@
         "description": "Design a helper trait or pattern to iterate over `Buy` occurrences and sum `unit_cost * quantity_produced` into a `Scalar<Money>`.",
         "details": "Implement a helper trait or pattern in the stdlib that efficiently aggregates costs by iterating over `Buy` occurrences within a given scope. This trait should compute the total cost by multiplying `unit_cost` by `quantity_produced` for each occurrence and summing the results into a `Scalar<Money>`. Ensure the implementation is efficient and integrates seamlessly with existing stdlib components. Additionally, create a canonical example in `examples/cost_aggregation.ri` to demonstrate the usage of this idiom. Reference the PRD in `docs/prds/money-dimension.md`, specifically task 5 and specification section 11, to align with the project requirements.",
         "testStrategy": "1. Write unit tests to verify that the trait correctly aggregates costs from multiple `Buy` occurrences. \n2. Ensure the example in `examples/cost_aggregation.ri` compiles and runs, demonstrating the correct aggregation of costs. \n3. Use `cargo test -p reify-compiler -- cost_aggregation` to run all relevant tests and ensure no regressions occur in related modules.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "339"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:55.516Z"
       },
       {
         "id": "2382",
@@ -51255,13 +51256,14 @@
         "description": "Ensure currency units render in source form (e.g., `USD/kg`) in error messages and LSP hovers.",
         "details": "Modify the error message and LSP hover rendering logic to display currency units in their source form rather than as exponent vectors. This involves updating the formatting functions within the language server and error handling modules to recognize and correctly format units like `USD/kg`. Reference the PRD in docs/prds/money-dimension.md, specifically task 6, for detailed specifications on how units should be displayed. Ensure that the changes are consistent across all relevant parts of the application.",
         "testStrategy": "Create unit tests to verify that currency units are displayed in the correct format in both error messages and LSP hovers. Use a variety of test cases to cover different unit combinations and ensure that no exponent vectors are displayed. Additionally, perform integration tests to confirm that the changes do not affect other parts of the system.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "208",
           "209"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:55.641Z"
       },
       {
         "id": "2383",
@@ -51280,7 +51282,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:24:55.386Z",
+      "lastModified": "2026-04-26T20:24:55.641Z",
       "taskCount": 2372,
       "completedCount": 2060,
       "tags": [
