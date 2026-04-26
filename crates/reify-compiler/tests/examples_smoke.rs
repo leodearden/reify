@@ -93,6 +93,26 @@ fn skip_set_entries_exist_under_examples_dir() {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+/// Strip the `EXAMPLES_DIR` prefix from `path` and return a portable,
+/// forward-slash-separated relative path string.
+///
+/// For example:
+/// - `<EXAMPLES_DIR>/bracket.ri`                   → `"bracket.ri"`
+/// - `<EXAMPLES_DIR>/fields/composed_stiffness.ri` → `"fields/composed_stiffness.ri"`
+///
+/// This is the canonical form used as SKIP_SET keys and in failure reports,
+/// so that same-basename files in different subdirectories are unambiguous.
+fn relative_to_examples_dir(path: &Path) -> String {
+    let rel = path
+        .strip_prefix(EXAMPLES_DIR)
+        .unwrap_or_else(|e| panic!(
+            "examples_smoke: '{}' is not under EXAMPLES_DIR ({}): {}",
+            path.display(), EXAMPLES_DIR, e
+        ));
+    rel.to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/")
+}
+
 /// Return all `*.ri` files under `EXAMPLES_DIR` (recursively), sorted by
 /// their full path for deterministic output.
 fn discover_ri_files() -> Vec<PathBuf> {
