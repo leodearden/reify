@@ -998,8 +998,10 @@ fn compile_purpose_user_defined_structure_named_structure_bypasses_validation() 
     // `subject.mass` references a *real* param of the declared template — it is
     // included as a real-param probe so the combined `no_member_errors` filter
     // covers both a spurious member access (`bogus`) and a legitimate one (`mass`).
-    // If a future refactor makes the wildcard guard registry-aware, `mass` would
-    // start failing the combined filter for the right reason.
+    // If a future refactor makes the wildcard guard registry-aware, `bogus` would
+    // start producing a `has no member` diagnostic for the right reason while
+    // `mass` would remain silent because it is a legitimate member of the
+    // registered template.
     let source = r#"
 structure Structure {
     param mass : Mass = 1kg
