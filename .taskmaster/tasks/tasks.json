@@ -49382,12 +49382,13 @@
           ],
           "memory_hints": {
             "entities": [
-              "TypeNotConformingToTrait",
-              "trait_typed_param_tests"
+              "WalkCtx",
+              "CompiledExpr"
             ],
             "queries": [
-              "Map key non-conformance trait typed param test coverage wrapper types",
-              "Option List Map nested wrapper conformance test coverage task 2227"
+              "WalkCtx conformance walk extraction task 2279",
+              "Map-key conformance Option List coverage reify conformance tests",
+              "conformance test infrastructure non-conformance"
             ]
           },
           "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
