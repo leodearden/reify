@@ -160,6 +160,23 @@ fn post_solver_re_eval_guard_cells(
     }
 }
 
+/// Engine-scoped state threaded through [`eval_guarded_group_param_cell`].
+///
+/// Bundles the five parameters that are shared across the members and
+/// else_members loops inside `Engine::eval`'s third pass, reducing the
+/// helper's argument list from 10 to 6 and allowing the
+/// `#[allow(clippy::too_many_arguments)]` suppression to be removed.
+///
+/// Lifetime `'a` ties all borrowed fields to the call scope in `Engine::eval`.
+/// `version` is `Copy` and stored by value — no ref needed.
+struct GuardedParamCtx<'a> {
+    journal: &'a mut crate::journal::EventJournal,
+    cache: &'a mut crate::cache::CacheStore,
+    functions: &'a [CompiledFunction],
+    meta_map: &'a HashMap<String, HashMap<String, String>>,
+    version: VersionId,
+}
+
 /// Emit a `cache.record_evaluation` + journal `Completed` event pair for a
 /// single Param-cell write path.  Centralises the five-line closing idiom
 /// shared by `eval_guarded_group_param_cell` (four arms) and the top-level
@@ -175,20 +192,20 @@ fn record_eval_completed(
     cache: &mut crate::cache::CacheStore,
     node_id: NodeId,
     cached_result: CachedResult,
-    version_id: u64,
+    version: VersionId,
     start: Instant,
 ) {
     let outcome = cache.record_evaluation(
         node_id.clone(),
         cached_result,
-        VersionId(version_id),
+        version,
         DependencyTrace::default(),
     );
     journal.record(EvalEvent {
         timestamp: Instant::now(),
         node_id,
         kind: EventKind::Completed { outcome },
-        version: VersionId(version_id),
+        version,
         payload: Some(EventPayload::Duration(start.elapsed())),
     });
 }
@@ -212,26 +229,21 @@ fn record_eval_completed(
 /// pattern (engine_eval.rs:546-628). Task-2195 added journal+cache recording
 /// here to make guarded-group Param evals fully visible to tooling that joins
 /// journal events against cache state.
-#[allow(clippy::too_many_arguments)]
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
-    functions: &[CompiledFunction],
-    meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    journal: &mut crate::journal::EventJournal,
-    cache: &mut crate::cache::CacheStore,
-    version_id: u64,
+    ctx: &mut GuardedParamCtx<'_>,
 ) {
     let node_id = NodeId::Value(cell.id.clone());
     let start = Instant::now();
-    journal.record(EvalEvent {
+    ctx.journal.record(EvalEvent {
         timestamp: start,
         node_id: node_id.clone(),
         kind: EventKind::Started,
-        version: VersionId(version_id),
+        version: ctx.version,
         payload: None,
     });
 
@@ -253,11 +265,11 @@ fn eval_guarded_group_param_cell(
                     (Value::Undef, DeterminacyState::Undetermined),
                 );
                 record_eval_completed(
-                    journal,
-                    cache,
+                    ctx.journal,
+                    ctx.cache,
                     node_id,
                     CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
-                    version_id,
+                    ctx.version,
                     start,
                 );
                 return;
@@ -288,7 +300,7 @@ fn eval_guarded_group_param_cell(
     } else if let Some(ref expr) = cell.default_expr {
         reify_expr::eval_expr(
             expr,
-            &eval_ctx_with_meta(values, functions, meta_map)
+            &eval_ctx_with_meta(values, ctx.functions, ctx.meta_map)
                 .with_determinacy(&snapshot.values),
         )
     } else {
@@ -302,11 +314,11 @@ fn eval_guarded_group_param_cell(
             (Value::Undef, DeterminacyState::Undetermined),
         );
         record_eval_completed(
-            journal,
-            cache,
+            ctx.journal,
+            ctx.cache,
             node_id,
             CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
-            version_id,
+            ctx.version,
             start,
         );
         return;
@@ -316,11 +328,11 @@ fn eval_guarded_group_param_cell(
     values.insert(cell.id.clone(), val.clone());
     snapshot.values.insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
     record_eval_completed(
-        journal,
-        cache,
+        ctx.journal,
+        ctx.cache,
         node_id,
         CachedResult::Value(val, DeterminacyState::Determined),
-        version_id,
+        ctx.version,
         start,
     );
 }
@@ -675,7 +687,7 @@ impl Engine {
                             &mut self.cache,
                             node_id,
                             CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
-                            version_id,
+                            VersionId(version_id),
                             start,
                         );
                         continue;
@@ -692,7 +704,7 @@ impl Engine {
                         &mut self.cache,
                         node_id,
                         CachedResult::Value(val, DeterminacyState::Determined),
-                        version_id,
+                        VersionId(version_id),
                         start,
                     );
                 }
@@ -739,6 +751,13 @@ impl Engine {
                 let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
                 // Evaluate members (active when guard is true)
+                let mut members_ctx = GuardedParamCtx {
+                    journal: &mut self.journal,
+                    cache: &mut self.cache,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                    version: VersionId(version_id),
+                };
                 for cell in &group.members {
                     if guard_is_true {
                         // Evaluate normally
@@ -748,12 +767,8 @@ impl Engine {
                                 &self.param_overrides,
                                 &mut values,
                                 &mut snapshot,
-                                &functions,
-                                &self.meta_map,
                                 &mut diagnostics,
-                                &mut self.journal,
-                                &mut self.cache,
-                                version_id,
+                                &mut members_ctx,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
@@ -792,6 +807,13 @@ impl Engine {
                 }
 
                 // Evaluate else_members (active when guard is false)
+                let mut else_ctx = GuardedParamCtx {
+                    journal: &mut self.journal,
+                    cache: &mut self.cache,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                    version: VersionId(version_id),
+                };
                 for cell in &group.else_members {
                     if guard_is_false {
                         // Mirror the top-level Param branch and the members loop above:
@@ -803,12 +825,8 @@ impl Engine {
                                 &self.param_overrides,
                                 &mut values,
                                 &mut snapshot,
-                                &functions,
-                                &self.meta_map,
                                 &mut diagnostics,
-                                &mut self.journal,
-                                &mut self.cache,
-                                version_id,
+                                &mut else_ctx,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
