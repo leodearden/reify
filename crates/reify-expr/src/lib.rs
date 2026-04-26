@@ -3747,4 +3747,20 @@ mod tests {
             Value::Bool(true)
         );
     }
+
+    /// Pins that `UnOp::Not` on a non-bool/non-undef operand returns `Value::Undef`
+    /// via the `Err(_) => Value::Undef` branch in `eval_unop` (lib.rs:2108-2111).
+    ///
+    /// NOT has only one operand and no right-operand short-circuit semantics, so
+    /// this test does not use a panic sentinel — it pins the result-only contract
+    /// that future refactors of the `kleene::KBool::try_from(&v)` failure branch
+    /// must preserve: non-bool operand → `Value::Undef`, not some other value.
+    #[test]
+    fn eval_unop_not_non_bool_pins_type_error_returns_undef() {
+        let expr = CompiledExpr::unop(UnOp::Not, lit(Value::Int(3), Type::Int), Type::Bool);
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef(),
+            "UnOp::Not on non-bool operand must return Value::Undef (type-error contract)"
+        );
+    }
 }
