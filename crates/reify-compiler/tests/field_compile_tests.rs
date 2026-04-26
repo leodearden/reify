@@ -221,15 +221,22 @@ fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
         module.diagnostics
     );
 
-    // The diagnostic message should name both types.
+    // The diagnostic message should use the canonical phrasing, naming both sides.
+    // Checking the full phrase rather than bare type names avoids false positives
+    // from substrings like "Vector<Real>", "Scalar<Temperature>", etc.
     let mismatch_diag = module
         .diagnostics
         .iter()
         .find(|d| d.code == Some(DiagnosticCode::FieldCodomainMismatch))
         .unwrap();
     assert!(
-        mismatch_diag.message.contains("Real") && mismatch_diag.message.contains("Scalar"),
-        "expected message to name both 'Real' and 'Scalar', got: {}",
+        mismatch_diag.message.contains("declared codomain `Scalar"),
+        "expected message to contain 'declared codomain `Scalar...`', got: {}",
+        mismatch_diag.message
+    );
+    assert!(
+        mismatch_diag.message.contains("lambda body produces `Real`"),
+        "expected message to contain 'lambda body produces `Real`', got: {}",
         mismatch_diag.message
     );
 }
