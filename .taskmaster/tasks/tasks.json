@@ -45567,7 +45567,7 @@
         "id": "2134",
         "title": "engine_edit tests: resolve symmetry-test redundancy and fix hardcoded line ref",
         "description": "Five doc-comment and test-quality cleanups across the reify-eval perf-lock and guard test suite — all caused by misleading, hardcoded, or stale references that drift as the file evolves.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "1. **Symmetry-test redundancy** (engine_edit.rs:2423-2470): Delete `reelaborate_guarded_group_members_and_else_members_are_symmetric_across_guard_values`; per-branch tests (`..._leaves_active_members_with_no_default_expr_untouched`, `..._absent_from_graph_untouched`, `..._activates_else_members_when_guard_false`) already give tighter failure localization and symmetry is implicit in having both guard=true and guard=false covered.\n\n2. **Hardcoded line reference in doc comment** (engine_edit.rs:2412-2414): Doc comment references `engine_edit.rs:68`; replace with landmark-style phrasing (e.g. \"the guard-elaboration loop\") or remove entirely if the symmetry test is deleted per item 1.\n\n3. **Drifted line-number cites in `reapply_guard_deactivations_post_wave2` docstring** (engine_edit.rs ~lines 114-163): The docstring pins specific line numbers (\"line 589\", \"line 593\", \"line 432-437\", \"line 564\", \"lines 833 / 1892\") that have already drifted. Replace all exact line-number citations with symbolic references (e.g. \"Phase 1 in edit_param\", \"the snapshot-to-value rewrite loop\") so the docstring remains accurate as the file evolves.\n\n4. **Loosen test counter comment in guard_eval.rs**: Post-merge review suggestion from task 2144 to replace a fragile counter-specific comment (referencing a fixed call count) with phrasing that will not become misleading if the count changes.\n\n5. **T2 perf-lock doc/fixture reconciliation** (edit_source.rs:2412-2431): The doc comment for `edit_source_added_member_in_unchanged_guard_group_forces_non_skip` describes the regression class as \"an added `let` on the inactive branch would silently retain a Determined value instead of being deactivated\", but the fixture puts the added member `b` on the ACTIVE branch (`where u { let a = 1mm; let b = 2mm }` with u=true). Fix the doc comment to accurately describe the fixture's actual active-branch scenario — or, if the intent was to exercise the inactive-branch path, adjust the fixture so `b` is placed on the inactive branch instead. Preserve the concrete symbol names `edit_source_added_member_in_unchanged_guard_group_forces_non_skip`, `has_added_in_group`, and the fixture parameter names verbatim.",
@@ -45592,9 +45592,12 @@
               "engine_edit.rs symmetry test guard group redundant doc comment stale line reference",
               "reapply_guard_deactivations_post_wave2 docstring line number drift symbolic reference"
             ]
+          },
+          "done_provenance": {
+            "commit": "9b01cb0497d59e80a3d9f6e1bf1d5573d5666d20"
           }
         },
-        "updatedAt": "2026-04-26T09:24:47.776Z"
+        "updatedAt": "2026-04-26T09:59:30.663Z"
       },
       {
         "id": "2135",
@@ -48702,9 +48705,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T09:50:58.371Z",
+      "lastModified": "2026-04-26T09:59:30.663Z",
       "taskCount": 2251,
-      "completedCount": 2013,
+      "completedCount": 2014,
       "tags": [
         "master"
       ]
