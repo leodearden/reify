@@ -50535,12 +50535,13 @@
         "description": "Add error[E_FIELD_IMPORTED_V02] for the `imported { ... }` form, ensuring it references the v0.2 deferral.",
         "details": "Update the compiler to emit a specific error code, error[E_FIELD_IMPORTED_V02], when the `imported { ... }` form is used. This error should reference the v0.2 deferral as outlined in the PRD documentation (docs/prds/field-source-kinds.md). Ensure that the parsing logic for this form is already handled as per task #79, which accepts this syntax. Modify the compile path to trigger the new diagnostic instead of a generic compile error.",
         "testStrategy": "Create a test case that verifies the `imported { ... }` form is parsed correctly and that the error[E_FIELD_IMPORTED_V02] is emitted. Ensure the test checks for the specific error message related to the v0.2 deferral. Use existing test frameworks to validate both parsing and diagnostic emission.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "79"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:08:25.328Z"
       },
       {
         "id": "2345",
@@ -50557,7 +50558,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:08:24.638Z",
+      "lastModified": "2026-04-26T20:08:25.328Z",
       "taskCount": 2334,
       "completedCount": 2059,
       "tags": [
