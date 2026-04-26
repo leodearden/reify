@@ -3640,7 +3640,10 @@ mod tests {
     fn eval_unop_not_non_bool_is_undef() {
         // Non-bool operand → Value::Undef (type-error catch-all)
         let expr = CompiledExpr::unop(UnOp::Not, lit(Value::Int(3), Type::Int), Type::Bool);
-        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef(),
+            "UnOp::Not on non-bool operand must return Value::Undef (type-error contract)"
+        );
     }
 
     /// Returns a `CompiledExpr` that panics if it is ever evaluated.
@@ -3658,11 +3661,25 @@ mod tests {
         CompiledExpr::meta_access("__sentinel".into(), "should_not_evaluate".into())
     }
 
+    /// Verifies the assumption that `panic_on_eval_sentinel()` actually panics
+    /// when evaluated under `EvalContext::simple` (i.e., `ctx.meta` is `None`).
+    ///
+    /// If `MetaAccess` evaluation is ever changed to return `Value::Undef` instead
+    /// of panicking on missing context, this test fails — alerting maintainers that
+    /// the short-circuit sentinel mechanism is broken and the AND/OR short-circuit
+    /// tests no longer provide reliable coverage.
+    #[test]
+    #[should_panic(expected = "MetaAccess evaluation requires meta context")]
+    fn panic_on_eval_sentinel_panics_when_evaluated() {
+        let sentinel = panic_on_eval_sentinel();
+        let _ = eval_expr(&sentinel, &EvalContext::simple(&ValueMap::new()));
+    }
+
     /// Pins that `eval_and` short-circuits on a non-bool left operand:
     /// the right operand is **never evaluated** when the left is not bool/undef.
     ///
     /// Contract: non-bool left → `Value::Undef`, right NOT evaluated
-    /// (see `eval_and` at lib.rs:1116-1132, type-error branch).
+    /// (see `eval_and`, type-error branch).
     ///
     /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
     /// silently starts evaluating the right operand on this path, the test panics
@@ -3683,7 +3700,7 @@ mod tests {
     /// the right operand is **never evaluated** when the left is `Bool(false)`.
     ///
     /// Contract: `False` left → `Value::Bool(false)`, right NOT evaluated
-    /// (see `eval_and` at lib.rs:1122-1125, absorbing-element branch).
+    /// (see `eval_and`, absorbing-element branch).
     ///
     /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
     /// silently starts evaluating the right operand on this path, the test panics
@@ -3707,7 +3724,7 @@ mod tests {
     /// the right operand is **never evaluated** when the left is not bool/undef.
     ///
     /// Contract: non-bool left → `Value::Undef`, right NOT evaluated
-    /// (see `eval_or` at lib.rs:1141-1157, type-error branch).
+    /// (see `eval_or`, type-error branch).
     ///
     /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
     /// silently starts evaluating the right operand on this path, the test panics
@@ -3728,7 +3745,7 @@ mod tests {
     /// the right operand is **never evaluated** when the left is `Bool(true)`.
     ///
     /// Contract: `True` left → `Value::Bool(true)`, right NOT evaluated
-    /// (see `eval_or` at lib.rs:1147-1150, absorbing-element branch).
+    /// (see `eval_or`, absorbing-element branch).
     ///
     /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
     /// silently starts evaluating the right operand on this path, the test panics
@@ -3748,19 +3765,4 @@ mod tests {
         );
     }
 
-    /// Pins that `UnOp::Not` on a non-bool/non-undef operand returns `Value::Undef`
-    /// via the `Err(_) => Value::Undef` branch in `eval_unop` (lib.rs:2108-2111).
-    ///
-    /// NOT has only one operand and no right-operand short-circuit semantics, so
-    /// this test does not use a panic sentinel — it pins the result-only contract
-    /// that future refactors of the `kleene::KBool::try_from(&v)` failure branch
-    /// must preserve: non-bool operand → `Value::Undef`, not some other value.
-    #[test]
-    fn eval_unop_not_non_bool_pins_type_error_returns_undef() {
-        let expr = CompiledExpr::unop(UnOp::Not, lit(Value::Int(3), Type::Int), Type::Bool);
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef(),
-            "UnOp::Not on non-bool operand must return Value::Undef (type-error contract)"
-        );
-    }
 }
