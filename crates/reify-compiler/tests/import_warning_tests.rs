@@ -23,6 +23,7 @@
 use std::fs;
 
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
+use reify_types::Severity;
 
 // ── Step-1: silent-on-resolved tests ─────────────────────────────────────────
 
@@ -73,6 +74,94 @@ fn module_dag_resolved_user_import_emits_no_warning() {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+}
+
+// ── Step-3: specific wording for unresolved user imports ─────────────────────
+
+/// Unresolved user import through `compile_with_stdlib`: the warning must use
+/// accurate, actionable wording.
+///
+/// Contracts (must ALL hold):
+/// (a) `diag.message.contains("shapes")` — path appears in the message.
+/// (b) `diag.message.contains("import")` — word "import" appears (backward
+///     compat with boundary2_producer.rs assertion shape).
+/// (c) `!diag.message.contains("not yet implemented")` — misleading phrase
+///     removed (mirrors geometry_sub_ref_e2e.rs:100 assertion style).
+/// (d) Message references the actual API to switch to: contains
+///     "compile_project" OR "ModuleDag".
+/// (e) `diag.severity == Warning` — still a warning, not an error.
+/// (f) `!diag.labels.is_empty()` — squiggle label is present.
+///
+/// Before step-4 this test fails on contracts (c) and (d) because the old
+/// "noted; module resolution not yet implemented" wording is still in place.
+#[test]
+fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
+    let source = "import shapes\nstructure S {\n    param w: Scalar = 80mm\n}";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+    // Find Warning diagnostics that mention the unresolved import path.
+    let import_warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("import \"shapes\""))
+        .collect();
+
+    assert_eq!(
+        import_warnings.len(),
+        1,
+        "expected exactly 1 import-warning for unresolved module 'shapes', got: {:?}",
+        import_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let diag = import_warnings[0];
+
+    // (a) import path present
+    assert!(
+        diag.message.contains("shapes"),
+        "message must contain the import path 'shapes': {:?}",
+        diag.message
+    );
+    // (b) word "import" present
+    assert!(
+        diag.message.contains("import"),
+        "message must contain 'import': {:?}",
+        diag.message
+    );
+    // (c) old misleading phrase removed
+    assert!(
+        !diag.message.contains("not yet implemented"),
+        "message must NOT contain 'not yet implemented': {:?}",
+        diag.message
+    );
+    // (d) references actionable API
+    assert!(
+        diag.message.contains("compile_project") || diag.message.contains("ModuleDag"),
+        "message must reference 'compile_project' or 'ModuleDag': {:?}",
+        diag.message
+    );
+    // (e) severity is Warning
+    assert_eq!(
+        diag.severity,
+        Severity::Warning,
+        "severity must be Warning: {:?}",
+        diag
+    );
+    // (f) squiggle label present
+    assert!(
+        !diag.labels.is_empty(),
+        "diagnostic must have at least one label: {:?}",
+        diag
     );
 }
 
