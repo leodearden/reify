@@ -48877,7 +48877,20 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T10:46:36.471Z"
+        "updatedAt": "2026-04-26T10:46:36.471Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "Engine::eval_cached"
+            ],
+            "queries": [
+              "eval_cached diagnostics repeat-call regression test param_override sub-component",
+              "eval_cached_diagnostics.rs test suite repeat-call patterns circular let solver",
+              "eval_cached diagnostics repeat-call emission engine_eval.rs"
+            ]
+          },
+          "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4"
+        }
       }
     ],
     "metadata": {
