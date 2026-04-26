@@ -136,37 +136,22 @@ pub struct UnitEntry {
     pub source_module: Option<String>,
 }
 
-/// Convert a [`CompiledUnit`] reference into a [`UnitEntry`].
-///
-/// The six fields shared between the two types are copied directly. The two
-/// `UnitEntry`-only fields receive safe placeholder defaults:
-///
-/// - `span` → [`SourceSpan::empty`]`(0)` — **callers that seed prelude units MUST
-///   override this** with [`SourceSpan::prelude()`] so that diagnostic labels and
-///   `is_prelude()` checks behave correctly.
-/// - `source_module` → `None` — callers that seed prelude units MUST override this
-///   with the originating module path.
-///
-/// Use struct-update syntax to supply the required overrides:
-///
-/// ```rust,ignore
-/// UnitEntry {
-///     span: SourceSpan::prelude(),
-///     source_module: Some(module_display.clone()),
-///     ..UnitEntry::from(cu)
-/// }
-/// ```
-impl From<&CompiledUnit> for UnitEntry {
-    fn from(cu: &CompiledUnit) -> Self {
+impl UnitEntry {
+    /// Construct a `UnitEntry` for prelude-seeded units.
+    ///
+    /// Bakes in `SourceSpan::prelude()` (so `is_prelude()` checks and
+    /// diagnostic labels behave correctly) and the originating module's
+    /// display path. The six shared fields are copied from `cu`.
+    pub fn from_compiled_for_prelude(cu: &CompiledUnit, source_module: String) -> UnitEntry {
         UnitEntry {
             name: cu.name.clone(),
             dimension: cu.dimension,
             factor: cu.factor,
             offset: cu.offset,
             is_pub: cu.is_pub,
-            span: SourceSpan::empty(0),
+            span: SourceSpan::prelude(),
             content_hash: cu.content_hash,
-            source_module: None,
+            source_module: Some(source_module),
         }
     }
 }

@@ -56,11 +56,9 @@ pub(crate) fn phase_units(
                         )),
                     );
                 }
-                ctx.unit_registry.seed_prelude_unit(UnitEntry {
-                    span: SourceSpan::prelude(),
-                    source_module: Some(module_display.clone()),
-                    ..UnitEntry::from(cu)
-                });
+                ctx.unit_registry.seed_prelude_unit(
+                    UnitEntry::from_compiled_for_prelude(cu, module_display.clone()),
+                );
             }
         }
     }
