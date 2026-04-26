@@ -46428,11 +46428,11 @@
         "description": "In crates/reify-eval/tests/edit_source.rs around 2464-2466/2558-2563, test `edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip` (T3) asserts that the role-flip probe is the SOLE signal driving `has_dirty_guards`. That premise depends on `ValueCellNode::content_hash` NOT incorporating the member/else_member role; if content_hash is ever extended to hash that role, `changed` would include x and y on its own and the role-flip probe would no longer be the sole signal — the test would keep passing but for the wrong reason. Author flagged this in the doc comment but added no runtime guard. Add either (a) a test hook to snapshot the `diff_value_cells` output between the two modules and assert `changed.is_empty() && added.is_empty() && removed.is_empty()` for x and y, or (b) a `debug_assert!` near the counter assertion that pins the premise so a regression produces a targeted error rather than silent test-drift. Source: post-merge review on task 2138.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T09:59:34.564Z",
+        "updatedAt": "2026-04-26T10:37:08.519Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_admin.rs",
@@ -46450,6 +46450,9 @@
               "diff_value_cells role-flip has_dirty_guards sole signal debug_assert guard",
               "edit_source_role_flipped_member_in_unchanged_guard_group_forces_non_skip T3 test"
             ]
+          },
+          "done_provenance": {
+            "commit": "8a7c771e7a68acb4db74c71f7ea40cfd336e6672"
           }
         }
       },
@@ -48781,9 +48784,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T10:37:06.980Z",
+      "lastModified": "2026-04-26T10:37:08.519Z",
       "taskCount": 2254,
-      "completedCount": 2018,
+      "completedCount": 2019,
       "tags": [
         "master"
       ]
