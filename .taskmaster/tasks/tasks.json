@@ -49245,11 +49245,11 @@
         "description": "Apply three small post-merge polish suggestions from the review of task 2226's import-warning cleanup. All three changes are localized to the two files listed under modules and have no behaviour impact beyond what the existing tests already pin.",
         "details": "Three independent suggestions from reviewer_comprehensive on task 2226:\n\n1. **crates/reify-compiler/src/compile_builder/entities_phase.rs:138-142 — drop redundant label.**\n   The diagnostic emitted for an unresolved import currently attaches two `DiagnosticLabel`s at the same `import.span`. The first is just `\"import\"` (a redundant restatement of what the underline points at); the second carries the actionable hint `\"use compile_project (ModuleDag) for cross-file imports\"`. Most renderers will draw two underlines at the same byte range. Drop the first `with_label(.. \"import\")` so only the actionable label remains.\n\n   Note: `compile_with_stdlib_unresolved_user_import_emits_specific_warning` in `crates/reify-compiler/tests/import_warning_tests.rs` only asserts `!diag.labels.is_empty()` (assertion (d)), so this change does not break the test, but consider tightening the assertion to `assert_eq!(diag.labels.len(), 1)` to pin the new shape.\n\n2. **crates/reify-compiler/tests/import_warning_tests.rs:1-30 — trim TDD-step doc rot.**\n   The module doc enumerates each test by its TDD step number (\"Step-1 tests\", \"Step-3 test\", \"Amendment test\"). This metadata only made sense during task 2226's TDD sequence and will rot. Replace with a 1-2 line description: e.g. \"Pin the import-warning behaviour: silent when the import path is in the prelude, specific wording otherwise.\" The test names already describe their intent.\n\n3. **crates/reify-compiler/tests/import_warning_tests.rs:39,209 — dedupe ModuleDag tests.**\n   `module_dag_resolved_user_import_emits_no_warning` and `module_dag_resolved_destructured_import_emits_no_warning` share ~90% of their setup (tempdir, write `a.ri` with the same `pub structure Foo`, build `ModuleResolver`, run `compile_project`, filter import warnings). Only the `b.ri` source differs. Extract a private helper `assert_no_import_warning_for(b_source: &str, expected_path_substr: &str)` that encapsulates tempdir setup + writing `a.ri` + compile_project + the import-warning assertion. Both tests then become a one-liner showing only the `b.ri` source they care about.\n\n## Verification\n- `cargo test -p reify-compiler --test import_warning_tests`\n- `cargo build -p reify-compiler`",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T18:23:34.117Z",
+        "updatedAt": "2026-04-26T18:23:38.600Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
@@ -49605,7 +49605,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T18:23:37.944Z",
+      "lastModified": "2026-04-26T18:23:38.600Z",
       "taskCount": 2278,
       "completedCount": 2051,
       "tags": [
