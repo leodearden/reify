@@ -61,7 +61,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                     id
                                 ),
                                 labels: vec![],
-                                code: None,
+                                code: Some(DiagnosticCode::ConstraintIndeterminate),
                             }],
                         },
                     ),
