@@ -28,7 +28,7 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{assert_no_eval_errors, make_engine, parse_and_compile_with_stdlib};
 use reify_types::{Value, ValueCellId};
 
 // ── Path constant ─────────────────────────────────────────────────────────────
@@ -54,9 +54,9 @@ fn compiled() -> &'static CompiledModule {
     C.get_or_init(|| parse_and_compile_with_stdlib(source()))
 }
 
-/// Evaluate `examples/kleene_e2e.ri` with a fresh `SimpleConstraintChecker` engine.
+/// Evaluate `examples/kleene_e2e.ri` with a fresh mock-checker engine.
 fn eval_kleene() -> reify_eval::EvalResult {
-    let mut engine = make_simple_engine();
+    let mut engine = make_engine();
     let result = engine.eval(compiled());
     assert_no_eval_errors(&result);
     result
