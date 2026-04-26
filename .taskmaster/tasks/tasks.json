@@ -48397,11 +48397,11 @@
         "description": "Inline `phase3_skip_group` (called only from inside `group_needs_phase3` via negation) into a single unified helper named for the question Phase 3 actually asks. The current factoring works correctly but encodes the relationship by negation, forcing readers to mentally re-NOT the truth table when reasoning about the four call sites.",
         "details": "Source: post-merge review on task 2146 (esc-2146-46, reviewer_comprehensive).\n\nScope: crates/reify-eval/src/engine_edit.rs\n\nCurrent state (lines ~239-249): `group_needs_phase3(group, values, old_guard_val, phase1)` returns `!phase3_skip_group(...)` when the guard cell is present, plus an absent-cell case. Four call sites use `group_needs_phase3` (one `.any()` early-exit predicate plus per-group `continue` checks in both edit_param and edit_source Phase 3 loops).\n\nSuggested fix: collapse to a single function `group_needs_phase3(group, values, old_guard_val, phase1)` with the full case analysis inlined. Drop the separate `phase3_skip_group` and update the four call sites + tests accordingly.\n\nWhile touching this code, also add a one-line comment in edit_param Phase 1 (after the `if guard_value_unchanged(...)` skip near line 737-743) explaining that groups skipped at this point intentionally fall through to case (c) on the Phase 3 side, and that wave2 flips would still be caught by `old_guard_val != current`. Same applies to edit_source Phase 1.\n\nPriority: low — purely readability / comment improvement, no behavior change.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T07:52:54.856Z",
+        "updatedAt": "2026-04-26T11:09:33.262Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -48425,11 +48425,11 @@
         "description": "Reduce parameter count and remove `u64`→`VersionId` impedance mismatch in `eval_guarded_group_param_cell` and its companion `record_eval_completed` (both in `crates/reify-eval/src/engine_eval.rs`).",
         "details": "Two related cleanups surfaced by review of task-2195:\n\n1. **Parameter explosion (engine_eval.rs:215-226).** `eval_guarded_group_param_cell` now takes 10 parameters and is silenced with `#[allow(clippy::too_many_arguments)]`. Five of them (`journal`, `cache`, `version_id`, `meta_map`, `functions`) are engine-scoped state and the helper is only called from `Engine::eval`. Introduce a small bundle (e.g. `struct GuardedParamCtx<'a> { journal: &'a mut EventJournal, cache: &'a mut CacheStore, functions: &'a [CompiledFunction], meta_map: &'a HashMap<String, HashMap<String, String>>, version: VersionId }`) and pass it as a single argument. Remove the `clippy::too_many_arguments` suppression.\n\n2. **Type strength (engine_eval.rs:178).** `record_eval_completed` and `eval_guarded_group_param_cell` accept `version_id: u64` and immediately wrap it as `VersionId(version_id)` at every use site (twice in the helper). Other engine code wraps once at the call boundary. Change `version_id: u64` → `version: VersionId` in both helpers; update the four `Engine::eval` call sites to wrap once at the boundary.\n\nCombine both because they touch the same signatures — doing them in one PR avoids a second churn of `engine_eval.rs`. Lock with the existing journal+cache regression tests in `crates/reify-eval/tests/eval_param_overrides.rs` (no behaviour change expected).\n\nSource: review of task-2195 by reviewer_comprehensive (esc-2195-45).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T10:46:59.213Z",
+        "updatedAt": "2026-04-26T11:09:33.378Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
@@ -48453,11 +48453,11 @@
         "description": "Doc-only nit at `crates/reify-eval/src/engine_eval.rs:663-680`. Add a sentence to the rationale comment explicitly noting that the `Completed` event's `EvalOutcome` is now whatever `cache.record_evaluation` returns (typically `New` on first eval), no longer hardcoded `Unchanged`.",
         "details": "Task-2195 introduced `cache.record_evaluation` on the S4 (rejected-override-no-default) top-level Param branch. Before that change, the `EvalEvent { kind: EventKind::Completed { outcome } }` record on this path hardcoded `EvalOutcome::Unchanged`; now `outcome` is whatever `cache.record_evaluation` returns — `New` on first eval, `Unchanged` only on identical re-record.\n\nAny downstream consumer that pattern-matches on the old fixed `Unchanged` outcome for this path will now see a different variant. The existing rationale comment at `engine_eval.rs:663-680` (which acknowledges the deferred-cache reversal) and the doc-comment on `record_eval_completed` should call out this Completed-outcome shape change so a future bisect ties the journal-shape diff to task-2195.\n\nNo code change required — comment only. Add roughly:\n\n```text\n// Note: the `Completed` event's `EvalOutcome` is now whatever\n// cache.record_evaluation returns (typically `New` on first eval,\n// `Unchanged` only on identical re-record), no longer hardcoded\n// `Unchanged` as it was before task-2195.\n```\n\nSource: review of task-2195 by reviewer_comprehensive (esc-2195-45).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T08:11:30.541Z",
+        "updatedAt": "2026-04-26T11:09:33.528Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
@@ -48945,7 +48945,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:09:33.124Z",
+      "lastModified": "2026-04-26T11:09:33.528Z",
       "taskCount": 2259,
       "completedCount": 2022,
       "tags": [
