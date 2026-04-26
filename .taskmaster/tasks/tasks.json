@@ -48821,6 +48821,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T10:45:18.524Z"
+      },
+      {
+        "id": "2269",
+        "title": "eval_cached tests: add repeat-call regression locks for param-override and sub-component diagnostics",
+        "description": "In `crates/reify-eval/tests/eval_cached_diagnostics.rs`, repeat-call regression locks exist for solver Infeasible/NoProgress (steps 10/11) and circular-let (step 9), but NOT for:\n- param_override type/dimension mismatch warnings\n- sub-component \"unknown structure\" errors\n\nBoth diagnostics are expected to surface on every eval_cached invocation per the LSP requirement and task 2259's stated goal. Without a repeat-call test, a future change that gates either pass on `any_auto_miss` or similar cache state would silently regress.\n\nFix: add two short repeat-call tests modeled on `eval_cached_repeat_call_with_unchanged_module_re_emits_circular_diagnostic`:\n- one for param_override type/dimension mismatch (covers TypeKindMismatch and ScalarDimensionMismatch arms)\n- one for sub-component unknown structure\n\nEach calls eval_cached with VersionId(1) then VersionId(2) on the same module and asserts the diagnostic appears in both results.\n\nNote: depends on companion task that fixes the param_override fast-path bug (suggestion 4) — without that fix, the param_override repeat-call test would correctly fail.\n\nDone means: two new repeat-call regression tests added and passing.\n\nSpawned from review of task 2259 (esc-2259-71, suggestion 5).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48830,7 +48841,10 @@
       "completedCount": 2020,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T10:46:32.761Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T10:46:32.787Z"
     }
   }
 }
