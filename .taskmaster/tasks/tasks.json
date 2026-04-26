@@ -45884,11 +45884,11 @@
         "description": "The `phase1_reelaborated` HashSet in both edit_param (task 2140) and edit_source (task 2142) dedup assumes Phase 1's re-elaboration is idempotent *for a given guard value*. If the guard cell itself reads a resolved auto param, wave2 can flip the guard between Phase 1 and Phase 3. `reapply_phase1_deactivations` uses the *current* guard_val to deactivate newly-inactive members (correct), but never evaluates the default_expr of newly-active else_members whose default_expr does not read a resolved auto param. Phase 3 then skips the group via `phase1_reelaborated`, leaving those cells Undef when they should be Determined.\n\nScope: crates/reify-eval/src/engine_edit.rs — applies symmetrically to both edit_source (lines ~1860-1868, ~1583-1590) and edit_param (task 2140 path, comment at 1442-1445).\n\nSuggested fix options:\n(a) Track guard value at insert time: replace `HashSet<ValueCellId>` with `HashMap<ValueCellId, Value>` and in Phase 3 don't dedup when the current guard value differs from the recorded one (fall through to full re-elaboration, including active-branch default_expr evaluation).\n(b) Have `reapply_phase1_deactivations` detect a guard flip versus Phase 1's recorded value and, on flip, fall through to full re-elaboration rather than only re-deactivating.\n\nAdd a targeted regression test: source edit that changes a non-guard constraint input, guard reads a resolved auto param, guard flips because of the resolver, else_members' default_exprs are literals (not reading auto params). Verify the newly-active else_members transition from Undef to Determined and match cold-eval results.\n\nSource: post-merge review suggestion on task 2142 (esc-2142-102, reviewer_comprehensive). Inherited from task 2140 — predates this diff.",
         "details": "<info added on 2026-04-26T06:55:42.125Z>\nReconciliation stage 2 (2026-04-26) verified the following:\n\n1. WORKTREE STATUS: `.worktrees/2146` still exists on disk as a valid git worktree. It contains the original implementation with `group_needs_phase3()` defined (10 references in engine_edit.rs). Before starting fresh, the implementer should remove this stale worktree: `git worktree remove --force /home/leo/src/reify/.worktrees/2146` (or equivalently from repo root: `git worktree remove --force .worktrees/2146`).\n\n2. group_needs_phase3 ON MAIN: `group_needs_phase3()` is NOT present on main. The function exists only in the abandoned worktree branch. The previous attempt (the branch in .worktrees/2146) was abandoned due to merge conflicts. The implementer must implement this function fresh.\n\n3. CORRECT FILE PATH: The relevant file is `crates/reify-eval/src/engine_edit.rs` (not `reify-core` — that crate does not exist). The engine_edit.rs lines referenced in the description are correct for this file.\n</info added on 2026-04-26T06:55:42.125Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:59:10.141Z",
+        "updatedAt": "2026-04-26T11:59:12.215Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -49076,7 +49076,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:59:11.051Z",
+      "lastModified": "2026-04-26T11:59:12.215Z",
       "taskCount": 2262,
       "completedCount": 2028,
       "tags": [
