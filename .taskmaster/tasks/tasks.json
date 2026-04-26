@@ -48286,11 +48286,11 @@
         "description": "The review/briefing.yaml known_gaps section routinely lags live task state: Task 2225 was added as a known_gap in the 2026-04-25 briefing refresh and completed ~2h later; this is the second occurrence of this pattern (first: all 9 original known_gaps closed before the refresh was triggered). Reviewers may incorrectly dismiss implemented features as still-open gaps.\\n\\nImplement a lightweight automation: when the reconciliation system marks a task done whose title/id appears in review/briefing.yaml known_gaps, automatically queue a /review-briefing task (or directly remove the entry). Options: (1) post-done reconciliation hook that scans briefing.yaml for the task id, (2) a Stage 3 check during reconciliation that detects known_gaps/done mismatch and submits a briefing-refresh task, (3) add briefing.yaml known_gaps entries with the task id as structured metadata so they can be programmatically removed.\\n\\nMinimum viable: Stage 2 reconciliation creates a 'Refresh briefing: remove task N from known_gaps' task whenever it detects a done task whose id is listed in known_gaps.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T07:36:16.362Z",
+        "updatedAt": "2026-04-26T09:10:37.256Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -48299,6 +48299,9 @@
               "Task 2225 known_gap removal briefing.yaml reconciliation cycle",
               "Stage 2 task knowledge sync briefing.yaml refresh pattern"
             ]
+          },
+          "done_provenance": {
+            "commit": "5a7c22189beb4e1e1039e57628e104d3362bcda9"
           }
         }
       },
@@ -48505,26 +48508,36 @@
       {
         "id": "2255",
         "title": "Extend DiagnosticCode for remaining constraint-solver sites (NonUnique + cpsat builder)",
-        "description": "Follow-up to task 2253. Two additional `code: None` constraint-domain Diagnostic emissions exist in reify-constraints that were intentionally left out of 2253's scope. Migrate them to typed DiagnosticCodes and flip the related substring-matching test.",
-        "details": "Spawned from esc-2253-61 (cleanup_needed, info). Task 2253 migrates the five Diagnostic struct-literal sites it lists explicitly; these two share the same anti-pattern but were observed during planning and intentionally left out of scope:\n\n1. `crates/reify-constraints/src/solver.rs:884-893` — `DimensionalSolver` emits `SolveResult::Infeasible` with `code: None` for \"strict auto parameter resolution is not uniquely determined …\". Semantically distinct from `ConstraintUnsatisfiable` (multiple solutions, not zero) — needs a fourth variant such as `ConstraintNonUnique` / `ConstraintUnderdetermined` added to `DiagnosticCode`.\n\n2. `crates/reify-constraints/src/cpsat.rs:249-255` — `CpSatSolver` emits Infeasible via `Diagnostic::error(format!(…))` (implicit `code: None` from the `Diagnostic::error` builder). Likely maps to `ConstraintUnsatisfiable`, but the migration shape is `.with_code(...)` builder chain rather than struct-literal mutation — a different idiom from 2253's five sites.\n\nTest to flip: `crates/reify-constraints/tests/solver_integration.rs::strict_auto_non_unique_returns_infeasible` (~line 1646) currently substring-matches \"not uniquely determined\" — switch to a typed-code assertion (e.g. `DiagnosticCode::ConstraintNonUnique`) once the variant lands. This is exactly the fragility the parent task is retiring.\n\nAcceptance:\n- Add `ConstraintNonUnique` (or equivalent) variant to DiagnosticCode in reify-diagnostics.\n- Migrate solver.rs:891 to set the new code; migrate cpsat.rs:249 via `.with_code(DiagnosticCode::ConstraintUnsatisfiable)`.\n- Update `strict_auto_non_unique_returns_infeasible` to assert on the typed code instead of message substring.\n- Depends on task 2253 landing first (introduces ConstraintViolated / ConstraintIndeterminate / ConstraintUnsatisfiable variants).",
-        "testStrategy": "",
+        "description": "Follow-up to task 2253. Migrate the two remaining code:None Infeasible emissions in reify-constraints (NonUnique path in solver.rs and cpsat.rs builder path), add a ConstraintNonUnique DiagnosticCode variant, flip the substring-matching test to a typed-code assertion, and add a second test case for the existing ConstraintUnsatisfiable residual-infeasibility path so future refactors that split the bounds-cap branch from the residual branch cannot silently regress code-tag wiring on either.",
         "status": "pending",
         "dependencies": [
           "2253"
         ],
         "priority": "low",
-        "subtasks": []
+        "details": "Combined from esc-2253-61 (cleanup_needed, info) and esc-2253-63 (review_suggestions, optional test_coverage).\n\n1. **Add ConstraintNonUnique variant** — Add `ConstraintNonUnique` (or `ConstraintUnderdetermined`) to `DiagnosticCode` in reify-diagnostics.\n\n2. **Migrate solver.rs:884-893** — `DimensionalSolver` emits `SolveResult::Infeasible` with `code: None` for \"strict auto parameter resolution is not uniquely determined …\". Semantically distinct from `ConstraintUnsatisfiable` (multiple solutions, not zero). Migrate to set the new `ConstraintNonUnique` variant.\n\n3. **Migrate cpsat.rs:249-255** — `CpSatSolver` emits Infeasible via `Diagnostic::error(format!(…))` (implicit `code: None` from the `Diagnostic::error` builder). Likely maps to `ConstraintUnsatisfiable`. Migration shape is `.with_code(DiagnosticCode::ConstraintUnsatisfiable)` builder chain — different idiom from 2253's five struct-literal sites.\n\n4. **Flip strict_auto_non_unique_returns_infeasible** (`crates/reify-constraints/tests/solver_integration.rs` ~line 1646) — currently substring-matches \"not uniquely determined\". Switch to typed-code assertion (`DiagnosticCode::ConstraintNonUnique`) once the variant lands.\n\n5. **Add residual-path test case** — Add a second `#[test]` case (or parameterized variant) to `infeasible_diagnostic_carries_constraint_unsatisfiable_code` at `crates/reify-constraints/tests/solver_integration.rs:1715-1755`. Construct a residual-only infeasible problem (no bounds, contradictory equalities, e.g. `x == 1mm AND x == 2mm`). Assert `Some(DiagnosticCode::ConstraintUnsatisfiable)` is attached. The existing case exercises only the bounds-cap-blocks-feasibility path (`x > 15mm` vs bounds `[0, 10mm]`); this new case guards the residual branch independently.\n\nAcceptance:\n- `ConstraintNonUnique` (or equivalent) variant exists in DiagnosticCode.\n- solver.rs:891 and cpsat.rs:249-255 migrated to typed codes.\n- `strict_auto_non_unique_returns_infeasible` uses typed-code assertion.\n- New residual-path test case passes on current main post-2253 and fails if the residual-path Infeasible loses its typed code.\n- All existing tests pass.",
+        "testStrategy": "",
+        "subtasks": [],
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Both tasks are low-priority follow-ups to task 2253, both touch crates/reify-constraints/tests/solver_integration.rs, and both are about ensuring all Infeasible emissions in the constraint solver carry typed DiagnosticCodes with full test coverage. The candidate (add residual-path test for ConstraintUnsatisfiable) and task 2255 (add ConstraintNonUnique variant, migrate two code:None sites, flip a substring test) share the same subsystem context — the implementer would load DimensionalSolver, CpS",
+          "combined_at": "2026-04-26T09:10:08.974317+00:00"
+        }
       },
       {
         "id": "2256",
         "title": "post-commit: extend done-task regex to match dotted subtask IDs (e.g. NNN.M=done)",
-        "description": "Step (3.5) of hooks/post-commit gates the briefing-refresh script on `^chore(tasks): auto-commit after set_task_status([0-9]+=done)$`, which only matches numeric (top-level) task IDs. Real auto-commit messages in `git log` use dotted subtask form too (e.g. `set_task_status(2106.1=done)`, `set_task_status(1612.2=done)`), so subtask completions never trigger the briefing script even though scripts/refresh_briefing_known_gaps.py explicitly indexes subtasks as `{parent}.{sub}` and tests/infra/test_refresh_briefing_known_gaps.sh Check 14 verifies that capability. A reviewer adding a subtask-level `tracking: \"1612.1\"` known_gap will never see a stale-gap warning when that subtask closes.</description>\n<parameter name=\"details\">1. Update the regex in hooks/post-commit step (3.5) (line ~80) from `^chore\\(tasks\\): auto-commit after set_task_status\\([0-9]+=done\\)$` to `^chore\\(tasks\\): auto-commit after set_task_status\\([0-9]+(\\.[0-9]+)?=done\\)$`.\n2. Add a Check-9-style integration test in tests/infra/test_post_commit_hook.sh that asserts a `chore(tasks): auto-commit after set_task_status(NNN.M=done)` commit message triggers the briefing-refresh script (mirroring the existing top-level-id check).\n3. Verify against the existing test_refresh_briefing_known_gaps.sh Check 14 path so dotted subtask tracking IDs are exercised end-to-end through the hook.",
-        "details": "",
-        "testStrategy": "",
+        "description": "Two correctness/maintainability fixes to step (3.5) of hooks/post-commit that both prevent silent failures in the briefing-refresh trigger.",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "details": "**Regex gap (functional bug):** The current gate `^chore(tasks): auto-commit after set_task_status([0-9]+=done)$` only matches numeric top-level task IDs. Real auto-commit messages in `git log` use dotted subtask form (e.g. `set_task_status(2106.1=done)`, `set_task_status(1612.2=done)`), so subtask completions never trigger `scripts/refresh_briefing_known_gaps.py` even though that script explicitly indexes subtasks as `{parent}.{sub}` and `tests/infra/test_refresh_briefing_known_gaps.sh` tests for them. Extend the regex to match `[0-9]+(\\.[0-9]+)?=done`. Add a test case in `tests/infra/test_post_commit_hook.sh` (or `tests/infra/test_refresh_briefing_known_gaps.sh`) verifying a dotted-subtask commit message (e.g. `chore(tasks): auto-commit after set_task_status(2106.1=done)`) triggers the script.\n\n**Comment brittleness (cosmetic/maintenance):** Step (3.5) carries a ~30-line inline comment block whose final paragraph pins the implementation detail of `tests/infra/test_post_commit_hook.sh Check 12`. Any rename or renumber of Check 12 silently invalidates the hook prose with no CI signal. Keep a 1-2 sentence rationale explaining that `|| true` absorbs failures so step (5) always runs; drop the explicit `tests/infra/test_post_commit_hook.sh Check 12 ...` cross-reference. The assertion message inside Check 12 already names the failure mode clearly.",
+        "testStrategy": null,
+        "subtasks": [],
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Both tasks are tiny changes to the same step (3.5) of hooks/post-commit: Task 2256 fixes the regex to match dotted subtask IDs; the candidate trims the brittle Check-12 cross-reference comment. Same file, same lock, implementer loads context once. Union fits in <5 files and the unified concern — 'make step (3.5) reliable and clean' — survives one-sentence description without 'and also'. Task 2256 is the combine target (pending, combine_eligible=True).",
+          "combined_at": "2026-04-26T09:08:49.077216+00:00"
+        }
       },
       {
         "id": "2257",
@@ -48540,15 +48553,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T09:06:57.779Z",
-      "taskCount": 2243,
-      "completedCount": 2009,
+      "lastModified": "2026-04-26T09:10:37.263Z",
+      "taskCount": 2246,
+      "completedCount": 2010,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T09:07:10.234Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T09:08:48.207Z"
+      ]
     }
   }
 }
