@@ -49921,7 +49921,7 @@
         "id": "2303",
         "title": "Deep dot-chain warning: AST walker with depth threshold = 4",
         "description": "Implement spec §5.7 deep-dot-chain lint and its full test suite. Walk MemberAccess AST nodes in left-to-right chains; when chain length > 4, emit warning W_DEEP_DOT_CHAIN with full chain text + span. v0.1 default threshold = 4 (`a.b.c.d` OK; `a.b.c.d.e` warns). Method-call chains and indexing-mid-chain are out-of-scope for v0.1 — count `.field` hops only and treat indexed expressions as fresh chain roots. PRD: docs/prds/deep-dot-chain.md.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "details": "## Implementation\nSpec §5.7 lines 1077-1087. Threshold configurable but v0.1 ships 4 hardcoded; config knob can come post-v0.1.\n\nSingle-pass syntactic check on AST (no semantic info needed). Wire diagnostic correctly into the existing diagnostic pipeline.\n\nMemory hints: search \"AST walker\", \"MemberAccess\", \"diagnostic\" in reify-compiler.\n\n## Tests\nTest the dot-chain lint per PRD docs/prds/deep-dot-chain.md:\n\n- **At-threshold**: `a.b.c.d` (4 hops) — no warning emitted\n- **One-over threshold**: `a.b.c.d.e` (5 hops) — W_DEEP_DOT_CHAIN warning emitted with correct span\n- **Method-call mid-chain**: `a.b.foo().c.d` — no warn (method calls are out of scope for v0.1; treat as chain break)\n- **Indexed mid-chain**: `a.b[0].c.d.e` — treats `a.b[0]` as chain root; counts 3 hops from `[0]`, no warning at that depth\n- **Multi-chain expressions in same line**: multiple independent deep chains on one line, each evaluated independently\n- **Deep chains in let bodies**: chain as let initializer triggers warning when depth > 4\n- **Deep chains in constraint bodies**: chain in constraint predicate triggers warning when depth > 4",
@@ -49930,8 +49930,16 @@
         "metadata": {
           "curator_action": "combine",
           "curator_justification": "Task 2303 (pending, combine_eligible) is the matching implementation task for the same spec §5.7 deep-dot-chain lint. The candidate supplies the test plan that the implementation task needs; both share the same PRD, threshold semantics, and reify-compiler module lock. Combining loads context once and avoids a race where tests land before or after implementation in separate cycles. All four combine rules hold: coherent in one sentence, same 1-module lock, well under budget, both high-priority.",
-          "combined_at": "2026-04-26T19:47:52.989674+00:00"
-        }
+          "combined_at": "2026-04-26T19:47:52.989674+00:00",
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/deep_dot_chain_tests.rs",
+            "crates/reify-lsp/src/diagnostics.rs",
+            "crates/reify-types/src/diagnostics.rs"
+          ]
+        },
+        "updatedAt": "2026-04-26T20:02:44.863Z"
       },
       {
         "id": "2304",
@@ -50352,7 +50360,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:02:06.084Z",
+      "lastModified": "2026-04-26T20:02:44.864Z",
       "taskCount": 2321,
       "completedCount": 2059,
       "tags": [
