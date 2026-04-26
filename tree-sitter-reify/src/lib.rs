@@ -38,6 +38,25 @@ mod tests {
         kinds
     }
 
+    /// Depth-first search for the first node with the given kind.
+    fn find_node_by_kind<'a>(node: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                if let Some(found) = find_node_by_kind(cursor.node(), kind) {
+                    return Some(found);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn can_load_grammar() {
         make_parser();
@@ -72,6 +91,50 @@ mod tests {
         assert!(
             !tree.root_node().has_error(),
             "unexpected parse error in source with /* */ comment"
+        );
+    }
+
+    #[test]
+    fn test_forall_statement_with_connect() {
+        let mut parser = make_parser();
+        let source =
+            b"structure S { forall v in vents: connect v.inlet -> housing.air_channel }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let kinds = collect_kinds(tree.root_node());
+
+        // (a) No parse errors
+        assert!(
+            !tree.root_node().has_error(),
+            "unexpected parse error in forall-connect source: {kinds:?}"
+        );
+
+        // (b) Both forall_statement and connect_statement nodes must be present
+        assert!(
+            kinds.contains(&"forall_statement".to_string()),
+            "expected forall_statement node, got: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"connect_statement".to_string()),
+            "expected connect_statement node, got: {kinds:?}"
+        );
+
+        // (c) The forall_statement's body field must be a connect_statement
+        let forall_node = find_node_by_kind(tree.root_node(), "forall_statement")
+            .expect("forall_statement not found in tree");
+        let _variable = forall_node
+            .child_by_field_name("variable")
+            .expect("forall_statement missing 'variable' field");
+        let _collection = forall_node
+            .child_by_field_name("collection")
+            .expect("forall_statement missing 'collection' field");
+        let body = forall_node
+            .child_by_field_name("body")
+            .expect("forall_statement missing 'body' field");
+        assert_eq!(
+            body.kind(),
+            "connect_statement",
+            "expected body to be connect_statement, got: {}",
+            body.kind()
         );
     }
 
