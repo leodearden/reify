@@ -50938,7 +50938,13 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:14:47.342Z"
+        "updatedAt": "2026-04-26T20:14:47.342Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-runtime/src/commitment.rs",
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ]
+        }
       },
       {
         "id": "2359",
@@ -51444,7 +51450,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:26:43.941Z",
+      "description": "Tasks for master context"
     }
   }
 }
