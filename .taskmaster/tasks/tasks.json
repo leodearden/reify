@@ -49358,7 +49358,18 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "TypeNotConformingToTrait",
+              "trait_typed_param_tests"
+            ],
+            "queries": [
+              "Map key non-conformance trait typed param test coverage wrapper types",
+              "Option List Map nested wrapper conformance test coverage task 2227"
+            ]
+          },
+          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
         }
       },
       {
