@@ -23,6 +23,12 @@ const EXAMPLE_PATH: &str = concat!(
 );
 
 /// Read `examples/fields/composed_stiffness.ri` and verify it parses without errors.
+///
+/// Note: test #1 is intentionally a strict subset of test #2 (`composed_stiffness_compiles_with_stdlib`)
+/// and is also covered by `all_examples_parse_and_compile_with_stdlib`. It is kept as a separate
+/// fast-failing entry point consistent with the `m11_field_calculus.rs` convention: a parse-only
+/// failure surfaces immediately without running the compiler, making it unambiguous whether a
+/// regression is in the parser or downstream. See plan design decision #7.
 #[test]
 fn composed_stiffness_ri_parses() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
@@ -67,6 +73,12 @@ fn composed_stiffness_compiles_with_stdlib() {
 
 /// Eval the fixture and verify each field's `Value::Field` carries the expected
 /// `FieldSourceKind`: Analytical, Sampled, Composed.
+///
+/// Note: tests #3 and #4 intentionally re-run parse+compile independently rather than
+/// sharing a setup step. A failure here (wrong `FieldSourceKind`) points specifically
+/// at source-kind dispatch in `engine_eval.rs`, while a failure in test #4 points at
+/// the sample/constraint pipeline. Keeping them separate gives narrow failure modes.
+/// See plan design decision #7.
 #[test]
 fn composed_stiffness_evals_with_three_field_source_kinds() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
@@ -117,11 +129,13 @@ fn composed_stiffness_evals_with_three_field_source_kinds() {
 }
 
 /// Eval and check `examples/fields/composed_stiffness.ri` and verify all
-/// structure constraints (at least 4) are Satisfied.
+/// structure constraints are Satisfied.
 ///
-/// The four range constraints come from the `ComposedStiffnessDemo` structure:
+/// The fixture declares exactly **4** range constraints in `ComposedStiffnessDemo`:
 ///   - `temp_at_p > 399.999` and `temp_at_p < 400.001` (analytical sample at 2.0)
 ///   - `stiff_at_p > 8.999` and `stiff_at_p < 9.001` (composed sample at 4.0)
+///
+/// If you add constraints to `composed_stiffness.ri`, update the exact count below.
 #[test]
 fn composed_stiffness_constraints_all_satisfied() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
@@ -141,11 +155,12 @@ fn composed_stiffness_constraints_all_satisfied() {
         .collect();
     assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
-    // Check constraints.
+    // Check constraints — exactly 4, one per range bound in ComposedStiffnessDemo.
     let check = engine.check(&compiled);
-    assert!(
-        check.constraint_results.len() >= 4,
-        "expected >=4 constraint results, got {}",
+    assert_eq!(
+        check.constraint_results.len(),
+        4,
+        "expected exactly 4 constraint results, got {}",
         check.constraint_results.len()
     );
 
