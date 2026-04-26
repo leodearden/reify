@@ -49857,10 +49857,11 @@
         "description": "Implement spec §5.7 deep-dot-chain lint. Walk MemberAccess AST nodes in left-to-right chains; when chain length > 4, emit warning W_DEEP_DOT_CHAIN with full chain text + span. v0.1 default threshold = 4 (`a.b.c.d` OK; `a.b.c.d.e` warns). Method-call chains and indexing-mid-chain are out-of-scope for v0.1 — count `.field` hops only and treat indexed expressions as fresh chain roots. PRD: docs/prds/deep-dot-chain.md.\n\nSingle-pass syntactic check on AST (no semantic info needed). Wire diagnostic code + format + LSP path.",
         "details": "Spec §5.7 lines 1077-1087. Threshold configurable but v0.1 ships 4 hardcoded; config knob can come post-v0.1.\n\nMemory hints: search \"AST walker\", \"MemberAccess\", \"diagnostic\" in reify-compiler.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:46:22.583Z"
       },
       {
         "id": "2304",
@@ -49876,15 +49877,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:44:59.472Z",
-      "taskCount": 2290,
+      "lastModified": "2026-04-26T19:46:22.583Z",
+      "taskCount": 2293,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:46:15.495Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:46:16.263Z"
+      ]
     }
   }
 }
