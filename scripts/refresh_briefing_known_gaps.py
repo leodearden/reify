@@ -129,8 +129,9 @@ def main() -> int:
         if task is None:
             # Orphan tracking ID — task not in tasks.json, skip silently.
             continue
-        # Only "done" counts — in-progress/blocked/deferred may still be
-        # open gaps from the reviewer's perspective.
+        # Only exact "done" status counts.  In-progress, blocked, deferred,
+        # and pending tasks may still legitimately represent open gaps from
+        # the reviewer's perspective — they are not yet actionable as stale.
         if task.get("status") == "done":
             mismatches.append(
                 {
