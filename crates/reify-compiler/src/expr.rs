@@ -1140,6 +1140,18 @@ pub(crate) fn compile_expr_guarded(
             // Anti-cascade: this branch is placed AFTER the compile_obj call so
             // the existing `is_error()` poison short-circuit below still fires
             // for already-poisoned subjects.
+            //
+            // Single-StructureRef-param invariant (task-2201): the
+            // `ValueCellId::new(&id.entity, member)` emit at line ~1222 below
+            // collapses ALL purpose-subject member refs onto the purpose-name
+            // entity stamp (id.entity == scope.entity_name == purpose_name).
+            // This is correct only when the purpose has exactly one StructureRef
+            // param, because `activate_purpose` rewrites the stamp with a single
+            // `remap_entity(purpose_name, entity_ref)` call
+            // (reify-types/src/expr.rs:660) — there is no per-param dispatch.
+            // `compile_purpose` (traits.rs) rejects multi-param purposes with a
+            // clear diagnostic before this branch ever runs for them; see
+            // esc-2181-18 S3 for the deferred Approach-2 design.
             if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind
                 && matches!(&compiled_obj.result_type, Type::StructureRef(_))
                 && id.entity == scope.entity_name
