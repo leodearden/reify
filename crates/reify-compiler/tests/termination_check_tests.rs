@@ -830,6 +830,11 @@ structure S {
     );
 
     // (b) Broken guard: field should be true, guard_expr should be None.
+    // compile_first_template uses partial-recovery semantics: it returns the template
+    // even when guard compilation emits Severity::Error diagnostics (same contract as
+    // conformance/checker.rs:545-557, where compile_expr errors are collected but the
+    // template is still returned). The sub is present in sub_components; only
+    // guard_expr is set to None and guard_compile_failed to true.
     let source_broken = r#"
 structure S {
     param n : Int = 5
