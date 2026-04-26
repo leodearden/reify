@@ -464,6 +464,29 @@ pub(crate) fn eval_ctx_with_meta<'a>(
     reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
 }
 
+/// Build the per-template meta-map consumed by `eval_ctx_with_meta`.
+///
+/// Filters out templates with empty `meta` blocks and clones each
+/// non-empty entry into the returned `Arc`-wrapped HashMap so the result
+/// can be cheaply shared (Arc::clone) with `ConcurrentEditSetup` and
+/// other consumers without deep-copying the inner string maps.
+///
+/// Centralised in `lib.rs` so future shape changes (interning, additional
+/// filter rules) land in exactly one place — see task 2216 / esc-397-72
+/// suggestion 2.
+pub(crate) fn build_meta_map(
+    module: &CompiledModule,
+) -> Arc<HashMap<String, HashMap<String, String>>> {
+    Arc::new(
+        module
+            .templates
+            .iter()
+            .filter(|t| !t.meta.is_empty())
+            .map(|t| (t.name.clone(), t.meta.clone()))
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,6 +930,43 @@ structure S {
             Arc::strong_count(&engine.meta_map) >= 2,
             "strong_count must be >= 2 (engine + setup both hold a ref); got {}",
             Arc::strong_count(&engine.meta_map)
+        );
+    }
+
+    #[test]
+    fn build_meta_map_filters_empty_and_preserves_non_empty_meta() {
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_types::ModulePath;
+
+        let meta_entries = {
+            let mut m = std::collections::HashMap::new();
+            m.insert("color".to_string(), "blue".to_string());
+            m.insert("material".to_string(), "steel".to_string());
+            m
+        };
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("Widget")
+                    .meta(meta_entries)
+                    .build(),
+            )
+            .template(TopologyTemplateBuilder::new("Bare").build())
+            .build();
+
+        let result = build_meta_map(&module);
+        let result = result.as_ref();
+
+        assert_eq!(result.len(), 1, "only Widget has non-empty meta");
+        assert!(result.contains_key("Widget"), "Widget must be present");
+        assert!(!result.contains_key("Bare"), "Bare must be filtered out");
+        assert_eq!(
+            result["Widget"]["color"], "blue",
+            "Widget.color must be 'blue'"
+        );
+        assert_eq!(
+            result["Widget"]["material"], "steel",
+            "Widget.material must be 'steel'"
         );
     }
 }
