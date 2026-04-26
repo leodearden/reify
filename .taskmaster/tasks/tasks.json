@@ -49268,11 +49268,11 @@
         "description": "Reduce duplication between the two recursive walkers in crates/reify-compiler/src/conformance/mod.rs by extracting a shared `WalkCtx<'a>` (or similar) holding the trailing 5 arguments (arg_name, span, template_registry, trait_registry, diagnostics).",
         "details": "Both `walk_param_against_arg` (literal-kind dispatcher, mod.rs:177) and `walk_param_against_arg_type` (Type-pair dispatcher, mod.rs:359) duplicate Option/List/Set/Map + leaf + fallback arms in nearly identical shape, threading the same 5-tuple of context through every recursive call.\n\nGoal:\n- Introduce `WalkCtx<'a> { arg_name: &'a str, span: SourceSpan, templates: &'a HashMap<...>, traits: &'a HashMap<...>, diagnostics: &'a mut Vec<Diagnostic> }`.\n- Pass `&mut ctx` through both walkers; reduce each helper from 7 args to 2-3.\n- Removes the `#[allow(clippy::too_many_arguments)]` pressure (see commit 3016f07).\n- Future wrapper additions (e.g. `Tuple<T,U>`) become a one-line arm in each walker.\n\nThis is a pure refactor — no behavior change. All conformance tests in tests/trait_typed_param_tests.rs must continue to pass unchanged.\n\nSource: review suggestion on task 2227 (esc-2227-7).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T13:58:00.210Z",
+        "updatedAt": "2026-04-26T14:23:57.798Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -49285,7 +49285,10 @@
               "trait typed param tests conformance wrapper types walk_param_against_arg"
             ]
           },
-          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
+          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd",
+          "done_provenance": {
+            "commit": "f9d62c34ec790f0e9509e7160ef6b6d8ff240d97"
+          }
         }
       },
       {
@@ -49399,9 +49402,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T14:17:32.804Z",
+      "lastModified": "2026-04-26T14:23:57.798Z",
       "taskCount": 2272,
-      "completedCount": 2040,
+      "completedCount": 2041,
       "tags": [
         "master"
       ]
