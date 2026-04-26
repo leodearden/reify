@@ -51,7 +51,11 @@ pub enum KBool {
 ///
 /// See `docs/reify-language-spec.md` §9.2.3 lines 1668-1676.
 pub fn kleene_and(a: KBool, b: KBool) -> KBool {
-    unimplemented!()
+    match (a, b) {
+        (KBool::False, _) | (_, KBool::False) => KBool::False,
+        (KBool::True, KBool::True) => KBool::True,
+        _ => KBool::Undef,
+    }
 }
 
 /// Kleene three-valued OR.
@@ -61,7 +65,11 @@ pub fn kleene_and(a: KBool, b: KBool) -> KBool {
 ///
 /// See `docs/reify-language-spec.md` §9.2.3 lines 1668-1676.
 pub fn kleene_or(a: KBool, b: KBool) -> KBool {
-    unimplemented!()
+    match (a, b) {
+        (KBool::True, _) | (_, KBool::True) => KBool::True,
+        (KBool::False, KBool::False) => KBool::False,
+        _ => KBool::Undef,
+    }
 }
 
 /// Kleene three-valued NOT.
@@ -70,7 +78,11 @@ pub fn kleene_or(a: KBool, b: KBool) -> KBool {
 ///
 /// See `docs/reify-language-spec.md` §9.2.3 lines 1668-1676.
 pub fn kleene_not(a: KBool) -> KBool {
-    unimplemented!()
+    match a {
+        KBool::True => KBool::False,
+        KBool::False => KBool::True,
+        KBool::Undef => KBool::Undef,
+    }
 }
 
 /// Kleene three-valued material implication (`a → b`).
@@ -83,7 +95,7 @@ pub fn kleene_not(a: KBool) -> KBool {
 ///
 /// See `docs/reify-language-spec.md` §9.2.3 lines 1668-1676.
 pub fn kleene_implies(a: KBool, b: KBool) -> KBool {
-    unimplemented!()
+    kleene_or(kleene_not(a), b)
 }
 
 impl TryFrom<&Value> for KBool {
@@ -95,8 +107,13 @@ impl TryFrom<&Value> for KBool {
     /// - `Bool(false)` → `Ok(False)`
     /// - `Undef` → `Ok(Undef)`
     /// - any other variant → `Err(())`
-    fn try_from(_v: &Value) -> Result<Self, ()> {
-        unimplemented!()
+    fn try_from(v: &Value) -> Result<Self, ()> {
+        match v {
+            Value::Bool(true) => Ok(KBool::True),
+            Value::Bool(false) => Ok(KBool::False),
+            Value::Undef => Ok(KBool::Undef),
+            _ => Err(()),
+        }
     }
 }
 
@@ -107,7 +124,11 @@ impl From<KBool> for Value {
     /// - `False` → `Value::Bool(false)`
     /// - `Undef` → `Value::Undef`
     fn from(k: KBool) -> Value {
-        unimplemented!()
+        match k {
+            KBool::True => Value::Bool(true),
+            KBool::False => Value::Bool(false),
+            KBool::Undef => Value::Undef,
+        }
     }
 }
 
