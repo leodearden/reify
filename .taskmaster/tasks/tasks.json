@@ -51051,6 +51051,20 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2369",
+        "title": "specialization-scope: emit E_SPECIALIZATION_FORBIDDEN_DECL with kind-specific message",
+        "description": "Implement a rule to emit an error for forbidden declarations inside a specialization scope.",
+        "details": "Implement the `E_SPECIALIZATION_FORBIDDEN_DECL` error emission for `param`, `port`, and `sub` declarations within a specialization scope. The error message should include the specific kind name of the offending declaration. The error span should point to the keyword and name of the forbidden declaration. Refer to the PRD document at `docs/prds/specialization-scope.md` task 2 and specification section §8.7 for detailed requirements. Update the parser to identify these declarations and trigger the error appropriately.",
+        "testStrategy": "Create unit tests to verify that `E_SPECIALIZATION_FORBIDDEN_DECL` is emitted for `param`, `port`, and `sub` declarations within a specialization scope. Ensure the error message includes the correct kind name and that the span points to the keyword and name. Run the full test suite to confirm no regressions.",
+        "status": "pending",
+        "dependencies": [
+          "1",
+          "3"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51060,7 +51074,10 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:23:03.361Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:23:12.497Z"
     }
   }
 }
