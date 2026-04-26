@@ -50465,6 +50465,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:05:31.473Z"
+      },
+      {
+        "id": "2340",
+        "title": "Warm-state eviction: add memory budget config and per-state metadata to WarmStatePool",
+        "description": "PRD docs/prds/warm-state-eviction.md. Per arch §4.3 lines 524-540 add to WarmStatePool: memory_budget_bytes (configurable, project-level), and per-pooled-state metadata size_bytes, last_accessed: Instant, cost_per_byte: f64 (estimated_cold_compute_time / state_size_bytes). Plumb budget from project config or env var; default to a documented sensible cap (e.g. 2GB). No-op if budget is None / unlimited; existing tests stay green. Builds on #27.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50474,7 +50485,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:05:34.363Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:05:34.589Z"
     }
   }
 }
