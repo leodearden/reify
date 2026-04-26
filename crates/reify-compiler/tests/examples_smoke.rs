@@ -93,42 +93,33 @@ fn skip_set_entries_exist_under_examples_dir() {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-/// Return all `*.ri` files under `EXAMPLES_DIR`, sorted by filename for
-/// deterministic output.
+/// Return all `*.ri` files under `EXAMPLES_DIR` (recursively), sorted by
+/// their full path for deterministic output.
 fn discover_ri_files() -> Vec<PathBuf> {
-    let dir = std::fs::read_dir(EXAMPLES_DIR).unwrap_or_else(|e| {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    collect_ri_files(std::path::Path::new(EXAMPLES_DIR), &mut paths);
+    paths.sort();
+    paths
+}
+
+/// Recursively collect `*.ri` files under `dir` into `out`.
+fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
-            "examples_smoke: cannot read examples directory '{}': {}",
-            EXAMPLES_DIR, e
+            "examples_smoke: cannot read directory '{}': {}",
+            dir.display(),
+            e
         )
     });
-
-    let mut paths: Vec<PathBuf> = dir
-        .filter_map(|entry| {
-            let entry = entry.expect("IO error reading examples dir entry");
-            let path = entry.path();
-            // Guard: assert no subdirectories exist so future restructuring
-            // surfaces this limitation loudly rather than silently losing files.
-            assert!(
-                !path.is_dir(),
-                "examples_smoke: unexpected subdirectory '{}' under examples/; \
-                 discover_ri_files is non-recursive — update it or escalate",
-                path.display()
-            );
-            if path.extension().and_then(|e| e.to_str()) == Some("ri") {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    paths.sort_by(|a, b| {
-        a.file_name()
-            .unwrap_or_default()
-            .cmp(b.file_name().unwrap_or_default())
-    });
-    paths
+    for entry in entries {
+        let entry = entry.expect("IO error reading examples dir entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ri_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
+            out.push(path);
+        }
+    }
 }
 
 /// Parse `path`, compile it with the stdlib prelude, and append an entry to
