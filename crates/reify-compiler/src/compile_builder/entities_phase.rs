@@ -132,10 +132,14 @@ pub(crate) fn phase_entities(
                 if !resolved.contains(&import.path) {
                     ctx.diagnostics.push(
                         Diagnostic::warning(format!(
-                            "import \"{}\" not resolved: this entry point does not load imported files — use compile_project (ModuleDag) for cross-file imports",
+                            "import \"{}\" not resolved by this entry point",
                             import.path
                         ))
-                        .with_label(DiagnosticLabel::new(import.span, "import")),
+                        .with_label(DiagnosticLabel::new(import.span, "import"))
+                        .with_label(DiagnosticLabel::new(
+                            import.span,
+                            "use compile_project (ModuleDag) for cross-file imports",
+                        )),
                     );
                 }
             }
