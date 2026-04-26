@@ -390,5 +390,63 @@ assert "clearing: subtask ids normalized in HEAD (hook actually ran)" \
     bash -c "! git -C '$_repo8' show HEAD:.taskmaster/tasks/tasks.json \
              | jq -r '.master.tasks[].subtasks[].id | type' | grep -q 'number'"
 
+# ==============================================================================
+# Check 9: hook surfaces briefing mismatch on set_task_status(555=done) commit
+# ==============================================================================
+# Builds a fixture repo that includes the briefing script, a review/briefing.yaml
+# with a known_gap tracking task 555, and a tasks.json with task 555 done.
+# A commit with message matching set_task_status(NNN=done) must trigger the
+# briefing check. Hook must still exit 0 (informational only), and the
+# hook's stderr must contain "WARN" and "555".
+echo ""
+echo "--- Check 9: briefing mismatch surfaced on done-task commit ---"
+
+REFRESH_SCRIPT="$REPO_ROOT/scripts/refresh_briefing_known_gaps.py"
+
+mk_repo_fixture _repo9
+# Copy the briefing script into the fixture (next to normalize script).
+if [ -f "$REFRESH_SCRIPT" ]; then
+    cp "$REFRESH_SCRIPT" "$_repo9/scripts/refresh_briefing_known_gaps.py"
+    chmod +x "$_repo9/scripts/refresh_briefing_known_gaps.py"
+fi
+
+# Create review/briefing.yaml with a known_gap tracking task 555.
+mkdir -p "$_repo9/review"
+cat > "$_repo9/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps:
+      - what: "LSP gap that was actually fixed"
+        tracking: "555"
+YAML
+
+# Create tasks.json with task 555 marked done.
+mkdir -p "$_repo9/.taskmaster/tasks"
+cat > "$_repo9/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"555","title":"Fix LSP gap","status":"done"}]}}
+JSON
+
+# Seed HEAD with an initial commit (--no-verify so hook doesn't fire yet).
+git -C "$_repo9" add .
+git -C "$_repo9" commit --no-verify -m "chore: seed initial state" -q
+
+# Now make the real commit: message matches set_task_status(555=done).
+# The post-commit hook should fire and invoke refresh_briefing_known_gaps.py.
+# Capture the hook's combined stdout+stderr to check for WARN.
+_stderr9pc="$_tmpdir/stderr9_postcommit.txt"
+_hook9_exit=0
+(cd "$_repo9" && git commit --allow-empty \
+    -m "chore(tasks): auto-commit after set_task_status(555=done)" \
+    2>"$_stderr9pc") || _hook9_exit=$?
+
+assert "Check 9: hook exited 0 (briefing check is informational)" \
+    test "$_hook9_exit" -eq 0
+
+assert "Check 9: hook stderr contains WARN" \
+    grep -q "WARN" "$_stderr9pc"
+
+assert "Check 9: hook stderr contains task id 555" \
+    grep -q "555" "$_stderr9pc"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
