@@ -5,7 +5,7 @@
 //! trait conformance and constraint injection work as expected.
 
 use reify_compiler::*;
-use reify_test_support::compile_first_template;
+use reify_test_support::{compile_first_template, compile_source_with_stdlib};
 use reify_types::*;
 use std::path::PathBuf;
 
@@ -532,6 +532,68 @@ fn four_mechanical_traits_refine_material_spec() {
             trait_def.refinements
         );
     }
+}
+
+// ─── conformance: FatigueRated : MaterialSpec enforced at compile time ────────
+
+/// A structure declaring `: FatigueRated` but omitting the MaterialSpec-required
+/// `density` and `name` members should produce error diagnostics.  This verifies
+/// that the FatigueRated : MaterialSpec refinement actually enforces the
+/// inherited contract during conformance-checking — not just in `refinements`.
+#[test]
+fn fatigue_rated_without_material_members_is_conformance_error() {
+    let source = r#"
+structure def Foo : FatigueRated {
+    param endurance_limit : Real = 500.0
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected conformance errors for Foo : FatigueRated missing density and name, but got none"
+    );
+}
+
+/// A structure declaring `: FatigueRated` and supplying all three required
+/// members — `density` and `name` (inherited via MaterialSpec) plus
+/// `endurance_limit` (declared by FatigueRated) — should compile without errors.
+#[test]
+fn fatigue_rated_with_all_material_members_conforms_cleanly() {
+    let source = r#"
+structure def FatiguedSteel : FatigueRated {
+    param density : Real = 7850.0
+    param name : String = "steel"
+    param endurance_limit : Real = 500.0
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "FatiguedSteel : FatigueRated with all required members should compile cleanly, got: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+    assert!(
+        template.trait_bounds.contains(&"FatigueRated".to_string()),
+        "FatiguedSteel should have 'FatigueRated' trait bound, got: {:?}",
+        template.trait_bounds
+    );
 }
 
 // ─── step-17: full integration ────────────────────────────────────────────────

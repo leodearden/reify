@@ -25,36 +25,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Trait Resolution Policy ──────────────────────────────────────────────────
-//
-// Four of the §6.2 mechanical-material traits — FatigueRated, FractureTough,
-// ImpactResistant, and Damping — are declared exactly once in this file and
-// each refines MaterialSpec, so that the `density` and `name` requirements
-// from MaterialSpec are inherited transitively rather than restated on every
-// trait.
-//
-// The remaining four §6.2 traits — Elastic, Strong, Hard, and Ductile — are
-// deliberately left free-standing in this PR.  Their scope was limited per the
-// originating task's per-trait recommendation; anchoring them is tracked
-// separately under audit gap (d) of docs/notes/stdlib-trait-audit.md §6.2.
-// Future readers should NOT infer from this block that all eight §6.2 traits
-// have a MaterialSpec parent today.
-//
-// Consumer structures that need material properties do NOT compose each
-// capability trait with its own copy of MaterialSpec.  Instead they carry a
-// single `param material : MaterialSpec` slot (or a concrete `Material` value
-// slot) that supplies one material record for the whole structure:
-//
-//   structure def FatiguedBeam : FatigueRated {
-//       param material : MaterialSpec   // ONE material slot, not one per trait
-//       param endurance_limit : Real
-//   }
-//
-// A structure that needs both fatigue and damping data (for example) references
-// one `Material` value through a single slot rather than two parallel
-// inheritance chains, each carrying their own density/name copy.
-//
-// Source-of-truth: docs/reify-stdlib-reference.md §6.2
-// Audit context:  docs/notes/stdlib-trait-audit.md §6.2 (audit gap (d))
+// FatigueRated, FractureTough, ImpactResistant, and Damping each refine
+// MaterialSpec; `density` and `name` are inherited transitively.  Consumer
+// structures should carry one `material : MaterialSpec` slot, not one per
+// capability trait.  (Elastic, Strong, Hard, Ductile remain free-standing;
+// see docs/notes/stdlib-trait-audit.md §6.2 audit gap (d).)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Base material trait ──────────────────────────────────────────────────────
