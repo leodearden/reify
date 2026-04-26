@@ -21,7 +21,7 @@ use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
-    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
+    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
 };
 
 /// Sentinel substring included in every panic raised by
@@ -349,40 +349,10 @@ impl Engine {
     /// dependency structures. Subsequent calls to edit_param() can perform
     /// incremental re-evaluation using these structures.
     pub fn eval(&mut self, module: &CompiledModule) -> EvalResult {
-        // Store functions and purposes for this module (used by edit_param and purpose activation).
-        //
-        // SHADOWING INVARIANT: module (user) functions are stored FIRST, then prelude functions
-        // are appended after. `reify_expr::eval_user_function_call` resolves calls via
-        // `ctx.functions.iter().find(...)` — a first-match-wins linear scan on (name, arity,
-        // param types). Therefore, any user function whose signature matches a prelude function
-        // takes precedence and shadows the prelude implementation. The compiler's
-        // duplicate-function check only compares user functions against each other, not against
-        // the prelude, so user code may freely redefine prelude signatures without diagnostics.
-        //
-        // COEXISTENCE COROLLARY: a user function whose (name, arity, param types) triple
-        // differs from all prelude functions does NOT shadow those prelude functions — both
-        // remain independently callable. The compiler includes non-shadowed prelude functions
-        // in its overload resolution so each call site is resolved to whichever signature
-        // matches the arguments, regardless of whether the user also defines a same-named
-        // function with a different arity or param types.
-        self.functions = module.functions.clone();
-        // Unfiltered append: intentionally adds ALL prelude functions without filtering out
-        // entries whose (name, arity, param_types) triple matches a user function.
-        // Correctness is preserved because `reify_expr::eval_user_function_call` resolves
-        // via first-match-wins linear scan, and user functions are stored FIRST (see
-        // SHADOWING INVARIANT above) — shadowed prelude entries can never be the first
-        // match, so they are permanently unreachable at dispatch time.
-        //
-        // This diverges from the compiler's `resolution_functions` build in
-        // compile_with_prelude_refs, which applies an explicit shadow filter via
-        // `reify_compiler::merge_prelude_functions`. That filter is a compile-time
-        // concern (it avoids ambiguous-overload errors in the resolution table); the
-        // eval dispatch table does not need it — unfiltered ≡ filtered under
-        // first-match-wins semantics. The shadow predicate itself is canonical in
-        // `merge_prelude_functions`; if the filtering rule changes, update that
-        // function and verify the dispatch-time equivalence still holds.
-        self.functions
-            .extend(self.prelude_functions.iter().cloned());
+        // Build the merged function table (user functions first, then prelude —
+        // SHADOWING INVARIANT) and seal it in an Arc so clones are O(1).
+        // See `merge_functions` in lib.rs for the full contract.
+        self.functions = merge_functions(module, &self.prelude_functions);
         self.compiled_purposes = module.compiled_purposes.clone();
         // Clear stale purpose state from previous eval() calls — the fresh
         // snapshot discards all purpose-injected constraints/objectives.
@@ -391,40 +361,26 @@ impl Engine {
         // Build meta_map: template name → meta key/value pairs.
         // Only includes templates with non-empty meta blocks.
         self.meta_map = build_meta_map(module);
-        // Use the merged function table (user functions prepended before prelude functions) so
-        // that EvalContext has the full dispatch set — both user-defined overloads AND
-        // non-shadowed prelude functions. This matches the SHADOWING INVARIANT: first-match-wins
-        // linear scan means user functions take precedence when signatures collide, while
-        // prelude functions with distinct (name, arity, param types) triples remain callable.
-        // Clone here to satisfy the borrow checker: `evaluate_let_bindings` borrows `self`
-        // mutably, which would conflict with an immutable borrow of `self.functions`.
+        // Use the merged function table (user functions prepended before prelude
+        // functions) so that EvalContext has the full dispatch set — both user-defined
+        // overloads AND non-shadowed prelude functions. This matches the SHADOWING
+        // INVARIANT: first-match-wins linear scan means user functions take precedence
+        // when signatures collide, while prelude functions with distinct
+        // (name, arity, param types) triples remain callable.
         //
-        // PERFORMANCE NOTE: eval() currently clones the merged function table TWICE per call —
-        // once when assigning `self.functions = module.functions.clone()` (then extending in
-        // place with the prelude above), and again into the local `functions` below so
-        // EvalContext can hold it without aliasing `self`. Each CompiledFunction contains a
-        // boxed expression tree, so for a nontrivial user module plus the 11-module stdlib
-        // the double-clone is a non-trivial allocation on the hot path (every edit_param,
-        // check, build, and tessellate triggers an eval). The natural fix is to change
-        // `self.functions` to `Arc<Vec<CompiledFunction>>` so both clones become O(1):
-        //
-        //   self.functions = Arc::new({ let mut v = module.functions.clone();
-        //                               v.extend(prelude); v });
-        //   let functions = Arc::clone(&self.functions);   // O(1)
-        //
-        // That refactor also requires updating `ConcurrentEditSetup::functions` in
-        // concurrent.rs (field type `Vec<CompiledFunction>`, assigned as
-        // `functions: self.functions.clone()`) — which lies outside this task's locked
-        // modules. The same pattern repeats in edit_param() below. Deferred to
-        // task #1997 (perf: Arc<Vec<CompiledFunction>> in Engine::eval/edit_param).
+        // Arc::clone is O(1) — a single refcount increment. The merged table was
+        // built and sealed by `merge_functions` (see lib.rs) at the assignment above;
+        // this local binding lets `evaluate_let_bindings` borrow `self` mutably
+        // (it takes &mut self) without conflicting with any immutable borrow of
+        // `self.functions`. The Arc keeps the table alive for the lifetime of this
+        // local binding even after `self.functions` is reassigned on a future call.
         //
         // PERFORMANCE NOTE (task-2195): eval_guarded_group_param_cell's determined-
         // value path clones `val` twice (once into `values`, once into
         // `snapshot.values`) and moves the third copy into `CachedResult::Value`.
         // The same triple-clone applies to the top-level Param success arm here.
-        // Arc-ifying `ValueMap` values (the same Arc<Value> direction as the
-        // self.functions fix above) would reduce all three to O(1) pointer copies.
-        let functions: Vec<CompiledFunction> = self.functions.clone();
+        // Arc-ifying `ValueMap` values would reduce all three to O(1) pointer copies.
+        let functions = Arc::clone(&self.functions);
 
         let mut values = ValueMap::new();
         let mut diagnostics = Vec::new();
@@ -1071,7 +1027,9 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: values.clone(),
                     objective: template.objective.clone(),
-                    functions: functions.clone(),
+                    // ResolutionProblem.functions is Vec<CompiledFunction>; deref-clone
+                    // extracts the inner Vec from the Arc. Solver-only path, off hot path.
+                    functions: (*functions).clone(),
                 };
 
                 let parent_snap_id = snapshot.id;
@@ -1742,7 +1700,11 @@ impl Engine {
                         constraints: filtered_constraints,
                         current_values: values.clone(),
                         objective: template.objective.clone(),
-                        functions: self.functions.clone(),
+                        // ResolutionProblem.functions is Vec<CompiledFunction> (defined in
+                        // reify-types, out of scope for this task). Deref-clone extracts the
+                        // inner Vec from the Arc; this path only runs when the constraint
+                        // solver is invoked (not on every eval), so the cost is acceptable.
+                        functions: (*self.functions).clone(),
                     };
 
                     let solve_result = solver.solve(&problem);

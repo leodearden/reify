@@ -47,7 +47,10 @@ pub struct ConcurrentEditSetup {
     /// Set of changed cells (the edited parameter).
     pub changed_cells: HashSet<ValueCellId>,
     /// User-defined functions from the module (for evaluating UserFunctionCall nodes).
-    pub functions: Vec<CompiledFunction>,
+    /// Shares the same Arc allocation as Engine::functions — assigned via Arc::clone
+    /// in prepare_concurrent_edit, so no deep copy of the function table is made
+    /// (task #1997).
+    pub functions: Arc<Vec<CompiledFunction>>,
     /// Template-to-meta-entries mapping, populated from Engine::meta_map.
     /// Used to resolve MetaAccess expressions during concurrent evaluation.
     pub meta_map: Arc<HashMap<String, HashMap<String, String>>>,
@@ -172,7 +175,7 @@ impl Engine {
             snapshot_id: SnapshotId(snapshot_id),
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
-            functions: self.functions.clone(),
+            functions: Arc::clone(&self.functions),
             meta_map: Arc::clone(&self.meta_map),
             objective: self.objectives.get(&cell.entity).cloned(),
         })
@@ -394,7 +397,11 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),
                     objective,
-                    functions: setup.functions.clone(),
+                    // ResolutionProblem.functions is Vec<CompiledFunction> (defined in
+                    // reify-types, out of scope). Deref-clone extracts the inner Vec;
+                    // this solver path runs only when constraints exist on auto-params,
+                    // so the residual deep clone is off the hot path (task #1997).
+                    functions: (*setup.functions).clone(),
                 };
 
                 match solver.solve(&problem) {

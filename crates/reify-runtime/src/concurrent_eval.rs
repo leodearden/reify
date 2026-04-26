@@ -112,7 +112,8 @@ pub struct ConcurrentEvalAdapter {
     /// Collected evaluation results.
     results: Arc<Mutex<Vec<ConcurrentNodeResult>>>,
     /// User-defined functions for evaluating UserFunctionCall nodes.
-    functions: Vec<CompiledFunction>,
+    /// Shares the same Arc as ConcurrentEditSetup::functions (task #1997).
+    functions: Arc<Vec<CompiledFunction>>,
     /// Template-to-meta-entries mapping for resolving MetaAccess expressions.
     meta_map: Arc<HashMap<String, HashMap<String, String>>>,
 }
@@ -129,7 +130,7 @@ impl ConcurrentEvalAdapter {
             snapshot_values: Arc::new(RwLock::new(setup.snapshot_values.clone())),
             previous_hashes: Arc::new(setup.previous_hashes.clone()),
             results: Arc::new(Mutex::new(Vec::new())),
-            functions: setup.functions.clone(),
+            functions: Arc::clone(&setup.functions),
             meta_map: Arc::clone(&setup.meta_map),
         }
     }

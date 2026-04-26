@@ -119,7 +119,7 @@ impl Engine {
             last_role_flip_probes: 0,
             last_diff_value_cells: None,
             journal: EventJournal::new(),
-            functions: Vec::new(),
+            functions: Arc::new(Vec::new()),
             compiled_purposes: Vec::new(),
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),

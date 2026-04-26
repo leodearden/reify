@@ -25,6 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledFunction, CompiledModule};
@@ -41,7 +42,7 @@ use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
-    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
+    build_meta_map, eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -479,10 +480,12 @@ impl Engine {
         cell: ValueCellId,
         new_value: reify_types::Value,
     ) -> Result<EvalResult, EngineError> {
-        // Clone the merged function table for use in EvalContext.  Same borrow-checker
-        // workaround and same O(N) cost as the clone in eval(); see PERFORMANCE NOTE
-        // near eval()'s `let functions` binding for the deferred Arc refactor.
-        let functions = self.functions.clone();
+        // Arc::clone is O(1) — a refcount bump. The merged table (user functions +
+        // prelude) was sealed into Arc<Vec<CompiledFunction>> by eval() or edit_source().
+        // The local binding satisfies the borrow checker: evaluate_let_bindings and
+        // other callers take &mut self, which would conflict with an immutable borrow
+        // of self.functions. The Arc keeps the table alive for the binding's scope.
+        let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
         // Reset the test-instrumentation diff snapshot. The "most recent
@@ -840,7 +843,9 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),
                     objective,
-                    functions: functions.clone(),
+                    // ResolutionProblem.functions is Vec<CompiledFunction>; deref-clone
+                    // extracts the inner Vec from the Arc. Solver-only path, off hot path.
+                    functions: (*functions).clone(),
                 };
 
                 match solver.solve(&problem) {
@@ -1504,9 +1509,7 @@ impl Engine {
         //      none are captured by the per-cell content_hash diff, so
         //      relying on cell-level diffing alone would silently serve
         //      stale tables (see eval() for the same refresh rationale).
-        self.functions = module.functions.clone();
-        self.functions
-            .extend(self.prelude_functions.iter().cloned());
+        self.functions = merge_functions(module, &self.prelude_functions);
         self.compiled_purposes = module.compiled_purposes.clone();
         self.meta_map = build_meta_map(module);
         self.objectives.clear();
@@ -1517,10 +1520,11 @@ impl Engine {
             }
         }
 
-        // Snapshot the merged function table for EvalContext; see the
-        // PERFORMANCE NOTE in Engine::eval about Arc<Vec<CompiledFunction>>
-        // (task #1997) — same deferral here.
-        let functions = self.functions.clone();
+        // Arc::clone is O(1) — a refcount bump. The merged table was built and
+        // sealed by `merge_functions` (see lib.rs) at the assignment above
+        // (same pattern as Engine::eval). The local binding satisfies the borrow
+        // checker the same way as edit_param() above.
+        let functions = Arc::clone(&self.functions);
 
         // (12) Per-cell eval loop (shape mirrors edit_param's). Transitions
         //      cache entries in the eval set through Pending, iterates in
@@ -1923,7 +1927,9 @@ impl Engine {
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),
                     objective,
-                    functions: functions.clone(),
+                    // ResolutionProblem.functions is Vec<CompiledFunction>; deref-clone
+                    // extracts the inner Vec from the Arc. Solver-only path, off hot path.
+                    functions: (*functions).clone(),
                 };
 
                 match solver.solve(&problem) {

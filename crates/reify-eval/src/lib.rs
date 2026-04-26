@@ -274,7 +274,10 @@ pub struct Engine {
     /// User-defined functions from the last eval() call.
     /// Stored so that edit_param() and other incremental paths can evaluate
     /// expressions containing UserFunctionCall nodes.
-    functions: Vec<CompiledFunction>,
+    /// Wrapped in Arc so per-call clones in eval(), edit_param(), and
+    /// prepare_concurrent_edit() become O(1) refcount bumps rather than deep
+    /// copies of the entire compiled function tree (task #1997).
+    functions: Arc<Vec<CompiledFunction>>,
     /// Compiled purpose declarations from the last eval() call.
     /// Stored so activate_purpose/deactivate_purpose can look up purposes by name.
     compiled_purposes: Vec<CompiledPurpose>,
@@ -487,6 +490,47 @@ pub(crate) fn build_meta_map(
             .map(|t| (t.name.clone(), t.meta.clone()))
             .collect(),
     )
+}
+
+/// Merge a module's user functions with the prelude function table into a new
+/// `Arc<Vec<CompiledFunction>>`.
+///
+/// # SHADOWING INVARIANT
+/// Module (user) functions are stored **first**, then prelude functions are
+/// appended after. `reify_expr::eval_user_function_call` resolves calls via a
+/// first-match-wins linear scan on `(name, arity, param_types)`. Therefore,
+/// any user function whose signature matches a prelude function takes precedence
+/// and shadows the prelude implementation. The compiler's duplicate-function
+/// check only compares user functions against each other (not the prelude), so
+/// user code may freely redefine prelude signatures without diagnostics.
+///
+/// # COEXISTENCE COROLLARY
+/// A user function whose `(name, arity, param_types)` triple differs from all
+/// prelude functions does NOT shadow those prelude functions — both remain
+/// independently callable.
+///
+/// # Unfiltered append
+/// All prelude entries are appended unconditionally; entries whose signature
+/// collides with a user function are permanently unreachable at dispatch time
+/// (shadowed by the earlier match), so filtering is unnecessary. This diverges
+/// from `reify_compiler::merge_prelude_functions`, which applies an explicit
+/// filter to avoid ambiguous-overload errors at compile time; the eval dispatch
+/// table is safe without it because first-match-wins is unambiguous by
+/// construction.
+///
+/// # Performance
+/// The merged table is built once per `eval()`/`edit_source()` call into a
+/// local `Vec`, then sealed by `Arc::new`. Subsequent clones (e.g. in
+/// `prepare_concurrent_edit`, `edit_param`) are O(1) refcount bumps.
+pub(crate) fn merge_functions(
+    module: &CompiledModule,
+    prelude: &[CompiledFunction],
+) -> Arc<Vec<CompiledFunction>> {
+    Arc::new({
+        let mut v = module.functions.clone();
+        v.extend(prelude.iter().cloned());
+        v
+    })
 }
 
 #[cfg(test)]
@@ -969,6 +1013,87 @@ structure S {
         assert_eq!(
             result["Widget"]["material"], "steel",
             "Widget.material must be 'steel'"
+        );
+    }
+
+    // ── Arc-sharing invariant: Engine.functions ───────────────────────────────
+
+    /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
+    /// `ConcurrentEditSetup.functions` must share the *same* Arc allocation as
+    /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
+    /// `Arc::strong_count >= 2`). This proves the per-call clone is O(1)
+    /// (a refcount bump), not an O(N) deep clone of the entire function table.
+    ///
+    /// Expected compile-failure before impl-1: `Engine.functions` is
+    /// `Vec<CompiledFunction>`, not `Arc<Vec<CompiledFunction>>`, so
+    /// `Arc::ptr_eq(&engine.functions, &setup.functions)` is a type error
+    /// (`error[E0308]: mismatched types`). Both fields must be Arc'd before
+    /// this test can compile (task #1997).
+    #[test]
+    fn prepare_concurrent_edit_shares_functions_arc_with_engine() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use std::sync::Arc;
+
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        engine.eval(&module);
+
+        let cell = ValueCellId::new("Bracket", "width");
+        let setup = engine
+            .prepare_concurrent_edit(cell, Value::length(0.1))
+            .expect("prepare_concurrent_edit must succeed after eval");
+
+        assert!(
+            Arc::ptr_eq(&engine.functions, &setup.functions),
+            "ConcurrentEditSetup.functions must share the same Arc allocation as \
+            Engine.functions — proves the per-call clone is O(1) Arc::clone, not a \
+            deep clone of the function table (task #1997)"
+        );
+        assert!(
+            Arc::strong_count(&engine.functions) >= 2,
+            "strong_count must be >= 2 (engine + setup both hold a ref); got {}",
+            Arc::strong_count(&engine.functions)
+        );
+    }
+
+    // ── Arc no-leak invariant: edit_param ─────────────────────────────────────
+
+    /// Guard that `edit_param()` releases its internal `Arc::clone` of
+    /// `Engine.functions` before returning. The local binding created inside
+    /// `edit_param` must be dropped at scope exit, leaving only the Engine's own
+    /// copy (strong_count == 1). This complements
+    /// `prepare_concurrent_edit_shares_functions_arc_with_engine`: together the
+    /// two tests guard that (a) the Arc is shared correctly when needed, and (b)
+    /// no extra long-lived strong reference leaks out of `edit_param`.
+    ///
+    /// Note: if a future refactor reverts the local binding to a deep-clone
+    /// (`(*self.functions).clone()`), this test still passes — strong_count is
+    /// 1 either way. The test's value is in the combination: a type-level check
+    /// (Arc field) + no-leak check (strong_count == 1) together make it hard to
+    /// silently regress the O(1) clone invariant.
+    #[test]
+    fn edit_param_does_not_leak_functions_arc() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use std::sync::Arc;
+
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        engine.eval(&module);
+
+        let cell = ValueCellId::new("Bracket", "width");
+        // Drop the result immediately so any Arc held by EvalResult (if any) is
+        // released before the assertion.
+        let _ = engine.edit_param(cell, Value::length(0.2));
+
+        assert_eq!(
+            Arc::strong_count(&engine.functions),
+            1,
+            "Arc::strong_count must be 1 after edit_param returns — the local \
+            Arc::clone inside edit_param must be dropped, leaving only Engine's copy"
         );
     }
 }
