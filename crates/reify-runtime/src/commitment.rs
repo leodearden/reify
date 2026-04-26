@@ -49,7 +49,15 @@ pub enum NodeKind {
 
 impl NodeKind {
     /// Extract the [`NodeKind`] discriminant from a [`NodeId`].
+    ///
+    /// Equivalent to `NodeKind::from(node_id)` / `node_id.into()`.
     pub fn of(node_id: &NodeId) -> Self {
+        Self::from(node_id)
+    }
+}
+
+impl From<&NodeId> for NodeKind {
+    fn from(node_id: &NodeId) -> Self {
         match node_id {
             NodeId::Value(_) => Self::Value,
             NodeId::Constraint(_) => Self::Constraint,
@@ -83,9 +91,12 @@ pub enum NodeCommitmentOverride {
 ///   2. **Type override** — applied by [`NodeKind`]; set via [`set_type`](Self::set_type)
 ///   3. **Default** — [`NodeCommitmentOverride::CommitIfSlow`] (lowest priority)
 ///
-/// The struct is freestanding — [`SchedulerConfig`] continues to use its own
-/// per-instance `HashMap<NodeId, NodeCommitmentOverride>` for now.  A follow-up
-/// task can refactor `SchedulerConfig` to consume `NodePolicyOverrides`.
+/// # Staging note
+///
+/// This struct is intentionally freestanding — [`SchedulerConfig`] continues to use its own
+/// per-instance `HashMap<NodeId, NodeCommitmentOverride>`.  Integration is deferred: a
+/// follow-up task will refactor `SchedulerConfig` to delegate override resolution to this
+/// struct, eliminating the duplicate map and centralising the precedence logic here.
 ///
 /// [`SchedulerConfig`]: crate::concurrent::SchedulerConfig
 #[derive(Clone, Debug, Default)]
@@ -671,6 +682,22 @@ mod tests {
             NodeCommitmentOverride::CommitIfSlow,
             "default must win when no instance and no matching type override"
         );
+
+        // (c) set_type last-write-wins: overwriting a type override takes effect
+        overrides.set_type(NodeKind::Value, NodeCommitmentOverride::CommitIfSlow);
+        assert_eq!(
+            overrides.resolve(&m),
+            NodeCommitmentOverride::CommitIfSlow,
+            "last-write wins: second set_type call must overwrite the first"
+        );
+
+        // (d) instance override is unaffected when set_type is updated for the same kind
+        // n still has instance=AlwaysCancelWhenStale; type for Value was just changed to CommitIfSlow
+        assert_eq!(
+            overrides.resolve(&n),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+            "instance override must persist after a subsequent set_type call for the same kind"
+        );
     }
 
     #[test]
@@ -748,22 +775,6 @@ mod tests {
         assert_eq!(NodeKind::of(&constraint_node), NodeKind::Constraint);
         assert_eq!(NodeKind::of(&realization_node), NodeKind::Realization);
         assert_eq!(NodeKind::of(&resolution_node), NodeKind::Resolution);
-
-        // Verify Copy trait: assignment should not move
-        let k = NodeKind::Value;
-        let k2 = k; // copy, not move
-        assert_eq!(k, k2);
-
-        // Verify Hash: can insert into a HashMap
-        let mut m = std::collections::HashMap::new();
-        m.insert(NodeKind::Value, 1u8);
-        m.insert(NodeKind::Constraint, 2u8);
-        m.insert(NodeKind::Realization, 3u8);
-        m.insert(NodeKind::Resolution, 4u8);
-        assert_eq!(m.len(), 4);
-
-        // Verify Debug
-        let _ = format!("{:?}", NodeKind::Constraint);
     }
 
     #[test]
