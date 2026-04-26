@@ -40,6 +40,75 @@ pub struct PragmaDoc {
     pub args: Vec<String>,
 }
 
+/// Documentation for a parameter declaration on a structure or occurrence.
+///
+/// Field values are rendered/printable strings — `type_repr` holds a textual
+/// rendering of the parameter's type (e.g. `"Length"`), and `default_repr`
+/// holds a rendering of the default expression if present.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ParamDoc {
+    /// Parameter name.
+    pub name: String,
+    /// Optional doc-comment extracted from the source.
+    pub doc: Option<String>,
+    /// Rendered type of the parameter (e.g. `"Length"`, `"Voltage"`).
+    pub type_repr: String,
+    /// Rendered default value expression, if any.
+    pub default_repr: Option<String>,
+    /// Annotations attached to this parameter declaration.
+    pub annotations: Vec<AnnotationDoc>,
+}
+
+/// Documentation for a port declaration on a structure or occurrence.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PortDoc {
+    /// Port name.
+    pub name: String,
+    /// Direction of the port (e.g. `"in"`, `"out"`, `"inout"`).
+    pub direction: String,
+    /// Rendered type name for the port interface (e.g. `"Power"`, `"Signal"`).
+    pub type_name: String,
+    /// Names of the port's member signals/nets, if any.
+    pub members: Vec<String>,
+}
+
+/// Documentation for a constraint expression on a topology template.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConstraintDoc {
+    /// Optional user-given label for the constraint.
+    pub label: Option<String>,
+    /// Rendered constraint expression (e.g. `"voltage >= 3.0 V && voltage <= 5.5 V"`).
+    pub expr_repr: String,
+    /// Annotations attached to this constraint.
+    pub annotations: Vec<AnnotationDoc>,
+}
+
+/// Documentation for a sub-component instantiation inside a topology template.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SubComponentDoc {
+    /// Instance name within the parent template.
+    pub name: String,
+    /// Name of the structure or occurrence being instantiated.
+    pub structure_name: String,
+    /// Rendered argument expressions passed to the sub-component (e.g. `["flash = 512 kB"]`).
+    pub args: Vec<String>,
+    /// Annotations attached to this sub-component instantiation.
+    pub annotations: Vec<AnnotationDoc>,
+}
+
+/// Documentation for a realization block on a topology template.
+///
+/// A realization describes how abstract topology maps to a concrete view
+/// (e.g. schematic placement, layout, simulation). `op_summaries` holds
+/// one rendered string per operation inside the realization body.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RealizationDoc {
+    /// Realization name (e.g. `"SchematicView"`, `"PCBLayout"`).
+    pub name: String,
+    /// Rendered summaries of each operation in the realization body.
+    pub op_summaries: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
