@@ -48914,11 +48914,11 @@
       {
         "id": "2268",
         "title": "Refactor: extract shared helpers between eval() and eval_cached (cycle detection + solver invocation)",
-        "description": "Three categories of code in `crates/reify-eval/src/engine_eval.rs` are duplicated between `eval()`, `eval_cached`, and/or `eval_guarded_group_param_cell`; extract private helpers so a future fix to one site automatically covers all others.",
+        "description": "Three categories of code in `crates/reify-eval/src/engine_eval.rs` are duplicated between `eval()`, `eval_cached`, and/or `eval_guarded_group_param_cell`; extract private helpers so a future fix to one site automatically covers all others. Additionally, scope the `sorted_set` HashSet allocation in `eval_cached` lazily to eliminate wasted work on the cycle-free hot path.",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "details": "Two large blocks of `crates/reify-eval/src/engine_eval.rs::eval_cached` were copy-pasted from their `eval()` counterparts during task 2259. Both sites format identical messages and identical control flow; any future fix to one will silently fail to propagate to the other.\n\n(a) Cycle detection (eval_cached lines 1491-1531 vs evaluate_let_bindings lines ~1768-1805): build let_cells map, extract traces, topological_sort, emit cyclic_members diagnostic. Extract a private helper `fn detect_let_cycle(…)` shared by both paths.\n\n(b) Solver invocation: identical control flow around solver dispatch is duplicated between eval() and eval_cached. Extract a shared helper so both paths call the same code.\n\n(c) Param-override rejection warning emission (three sites diverged after task 2267):\n- `eval_cached` unconditional pre-check (lines 1398-1417, added by task 2267)\n- `eval()` inline emission inside the cache-miss match (lines 615-633)\n- `eval_guarded_group_param_cell` (~L180-254)\n\nAll three sites format identical TypeKindMismatch and ScalarDimensionMismatch rejection warnings. Extract a small helper, e.g. `fn emit_param_override_rejection_warning(diagnostics: &mut Vec<Diagnostic>, cell_id: &NodeId, kind: OverrideRejection)`, and replace all three call sites.",
+        "details": "Two large blocks of `crates/reify-eval/src/engine_eval.rs::eval_cached` were copy-pasted from their `eval()` counterparts during task 2259. Both sites format identical messages and identical control flow; any future fix to one will silently fail to propagate to the other.\n\n(a) Cycle detection (eval_cached lines 1491-1531 vs evaluate_let_bindings lines ~1768-1805): build let_cells map, extract traces, topological_sort, emit cyclic_members diagnostic. Extract a private helper `fn detect_let_cycle(…)` shared by both paths.\n\n    As part of this extraction, scope the `sorted_set` HashSet allocation (currently unconditional at lines 1572-1573) inside the cycle-diagnostic `if` block at line 1578 — after the task-2266 fix, `sorted_set` is only referenced inside that block. The comment \"Owned set so sorted_lets is still iterable for second-pass ordering below\" is stale; the second pass no longer consults `sorted_set`. Remove or replace the comment. The sibling eval() path at lines 1839-1855 already builds the set lazily inside the diagnostic block; mirror that pattern.\n\n(b) Solver invocation: identical control flow around solver dispatch is duplicated between eval() and eval_cached. Extract a shared helper so both paths call the same code.\n\n(c) Param-override rejection warning emission (three sites diverged after task 2267):\n- `eval_cached` unconditional pre-check (lines 1398-1417, added by task 2267)\n- `eval()` inline emission inside the cache-miss match (lines 615-633)\n- `eval_guarded_group_param_cell` (~L180-254)\n\nAll three sites format identical TypeKindMismatch and ScalarDimensionMismatch rejection warnings. Extract a small helper, e.g. `fn emit_param_override_rejection_warning(diagnostics: &mut Vec<Diagnostic>, cell_id: &NodeId, kind: OverrideRejection)`, and replace all three call sites.",
         "testStrategy": "Acceptance: `cargo test -p reify-eval` passes; no call site is left formatting either rejection variant inline.",
         "subtasks": [],
         "metadata": {
@@ -48939,8 +48939,8 @@
           },
           "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4",
           "curator_action": "combine",
-          "curator_justification": "The candidate extracts a param_override rejection diagnostic helper from three sites in engine_eval.rs. Task 2268 is already a pending, combine_eligible refactor task extracting shared helpers between eval() and eval_cached in the same single file (engine_eval.rs). Both tasks share the identical root cause (code duplication between eval() and eval_cached in engine_eval.rs) and the same module lock. The candidate is tiny (<300 chars detail, 1 file) so combining loses zero parallelism and saves an",
-          "combined_at": "2026-04-26T11:55:45.052572+00:00"
+          "curator_justification": "The candidate's work — lazily scoping `sorted_set` inside the cycle-diagnostic `if` block and deleting its stale comment — is a direct sub-concern of task 2268's cycle-detection helper extraction. When `detect_let_cycle(…)` is extracted from eval_cached lines 1491-1531, the `sorted_set` allocation at 1572-1573 naturally moves inside that helper, making the candidate's explicit scoping step redundant as a separate pass. Both tasks touch only `crates/reify-eval/src/engine_eval.rs` (same module loc",
+          "combined_at": "2026-04-26T13:06:13.237448+00:00"
         }
       },
       {
@@ -49223,6 +49223,17 @@
           },
           "_causation_id": "c33dfab8-7303-4c9c-b2df-2285b4d4b6e0"
         }
+      },
+      {
+        "id": "2278",
+        "title": "eval_cached cyclic-let test: add second eval_cached call to pin persistence invariant",
+        "description": "The cyclic-let regression test in `crates/reify-eval/tests/eval_cached_diagnostics.rs:861-880` (added under task 2266) asserts that the eval_cached engine has no cache entry and no value-map entry for cyclic cells on the FIRST call. That catches the bug task 2266 fixed.\n\nBut the docstring's stated motivation includes \"corrupt the cache fast-path on subsequent calls\" — there is no second eval_cached call asserting the absence of a stale cached Undef on re-eval at a bumped version. A follow-up `engine_b.eval_cached(&module, VersionId(2))` with the same cache-parity / value-map-parity / diagnostic-count assertions on its result would pin the persistence-across-calls invariant the comment cites, and would catch regressions where a future change re-introduces caching only after the first pass.\n\nFix: extend the existing test (or add a sibling) to perform the second `eval_cached(&module, VersionId(2))` call after the first and re-run the same assertions.\n\nSpawned from review of task 2266 (esc-2266-5, suggestion 2).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49234,7 +49245,8 @@
         "master"
       ],
       "created": "2026-04-26T12:44:04.338Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T13:07:05.242Z"
     }
   }
 }
