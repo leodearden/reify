@@ -136,6 +136,52 @@ mod tests {
     }
 
     #[test]
+    fn build_cross_refs_input_order_independent() {
+        // Combined fixture: Bolt + Spring (traits) + Robot + Arm (sub-components)
+        let bolt = TopologyTemplateBuilder::new("Bolt")
+            .trait_bound("Rigid")
+            .trait_bound("Fastener")
+            .build();
+        let spring = TopologyTemplateBuilder::new("Spring")
+            .trait_bound("Rigid")
+            .build();
+        let robot = TopologyTemplateBuilder::new("Robot")
+            .sub_component("arm", "Arm", vec![])
+            .sub_component("wheel1", "Wheel", vec![])
+            .sub_component("wheel2", "Wheel", vec![])
+            .build();
+        let arm = TopologyTemplateBuilder::new("Arm")
+            .sub_component("joint", "Joint", vec![])
+            .build();
+
+        let bolt2 = TopologyTemplateBuilder::new("Bolt")
+            .trait_bound("Rigid")
+            .trait_bound("Fastener")
+            .build();
+        let spring2 = TopologyTemplateBuilder::new("Spring")
+            .trait_bound("Rigid")
+            .build();
+        let robot2 = TopologyTemplateBuilder::new("Robot")
+            .sub_component("arm", "Arm", vec![])
+            .sub_component("wheel1", "Wheel", vec![])
+            .sub_component("wheel2", "Wheel", vec![])
+            .build();
+        let arm2 = TopologyTemplateBuilder::new("Arm")
+            .sub_component("joint", "Joint", vec![])
+            .build();
+
+        let result_a = build_cross_refs(&[bolt, spring, robot, arm]);
+        let result_b = build_cross_refs(&[arm2, robot2, spring2, bolt2]);
+
+        // Full struct equality regardless of input order
+        assert_eq!(result_a, result_b);
+
+        // Forward-compat: deserializing empty JSON object must equal CrossRefs::default()
+        let from_empty: CrossRefs = serde_json::from_str("{}").expect("deserialize empty");
+        assert_eq!(from_empty, CrossRefs::default());
+    }
+
+    #[test]
     fn build_cross_refs_nested_sub_components_with_dedup() {
         let robot = TopologyTemplateBuilder::new("Robot")
             .sub_component("arm", "Arm", vec![])
