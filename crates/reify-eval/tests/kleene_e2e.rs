@@ -93,3 +93,19 @@ fn kleene_e2e_or_absorption() {
         "undef || true should be Bool(true) (Kleene OR absorption)"
     );
 }
+
+/// Kleene implies via de-Morgan: `b implies a` ≡ `!b || a`.
+///
+/// With `b = false`, `!false || a = true || undef = true` (Kleene OR absorption
+/// applied to the left operand, since `!false = Bool(true)` evaluates first).
+/// `p3 = !b || a` should return `Bool(true)`.
+#[test]
+fn kleene_e2e_implies_vacuous_true() {
+    let result = eval_kleene();
+    let id = ValueCellId::new("Foo", "p3");
+    assert_eq!(
+        result.values.get(&id).expect("Foo.p3 not found"),
+        &Value::Bool(true),
+        "!b || a with b=false should be Bool(true) (vacuous implication via de-Morgan)"
+    );
+}
