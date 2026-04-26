@@ -353,8 +353,10 @@ esac
 NPM_STUB
 chmod +x "$_t25_tmpdir/bin/npm"
 
-# Stub curl: always exits 1 — prevents an existing :1420 listener in the CI/dev
-# environment from satisfying the readiness poll and bypassing the kill-0 path.
+# Stub curl: always exit 1 so the polling loop never thinks vite is ready.
+# Without this stub, a pre-existing server on :1420 (e.g. a running vite dev
+# session in the developer's environment) causes curl to succeed and the loop
+# to skip the vite-death branch entirely.
 cat > "$_t25_tmpdir/bin/curl" <<'CURL_STUB'
 #!/usr/bin/env bash
 exit 1
