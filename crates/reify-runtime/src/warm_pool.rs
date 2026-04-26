@@ -301,4 +301,47 @@ mod tests {
         assert_eq!(pool.len(), 0);
         assert!(pool.is_empty());
     }
+
+    // --- Step 1: unlimited-budget path tests ---
+
+    #[test]
+    fn with_budget_none_reports_unlimited() {
+        let pool_a = WarmStatePool::with_budget(None);
+        assert_eq!(pool_a.budget_bytes(), None);
+
+        let pool_b = WarmStatePool::unlimited();
+        assert_eq!(pool_b.budget_bytes(), None);
+    }
+
+    #[test]
+    fn unlimited_pool_does_not_evict() {
+        // 5 items of 1 GiB each — would exceed the 2 GiB default but should
+        // not be evicted because the pool has no budget limit.
+        let mut pool = WarmStatePool::unlimited();
+        let gib: usize = 1 << 30;
+        let nodes: Vec<NodeId> = (0..5)
+            .map(|i| NodeId::Value(ValueCellId::new("T", &format!("n{i}"))))
+            .collect();
+
+        for node in &nodes {
+            pool.donate(node.clone(), OpaqueState::new(0u8, gib));
+        }
+
+        assert_eq!(pool.len(), 5);
+        assert_eq!(pool.used_bytes(), 5 * gib);
+
+        for node in &nodes {
+            assert!(
+                pool.retrieve(node).is_some(),
+                "node {:?} should not have been evicted",
+                node
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_new_still_returns_some_budget() {
+        let pool = WarmStatePool::new(1024);
+        assert_eq!(pool.budget_bytes(), Some(1024));
+    }
 }
