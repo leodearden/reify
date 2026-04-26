@@ -48413,7 +48413,18 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "EvalOutcome",
+              "record_eval_completed"
+            ],
+            "queries": [
+              "EvalOutcome variant record_evaluation task-2195 engine_eval.rs rejected override no default",
+              "cache record_evaluation Completed outcome EvalOutcome New Unchanged hardcoded",
+              "engine_eval.rs rationale comment deferred-cache reversal task-2195"
+            ]
+          }
         }
       },
       {
