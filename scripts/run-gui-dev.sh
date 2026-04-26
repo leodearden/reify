@@ -6,7 +6,7 @@
 # Performs every build step needed to launch reify-gui in dev mode:
 #   1. Build the sidecar (idempotent; ~20ms tsup bundle).
 #   2. Install gui/ npm deps (vite needs them).
-#   3. Start the vite dev server in the background and wait for :1420.
+#   3. Start the vite dev server in the background and wait for :${REIFY_VITE_PORT:-1420}.
 #   4. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
 #   5. Export REIFY_DEBUG=1 + OCCT LD_LIBRARY_PATH.
 #   6. Run target/debug/reify-gui <file.ri> AS A CHILD (NOT exec) so the
@@ -25,7 +25,7 @@ if [ "$#" -lt 1 ]; then
     echo "" >&2
     echo "  <file>  path to a .ri source file" >&2
     echo "" >&2
-    echo "Launches reify-gui in dev mode (vite dev server on :1420, devtools," >&2
+    echo "Launches reify-gui in dev mode (vite dev server on :1420 by default, devtools," >&2
     echo "MCP debug listener on :3939 via REIFY_DEBUG=1)." >&2
     echo "For release mode, use scripts/run-gui.sh." >&2
     exit 1
@@ -48,6 +48,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Vite dev server port: default 1420, overridable via REIFY_VITE_PORT.
+# Used by tests/infra/test_run_gui_scripts.sh Test 25 to avoid collisions
+# with another worktree's vite already bound to :1420. See task 2308.
+REIFY_VITE_PORT="${REIFY_VITE_PORT:-1420}"
+
 # -- 2. Build the sidecar -----------------------------------------------------
 echo "==> Building sidecar..."
 bash gui/sidecar/build-sidecar.sh
@@ -62,9 +67,9 @@ echo "==> Installing gui dependencies..."
 # EXIT trap's `kill "$VITE_PID"` may signal the subshell while leaving the
 # real npm/vite process alive — vite then keeps :1420 bound and the next dev
 # run fails to start. With pushd/popd, `$!` points directly at npm.
-echo "==> Starting vite dev server on :1420..."
+echo "==> Starting vite dev server on :$REIFY_VITE_PORT..."
 pushd gui >/dev/null
-npm run dev -- --port 1420 &
+npm run dev -- --port "$REIFY_VITE_PORT" &
 VITE_PID=$!
 popd >/dev/null
 
@@ -80,10 +85,10 @@ popd >/dev/null
 trap 'pkill -P "$VITE_PID" 2>/dev/null || true; kill "$VITE_PID" 2>/dev/null || true; wait "$VITE_PID" 2>/dev/null || true' EXIT
 
 # -- 5. Wait for vite readiness ----------------------------------------------
-echo "==> Waiting for vite at http://127.0.0.1:1420/ ..."
+echo "==> Waiting for vite at http://127.0.0.1:$REIFY_VITE_PORT/ ..."
 VITE_READY=0
 for _ in $(seq 1 60); do
-    if curl -fsS http://127.0.0.1:1420/ >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:$REIFY_VITE_PORT/" >/dev/null 2>&1; then
         VITE_READY=1
         break
     fi
@@ -97,7 +102,7 @@ for _ in $(seq 1 60); do
 done
 
 if [ "$VITE_READY" -ne 1 ]; then
-    echo "Error: vite dev server did not become ready on 127.0.0.1:1420 within 30s" >&2
+    echo "Error: vite dev server did not become ready on 127.0.0.1:$REIFY_VITE_PORT within 30s" >&2
     exit 1
 fi
 

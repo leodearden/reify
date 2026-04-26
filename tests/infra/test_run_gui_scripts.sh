@@ -188,21 +188,24 @@ assert "scripts/run-gui-dev.sh invokes 'gui/sidecar/build-sidecar.sh'" \
 echo ""
 echo "--- Test 14: vite dev server is started in background ---"
 
-assert "scripts/run-gui-dev.sh runs 'npm run dev -- --port 1420'" \
-    grep -qF 'npm run dev -- --port 1420' "$RUN_GUI_DEV"
+assert "scripts/run-gui-dev.sh runs 'npm run dev -- --port \$REIFY_VITE_PORT'" \
+    bash -c "grep -qE 'npm run dev -- --port.*REIFY_VITE_PORT' '$RUN_GUI_DEV'"
 
-# Look for a line that runs `npm run dev -- --port 1420` and ends with `&`
+assert "scripts/run-gui-dev.sh defaults REIFY_VITE_PORT to 1420 when unset" \
+    bash -c "grep -qE 'REIFY_VITE_PORT=.*:-1420' '$RUN_GUI_DEV'"
+
+# Look for a line that runs `npm run dev -- --port $REIFY_VITE_PORT` and ends with `&`
 # (or `&` followed by whitespace/comment) — i.e. the npm-run-dev invocation
 # is backgrounded so the script can continue and poll for readiness.
 assert "scripts/run-gui-dev.sh backgrounds the 'npm run dev' invocation (line ends with '&')" \
-    bash -c "grep 'npm run dev -- --port 1420' '$RUN_GUI_DEV' | grep -qE '\\) *& *(\$|#)|& *(\$|#)'"
+    bash -c "grep -E 'npm run dev -- --port' '$RUN_GUI_DEV' | grep -qE '\\) *& *(\$|#)|& *(\$|#)'"
 
 # -- Test 15: polling loop for vite readiness on 127.0.0.1:1420 -------------
 echo ""
-echo "--- Test 15: dev script polls 127.0.0.1:1420 for vite readiness ---"
+echo "--- Test 15: dev script polls 127.0.0.1:\$REIFY_VITE_PORT for vite readiness ---"
 
-assert "scripts/run-gui-dev.sh references '127.0.0.1:1420'" \
-    grep -qF '127.0.0.1:1420' "$RUN_GUI_DEV"
+assert "scripts/run-gui-dev.sh references '127.0.0.1:\$REIFY_VITE_PORT' (parameterized port)" \
+    bash -c "grep -qE '127[.]0[.]0[.]1:.*REIFY_VITE_PORT' '$RUN_GUI_DEV'"
 
 assert "scripts/run-gui-dev.sh contains a polling loop (curl or nc)" \
     bash -c "grep -qE 'curl|nc -z' '$RUN_GUI_DEV'"
@@ -310,6 +313,7 @@ echo ""
 echo "--- Test 25: run-gui-dev.sh vite-process-death early-exit branch ---"
 
 _t25_tmpdir=$(mktemp -d)
+_t25_port=$(python3 -c 'import socket;s=socket.socket();s.bind(("",0));print(s.getsockname()[1])')
 trap 'rm -rf "$_t25_tmpdir"' EXIT
 
 # Build temp fixture: the script resolves REPO_ROOT from ${BASH_SOURCE[0]}/..
@@ -354,21 +358,25 @@ NPM_STUB
 chmod +x "$_t25_tmpdir/bin/npm"
 
 # Stub curl: always fail so the readiness check never succeeds regardless of
-# what happens to be listening on :1420 in the test environment (e.g. an
-# unrelated vite dev server from a concurrent task).  The polling loop must
-# reach the `kill -0 "$VITE_PID"` death-detection branch, not the
+# what happens to be listening on the test's vite port in the environment
+# (e.g. an unrelated vite dev server from a concurrent task).  The polling
+# loop must reach the `kill -0 "$VITE_PID"` death-detection branch, not the
 # curl-success branch.
-# Exit 7 = CURLE_COULDNT_CONNECT, mimicking the real "no listener on :1420"
-# behaviour. The script only checks curl's success/failure (`if curl ...; then`),
-# so any non-zero exit works; 7 is chosen for semantic accuracy.
+# Exit 7 = CURLE_COULDNT_CONNECT, mimicking the real "no listener" behaviour.
+# The script only checks curl's success/failure (`if curl ...; then`), so any
+# non-zero exit works; 7 is chosen for semantic accuracy.
 cat > "$_t25_tmpdir/bin/curl" <<'CURL_STUB'
 #!/usr/bin/env bash
 exit 7
 CURL_STUB
 chmod +x "$_t25_tmpdir/bin/curl"
 
-# Run the script with the stubbed PATH; capture combined output + rc in one shot.
-_t25_out=$(PATH="$_t25_tmpdir/bin:$PATH" \
+# Run the script with the stubbed PATH and an ephemeral port; capture combined
+# output + rc in one shot. REIFY_VITE_PORT is set to an ephemeral free port so
+# the script's polling loop targets a port unlikely to collide with another
+# worktree's vite on :1420 (task 2308). The curl stub above is a redundant
+# secondary guard for the same class of failure.
+_t25_out=$(REIFY_VITE_PORT="$_t25_port" PATH="$_t25_tmpdir/bin:$PATH" \
     bash "$_t25_tmpdir/scripts/run-gui-dev.sh" "$_t25_tmpdir/test.ri" 2>&1) \
     && _t25_rc=0 || _t25_rc=$?
 

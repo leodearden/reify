@@ -937,6 +937,51 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(moi))
             }
+            GeometryQuery::AdjacentFaces { shape, face_index } => {
+                let s = self
+                    .get_shape(*shape)
+                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let idx_u32: u32 = (*face_index).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "adjacent_faces: face_index {} exceeds u32::MAX",
+                        face_index
+                    ))
+                })?;
+                let neighbors = ffi::ffi::adjacent_faces(s, idx_u32)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(
+                    neighbors
+                        .into_iter()
+                        .map(|i| Value::Int(i as i64))
+                        .collect(),
+                ))
+            }
+            GeometryQuery::SharedEdges {
+                shape,
+                face_a,
+                face_b,
+            } => {
+                let s = self
+                    .get_shape(*shape)
+                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let a_u32: u32 = (*face_a).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "shared_edges: face_a {} exceeds u32::MAX",
+                        face_a
+                    ))
+                })?;
+                let b_u32: u32 = (*face_b).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "shared_edges: face_b {} exceeds u32::MAX",
+                        face_b
+                    ))
+                })?;
+                let edges = ffi::ffi::shared_edges(s, a_u32, b_u32)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(
+                    edges.into_iter().map(|i| Value::Int(i as i64)).collect(),
+                ))
+            }
         }
     }
 

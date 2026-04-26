@@ -199,6 +199,24 @@ BBox query_bbox(const OcctShape& shape);
 double query_distance(const OcctShape& shape1, const OcctShape& shape2);
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
+/// Return the 0-based global indices of faces sharing at least one edge with
+/// the face at `face_index`. Indices follow the canonical
+/// `TopExp::MapShapes(..., TopAbs_FACE, ...)` order — a 0-based view of the
+/// 1-based `TopTools_IndexedMapOfShape`, deduplicated by `TopoDS_Shape::IsSame`.
+/// Excludes the queried face itself; deduplicated; returned in ascending order.
+/// Throws std::runtime_error if `face_index` is out of range.
+rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index);
+
+/// Return the 0-based global indices of edges shared between the faces at
+/// `face_a_index` and `face_b_index`, using `TopoDS_Shape::IsSame` for
+/// matching. Indices follow the canonical
+/// `TopExp::MapShapes(..., TopAbs_EDGE, ...)` order — a 0-based view of the
+/// 1-based `TopTools_IndexedMapOfShape`, deduplicated by `TopoDS_Shape::IsSame`.
+/// Returns an empty vector if `face_a_index == face_b_index`. Deduplicated;
+/// returned in ascending order. Throws std::runtime_error if either index is
+/// out of range.
+rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index);
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.
