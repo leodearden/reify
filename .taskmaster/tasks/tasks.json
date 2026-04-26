@@ -50621,23 +50621,21 @@
         "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.6 lines 803-816 declare NodeTraits as a first-class type (bitflags or enum-set): IMMEDIATE, WARM_STARTABLE, PROGRESSIVE, COMMITTABLE. Assign defaults per node kind: ValueCell scalar = IMMEDIATE; SchemaNode = IMMEDIATE; SourceNode = IMMEDIATE; ResolutionNode = WARM_STARTABLE | COMMITTABLE; RealizationNode = WARM_STARTABLE | COMMITTABLE; ComputeNode = WARM_STARTABLE | COMMITTABLE; ConstraintNode = (typically nothing). Doc-comment cites arch §7.6 with line numbers. Land as no-op data — nothing yet consumes the traits.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:11:14.289Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:10:57.462Z",
-      "taskCount": 2338,
+      "lastModified": "2026-04-26T20:11:14.289Z",
+      "taskCount": 2339,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:11:06.054Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:11:06.088Z"
+      ]
     }
   }
 }
