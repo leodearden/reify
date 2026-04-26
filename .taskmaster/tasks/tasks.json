@@ -48787,7 +48787,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T10:37:06.980Z"
+        "updatedAt": "2026-04-26T10:37:06.980Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "Engine::edit_param",
+              "Engine::edit_source"
+            ],
+            "queries": [
+              "last_diff_value_cells cfg-gated writer instrumentation documentation field",
+              "edit_param edit_source instrumentation counter reset asymmetry behavior"
+            ]
+          },
+          "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4"
+        }
       },
       {
         "id": "2266",
