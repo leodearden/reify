@@ -48187,23 +48187,21 @@
         "description": "Add a behavioral test for the vite-process-death early exit added to `scripts/run-gui-dev.sh` (lines 90-95) in task 2237. The branch detects when the npm/vite child dies before binding :1420 (via `kill -0 \"$VITE_PID\"`), surfaces the actual rc, and exits non-zero — but it currently has no test coverage, making it easy to silently break on future refactors (e.g. someone changes how VITE_PID is assigned or moves the readiness loop above the trap).\n\nSuggested approach (from reviewer_comprehensive on task 2237):\n- Stub `npm` on PATH so `npm run dev -- --port 1420` exits non-zero immediately (e.g. write a temp `npm` shim that exits 1 when invoked with `run dev`).\n- Run `scripts/run-gui-dev.sh somefile.ri` with the stubbed PATH.\n- Assert the script exits non-zero AND stderr contains the substring `vite process exited` (NOT the 30s-timeout message `did not become ready on 127.0.0.1:1420`).\n\nThe test should live alongside the project's other shell-script behavioral tests (see `tests/infra/` patterns in the repo). It needs to also bypass the sidecar/npm-install steps that run BEFORE the vite spawn — either by stubbing those too, or by structuring the test to short-circuit them.\n\nSource: review of task 2237; reviewer_comprehensive suggestion #1.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T07:13:34.095Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T07:12:52.273Z",
-      "taskCount": 2231,
+      "lastModified": "2026-04-26T07:13:34.095Z",
+      "taskCount": 2232,
       "completedCount": 1997,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T07:13:23.939Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T07:13:23.957Z"
+      ]
     }
   }
 }
