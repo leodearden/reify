@@ -46155,11 +46155,11 @@
         "description": "The invariant test at `crates/reify-eval/tests/guard_eval.rs:2420-2579` uses `MockConstraintSolver::new_solved` pre-seeded with the same answer for both engines (Path A and Path B), so it does not exercise whether the solver is actually re-invoked when the guard flips and `thickness` moves to the inactive branch in Path B. The test verifies value preservation across the two paths — which is the original regression — but will not catch a future bug where the solver fails to run in one path and a stale value is preserved.\n\nEither:\n - Extend `MockConstraintSolver` with an invocation counter and assert the expected re-invocation pattern in each path, OR\n - Add a clarifying comment to the test explaining that it deliberately does not cover solver re-invocation semantics (and pointing to where those are exercised).\n\nSource: post-merge review suggestion on task 2143.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T08:35:13.071Z",
+        "updatedAt": "2026-04-26T06:52:57.207Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/guard_eval.rs",
@@ -46172,6 +46172,9 @@
               "auto cells inactive branch eval edit_param symmetry",
               "Auto-cell deactivation rule inactive branch post-solver pass"
             ]
+          },
+          "done_provenance": {
+            "commit": "706074d616a4e6c80832e236f587028a03ecfe5d"
           }
         }
       },
@@ -48096,9 +48099,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:52:08.671Z",
+      "lastModified": "2026-04-26T06:52:57.207Z",
       "taskCount": 2229,
-      "completedCount": 1988,
+      "completedCount": 1989,
       "tags": [
         "master"
       ]
