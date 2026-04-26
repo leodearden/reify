@@ -621,7 +621,7 @@ assert "Check 18: stderr contains WARN" \
     grep -q "WARN" "$_stderr18"
 
 assert "Check 18: stderr contains dotted subtask id '100.1'" \
-    grep -q "100.1" "$_stderr18"
+    grep -qF "100.1" "$_stderr18"
 
 assert "Check 18: stderr contains done subtask title 'Subtask one done in B'" \
     grep -q "Subtask one done in B" "$_stderr18"
@@ -667,7 +667,7 @@ assert "Check 19: stderr contains WARN" \
     grep -q "WARN" "$_stderr19"
 
 assert "Check 19: stderr contains dotted subtask id '100.1'" \
-    grep -q "100.1" "$_stderr19"
+    grep -qF "100.1" "$_stderr19"
 
 assert "Check 19: stderr contains done subtask title 'Subtask one done in A'" \
     grep -q "Subtask one done in A" "$_stderr19"
