@@ -28,8 +28,8 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{Severity, Value, ValueCellId};
+use reify_test_support::{assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_types::{Value, ValueCellId};
 
 // ── Path constant ─────────────────────────────────────────────────────────────
 
@@ -58,12 +58,7 @@ fn compiled() -> &'static CompiledModule {
 fn eval_kleene() -> reify_eval::EvalResult {
     let mut engine = make_simple_engine();
     let result = engine.eval(compiled());
-    let errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "eval-phase errors: {errors:?}");
+    assert_no_eval_errors(&result);
     result
 }
 
