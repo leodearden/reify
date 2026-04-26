@@ -48005,7 +48005,16 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T06:28:03.063Z"
+        "updatedAt": "2026-04-26T06:28:03.063Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "run-gui.sh run-gui-dev.sh file existence preflight vite process died early exit",
+              "task 2228 single-command GUI launch scripts run-gui completed"
+            ]
+          }
+        }
       },
       {
         "id": "2238",
