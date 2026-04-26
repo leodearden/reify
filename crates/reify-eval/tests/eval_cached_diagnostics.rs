@@ -342,6 +342,72 @@ fn eval_cached_emits_sub_component_unknown_structure_collection_diagnostic() {
     );
 }
 
+// ── task-2267: repeat-call regression lock for param_override diagnostics ────
+
+/// Calling eval_cached multiple times on a param cell with a type-kind-mismatched
+/// override must continue to surface the warning on EVERY call — including a
+/// same-version fast-path hit and a bumped-version repeat.
+///
+/// Fails today because the Param branch emits the warning only in the cache-miss
+/// path; after the first call caches the result, a same-version repeat hits the
+/// fast-path and returns the cached fallback without re-running validation. The
+/// LSP needs this on every keystroke.
+#[test]
+fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() {
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "x",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(1.0), Type::length())),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    // Push a Bool override into a Length param — type-kind mismatch
+    engine.set_param_and_invalidate(&x_id, Value::Bool(true));
+
+    // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
+    let result1 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result1.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("param_override for") && d.message.contains("type-kind mismatch")
+        }),
+        "first eval_cached call must warn about type-kind mismatch; got: {:?}",
+        result1.eval_result.diagnostics,
+    );
+
+    // Second call — same version (fast-path hit). Must still surface the warning.
+    // FAILS today because the fast-path returns the cached fallback without re-running
+    // validation — the diagnostic emission is gated on the cache-miss path.
+    let result2 = engine.eval_cached(&module, VersionId(1));
+    assert!(
+        result2.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("param_override for") && d.message.contains("type-kind mismatch")
+        }),
+        "second eval_cached call (same version, fast-path hit) must also warn about \
+         type-kind mismatch (must not drop on cache hit); got: {:?}",
+        result2.eval_result.diagnostics,
+    );
+
+    // Third call — bumped version. Must still surface the warning.
+    let result3 = engine.eval_cached(&module, VersionId(2));
+    assert!(
+        result3.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("param_override for") && d.message.contains("type-kind mismatch")
+        }),
+        "third eval_cached call (bumped version) must also warn about type-kind mismatch; \
+         got: {:?}",
+        result3.eval_result.diagnostics,
+    );
+}
+
 // ── step-10: repeat-call regression lock for solver diagnostics ──────────────
 
 /// Calling eval_cached twice on the same (unchanged) module must continue to
