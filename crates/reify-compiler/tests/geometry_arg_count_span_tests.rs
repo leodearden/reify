@@ -43,6 +43,11 @@ fn assert_arg_count_label(source: &str, needle: &str) {
         "expected non-empty span on '{}' label",
         needle
     );
+    assert_eq!(
+        first.labels[0].message, "wrong number of arguments",
+        "expected 'wrong number of arguments' label text on '{}' diagnostic",
+        needle
+    );
 }
 
 // ── box() ──────────────────────────────────────────────────────────────
