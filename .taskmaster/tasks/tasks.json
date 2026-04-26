@@ -48673,7 +48673,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T09:33:57.890Z"
+        "updatedAt": "2026-04-26T09:33:57.890Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "geometry_arg_check",
+              "check_arg_count_exact"
+            ],
+            "queries": [
+              "geometry_arg_check check_arg_count_exact helpers arg count",
+              "wrong number of arguments label text centralized geometry_arg_check.rs",
+              "expr.rs ad-hoc arg count validation sites migration"
+            ]
+          }
+        }
       },
       {
         "id": "2261",
@@ -48742,7 +48755,9 @@
       "completedCount": 2016,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T10:20:03.706Z",
+      "description": "Tasks for master context"
     }
   }
 }
