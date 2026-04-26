@@ -50299,7 +50299,7 @@
         "description": "Develop FFI bindings for closest_point, on(point, geometry), and angle_between_surfaces using the OCCT library.",
         "details": "Follow the FFI pattern established in Task #319 for closest_point_on_shape. Implement the following functions:\n\n1. **closest_point_on_shape**: Re-export from Task #319, ensuring it integrates with the OCCT library to find the closest point on a given shape.\n\n2. **point_on_shape**: Implement membership checking to determine if a point lies on a specified geometry. Use OCCT's geometric evaluation capabilities.\n\n3. **surface_angle**: Calculate the dihedral angle between two surfaces using the dot product of their face normals. Leverage OCCT's surface analysis tools.\n\nUpdate the stdlib bindings to register these functions and ensure they are correctly wired through the eval pipeline. Refer to `docs/prds/topology-selectors.md` task 2 for detailed requirements.\n<info added on 2026-04-26T20:21:31.861Z>\nThe task scope has been narrowed to focus solely on stdlib registration and eval-pipeline wiring, which will be addressed after the completion of the three subtasks (2324.1, 2324.2, 2324.3). Each subtask will independently implement one of the FFI primitives from scratch, as Task 319's deliverables are not present in the codebase. Ignore references to `docs/prds/topology-selectors.md` as it does not exist.\n</info added on 2026-04-26T20:21:31.861Z>",
         "testStrategy": "Conduct happy-path tests using box and sphere fixtures to verify each function:\n\n1. **closest_point_on_shape**: Test with various points and shapes to ensure the closest point is accurately calculated.\n\n2. **point_on_shape**: Verify membership results for points on and off the geometry.\n\n3. **surface_angle**: Test angle calculations between known surfaces to ensure accuracy.\n\nEnsure all tests pass using the `cargo test` framework, focusing on edge cases and typical use scenarios.",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "319"
         ],
@@ -50332,10 +50332,11 @@
             "details": "Scope: ONE FFI primitive only. NO stdlib registration, NO eval-pipeline wiring — parent 2324 retains those.\n\nAlgorithm: angle = acos(clamp(dot(n1, n2), -1, 1)). Sample face normals via BRep_Tool::Surface + GeomLProp_SLProps; respect TopAbs_REVERSED orientation.\n\nFiles to touch:\n- crates/reify-kernel-occt/cpp/occt_wrapper.{h,cpp}\n- crates/reify-kernel-occt/src/ffi.rs\n- crates/reify-kernel-occt/src/lib.rs\n- crates/reify-kernel-occt/src/stubs.rs\n- crates/reify-kernel-occt/tests/ — box adjacent faces → π/2; coplanar → 0; opposing → π.\n\nCONTEXT: Task 319 is marked done but its FFI is not in the codebase. docs/prds/topology-selectors.md does not exist. Implement from scratch.\n\nOpen question: surface_normal_at primitive (also nominally from 319) is missing. Either inline normal-sampling here or escalate for a separate subtask.",
             "status": "pending",
             "dependencies": [],
-            "parentTaskId": 2324
+            "parentTaskId": 2324,
+            "parentId": "undefined"
           }
         ],
-        "updatedAt": "2026-04-26T20:17:21.929Z",
+        "updatedAt": "2026-04-26T20:24:07.818Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -51130,19 +51131,29 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2374",
+        "title": "match-block decls: missing-arm-field diagnostic with arm list",
+        "description": "Implement diagnostics for GuardedDeclGroup when a narrowed type is a union and a requested field is missing in some active arms, listing the offending arms.",
+        "details": "Enhance the diagnostic system to handle cases where a field access on a union type is attempted, but the field is not present in all active arms. Update the diagnostic message to include a list of the specific arms where the field is missing. This requires modifying the GuardedDeclGroup logic to track and report these cases. Reference the PRD document at docs/prds/match-block-decls.md task 3 for detailed requirements. Ensure that the diagnostic message is clear and provides actionable information to the user.",
+        "testStrategy": "Create unit tests that simulate field access on union types with missing fields in some arms. Verify that the diagnostic message correctly lists the offending arms. Use a variety of union types and field access patterns to ensure comprehensive coverage. Additionally, run the full test suite to confirm no regressions in existing functionality.",
+        "status": "pending",
+        "dependencies": [
+          "2371"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:23:25.866Z",
-      "taskCount": 2360,
+      "lastModified": "2026-04-26T20:24:07.818Z",
+      "taskCount": 2363,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:23:53.945Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:24:03.674Z"
+      ]
     }
   }
 }
