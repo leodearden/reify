@@ -1508,7 +1508,8 @@ impl Engine {
                 } else if cell.kind == ValueCellKind::Param {
                     let node_id = NodeId::Value(cell.id.clone());
 
-                    // Validate the override once, storing ONLY the Result — no clone of the Value.
+                    // Validate the override once, storing both the &Value borrow and the
+                    // Result — no unconditional clone.
                     //
                     // The amend bdf65905d (task 2267) previously hoisted both the clone and the
                     // validation into a single `override_check: Option<(Value, Result<...>)>`
@@ -1518,18 +1519,17 @@ impl Engine {
                     // LSP-keystroke fast-path where the cloned value is immediately dropped.
                     //
                     // Task 2273 separates the two concerns:
-                    //   • validation result  → stored in `override_rejection` (no clone needed)
-                    //   • value ownership    → re-borrowed via HashMap::get at the two sites that
-                    //                          actually need it (O(1) amortised; cheaper than clone
-                    //                          for String/List/Map/Geometry/Tensor variants)
-                    //
-                    // Invariant: `param_overrides` is not mutated within this Param branch, so the
-                    // re-borrows at the diagnostic pre-check and the cache-miss `Ok(())` arm are
-                    // guaranteed to find the same entry that the validate call saw.
-                    let override_rejection: Option<Result<(), ParamOverrideRejection>> =
+                    //   • validation result  → stored in `override_entry.1` (no clone needed)
+                    //   • value access       → `override_entry.0` holds a &Value borrow, valid for
+                    //                          the duration of this Param branch (param_overrides is
+                    //                          not mutated here).  One .clone() only in the single
+                    //                          `Some((v, Ok(())))` cache-miss arm that writes to the
+                    //                          cache — cheaper than the previous shape which did
+                    //                          three separate HashMap::get calls.
+                    let override_entry: Option<(&Value, Result<(), ParamOverrideRejection>)> =
                         self.param_overrides
                             .get(&cell.id)
-                            .map(|v| validate_param_override(v, &cell.cell_type));
+                            .map(|v| (v, validate_param_override(v, &cell.cell_type)));
 
                     // Unconditional override-validation diagnostic pre-check.
                     // Mirrors the step-10/step-11 pattern from task 2259: the solver pass and
@@ -1540,17 +1540,12 @@ impl Engine {
                     // returns the cached fallback, and the validation warning is silently dropped.
                     // See regression tests: eval_cached_repeat_call_re_emits_param_override_*
                     // (task-2267 step-1 / step-3).
-                    //
-                    // Re-borrow the override Value here for the rejection message.  The borrow is
-                    // safe because param_overrides is not mutated between validate and this point.
-                    if let Some(Err(ref rej)) = override_rejection
-                        && let Some(override_val) = self.param_overrides.get(&cell.id)
-                    {
+                    if let Some((override_val, Err(rej))) = &override_entry {
                         emit_param_override_rejection_warning(
                             &mut diagnostics,
                             &cell.id,
                             &cell.cell_type,
-                            override_val,
+                            *override_val,
                             rej,
                         );
                     }
@@ -1607,24 +1602,20 @@ impl Engine {
                     });
 
                     // Use override if available (with validation), otherwise evaluate default.
-                    // Reuses `override_rejection` computed above — no second call to validate_param_override.
+                    // Reuses `override_entry` computed above — no second call to validate_param_override.
                     // Mirrors eval() lines 603-622: on mismatch fall back to default.
                     // Returns (Value, DeterminacyState): rejected-override-with-no-default
                     // yields (Undef, Undetermined) matching eval()'s DeterminacyState path.
                     //
-                    // The `Some(Ok(()))` arm is the only site where we genuinely need an owned
-                    // Value to write into the cache.  Re-borrow + clone here is correct: the
-                    // validate-once invariant is preserved (result consumed from `override_rejection`),
-                    // and the re-borrow is guaranteed to succeed (see invariant note above).
-                    let (val, det) = match override_rejection {
-                        Some(Ok(())) => {
-                            let override_val = self.param_overrides
-                                .get(&cell.id)
-                                .expect("Some(Ok(())) implies override exists in param_overrides")
-                                .clone();
-                            (override_val, DeterminacyState::Determined)
+                    // `Some((override_val, Ok(())))` is the only site that clones: the &Value
+                    // borrow is moved out of override_entry and cloned here to produce the owned
+                    // Value written to the cache.  Validate-once invariant is preserved — the
+                    // Result in override_entry.1 is the same one computed at the top.
+                    let (val, det) = match override_entry {
+                        Some((override_val, Ok(()))) => {
+                            (override_val.clone(), DeterminacyState::Determined)
                         }
-                        Some(Err(_)) => {
+                        Some((_, Err(_))) => {
                             // Diagnostic already pushed by the unconditional pre-check above.
                             // fall back to default; Undetermined if no default (mirrors eval())
                             if let Some(ref expr) = cell.default_expr {

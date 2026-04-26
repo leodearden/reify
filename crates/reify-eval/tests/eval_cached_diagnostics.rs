@@ -576,8 +576,8 @@ fn eval_cached_repeat_call_applies_valid_param_override_through_fast_path() {
         result1.eval_result.values.get(&x_id),
     );
     assert!(
-        result1.eval_result.diagnostics.iter().all(|d| !d.message.contains("param_override")),
-        "first call: valid override must produce no param_override diagnostic; got: {:?}",
+        result1.eval_result.diagnostics.is_empty(),
+        "first call: valid override must produce no diagnostics; got: {:?}",
         result1.eval_result.diagnostics,
     );
 
@@ -598,8 +598,8 @@ fn eval_cached_repeat_call_applies_valid_param_override_through_fast_path() {
         result2.eval_result.values.get(&x_id),
     );
     assert!(
-        result2.eval_result.diagnostics.iter().all(|d| !d.message.contains("param_override")),
-        "second call: valid override must produce no param_override diagnostic; got: {:?}",
+        result2.eval_result.diagnostics.is_empty(),
+        "second call: valid override must produce no diagnostics; got: {:?}",
         result2.eval_result.diagnostics,
     );
 }
