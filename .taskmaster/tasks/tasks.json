@@ -50204,10 +50204,11 @@
         "description": "Two small follow-ups on the already-wired #no_prelude pragma. (1) Audit that each prelude .ri file under crates/reify-compiler/stdlib/ carries #no_prelude at the top — the current pre-pass-list-based bootstrap works but making the source explicit makes the convention self-documenting and removes the implicit special case. (2) Add a positive regression test in pragma_compile_tests.rs verifying that compiling a non-prelude module WITHOUT #no_prelude correctly imports the prelude — currently only the negative case (no_prelude_simple_structure_compiles_clean) is pinned. Bootstrap-critical because the prelude itself uses #no_prelude to avoid self-import. PRD: docs/prds/pragmas.md item 1.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">278",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:59:08.924Z"
       },
       {
         "id": "2323",
@@ -50227,7 +50228,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:59:05.337Z",
+      "lastModified": "2026-04-26T19:59:08.930Z",
       "taskCount": 2312,
       "completedCount": 2058,
       "tags": [
