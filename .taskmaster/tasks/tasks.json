@@ -48622,7 +48622,19 @@
             "crates/reify-eval/src",
             "crates/reify-eval/tests",
             "crates/reify-lsp/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine",
+              "EvalState",
+              "eval_cached"
+            ],
+            "queries": [
+              "eval_cached diagnostics Vec::new circular let binding silent drop",
+              "LSP incremental eval eval_cached diagnostic surface engine_eval.rs",
+              "eval_cached content_unchanged diagnostics disappear LSP didChange repeat call"
+            ]
+          }
         },
         "updatedAt": "2026-04-26T09:24:47.355Z"
       },
@@ -48646,7 +48658,9 @@
       "completedCount": 2011,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T09:41:16.971Z",
+      "description": "Tasks for master context"
     }
   }
 }
