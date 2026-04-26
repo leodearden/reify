@@ -34,7 +34,7 @@ pub struct CommitmentPolicy {
 /// the per-instance identifier payload, making it usable as a lightweight
 /// key for per-type policy overrides (§7.3, lines 751–767).
 ///
-/// Use [`NodeKind::of`] to extract the kind from a [`NodeId`].
+/// Convert from a [`NodeId`] via `NodeKind::from(&node_id)` / `(&node_id).into()`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NodeKind {
     /// A value cell node.
@@ -45,15 +45,6 @@ pub enum NodeKind {
     Realization,
     /// A resolution (constraint solver) node.
     Resolution,
-}
-
-impl NodeKind {
-    /// Extract the [`NodeKind`] discriminant from a [`NodeId`].
-    ///
-    /// Equivalent to `NodeKind::from(node_id)` / `node_id.into()`.
-    pub fn of(node_id: &NodeId) -> Self {
-        Self::from(node_id)
-    }
 }
 
 impl From<&NodeId> for NodeKind {
@@ -94,8 +85,8 @@ pub enum NodeCommitmentOverride {
 /// # Staging note
 ///
 /// This struct is intentionally freestanding — [`SchedulerConfig`] continues to use its own
-/// per-instance `HashMap<NodeId, NodeCommitmentOverride>`.  Integration is deferred: a
-/// follow-up task will refactor `SchedulerConfig` to delegate override resolution to this
+/// per-instance `HashMap<NodeId, NodeCommitmentOverride>`.  Integration is tracked by
+/// task 2395, which will refactor `SchedulerConfig` to delegate override resolution to this
 /// struct, eliminating the duplicate map and centralising the precedence logic here.
 ///
 /// [`SchedulerConfig`]: crate::concurrent::SchedulerConfig
@@ -135,7 +126,7 @@ impl NodePolicyOverrides {
         if let Some(o) = self.instance_overrides.get(node_id) {
             return *o;
         }
-        if let Some(o) = self.type_overrides.get(&NodeKind::of(node_id)) {
+        if let Some(o) = self.type_overrides.get(&NodeKind::from(node_id)) {
             return *o;
         }
         NodeCommitmentOverride::default()
@@ -771,10 +762,10 @@ mod tests {
         let realization_node = make_realization_node("E", 0);
         let resolution_node = make_resolution_node("E", 0);
 
-        assert_eq!(NodeKind::of(&value_node), NodeKind::Value);
-        assert_eq!(NodeKind::of(&constraint_node), NodeKind::Constraint);
-        assert_eq!(NodeKind::of(&realization_node), NodeKind::Realization);
-        assert_eq!(NodeKind::of(&resolution_node), NodeKind::Resolution);
+        assert_eq!(NodeKind::from(&value_node), NodeKind::Value);
+        assert_eq!(NodeKind::from(&constraint_node), NodeKind::Constraint);
+        assert_eq!(NodeKind::from(&realization_node), NodeKind::Realization);
+        assert_eq!(NodeKind::from(&resolution_node), NodeKind::Resolution);
     }
 
     #[test]
