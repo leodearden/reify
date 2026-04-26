@@ -110,5 +110,43 @@ python3 "$REFRESH_SCRIPT" --briefing /no/such/briefing.yaml --tasks "$_tasks2" \
 assert "Check 2b: non-existent --briefing path raises non-zero exit" \
     test "$_exit2b" -ne 0
 
+# ==============================================================================
+# Check 3: done-task tracking ID → exit 1, stderr contains WARN + task id + gap text
+# ==============================================================================
+echo ""
+echo "--- Check 3: known_gap with tracking ID for done task raises mismatch ---"
+
+_brief3="$_tmpdir/briefing3.yaml"
+_tasks3="$_tmpdir/tasks3.json"
+
+cat > "$_brief3" <<'YAML'
+subprojects:
+  myproject:
+    known_gaps:
+      - what: "thing X"
+        why: "some reason"
+        tracking: "42"
+YAML
+
+cat > "$_tasks3" <<'JSON'
+{"master":{"tasks":[{"id":"42","title":"Fix thing X","status":"done"}]}}
+JSON
+
+_stderr3="$_tmpdir/stderr3.txt"
+_exit3=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief3" --tasks "$_tasks3" 2>"$_stderr3" || _exit3=$?
+
+assert "Check 3: exit code is 1 (mismatch found)" \
+    test "$_exit3" -eq 1
+
+assert "Check 3: stderr contains WARN" \
+    grep -q "WARN" "$_stderr3"
+
+assert "Check 3: stderr contains task id 42" \
+    grep -q "42" "$_stderr3"
+
+assert "Check 3: stderr contains gap text 'thing X'" \
+    grep -q "thing X" "$_stderr3"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
