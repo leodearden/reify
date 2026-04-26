@@ -12,7 +12,7 @@ use reify_eval::deps::DependencyTrace;
 use reify_types::ValueCellId;
 
 use crate::Priority;
-use crate::commitment::{CommitmentTracker, NodeCommitmentOverride};
+use crate::commitment::{CommitmentTracker, NodeCommitmentOverride, NodePolicyOverrides};
 use crate::priority_promotion::SharedPriorityPromoter;
 
 /// Configuration for [`ConcurrentScheduler::execute_with_config`].
@@ -27,7 +27,7 @@ pub struct SchedulerConfig {
     /// Optional priority promoter for priority-based spawn ordering.
     pub priority_promoter: Option<Arc<SharedPriorityPromoter>>,
     /// Per-node commitment behavior overrides.
-    pub node_overrides: HashMap<NodeId, NodeCommitmentOverride>,
+    pub node_overrides: NodePolicyOverrides,
     /// Per-node scheduling priorities.
     pub node_priorities: HashMap<NodeId, Priority>,
     /// Callback to check if a node has intermediate (non-final) inputs.
@@ -39,7 +39,7 @@ impl Default for SchedulerConfig {
         Self {
             commitment_tracker: None,
             priority_promoter: None,
-            node_overrides: HashMap::new(),
+            node_overrides: NodePolicyOverrides::new(),
             node_priorities: HashMap::new(),
             has_intermediate_inputs: Arc::new(|_| false),
         }
@@ -256,12 +256,8 @@ impl ConcurrentScheduler {
                 };
 
                 if is_dirty {
-                    // Compute override once per dirty node
-                    let override_ = config
-                        .node_overrides
-                        .get(&node)
-                        .copied()
-                        .unwrap_or_default();
+                    // Compute override once per dirty node (instance > type > default)
+                    let override_ = config.node_overrides.resolve(&node);
                     // Check OnlyRunOnFinalInputs override before adding to dirty
                     if override_ == NodeCommitmentOverride::OnlyRunOnFinalInputs
                         && (config.has_intermediate_inputs)(&node)

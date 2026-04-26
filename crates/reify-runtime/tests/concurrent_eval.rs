@@ -2903,8 +2903,8 @@ mod execute_with_config_tests {
         traces.insert(node_b.clone(), DependencyTrace::default());
 
         // node_b has OnlyRunOnFinalInputs override
-        let mut node_overrides = HashMap::new();
-        node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        let mut node_overrides = NodePolicyOverrides::new();
+        node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
         // has_intermediate_inputs returns true for node_b
         let b_clone = node_b.clone();
@@ -3377,11 +3377,8 @@ mod execute_with_config_tests {
         let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
 
         // node_b has AlwaysCancelWhenStale override
-        let mut node_overrides = HashMap::new();
-        node_overrides.insert(
-            node_b.clone(),
-            NodeCommitmentOverride::AlwaysCancelWhenStale,
-        );
+        let mut node_overrides = NodePolicyOverrides::new();
+        node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
 
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
@@ -3467,11 +3464,8 @@ mod execute_with_config_tests {
         let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
 
         // slow_node has AlwaysCancelWhenStale override
-        let mut node_overrides = HashMap::new();
-        node_overrides.insert(
-            slow_node.clone(),
-            NodeCommitmentOverride::AlwaysCancelWhenStale,
-        );
+        let mut node_overrides = NodePolicyOverrides::new();
+        node_overrides.set_instance(slow_node.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
 
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
@@ -3533,8 +3527,8 @@ mod execute_with_config_tests {
         traces.insert(node_b.clone(), DependencyTrace::default());
 
         // node_b has OnlyRunOnFinalInputs override
-        let mut node_overrides = HashMap::new();
-        node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        let mut node_overrides = NodePolicyOverrides::new();
+        node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
         // has_intermediate_inputs returns false for all nodes (all inputs are final)
         let config = SchedulerConfig {

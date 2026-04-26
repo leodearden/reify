@@ -81,15 +81,6 @@ pub enum NodeCommitmentOverride {
 ///   1. **Instance override** — highest priority; set via [`set_instance`](Self::set_instance)
 ///   2. **Type override** — applied by [`NodeKind`]; set via [`set_type`](Self::set_type)
 ///   3. **Default** — [`NodeCommitmentOverride::CommitIfSlow`] (lowest priority)
-///
-/// # Staging note
-///
-/// This struct is intentionally freestanding — [`SchedulerConfig`] continues to use its own
-/// per-instance `HashMap<NodeId, NodeCommitmentOverride>`.  Integration is tracked by
-/// task 2395, which will refactor `SchedulerConfig` to delegate override resolution to this
-/// struct, eliminating the duplicate map and centralising the precedence logic here.
-///
-/// [`SchedulerConfig`]: crate::concurrent::SchedulerConfig
 #[derive(Clone, Debug, Default)]
 pub struct NodePolicyOverrides {
     instance_overrides: HashMap<NodeId, NodeCommitmentOverride>,
