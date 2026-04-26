@@ -782,4 +782,51 @@ mod tests {
             );
         }
     }
+
+    // --- step-5 regression lock: eval diagnostics never use constraint-violation format ---
+
+    /// Invariant: `eval()` never emits diagnostics in the "constraint {id} violated" format.
+    ///
+    /// The `violated_messages` HashSet in `compute_diagnostics_with_state` is built from
+    /// constraint results and is used to filter `check_result.diagnostics` to avoid
+    /// double-emitting alongside the span-aware constraint violation diagnostics generated
+    /// below that loop. The companion loop over `eval_diagnostics` relies on the invariant
+    /// that eval-time diagnostics never overlap with that format, so the filter is a no-op.
+    ///
+    /// If this test fails, `eval()` has started emitting "constraint {id} violated" format
+    /// messages — the dropped filter in `compute_diagnostics_with_state` was relied on to
+    /// suppress double-emission alongside the span-aware versions; re-introduce a filter or
+    /// update the merge loop.
+    #[test]
+    fn eval_diagnostics_never_use_constraint_violation_format() {
+        // Use circular-let-binding source: a known eval-time diagnostic emitter.
+        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let result = engine.eval(&compiled);
+
+        // Sanity: eval must emit at least one diagnostic for the circular let-binding
+        // so the negative assertion below cannot pass vacuously.
+        assert!(
+            !result.diagnostics.is_empty(),
+            "eval() must emit at least one diagnostic for circular-let-binding source; \
+             got none — check that the source is still erroneous"
+        );
+
+        // None of the eval-time diagnostics must use the "constraint {id} violated" format.
+        for diag in &result.diagnostics {
+            let msg = &diag.message;
+            assert!(
+                !(msg.starts_with("constraint ") && msg.ends_with(" violated")),
+                "eval() emitted a 'constraint {{id}} violated' format message: {:?}. \
+                 The compute_diagnostics_with_state merge loop relies on eval diagnostics \
+                 never using this format — re-introduce the violated_messages filter or \
+                 update the merge loop.",
+                msg
+            );
+        }
+    }
 }
