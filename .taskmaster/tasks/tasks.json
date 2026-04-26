@@ -48715,7 +48715,18 @@
           "modules": [
             "scripts/refresh_briefing_known_gaps.py",
             "tests/infra/test_refresh_briefing_known_gaps.sh"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "refresh_briefing_known_gaps",
+              "briefing.yaml"
+            ],
+            "queries": [
+              "per-subtask done-wins cross-tag briefing known_gaps divergence",
+              "briefing tracking subtask orphan parent-coupled limitation",
+              "refresh_briefing_known_gaps.py subtask iteration cross-tag"
+            ]
+          }
         }
       },
       {
