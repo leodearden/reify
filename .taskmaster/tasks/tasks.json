@@ -48132,7 +48132,20 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T06:54:58.060Z"
+        "updatedAt": "2026-04-26T06:54:58.060Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "Structure",
+              "purpose_compile_tests"
+            ],
+            "queries": [
+              "task 2213 Structure wildcard named constant purpose member validation completed",
+              "user-declared Structure template registration bypass validation purpose_compile_tests",
+              "purpose body member validation template_registry subject type task 2200"
+            ]
+          }
+        }
       },
       {
         "id": "2242",
@@ -48168,7 +48181,9 @@
       "completedCount": 1995,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T07:07:00.008Z",
+      "description": "Tasks for master context"
     }
   }
 }
