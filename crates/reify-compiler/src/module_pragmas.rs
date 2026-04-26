@@ -79,8 +79,17 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     }
                 }
             }
+            [PragmaArg::Bare(PragmaValue::Ident(s))] if s == "float64" => {
+                module.diagnostics.push(
+                    Diagnostic::info(
+                        "#precision(float64) recognised but ignored \u{2014} v0.1 always uses \
+                         float64; use a Length literal (e.g. 0.001m) to set the default tolerance",
+                    )
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored legacy form")),
+                );
+            }
             _ => {
-                // Other arg shapes (Ident, bare Number, KeyValue, etc.) handled
+                // Other arg shapes (bare Number, KeyValue, etc.) handled
                 // in later steps.
             }
         }
