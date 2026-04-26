@@ -4,6 +4,20 @@ use std::time::Instant;
 use reify_eval::cache::NodeId;
 use reify_types::OpaqueState;
 
+/// Environment variable that overrides the warm-state pool memory budget.
+///
+/// Accepted values:
+/// - Absent / unset → uses [`DEFAULT_BUDGET_BYTES`].
+/// - `"unlimited"` (case-insensitive) → disables the budget; eviction is skipped.
+/// - A decimal integer string → interpreted as bytes.
+/// - Any other value → a `tracing::warn!` is emitted and [`DEFAULT_BUDGET_BYTES`] is used.
+pub const BUDGET_ENV_VAR: &str = "REIFY_WARM_STATE_BUDGET_BYTES";
+
+/// Default warm-state pool memory budget: 2 GiB.
+///
+/// Used when [`BUDGET_ENV_VAR`] is absent or set to an unparseable value.
+pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
 /// Entry in the warm-state pool, wrapping an `OpaqueState` with metadata.
 struct PoolEntry {
     state: OpaqueState,
@@ -42,6 +56,44 @@ impl WarmStatePool {
     /// Create a new pool with no memory budget (unlimited; eviction is disabled).
     pub fn unlimited() -> Self {
         Self::with_budget(None)
+    }
+
+    /// Create a pool by reading [`BUDGET_ENV_VAR`] from the environment.
+    ///
+    /// Falls back to [`DEFAULT_BUDGET_BYTES`] when the variable is unset.
+    /// See [`from_env_value`](Self::from_env_value) for parse semantics.
+    pub fn from_env_or_default() -> Self {
+        Self::from_env_value(std::env::var(BUDGET_ENV_VAR).ok().as_deref())
+    }
+
+    /// Create a pool from an optional string value (the test seam for env-var parsing).
+    ///
+    /// | `value`              | Result                                                         |
+    /// |----------------------|----------------------------------------------------------------|
+    /// | `None`               | `Some(DEFAULT_BUDGET_BYTES)`                                   |
+    /// | `"unlimited"` (any case) | `None` (unlimited)                                         |
+    /// | parseable `usize`    | `Some(parsed)`                                                 |
+    /// | anything else        | `tracing::warn!` emitted; `Some(DEFAULT_BUDGET_BYTES)` used    |
+    pub fn from_env_value(value: Option<&str>) -> Self {
+        let budget = match value {
+            None => Some(DEFAULT_BUDGET_BYTES),
+            Some(s) if s.eq_ignore_ascii_case("unlimited") => None,
+            Some(s) => match s.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    tracing::warn!(
+                        env_var = BUDGET_ENV_VAR,
+                        value = s,
+                        default_bytes = DEFAULT_BUDGET_BYTES,
+                        "Invalid value for {}; falling back to default ({} bytes)",
+                        BUDGET_ENV_VAR,
+                        DEFAULT_BUDGET_BYTES,
+                    );
+                    Some(DEFAULT_BUDGET_BYTES)
+                }
+            },
+        };
+        Self::with_budget(budget)
     }
 
     /// Store warm-start state for a node.
