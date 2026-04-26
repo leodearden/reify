@@ -50285,10 +50285,11 @@
         "description": "PRD docs/prds/freshness-4-variant.md. Wire arch §7.2 (lines 730-749) propagation rule into the recursive evaluator: output.freshness = if self.still_refining { Intermediate } else if any input != Final { Intermediate } else { Final }. Add unit tests for each row of the §7.2 truth table over a small synthetic graph in crates/reify-eval. Builds on the NodeCache freshness-field task.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:16.847Z"
       },
       {
         "id": "2329",
@@ -50296,19 +50297,20 @@
         "description": "Update the routing of filtered selectors to use feature-tag resolution, replacing raw re-iteration methods.",
         "details": "Modify the selector routing logic to utilize feature-tag resolution as described in the PRD document (prds/topology-selectors.md, task 5). Specifically, transition the handling of `edges_at_height`, `edges_parallel_to`, `edges_by_length`, and `faces_by_area` from raw re-iteration to a feature-tag-based approach. Implement a behavior change where stale tags return `undef` and emit a `W_TOPOLOGY_TAG_STALE` warning instead of returning stale results. Ensure that the existing tests (#318) continue to pass with the new implementation path. This will involve updating the logic in the relevant modules to check for tag staleness and handle it appropriately, as well as ensuring that the feature-tag resolution is integrated seamlessly into the existing selector framework.",
         "testStrategy": "Run the pre-existing test suite (#318) to verify that all tests pass with the new feature-tag resolution path. Additionally, create new tests to specifically verify that stale tags return `undef` and emit the `W_TOPOLOGY_TAG_STALE` warning. These tests should cover scenarios where tags are fresh, stale, and missing, ensuring that the correct behavior is exhibited in each case.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "248",
           "249",
           "250"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:17.420Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:01:16.139Z",
+      "lastModified": "2026-04-26T20:01:17.421Z",
       "taskCount": 2318,
       "completedCount": 2058,
       "tags": [
