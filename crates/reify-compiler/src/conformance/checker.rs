@@ -897,10 +897,12 @@ pub(super) fn check_phase_check_members_against_requirements(
                             )
                         };
                         diagnostics.push(
-                            Diagnostic::error(message).with_label(DiagnosticLabel::new(
-                                structure.span,
-                                "required by trait",
-                            )),
+                            Diagnostic::error(message)
+                                .with_code(DiagnosticCode::MissingRequiredMember)
+                                .with_label(DiagnosticLabel::new(
+                                    structure.span,
+                                    "required by trait",
+                                )),
                         );
                     }
                 }
