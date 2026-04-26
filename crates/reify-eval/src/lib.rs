@@ -909,4 +909,41 @@ structure S {
             Arc::strong_count(&engine.meta_map)
         );
     }
+
+    #[test]
+    fn build_meta_map_filters_empty_and_preserves_non_empty_meta() {
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_types::ModulePath;
+
+        let meta_entries = {
+            let mut m = std::collections::HashMap::new();
+            m.insert("color".to_string(), "blue".to_string());
+            m.insert("material".to_string(), "steel".to_string());
+            m
+        };
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("Widget")
+                    .meta(meta_entries)
+                    .build(),
+            )
+            .template(TopologyTemplateBuilder::new("Bare").build())
+            .build();
+
+        let result = build_meta_map(&module);
+        let result = result.as_ref();
+
+        assert_eq!(result.len(), 1, "only Widget has non-empty meta");
+        assert!(result.contains_key("Widget"), "Widget must be present");
+        assert!(!result.contains_key("Bare"), "Bare must be filtered out");
+        assert_eq!(
+            result["Widget"]["color"], "blue",
+            "Widget.color must be 'blue'"
+        );
+        assert_eq!(
+            result["Widget"]["material"], "steel",
+            "Widget.material must be 'steel'"
+        );
+    }
 }
