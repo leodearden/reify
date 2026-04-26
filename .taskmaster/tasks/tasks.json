@@ -50304,7 +50304,17 @@
           "319"
         ],
         "priority": "high",
-        "subtasks": [],
+        "subtasks": [
+          {
+            "id": "1",
+            "title": "FFI: closest_point_on_shape",
+            "description": "Add OCCT FFI primitive that returns the closest point on a shape to a given input point.",
+            "details": "Scope: ONE FFI primitive only. No stdlib registration, no eval-pipeline wiring (parent 2324 owns that).\n\nFiles to touch:\n- crates/reify-kernel-occt/cpp/occt_wrapper.{h,cpp} — add C wrapper using BRepExtrema_DistShapeShape (or similar) for point-to-shape distance\n- crates/reify-kernel-occt/src/ffi.rs — extern \"C\" declaration\n- crates/reify-kernel-occt/src/lib.rs — safe Rust wrapper returning the closest Point3\n- crates/reify-kernel-occt/src/stubs.rs — non-OCCT fallback\n- crates/reify-kernel-occt/tests/ — integration test using a box fixture, verify against analytic answer\n\nCONTEXT WARNING: Task 319 is marked `done` and was supposed to ship this primitive, but a grep over crates/reify-kernel-occt finds NO references to closest_point_on_shape, point_in_solid, or surface_normal_at. Treat 319 as un-landed and implement from scratch. Do not waste turns hunting for prior work.\n\nPRD `docs/prds/topology-selectors.md` referenced in the original task description does NOT exist — ignore that pointer.",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 2324
+          }
+        ],
         "updatedAt": "2026-04-26T20:17:21.929Z",
         "metadata": {
           "memory_hints": {
@@ -50930,7 +50940,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:19:47.633Z",
+      "description": "Tasks for master context"
     }
   }
 }
