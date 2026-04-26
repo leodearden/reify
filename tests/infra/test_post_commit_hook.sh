@@ -390,5 +390,295 @@ assert "clearing: subtask ids normalized in HEAD (hook actually ran)" \
     bash -c "! git -C '$_repo8' show HEAD:.taskmaster/tasks/tasks.json \
              | jq -r '.master.tasks[].subtasks[].id | type' | grep -q 'number'"
 
+# ==============================================================================
+# Check 9: hook surfaces briefing mismatch on set_task_status(555=done) commit
+# ==============================================================================
+# Builds a fixture repo that includes the briefing script, a review/briefing.yaml
+# with a known_gap tracking task 555, and a tasks.json with task 555 done.
+# A commit with message matching set_task_status(NNN=done) must trigger the
+# briefing check. Hook must still exit 0 (informational only), and the
+# hook's stderr must contain "WARN" and "555".
+echo ""
+echo "--- Check 9: briefing mismatch surfaced on done-task commit ---"
+
+REFRESH_SCRIPT="$REPO_ROOT/scripts/refresh_briefing_known_gaps.py"
+
+mk_repo_fixture _repo9
+# Copy the briefing script into the fixture (next to normalize script).
+if [ -f "$REFRESH_SCRIPT" ]; then
+    cp "$REFRESH_SCRIPT" "$_repo9/scripts/refresh_briefing_known_gaps.py"
+    chmod +x "$_repo9/scripts/refresh_briefing_known_gaps.py"
+fi
+
+# Create review/briefing.yaml with a known_gap tracking task 555.
+mkdir -p "$_repo9/review"
+cat > "$_repo9/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps:
+      - what: "LSP gap that was actually fixed"
+        tracking: "555"
+YAML
+
+# Create tasks.json with task 555 marked done.
+mkdir -p "$_repo9/.taskmaster/tasks"
+cat > "$_repo9/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"555","title":"Fix LSP gap","status":"done"}]}}
+JSON
+
+# Seed HEAD with an initial commit (--no-verify so hook doesn't fire yet).
+git -C "$_repo9" add .
+git -C "$_repo9" commit --no-verify -m "chore: seed initial state" -q
+
+# Now make the real commit: message matches set_task_status(555=done).
+# The post-commit hook should fire and invoke refresh_briefing_known_gaps.py.
+# Capture the hook's combined stdout+stderr to check for WARN.
+_stderr9pc="$_tmpdir/stderr9_postcommit.txt"
+_hook9_exit=0
+(cd "$_repo9" && git commit --allow-empty \
+    -m "chore(tasks): auto-commit after set_task_status(555=done)" \
+    2>"$_stderr9pc") || _hook9_exit=$?
+
+assert "Check 9: hook exited 0 (briefing check is informational)" \
+    test "$_hook9_exit" -eq 0
+
+assert "Check 9: hook stderr contains WARN" \
+    grep -q "WARN" "$_stderr9pc"
+
+assert "Check 9: hook stderr contains task id 555" \
+    grep -q "555" "$_stderr9pc"
+
+# ==============================================================================
+# Check 10: non-task commits must NOT invoke the briefing script
+# ==============================================================================
+# Regression: a README.md change with message "docs: update" must not trigger
+# step (3.5). We replace the briefing script with a stub that writes a sentinel
+# file so we can detect whether it was called.
+echo ""
+echo "--- Check 10: non-task commit does not invoke briefing script ---"
+
+mk_repo_fixture _repo10
+cp "$REFRESH_SCRIPT" "$_repo10/scripts/refresh_briefing_known_gaps.py"
+chmod +x "$_repo10/scripts/refresh_briefing_known_gaps.py"
+
+mkdir -p "$_repo10/review"
+cat > "$_repo10/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps: []
+YAML
+
+mkdir -p "$_repo10/.taskmaster/tasks"
+cat > "$_repo10/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[]}}
+JSON
+
+# Replace the briefing script with a sentinel stub.
+_sentinel10="$_tmpdir/sentinel10.txt"
+cat > "$_repo10/scripts/refresh_briefing_known_gaps.py" <<STUB
+#!/usr/bin/env python3
+import sys
+with open("$_sentinel10", "w") as f:
+    f.write("called\n")
+sys.exit(0)
+STUB
+chmod +x "$_repo10/scripts/refresh_briefing_known_gaps.py"
+
+# Seed HEAD (no-verify so hook doesn't fire on the seed).
+git -C "$_repo10" add .
+git -C "$_repo10" commit --no-verify -m "chore: seed" -q
+
+# Commit an unrelated file with a non-matching message.
+echo "hello" > "$_repo10/README.md"
+git -C "$_repo10" add README.md
+git -C "$_repo10" commit -m "docs: update readme" 2>/dev/null || true
+
+assert "Check 10: non-task commit does not invoke briefing script (sentinel absent)" \
+    test ! -f "$_sentinel10"
+
+# ==============================================================================
+# Check 11: in-progress task commit must NOT invoke the briefing script
+# ==============================================================================
+# Regression: set_task_status(555=in-progress) must NOT match the done pattern.
+echo ""
+echo "--- Check 11: in-progress task commit does not invoke briefing script ---"
+
+mk_repo_fixture _repo11
+cp "$REFRESH_SCRIPT" "$_repo11/scripts/refresh_briefing_known_gaps.py"
+chmod +x "$_repo11/scripts/refresh_briefing_known_gaps.py"
+
+mkdir -p "$_repo11/review"
+cat > "$_repo11/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps: []
+YAML
+
+mkdir -p "$_repo11/.taskmaster/tasks"
+cat > "$_repo11/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[]}}
+JSON
+
+# Replace the briefing script with a sentinel stub.
+_sentinel11="$_tmpdir/sentinel11.txt"
+cat > "$_repo11/scripts/refresh_briefing_known_gaps.py" <<STUB
+#!/usr/bin/env python3
+import sys
+with open("$_sentinel11", "w") as f:
+    f.write("called\n")
+sys.exit(0)
+STUB
+chmod +x "$_repo11/scripts/refresh_briefing_known_gaps.py"
+
+# Seed HEAD then make the in-progress commit.
+git -C "$_repo11" add .
+git -C "$_repo11" commit --no-verify -m "chore: seed" -q
+
+# Make a new tasks.json change so the tasks.json gate passes (step 4).
+echo '{"master":{"tasks":[{"id":"555","status":"in-progress"}]}}' \
+    > "$_repo11/.taskmaster/tasks/tasks.json"
+git -C "$_repo11" add .taskmaster/tasks/tasks.json
+git -C "$_repo11" commit -m "chore(tasks): auto-commit after set_task_status(555=in-progress)" \
+    2>/dev/null || true
+
+assert "Check 11: in-progress commit does not invoke briefing script (sentinel absent)" \
+    test ! -f "$_sentinel11"
+
+# ==============================================================================
+# Check 12: hook tolerates a briefing script that exits non-zero
+# ==============================================================================
+# REGRESSION-DETECTION MECHANISM:
+# If `|| true` is dropped from hooks/post-commit's step (3.5) invocation of the
+# briefing script, the briefing script's exit 99 leaks back through `set -eu`,
+# causing the hook to abort BEFORE step (5) (the normalizer). With the hook
+# aborted, the int→string conversion never happens, so the subtask id in
+# tasks.json on disk remains a JSON number. The primary assertion below checks
+# for that exact condition via `jq type == "string"`.
+#
+# The test mechanism works because:
+#   1. The seed commit uses an EMPTY tasks.json (no subtasks), so the seed
+#      commit's post-commit hook run is a no-op at step (5) and does not
+#      pre-normalize the int id we add next.
+#   2. After the seed, we overwrite tasks.json with a numeric subtask id so a
+#      real commit (not --allow-empty) triggers both step (3.5) (briefing gate)
+#      and step (5) (normalizer).
+#   3. We confirm step (5) ran end-to-end by checking the on-disk subtask id
+#      type in tasks.json after the commit.
+#
+# Summary: if `|| true` is present → step (3.5) absorbs exit 99 → step (5) runs
+# → subtask id is string → assertion PASSES.  If `|| true` is absent → hook
+# aborts after step (3.5) → step (5) never runs → subtask id is number →
+# assertion FAILS.
+echo ""
+echo "--- Check 12: hook tolerates briefing script non-zero exit ---"
+
+mk_repo_fixture _repo12
+mkdir -p "$_repo12/review" "$_repo12/.taskmaster/tasks"
+
+cat > "$_repo12/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps: []
+YAML
+
+# SEED with empty tasks.json — no subtasks means the normalizer is a no-op at
+# step (5) of the seed commit's hook run, so the int subtask id we add next is
+# NOT pre-normalized before the real test commit fires.
+cat > "$_repo12/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[]}}
+JSON
+
+# Replace the briefing script with a stub that always exits 99.
+cat > "$_repo12/scripts/refresh_briefing_known_gaps.py" <<'STUB'
+#!/usr/bin/env python3
+import sys
+sys.exit(99)
+STUB
+chmod +x "$_repo12/scripts/refresh_briefing_known_gaps.py"
+
+# Seed HEAD. Note: --no-verify bypasses pre-commit/commit-msg only; post-commit
+# still fires. With empty tasks.json the normalizer is a no-op at step (5).
+git -C "$_repo12" add .
+git -C "$_repo12" commit --no-verify -m "chore: seed" -q
+
+# Overwrite tasks.json with a numeric subtask id. This is what the normalizer
+# (step 5) must convert to a string — confirming it ran past the exit-99 stub.
+cat > "$_repo12/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"555","title":"Fix thing","status":"done","subtasks":[{"id":42,"title":"sub","status":"done"}]}]}}
+JSON
+
+# Commit the updated tasks.json — NOT --allow-empty so the file is in the diff
+# and step (4) does NOT short-circuit, ensuring step (5) will actually run.
+_head12_before="$(git -C "$_repo12" rev-parse HEAD)"
+_hook12_exit=0
+(cd "$_repo12" && \
+    git add .taskmaster/tasks/tasks.json && \
+    git commit -m "chore(tasks): auto-commit after set_task_status(555=done)" \
+    ) 2>/dev/null || _hook12_exit=$?
+
+# PRIMARY: normalizer ran past the failing briefing script (subtask id is string).
+# If `|| true` is dropped from hooks/post-commit step (3.5): the briefing script's
+# exit 99 leaks back through `set -eu`, the hook aborts, step (5) never runs, the
+# subtask id on disk stays a JSON number, and this assertion FAILS.
+assert "Check 12: normalizer ran past failing briefing script (subtask id is string, not numeric)" \
+    bash -c "jq -e '.master.tasks[0].subtasks[0].id | type == \"string\"' \
+             '$_repo12/.taskmaster/tasks/tasks.json' >/dev/null"
+
+# Secondary: the commit itself still succeeded and HEAD advanced.
+assert "Check 12: HEAD advanced (commit was not rolled back)" \
+    bash -c "test \"\$(git -C '$_repo12' rev-parse HEAD)\" != '$_head12_before'"
+
+# Secondary: NORMALIZE_FAILED not created (briefing failure ≠ normalize failure).
+assert "Check 12: .git/NORMALIZE_FAILED not created (briefing failure ≠ normalize failure)" \
+    test ! -f "$_repo12/.git/NORMALIZE_FAILED"
+
+# ==============================================================================
+# Check 13: non-canonical commit message embedding the pattern does NOT trigger
+# ==============================================================================
+# The regex in step (3.5) is anchored to the full canonical auto-commit prefix:
+#   ^chore(tasks): auto-commit after set_task_status(NNN=done)$
+# A hand-authored commit like "fix: don't call set_task_status(555=done) twice"
+# contains the pattern but is NOT anchored — it must NOT trigger the check.
+echo ""
+echo "--- Check 13: non-canonical commit embedding pattern does not invoke briefing script ---"
+
+mk_repo_fixture _repo13
+
+REFRESH_SCRIPT_LOCAL="$REPO_ROOT/scripts/refresh_briefing_known_gaps.py"
+
+mkdir -p "$_repo13/review" "$_repo13/.taskmaster/tasks"
+cat > "$_repo13/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps: []
+YAML
+cat > "$_repo13/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[]}}
+JSON
+
+# Replace the briefing script with a sentinel stub.
+_sentinel13="$_tmpdir/sentinel13.txt"
+cat > "$_repo13/scripts/refresh_briefing_known_gaps.py" <<STUB
+#!/usr/bin/env python3
+import sys
+with open("$_sentinel13", "w") as f:
+    f.write("called\n")
+sys.exit(0)
+STUB
+chmod +x "$_repo13/scripts/refresh_briefing_known_gaps.py"
+
+# Seed HEAD (no-verify so hook does not fire on the seed commit).
+git -C "$_repo13" add .
+git -C "$_repo13" commit --no-verify -m "chore: seed" -q
+
+# Commit with the pattern embedded in the subject but NOT at the canonical
+# auto-commit prefix position.  The anchored regex should NOT match.
+echo "extra" > "$_repo13/extra.txt"
+git -C "$_repo13" add extra.txt
+git -C "$_repo13" commit -m "fix: don't call set_task_status(555=done) twice" 2>/dev/null || true
+
+assert "Check 13: non-canonical embed does not invoke briefing script (sentinel absent)" \
+    test ! -f "$_sentinel13"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

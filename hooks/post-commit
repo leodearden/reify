@@ -45,6 +45,47 @@ if [ ! -f "$TASKS_JSON" ]; then
     exit 0
 fi
 
+# (3.5) Optional: surface known_gap closures when a done-task auto-commit fires.
+#
+# Placed BEFORE step (4) so it fires on any commit whose message matches the
+# done-task pattern, including --allow-empty commits.  In real usage the
+# set_task_status auto-commit always touches tasks.json, but the check should
+# be independent of that: it reads tasks.json from disk (guaranteed to exist
+# after step 3) and the commit-message regex is the sole gate.
+#
+# Gate conditions:
+#   (a) Commit message exactly matches the auto-commit prefix:
+#         ^chore(tasks): auto-commit after set_task_status(NNN=done)$
+#       Anchoring to the full canonical prefix prevents hand-authored commits
+#       that mention set_task_status(N=done) in their body from accidentally
+#       triggering the briefing check.  The auto-commit format is stable —
+#       every entry in git log for status transitions follows this pattern.
+#       Tests/infra/test_post_commit_hook.sh Checks 10-13 verify the boundary.
+#   (b) Both review/briefing.yaml and scripts/refresh_briefing_known_gaps.py
+#       exist in the worktree — silently no-ops if either is absent.
+#
+# STRICTLY INFORMATIONAL: never calls _loud_fail, never exits non-zero.
+# NOTE: no stdout/stderr redirection — the script's WARN lines go straight to
+# the hook's stderr (the developer's terminal), which is the intended UX.
+# The `|| true` on the python3 call absorbs any non-zero exit before it can
+# leak back through `set -eu`. The if-condition arms (command -v, grep, test -f)
+# are exempt from set -e by shell semantics. No set +e / set -e wrapping needed.
+# Test contract: tests/infra/test_post_commit_hook.sh Check 12 seeds tasks.json
+# with a numeric subtask id and asserts the normalizer (step 5) converts it to a
+# string AFTER the briefing script exits non-zero. Dropping `|| true` here causes
+# `set -eu` to abort the hook before step (5), leaving int IDs unnormalized —
+# Check 12 will catch that.
+_commit_msg="$(git log -1 --format=%s 2>/dev/null || true)"
+if command -v python3 >/dev/null 2>&1 \
+    && echo "$_commit_msg" | grep -qE '^chore\(tasks\): auto-commit after set_task_status\([0-9]+=done\)$' \
+    && [ -f "$ROOT/review/briefing.yaml" ] \
+    && [ -f "$ROOT/scripts/refresh_briefing_known_gaps.py" ]; then
+    python3 "$ROOT/scripts/refresh_briefing_known_gaps.py" \
+        --briefing "$ROOT/review/briefing.yaml" \
+        --tasks "$TASKS_JSON" \
+        --quiet || true
+fi
+
 # (4) Exit early if this commit didn't touch tasks.json.
 # --root is required so that root (first) commits are compared against the
 # empty tree rather than producing no output (which would cause a false exit).
