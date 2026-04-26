@@ -71,8 +71,27 @@ pub struct CrossRefs {
 /// Both index maps use [`BTreeMap`] for deterministic key order.  Inner
 /// `Vec<String>` values are sorted alphabetically and deduplicated after
 /// population to guarantee a stable, canonical output regardless of input order.
-pub fn build_cross_refs(_templates: &[reify_compiler::TopologyTemplate]) -> CrossRefs {
-    CrossRefs::default()
+pub fn build_cross_refs(templates: &[reify_compiler::TopologyTemplate]) -> CrossRefs {
+    let mut result = CrossRefs::default();
+
+    for template in templates {
+        // trait → conformers index
+        for trait_name in &template.trait_bounds {
+            result
+                .trait_to_conformers
+                .entry(trait_name.clone())
+                .or_default()
+                .push(template.name.clone());
+        }
+    }
+
+    // Post-process: sort + dedup inner vecs for deterministic output.
+    for conformers in result.trait_to_conformers.values_mut() {
+        conformers.sort();
+        conformers.dedup();
+    }
+
+    result
 }
 
 #[cfg(test)]
