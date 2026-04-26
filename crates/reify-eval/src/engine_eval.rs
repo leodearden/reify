@@ -343,6 +343,63 @@ fn detect_let_cycle<'a>(
     (let_cells, let_traces, sorted_lets)
 }
 
+/// Builds the `ResolutionProblem` for the constraint solver from `template`'s
+/// auto-param cells and constraints, returning `None` when there are no auto
+/// cells (signalling "skip solver invocation").
+///
+/// Centralises the problem-construction logic so that both `eval()` and
+/// `eval_cached()` build identical inputs to the solver.  Each caller retains its
+/// own `match solve_result` handling because the `Solved` arm semantics diverge
+/// intentionally: `eval()`'s `Solved` arm performs snapshot/cache/journal updates
+/// while `eval_cached()`'s `Solved` arm is an intentional no-op (pinned by
+/// `eval_cached_solver_solved_arm_is_intentional_noop`).
+fn build_solver_problem(
+    template: &reify_compiler::TopologyTemplate,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> Option<ResolutionProblem> {
+    let auto_ids: std::collections::HashSet<ValueCellId> = template
+        .value_cells
+        .iter()
+        .filter(|cell| cell.kind.is_auto())
+        .map(|cell| cell.id.clone())
+        .collect();
+
+    if auto_ids.is_empty() {
+        return None;
+    }
+
+    let filtered_constraints: Vec<_> = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            let trace = extract_dependency_trace(&c.expr);
+            trace.reads.iter().any(|r| auto_ids.contains(r))
+        })
+        .map(|c| (c.id.clone(), c.expr.clone()))
+        .collect();
+
+    let auto_param_list: Vec<AutoParam> = template
+        .value_cells
+        .iter()
+        .filter(|cell| cell.kind.is_auto())
+        .map(|cell| AutoParam {
+            id: cell.id.clone(),
+            param_type: cell.cell_type.clone(),
+            bounds: None,
+            free: cell.kind.is_auto_free(),
+        })
+        .collect();
+
+    Some(ResolutionProblem {
+        auto_params: auto_param_list,
+        constraints: filtered_constraints,
+        current_values: values.clone(),
+        objective: template.objective.clone(),
+        functions: functions.to_vec(),
+    })
+}
+
 /// Centralises the rejection-warning vocabulary for param_override validation
 /// so that adding a future `ParamOverrideRejection` variant only requires
 /// updating this one function.
@@ -1135,51 +1192,14 @@ impl Engine {
                 }
             }
             for template in &module.templates {
-                // Collect auto param IDs for this template
-                let auto_ids: std::collections::HashSet<ValueCellId> = template
-                    .value_cells
-                    .iter()
-                    .filter(|cell| cell.kind.is_auto())
-                    .map(|cell| cell.id.clone())
-                    .collect();
-
-                if auto_ids.is_empty() {
+                // Build the ResolutionProblem; returns None when there are no auto cells.
+                // `build_solver_problem` deref-clones `functions` from the Arc — this path
+                // only runs when the constraint solver is invoked (not on every eval), so
+                // the allocation cost is acceptable.
+                let Some(problem) =
+                    build_solver_problem(template, &values, &functions)
+                else {
                     continue;
-                }
-
-                // Find constraints whose dependency traces reference auto params
-                let filtered_constraints: Vec<_> = template
-                    .constraints
-                    .iter()
-                    .filter(|c| {
-                        let trace = extract_dependency_trace(&c.expr);
-                        trace.reads.iter().any(|r| auto_ids.contains(r))
-                    })
-                    .map(|c| (c.id.clone(), c.expr.clone()))
-                    .collect();
-
-                // Build AutoParam list from template value cells
-                let auto_param_list: Vec<AutoParam> = template
-                    .value_cells
-                    .iter()
-                    .filter(|cell| cell.kind.is_auto())
-                    .map(|cell| AutoParam {
-                        id: cell.id.clone(),
-                        param_type: cell.cell_type.clone(),
-                        bounds: None,
-                        free: cell.kind.is_auto_free(),
-                    })
-                    .collect();
-
-                // Build ResolutionProblem
-                let problem = ResolutionProblem {
-                    auto_params: auto_param_list.clone(),
-                    constraints: filtered_constraints,
-                    current_values: values.clone(),
-                    objective: template.objective.clone(),
-                    // ResolutionProblem.functions is Vec<CompiledFunction>; deref-clone
-                    // extracts the inner Vec from the Arc. Solver-only path, off hot path.
-                    functions: (*functions).clone(),
                 };
 
                 let parent_snap_id = snapshot.id;
@@ -1246,7 +1266,7 @@ impl Engine {
 
                         // Emit warning for free auto params when solution is non-unique
                         if !unique {
-                            for ap in &auto_param_list {
+                            for ap in &problem.auto_params {
                                 if ap.free {
                                     diagnostics.push(Diagnostic::warning(format!(
                                         "Parameter `{}` resolved via auto(free) \
@@ -1766,55 +1786,16 @@ impl Engine {
             // "Solver Solved arm in eval_cached is intentionally empty"). Only the
             // Infeasible and NoProgress arms matter for this task's diagnostic-emission goal.
             if let Some(solver) = &self.solver {
-                let auto_ids: std::collections::HashSet<ValueCellId> = template
-                    .value_cells
-                    .iter()
-                    .filter(|cell| cell.kind.is_auto())
-                    .map(|cell| cell.id.clone())
-                    .collect();
-
-                // Invoke the solver unconditionally (when auto cells exist), mirroring
-                // eval()'s solver invocation pattern. The solver must run on every
-                // eval_cached call — even when all auto cells hit the cache — so that
-                // Infeasible/NoProgress diagnostics surface on every LSP keystroke.
-                // See step-10/step-11 regression tests. Cycle detection and sub-component
-                // validation in the same loop body also run unconditionally; the solver
-                // was the only outlier.
-                if !auto_ids.is_empty() {
-                    let filtered_constraints: Vec<_> = template
-                        .constraints
-                        .iter()
-                        .filter(|c| {
-                            let trace = extract_dependency_trace(&c.expr);
-                            trace.reads.iter().any(|r| auto_ids.contains(r))
-                        })
-                        .map(|c| (c.id.clone(), c.expr.clone()))
-                        .collect();
-
-                    let auto_param_list: Vec<AutoParam> = template
-                        .value_cells
-                        .iter()
-                        .filter(|cell| cell.kind.is_auto())
-                        .map(|cell| AutoParam {
-                            id: cell.id.clone(),
-                            param_type: cell.cell_type.clone(),
-                            bounds: None,
-                            free: cell.kind.is_auto_free(),
-                        })
-                        .collect();
-
-                    let problem = ResolutionProblem {
-                        auto_params: auto_param_list,
-                        constraints: filtered_constraints,
-                        current_values: values.clone(),
-                        objective: template.objective.clone(),
-                        // ResolutionProblem.functions is Vec<CompiledFunction> (defined in
-                        // reify-types, out of scope for this task). Deref-clone extracts the
-                        // inner Vec from the Arc; this path only runs when the constraint
-                        // solver is invoked (not on every eval), so the cost is acceptable.
-                        functions: (*self.functions).clone(),
-                    };
-
+                // Build the ResolutionProblem; returns None when there are no auto cells.
+                // `build_solver_problem` centralises construction so both eval() and
+                // eval_cached() build identical inputs to the solver (pinned by the
+                // `eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning` test).
+                // The solver must run on every eval_cached call — even when all auto cells hit
+                // the cache — so that Infeasible/NoProgress diagnostics surface on every LSP
+                // keystroke. See step-10/step-11 regression tests.
+                if let Some(problem) =
+                    build_solver_problem(template, &values, &*self.functions)
+                {
                     let solve_result = solver.solve(&problem);
 
                     match solve_result {
