@@ -49416,18 +49416,23 @@
         "description": "Reviewer (post-merge of task 763) flagged that `From<&CompiledUnit> for UnitEntry` produces a value that is documented as not directly usable: `span` defaults to `SourceSpan::empty(0)` (a real, non-prelude span) and `source_module` defaults to `None`, so any caller who writes `let e: UnitEntry = (&cu).into();` and forgets the struct-update overrides silently inserts prelude units with a span at byte 0, breaking `is_prelude()` checks and diagnostic labeling. This inverts the conventional `From`/`Into` contract.\n\nFix: pick one of the reviewer's options and apply it to crates/reify-compiler/src/units.rs:159-172 and the sole caller at crates/reify-compiler/src/compile_builder/units_phase.rs:59-63:\n  (a) Replace the `From` impl with `pub fn UnitEntry::from_compiled_for_prelude(cu: &CompiledUnit, source_module: String) -> UnitEntry` that bakes in `SourceSpan::prelude()` and `Some(source_module)` (preferred — shorter at call site, removes the footgun entirely).\n  (b) Make field assignment explicit at the call site and drop the `From` impl.\n  (c) At minimum, change the default `span` to `SourceSpan::prelude()` since the only current consumer is the prelude-seeding path; `empty(0)` is strictly worse than `prelude()` because it looks like a legitimate source location.\n\nAlso tighten tests in crates/reify-compiler/tests/unit_registry_tests.rs:2053-2080: the existing `from_compiled_unit_populates_shared_fields` test asserts `source_module.is_none()` but does not assert the `span` default — exactly the field most likely to cause subtle bugs. Add `assert_eq!(entry.span, SourceSpan::empty(0));` (or whichever default the chosen design baseline requires), and add a second test mirroring the `units_phase.rs` call pattern that verifies `span.is_prelude()` and `source_module == Some(\"...\")` — that's the property the production caller actually relies on.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T14:35:04.479Z"
+        "updatedAt": "2026-04-26T14:55:58.356Z",
+        "metadata": {
+          "done_provenance": {
+            "commit": "cefa7c9b1a879143c0d663b9158a45d258da0030"
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T14:52:05.379Z",
+      "lastModified": "2026-04-26T14:55:58.356Z",
       "taskCount": 2273,
-      "completedCount": 2044,
+      "completedCount": 2045,
       "tags": [
         "master"
       ]
