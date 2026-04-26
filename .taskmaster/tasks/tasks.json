@@ -50486,13 +50486,30 @@
         "description": "PRD docs/prds/freshness-4-variant.md. Thread Freshness through diagnostic / outline / parameters panels (gui/) and LSP-served diagnostics so UI shows distinct badges for Final (no badge), Intermediate (spinner / progress), Pending (warning), Failed (error). Constraint-violation rendering stays on the existing `violated` channel, NOT the Failed channel. Smoke-test by opening an example with intermediate / failed nodes and confirming visual distinction.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2330"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:04:48.784Z"
+        "updatedAt": "2026-04-26T20:17:15.595Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/src/diagnostics.rs",
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests",
+            "gui/src-tauri/src/types.rs",
+            "gui/src/__tests__/DesignTree.test.tsx",
+            "gui/src/__tests__/PropertyEditor.test.tsx",
+            "gui/src/__tests__/engineStore.test.ts",
+            "gui/src/__tests__/types.typecheck.ts",
+            "gui/src/panels/DesignTree.module.css",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/panels/PropertyEditor.module.css",
+            "gui/src/panels/PropertyEditor.tsx",
+            "gui/src/types.ts"
+          ]
+        }
       },
       {
         "id": "2338",
@@ -50859,14 +50876,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:17:05.030Z",
+      "lastModified": "2026-04-26T20:17:15.596Z",
       "taskCount": 2350,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:17:05.362Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
