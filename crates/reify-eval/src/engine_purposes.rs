@@ -217,6 +217,19 @@ impl Engine {
 ///
 /// The walk mirrors `CompiledExpr::remap_entity`'s arm-by-arm traversal so a
 /// future variant addition only touches the same places.
+///
+/// CONTRACT — content-hash staleness: replacing a placeholder node updates
+/// that node's `content_hash` (via `CompiledExpr::list_literal`), but
+/// **does not** rebuild ancestor hashes (e.g. the enclosing `Quantifier`
+/// still carries the pre-rewrite hash). This is the same posture as
+/// `CompiledExpr::remap_entity` (also called above). Today this is safe
+/// because the only consumer of the rewritten expression — constraint
+/// injection at lines ~96–113 — reseeds each constraint's `content_hash`
+/// from `purpose:<name>:constraint:<i>` independently of the expression
+/// hash, so injected nodes are never observed at their stale hash. If a
+/// future caller relies on `expr.content_hash` for sub-expression cache
+/// lookups inside the rewritten tree, add a bottom-up hash-rebuild pass
+/// here (and on `remap_entity`/`remap_cell`).
 fn expand_purpose_reflective_placeholders(
     expr: &mut CompiledExpr,
     queries: &[ResolvedSchemaQuery],
@@ -224,39 +237,53 @@ fn expand_purpose_reflective_placeholders(
     value_cells: &PersistentMap<ValueCellId, ValueCellNode>,
 ) {
     match &mut expr.kind {
-        CompiledExprKind::PurposeReflectiveAggregation { query_kind, .. } => {
+        CompiledExprKind::PurposeReflectiveAggregation {
+            param_name,
+            query_kind,
+        } => {
             // Resolve the member list for this placeholder. Prefer compile-
             // time `ResolvedSchemaQuery`; fall back to scanning `value_cells`
             // for the bound entity's params when the query is unresolved
             // (wildcard-subject case).
-            let members: Vec<String> =
-                if let Some(q) = queries.iter().find(|q| q.query_kind == *query_kind) {
-                    q.resolved_ids.iter().map(|id| id.member.clone()).collect()
-                } else if query_kind == "params" {
-                    let mut members: Vec<String> = value_cells
-                        .iter()
-                        .filter(|(id, node)| {
-                            id.entity == entity_ref
-                                && matches!(
-                                    node.kind,
-                                    ValueCellKind::Param | ValueCellKind::Auto { .. }
-                                )
-                        })
-                        .map(|(id, _)| id.member.clone())
-                        .collect();
-                    // PersistentMap iteration order is not guaranteed stable
-                    // across runs; sort for determinism. Downstream tests
-                    // sort before comparison, so the surface order is not
-                    // load-bearing — but a stable order keeps logs and
-                    // hashes reproducible.
-                    members.sort();
-                    members
-                } else {
-                    // geometric_params / material_params: no resolution path
-                    // yet (task-1904). Empty list ⇒ vacuous-true forall, same
-                    // as before this expansion existed.
-                    Vec::new()
-                };
+            //
+            // The lookup filters by *both* `param_name` and `query_kind` —
+            // the placeholder records which purpose param it was projected
+            // from (e.g. `subject` vs a hypothetical `part`), and so does
+            // each `ResolvedSchemaQuery`. Today's compiler only accepts a
+            // single StructureRef param (task-2201), so collisions are
+            // latent — but matching by query_kind alone would silently
+            // misbind in any future multi-param purpose. Defending now is
+            // cheaper than debugging that misbind later.
+            let members: Vec<String> = if let Some(q) = queries
+                .iter()
+                .find(|q| q.param_name == *param_name && q.query_kind == *query_kind)
+            {
+                q.resolved_ids.iter().map(|id| id.member.clone()).collect()
+            } else if query_kind == "params" {
+                let mut members: Vec<String> = value_cells
+                    .iter()
+                    .filter(|(id, node)| {
+                        id.entity == entity_ref
+                            && matches!(
+                                node.kind,
+                                ValueCellKind::Param | ValueCellKind::Auto { .. }
+                            )
+                    })
+                    .map(|(id, _)| id.member.clone())
+                    .collect();
+                // PersistentMap iteration order is not guaranteed stable
+                // across runs; sort for determinism. Downstream tests
+                // sort before comparison, so the surface order is not
+                // load-bearing — but a stable order keeps logs and
+                // hashes reproducible.
+                members.sort();
+                members
+            } else {
+                // geometric_params / material_params: no resolution path
+                // yet (task-1904). Empty list ⇒ vacuous-true forall, same
+                // as before this expansion existed.
+                Vec::new()
+            };
 
             // Build ValueRef elements with cell-type lockstep.
             let elements: Vec<CompiledExpr> = members

@@ -675,6 +675,14 @@ impl CompiledExpr {
     /// replacing the entity part with `to_entity`. This is used during purpose
     /// activation to remap compiled references from the purpose's parameter
     /// namespace to the concrete entity being bound.
+    ///
+    /// CONTRACT — content-hash staleness: this rewrite mutates leaf cell IDs
+    /// in place but **does not** rebuild `content_hash` on ancestor nodes.
+    /// Callers that need a structurally-consistent hash on the rewritten
+    /// tree must reseed it themselves (e.g. `engine_purposes::activate_purpose`
+    /// reseeds each injected constraint's `content_hash` from
+    /// `purpose:<name>:constraint:<i>`). Same caveat applies to `remap_cell`
+    /// and to `engine_purposes::expand_purpose_reflective_placeholders`.
     pub fn remap_entity(&mut self, from_entity: &str, to_entity: &str) {
         match &mut self.kind {
             CompiledExprKind::ValueRef(id) => {
@@ -814,6 +822,10 @@ impl CompiledExpr {
     ///
     /// Mirrors the structure of `remap_entity` arm-for-arm so future variant
     /// additions touch one place.
+    ///
+    /// CONTRACT — content-hash staleness: same as `remap_entity`. This walk
+    /// rewrites cell IDs in place but does not rebuild ancestor `content_hash`
+    /// values. Callers that consume the rewritten tree's hash must reseed it.
     pub fn remap_cell(&mut self, from: &ValueCellId, to: &ValueCellId) {
         match &mut self.kind {
             CompiledExprKind::ValueRef(id) => {
