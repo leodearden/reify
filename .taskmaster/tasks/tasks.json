@@ -50338,7 +50338,15 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:18:31.765Z"
+        "updatedAt": "2026-04-26T20:18:31.765Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Implement OCCT FFI for center_of_mass and moment_of_inertia with density"
+            ]
+          }
+        }
       },
       {
         "id": "2326",
@@ -50947,6 +50955,19 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:21:46.091Z"
+      },
+      {
+        "id": "2363",
+        "title": "forall statement-form: AST/IR `ForallConnect` and `ForallConstraint` node kinds",
+        "description": "Introduce two new AST/IR node kinds (`ForallConnect`, `ForallConstraint`) for statement-form forall per docs/prds/forall-statement-form.md task 2 / spec §5.4. Distinguishes statement form from existing expression form.",
+        "details": "Acceptance: parser emits `ForallConnect` / `ForallConstraint` for the new alternatives; expression form remains an `Expr` AST node. Pretty-printer / span info preserved.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "63"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50958,7 +50979,8 @@
         "master"
       ],
       "created": "2026-04-26T20:21:46.234Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:22:03.779Z"
     }
   }
 }
