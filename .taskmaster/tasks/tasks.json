@@ -51229,14 +51229,15 @@
         "description": "Add the `unit USD : Money` to the standard library and ensure it is registered correctly in the unit registry.",
         "details": "Implement the `unit USD : Money` in the file `std/units/money.ri` or an equivalent path as specified in the project documentation. Ensure that the unit is correctly defined with its dimension and any necessary conversion factors. Update the unit registry to include this new unit, verifying that it is recognized during the compilation process. Follow the specifications outlined in the PRD document `docs/prds/money-dimension.md`, specifically task 2 and section §4.6. Ensure that the implementation aligns with existing unit declaration patterns and integrates seamlessly with the current system.",
         "testStrategy": "1. Verify that the `unit USD : Money` is correctly parsed and compiled without errors. \n2. Check that the unit appears in the unit registry by inspecting the registry output or logs. \n3. Conduct tests to ensure that the unit can be used in quantity literals and that any conversion factors are applied correctly. \n4. Run `cargo test -p reify-compiler -- units_money` to execute relevant test cases.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "208",
-          "209"
+          "209",
+          "2377"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:24:51.168Z"
+        "updatedAt": "2026-04-26T20:29:14.076Z"
       },
       {
         "id": "2379",
@@ -51449,14 +51450,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:27:49.159Z",
+      "lastModified": "2026-04-26T20:29:14.081Z",
       "taskCount": 2381,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:28:28.482Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
