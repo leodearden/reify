@@ -48427,6 +48427,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T08:32:16.085Z"
+      },
+      {
+        "id": "2254",
+        "title": "Tune task_curator LLM budget: scale by batch size (0.5 * (1+N) / 2 USD)",
+        "description": "Increase the per-batch LLM budget in dark-factory's TaskCurator middleware so batch curate calls don't OOB on multi-task batches.\n\n**Formula (additive USD, applied to current budget):**\n- batch_size=1: +0.5 USD\n- batch_size=2: +0.75 USD\n- batch_size=3: +1.0 USD\n- General: +0.5 * (1 + batch_size) / 2\n\n**Evidence (this session, fused-memory journal):**\n- 2026-04-26 06:54:53 UTC — `error_max_turns` (4 turns / 111s), batch_size=1, candidate \"Strengthen user-declared `Structure` characterization test…\"\n- 2026-04-26 09:09:13 UTC — `error_max_budget_usd` (109s), batch_size=2, recovered via batch→size-1 fallback\n- Successful calls in same window cost ~$0.157 each, so headroom of +$0.75 for batch_size=2 is comfortably above worst-observed.\n\n**Implementation site:** `/home/leo/src/dark-factory/fused-memory/src/fused_memory/middleware/task_curator.py` — curate_batch() budget config. Note: this is a dark-factory change, not reify. Architect will scope-violation this in the reify worktree; needs to be re-filed in dark-factory or implemented out-of-band.\n\n**Triggering escalation:** esc-curator-9 (resolved as stale 2026-04-26 ~09:25 UTC after 2.5h of no-impact and ongoing successful curator work).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48436,7 +48447,10 @@
       "completedCount": 2007,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T08:32:27.673Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T08:32:27.697Z"
     }
   }
 }
