@@ -50334,11 +50334,18 @@
         "description": "PRD docs/prds/freshness-4-variant.md. Wire arch §7.2 (lines 730-749) propagation rule into the recursive evaluator: output.freshness = if self.still_refining { Intermediate } else if any input != Final { Intermediate } else { Final }. Add unit tests for each row of the §7.2 truth table over a small synthetic graph in crates/reify-eval. Builds on the NodeCache freshness-field task.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:01:16.847Z"
+        "updatedAt": "2026-04-26T20:16:48.867Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/cache.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/freshness_propagation.rs"
+          ]
+        }
       },
       {
         "id": "2329",
@@ -50821,7 +50828,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:16:45.486Z",
+      "lastModified": "2026-04-26T20:16:48.894Z",
       "taskCount": 2350,
       "completedCount": 2060,
       "tags": [
