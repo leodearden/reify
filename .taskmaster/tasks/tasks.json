@@ -50715,23 +50715,21 @@
         "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.3 and §3.5 line 436: a node with OnlyRunOnFinalInputs policy is not scheduled while any input is Intermediate / Pending. Plugs into the freshness-propagation walk from the Freshness PRD (#2335) — when a freshness-only walk reaches a gated node and all inputs are now Final, the node enters the value dirty set. Integration test using a synthetic graph with mixed-freshness inputs. Depends on Freshness PRD tasks #2319, #2326, #2328, #2335.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:13:32.505Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:12:50.708Z",
-      "taskCount": 2344,
+      "lastModified": "2026-04-26T20:13:32.505Z",
+      "taskCount": 2345,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:12:57.425Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:13:19.364Z"
+      ]
     }
   }
 }
