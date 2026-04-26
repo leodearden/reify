@@ -35,6 +35,63 @@ use crate::{
 /// release builds, can reference it as a single source of truth.
 pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 
+/// Returns `true` when `ty` may legitimately appear as the `cell_type` of a
+/// `ValueCellDecl` post-compilation. The two unrepresentable variants are
+/// `Type::TypeParam(_)` and `Type::Geometry` — neither has a corresponding
+/// `Value` variant, so any non-Undef value supplied to a cell of those types
+/// would fall through `value_type_kind_matches` (lib.rs) and trigger
+/// `EngineError::TypeKindMismatch`.
+///
+/// Single source of truth shared by the runtime invariant
+/// `assert_value_cell_types_representable` (this file) and the CI regression
+/// walker `assert_template_cells_representable`
+/// (`crates/reify-eval/tests/value_cell_type_invariants.rs`). Adding a third
+/// unrepresentable variant requires updating only this function.
+///
+/// `Type::StructureRef` is intentionally permitted (task 1876) — see
+/// `assert_value_cell_types_representable` doc below for the rationale.
+///
+/// Re-exported from the crate root with `#[doc(hidden)] pub use` so the
+/// integration test crate can reach it; not part of the documented public API.
+pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
+    use reify_types::Type;
+    match ty {
+        // Unrepresentable: no corresponding `Value` variant.
+        Type::TypeParam(_) | Type::Geometry => false,
+        // Representable: every other variant that has (or may have) a
+        // corresponding `Value`. Listed explicitly so that adding a new
+        // `Type` variant to `reify_types` requires a conscious decision here
+        // rather than silently inheriting `true`.
+        Type::Bool
+        | Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::List(_)
+        | Type::Set(_)
+        | Type::Map(_, _)
+        | Type::Option(_)
+        | Type::Function { .. }
+        | Type::StructureRef(_) // task 1876: struct-typed params are permitted
+        | Type::TraitObject(_)
+        | Type::Field { .. }
+        | Type::Point { .. }
+        | Type::Vector { .. }
+        | Type::Tensor { .. }
+        | Type::Complex(_)
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::Range(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::BoundingBox
+        | Type::Matrix { .. }
+        | Type::Error => true,
+    }
+}
+
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
 /// evaluation graph has a `cell_type` that has a corresponding `Value`
 /// variant.  `Type::TypeParam` and `Type::Geometry` have no `Value`
@@ -58,10 +115,9 @@ pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 /// (CI regression lock).
 #[cfg(debug_assertions)]
 pub(crate) fn assert_value_cell_types_representable(graph: &crate::graph::EvaluationGraph) {
-    use reify_types::Type;
     for (id, node) in graph.value_cells.iter() {
         assert!(
-            !matches!(&node.cell_type, Type::TypeParam(_) | Type::Geometry),
+            is_representable_cell_type(&node.cell_type),
             "{}: value cell `{}` has cell_type {:?} post-compilation; \
              value_type_kind_matches treats these variants as having no Value counterpart — \
              see crates/reify-eval/tests/value_cell_type_invariants.rs",
@@ -1928,6 +1984,10 @@ mod invariant_tests {
             ("E", "b", Type::Real),
             ("E", "c", Type::Bool),
             ("E", "d", Type::List(Box::new(Type::Int))),
+            // StructureRef is permitted (task 1876): struct-typed params like
+            // `material : Material` are valid; their default evaluates to Undef
+            // which passes the kind-match for any type.
+            ("E", "e", Type::StructureRef("Material".into())),
         ] {
             let id = ValueCellId::new(entity, member);
             let node = ValueCellNode {
@@ -1941,4 +2001,5 @@ mod invariant_tests {
         }
         super::assert_value_cell_types_representable(&graph);
     }
+
 }
