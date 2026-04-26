@@ -1483,3 +1483,47 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_no_override_no_de
         result.diagnostics
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2270 step-1: version-threading regression lock — top-level Param branch
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression-lock test: every `EvalEvent` emitted for a top-level Param cell
+/// must carry `event.version == engine.snapshot().unwrap().version`.
+///
+/// This pins the version-threading invariant for the top-level Param branch in
+/// `Engine::eval`. A future regression where the hoisted `version` binding drifts
+/// from the snapshot's `VersionId` (e.g., reading a stale value, off-by-one
+/// increment) would break this test.
+///
+/// Setup: `structure S { param width: Scalar = 100mm }` — single top-level Param
+/// cell. After `engine.eval(&module)`, the journal for `S.width` must hold a
+/// Started+Completed pair, and both events must carry the engine's snapshot version.
+#[test]
+fn eval_threads_snapshot_version_through_top_level_param_journal_events() {
+    let mut engine = fresh_engine();
+    let module = compile_source("structure S { param width: Scalar = 100mm }");
+    engine.eval(&module);
+
+    let width_id = ValueCellId::new("S", "width");
+    let node_id = NodeId::Value(width_id);
+
+    let snapshot_version = engine.snapshot().unwrap().version;
+    let events = engine.journal().events_for_node(&node_id);
+
+    assert!(
+        !events.is_empty(),
+        "journal must have at least one event for S.width after eval"
+    );
+
+    for event in &events {
+        assert_eq!(
+            event.version,
+            snapshot_version,
+            "every journal event for S.width must carry the engine snapshot version \
+             (event.version={:?}, snapshot.version={:?})",
+            event.version,
+            snapshot_version,
+        );
+    }
+}
