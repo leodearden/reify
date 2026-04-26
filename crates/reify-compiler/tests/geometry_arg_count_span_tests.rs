@@ -135,6 +135,21 @@ fn mirror_arg_count_diagnostic_has_span_label() {
     );
 }
 
+// ── linear_pattern_2d() ────────────────────────────────────────────────
+
+#[test]
+fn linear_pattern_2d_arg_count_diagnostic_has_span_label() {
+    // linear_pattern_2d() expects 11 arguments — passing 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let p = linear_pattern_2d(box(10mm, 10mm, 10mm), 1mm)
+            }
+        "#,
+        "linear_pattern_2d() expects 11 arguments",
+    );
+}
+
 // ── union() / intersection() / difference() ────────────────────────────
 
 #[test]
