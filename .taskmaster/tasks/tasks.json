@@ -47866,11 +47866,11 @@
         "description": "Add up-front compile-output assertions to the §8 trap test (`manufacturing_ready_silently_passes_for_undetermined_params_trap`) at `crates/reify-eval/tests/purpose_activation.rs:802-859`, mirroring the pattern at line 722. Without these, a future regression in fixture compilation (e.g., `param x : Real` requiring units) would fall through with zero compiled purposes, surfacing only as the `unwrap_or_else` panic on the missing constraint id — masking the real cause.",
         "details": "After `let compiled = parse_and_compile(source);` near line 816, add:\n\n```rust\nassert_eq!(compiled.compiled_purposes.len(), 1, \"fixture failed to compile cleanly\");\nassert!(compiled.diagnostics.iter().all(|d| d.severity != Severity::Error),\n    \"fixture produced unexpected error diagnostics: {:?}\", compiled.diagnostics);\n```\n\nThis matches the pattern already used in the neighboring `subject_member_access_is_remapped_to_bound_entity_on_activation` test at line 722. Verify the test still passes (it's a characterization test pinning the vacuous-true trap; assertions go ABOVE the trap assertion which must remain Satisfaction::Satisfied until runtime expansion lands).\n\nSource: esc-2199-15 S1 (reviewer_comprehensive on task 2199).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T08:29:26.705Z",
+        "updatedAt": "2026-04-26T06:39:19.661Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -47881,6 +47881,9 @@
               "PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS empty ListLiteral vacuous true trap",
               "purpose reflective aggregation populate params geometric_params runtime"
             ]
+          },
+          "done_provenance": {
+            "commit": "46146b6e5da8d571950b698cfbbe4337d93e501a"
           }
         }
       },
@@ -48029,9 +48032,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:38:47.969Z",
+      "lastModified": "2026-04-26T06:39:19.661Z",
       "taskCount": 2228,
-      "completedCount": 1984,
+      "completedCount": 1985,
       "tags": [
         "master"
       ]
