@@ -48029,7 +48029,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T06:35:33.914Z"
+        "updatedAt": "2026-04-26T06:35:33.914Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "ModifyKind"
+            ],
+            "queries": [
+              "ModifyKind CASES table geometry_modify exhaustiveness VARIANT_COUNT sentinel",
+              "task 2203 CASES table compile-time assert geometry_modify.rs tighten completed",
+              "single_geom_target_kinds compile_modify_op CASES duplicate omission unique variant set"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
