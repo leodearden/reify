@@ -49743,7 +49743,7 @@
         "id": "2295",
         "title": "[v0.2] Multi-kernel geometry dispatch (Manifold/Truck/Fidget/OpenVDB)",
         "description": "Tracker task for v0.2 deferred work. PRD at docs/prds/v0_2/multi-kernel.md. Covers multi-kernel implicit dispatch (arch §10.3, §10.5–§10.8): Manifold for mesh Booleans, Truck B-rep alternative, Fidget for SDFs, OpenVDB voxels. Geometry-as-orchestrator pattern, per-rep stack/patchwork patterns. Tracker only; do not start in v0.1 phase.",
-        "details": "",
+        "details": "<info added on 2026-04-26T19:54:11.286Z>\nBlocking reason: This task is explicitly marked as \"Tracker only; do not start in v0.1 phase,\" reflecting intentional deferral to the v0.2 phase. The block status was set shortly after being briefly in-progress to ensure alignment with project timelines. Unblock only when the project transitions to the v0.2 phase. No changes to dependencies are required at this time.\n</info added on 2026-04-26T19:54:11.286Z>",
         "testStrategy": "",
         "status": "blocked",
         "dependencies": [],
@@ -50041,7 +50041,9 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:54:06.522Z",
+      "description": "Tasks for master context"
     }
   }
 }
