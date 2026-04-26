@@ -48,16 +48,21 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-        check_phase_pre_register_default_types(
-            &ctx,
-            &structure_all_members,
-            structure.name,
-            scope,
-            enum_defs,
-            functions,
-            diagnostics,
-        );
+    let (
+        inferred_let_exprs,
+        pass1_skipped,
+        pass1_param_skipped,
+        pass2_skipped,
+        pass2_compile_errors,
+    ) = check_phase_pre_register_default_types(
+        &ctx,
+        &structure_all_members,
+        structure.name,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+    );
 
     let available_defaults = check_phase_build_available_defaults_map(
         &ctx,
@@ -801,16 +806,21 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         // --- Phase 3: pre-register default types ---
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_all_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_all_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // Sanity: pass2_skipped must contain "x" for the guard path to be exercised.
         // If this fails, the fixture is misconfigured and would not test the guard at all.
@@ -1481,16 +1491,21 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         assert!(
             diagnostics.is_empty(),
@@ -1572,16 +1587,21 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         assert!(
             diagnostics.is_empty(),
@@ -1686,16 +1706,21 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // The collision must be recorded in pass2_skipped, not the expression cache.
         assert!(
@@ -1817,16 +1842,21 @@ mod tests {
         // COMPILE-TRIPWIRE: destructure as 5-tuple — fails to compile until step-2 changes the
         // return type from (HashMap, HashSet, HashSet, HashSet) to
         // (HashMap, HashSet, HashSet, HashSet, HashSet), adding pass1_param_skipped.
-        let (inferred_let_exprs, pass1_skipped, _pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            _pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // The annotated-Let loser must be recorded in pass1_skipped.
         assert!(
@@ -1950,16 +1980,21 @@ mod tests {
 
         // COMPILE-TRIPWIRE: destructure as 5-tuple — fails to compile until step-2 changes the
         // return type to (HashMap, HashSet, HashSet, HashSet, HashSet).
-        let (inferred_let_exprs, pass1_skipped, pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
+        let (
+            inferred_let_exprs,
+            pass1_skipped,
+            pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
+        );
 
         // The Param loser must be recorded in pass1_param_skipped.
         assert!(
@@ -2023,12 +2058,12 @@ mod tests {
     /// are counted — the warning is tolerated and the expression is cached normally.
     ///
     /// Assertions:
-    ///   (a) Exactly 1 diagnostic, with `severity == Severity::Warning`.
+    ///   (a) At least 1 diagnostic emitted, and ALL diagnostics have non-Error severity.
     ///   (b) `pass2_compile_errors` is empty — the warning must NOT be classified as failure.
     ///   (c) `("x", Let)` is present in `inferred_let_exprs`.
     ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::Real))`.
-    ///   (e) The scope slot for "x" is occupied after Pass 2 (a second `register_if_absent`
-    ///       call returns `Some(..)` indicating a conflict).
+    ///   (e) The scope slot for "x" is occupied after Pass 2 and holds the inferred type
+    ///       `Type::List(Real)` — verified via the non-mutating `scope.resolve("x")` probe.
     #[test]
     fn check_phase_pre_register_default_types_treats_warning_only_compile_as_success() {
         let let_decl = reify_syntax::LetDecl {
@@ -2060,29 +2095,35 @@ mod tests {
         let mut scope = CompilationScope::new("S");
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let (inferred_let_exprs, _pass1_skipped, _pass1_param_skipped, pass2_skipped, pass2_compile_errors) =
-            check_phase_pre_register_default_types(
-                &ctx,
-                &structure_members,
-                "S",
-                &mut scope,
-                &[],
-                &[],
-                &mut diagnostics,
-            );
-
-        // (a) Exactly one Warning diagnostic emitted by compile_expr for the empty list.
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "Expected exactly 1 diagnostic (the empty-list-literal warning); got: {:?}",
-            diagnostics
+        let (
+            inferred_let_exprs,
+            _pass1_skipped,
+            _pass1_param_skipped,
+            pass2_skipped,
+            pass2_compile_errors,
+        ) = check_phase_pre_register_default_types(
+            &ctx,
+            &structure_members,
+            "S",
+            &mut scope,
+            &[],
+            &[],
+            &mut diagnostics,
         );
-        assert_eq!(
-            diagnostics[0].severity,
-            Severity::Warning,
-            "Expected the diagnostic to be a Warning, not an Error; got: {:?}",
-            diagnostics[0]
+
+        // (a) At least one diagnostic was emitted and none are Error-severity.
+        //     The contract under test is "no Error ⇒ expression is cached", not the exact count.
+        //     Pinning to exactly 1 Warning would break if compile_expr adds a future Info/note
+        //     without any real regression.
+        assert!(
+            !diagnostics.is_empty(),
+            "Expected at least one diagnostic (the empty-list-literal warning); got none"
+        );
+        assert!(
+            diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "Expected NO Error-severity diagnostic — warning-only compile_expr must be treated \
+             as success; got: {:?}",
+            diagnostics
         );
 
         // (b) The warning must NOT be classified as a compile failure.
@@ -2116,13 +2157,21 @@ mod tests {
             "Expected Type::List(Real) for an empty list literal (defaulting to Real element type)"
         );
 
-        // (e) Scope slot for "x" is occupied: a second register_if_absent returns Some(..),
-        //     indicating the slot was claimed by Pass 2.
-        let conflict = scope.register_if_absent("x", Type::Int);
+        // (e) Scope slot for "x" is occupied after Pass 2 and holds the inferred type.
+        //     Use the non-mutating scope.resolve probe so the assertion cannot accidentally
+        //     insert an unrelated key if Pass 2 had failed to register silently.
+        let resolved = scope.resolve("x");
         assert!(
-            conflict.is_some(),
-            "Expected 'x' to be registered in scope by Pass 2 (register_if_absent should find \
-             the slot occupied); got None, meaning Pass 2 failed to register the inferred type"
+            resolved.is_some(),
+            "Expected 'x' to be registered in scope by Pass 2 (scope.resolve should return \
+             Some(..)); got None, meaning Pass 2 failed to register the inferred type"
+        );
+        assert_eq!(
+            resolved.unwrap().1,
+            &Type::List(Box::new(Type::Real)),
+            "Expected scope slot for 'x' to hold the inferred Type::List(Real) after Pass 2; \
+             got: {:?}",
+            resolved.unwrap().1
         );
     }
 

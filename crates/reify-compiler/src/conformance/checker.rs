@@ -321,6 +321,14 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// robust: some error-recovery paths in `expr.rs` (e.g. unknown-unit coercion) return
 /// `Type::Scalar{DIMENSIONLESS}` instead of `Type::Error`, and would escape a type-based check.
 ///
+/// **Order-dependence caveat:** cascade suppression via the `Type::Error` scope-poison sentinel
+/// is effective only when the failing dependency is defined *before* its dependents in
+/// `ctx.defaults` traversal order.  In a reverse-ordered chain (e.g. `let c = a  let a = b`
+/// with `b` undefined), Pass 2 compiles `c` first, finds `a` absent, emits "unresolved a", and
+/// records `c` in `pass2_compile_errors` — only *then* does `a = b` fail and poison `a` with
+/// `Type::Error`.  The cascade for `c` already fired.  A topological pre-pass would eliminate
+/// this but is not warranted unless reverse-ordered chains become a real concern.
+///
 /// # TWO-PASS DESIGN RATIONALE (task 1834 amendment)
 ///
 /// The split restores the pre-1834 tolerance for forward references to any *annotated* member:
@@ -510,6 +518,14 @@ pub(super) fn check_phase_pre_register_default_types(
     // incorrectly suppress successfully-typed expressions such as `let x = []`.
     // The tail-scan is safe under future drift: any new warning/info path in
     // compile_expr or its callees is silently tolerated.
+    //
+    // Order-dependence caveat: cascade suppression via the Type::Error scope-poison
+    // sentinel is effective only when the failing dependency is defined *before* its
+    // dependents in ctx.defaults traversal order.  In a reverse-ordered chain (e.g.
+    // `let c = a  let a = b` with b undefined), Pass 2 compiles c first, finds a
+    // absent, and emits the cascade error before a = b fails and poisons a.  A
+    // topological pre-pass would eliminate this but is not warranted unless such
+    // cases become a real concern.
     for default in &ctx.defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
