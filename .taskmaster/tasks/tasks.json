@@ -50637,6 +50637,20 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2352",
+        "title": "Reconcile Inheritance for Mechanical Material Traits",
+        "description": "Declare shared traits in materials_mechanical.ri and document trait resolution per spec §6.2.",
+        "details": "Implement the traits FatigueRated, FractureTough, ImpactResistant, and Damping explicitly as `: MaterialSpec` in the materials_mechanical.ri file. Ensure these traits are declared only once, refining MaterialSpec, and document the resolution process in a header comment block. This documentation should explain the decision to maintain a single declaration in materials_mechanical.ri and how structures will inherit properties via the material slot rather than direct trait composition. Follow the guidelines in §4 and §6 of the specification.",
+        "testStrategy": "1. Ensure the materials_mechanical.ri file parses and compiles without errors.\n2. Verify that the traits are correctly declared as `: MaterialSpec`.\n3. Check that the header comment block accurately documents the trait resolution process.\n4. Run `cargo test -p reify-compiler -- materials_mechanical` to confirm that the traits are correctly integrated and functional.",
+        "status": "pending",
+        "dependencies": [
+          "327",
+          "2347"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50649,7 +50663,7 @@
       ],
       "created": "2026-04-26T20:11:33.185Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:11:33.220Z"
+      "updated": "2026-04-26T20:11:39.541Z"
     }
   }
 }
