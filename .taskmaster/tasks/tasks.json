@@ -51368,6 +51368,21 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2390",
+        "title": "auto type-param: determinism smoke test + v0.1 example-corpus perf regression guard",
+        "description": "Add an example to test determinism of `Bearing<auto: Seal>` and verify performance on the v0.1 example corpus.",
+        "details": "Implement an end-to-end example using `Bearing<auto: Seal>` to ensure deterministic behavior. Run the example twice and assert that the resolved snapshot hash is identical both times. Additionally, execute the v0.1 example corpus to confirm there is no regression in elaboration time. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 7 and acceptance criteria 11-12. Ensure the example is comprehensive and covers edge cases that might affect determinism.",
+        "testStrategy": "1. Develop a test script to run the `Bearing<auto: Seal>` example twice and compare the snapshot hashes for consistency. 2. Execute the v0.1 example corpus and measure elaboration time, comparing it against baseline metrics to detect any regressions. 3. Validate that the test setup is repeatable and produces consistent results across different environments.",
+        "status": "pending",
+        "dependencies": [
+          "2384",
+          "2385",
+          "2386"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51380,7 +51395,7 @@
       ],
       "created": "2026-04-26T20:25:18.029Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:25:22.147Z"
+      "updated": "2026-04-26T20:25:28.125Z"
     }
   }
 }
