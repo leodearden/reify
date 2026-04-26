@@ -1,7 +1,14 @@
 //! Phase-11 entities: compile every `structure` / `occurrence` declaration
-//! and forward `import` declarations into `ctx.imports` with their
-//! placeholder diagnostics; other decl arms are passthroughs (already
-//! compiled in earlier phases).
+//! and forward `import` declarations into `ctx.imports`; other decl arms are
+//! passthroughs (already compiled in earlier phases).
+//!
+//! ## Import warning policy (task 2226)
+//!
+//! A "not resolved" warning is emitted **only** when the import path is absent
+//! from the prelude supplied to `phase_entities`. When the prelude already
+//! contains the module (e.g. because ModuleDag recursively compiled it, or
+//! `compile_with_stdlib` seeded the stdlib prelude), the warning is suppressed.
+//! The `CompiledImport` push is unconditional — downstream tools rely on it.
 //!
 //! Also hosts the post-pass `phase_pending_bound_checks` that drains
 //! `ctx.pending_bound_checks` once all entities are compiled and the
@@ -35,9 +42,10 @@ use crate::units::UnitRegistry;
 /// Constructs phase-local registries (`trait_registry`, `field_registry`,
 /// `constraint_def_registry`) and dispatches each declaration to its
 /// handler. Structure / Occurrence arms call `compile_entity` and push
-/// onto `ctx.templates`. Import arm appends to `ctx.imports` with a
-/// placeholder warning diagnostic. Other arms are passthroughs — they were
-/// already handled in earlier phases.
+/// onto `ctx.templates`. Import arm appends to `ctx.imports` unconditionally;
+/// a "not resolved" warning is emitted only when the import path is absent from
+/// `prelude` (see import warning policy in the module-level doc). Other arms
+/// are passthroughs — they were already handled in earlier phases.
 pub(crate) fn phase_entities(
     ctx: &mut CompilationCtx,
     parsed: &ParsedModule,
@@ -115,14 +123,16 @@ pub(crate) fn phase_entities(
                     is_pub: import.is_pub,
                     span: import.span,
                 });
-                // Only warn when the import was NOT resolved via the prelude.
-                // Resolved imports (ModuleDag user modules, stdlib modules) are
-                // already in `resolved_import_paths` — suppress the warning for
-                // those. See task 2226 for detection strategy.
+                // Emit a "not resolved" warning only when the import path is
+                // absent from the prelude (i.e. this entry point did not load
+                // the imported file). Resolved imports — ModuleDag user modules
+                // and stdlib modules — are already in `resolved_import_paths`
+                // and receive no diagnostic. See task 2226 for detection
+                // strategy and wording rationale.
                 if !resolved_import_paths.contains(&import.path) {
                     ctx.diagnostics.push(
                         Diagnostic::warning(format!(
-                            "import \"{}\" noted; module resolution not yet implemented",
+                            "import \"{}\" not resolved: this entry point does not load imported files — use compile_project (ModuleDag) for cross-file imports",
                             import.path
                         ))
                         .with_label(DiagnosticLabel::new(import.span, "import")),
