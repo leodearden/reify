@@ -24,12 +24,23 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
 /// Process the first well-formed module-level `#precision(<Length-quantity>)` pragma:
 /// store its SI-metres value on `module.default_tolerance`. All other shapes emit a
 /// warning (or info, for the legacy `#precision(float64)` form) and leave
-/// `default_tolerance` unset.
+/// `default_tolerance` unset. Subsequent `#precision` pragmas (regardless of arg
+/// shape) emit a "subsequent pragma ignored; first one wins" warning.
 fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
+    let mut first_seen = false;
     for pragma in &parsed.pragmas {
         if pragma.name != "precision" {
             continue;
         }
+
+        if first_seen {
+            module.diagnostics.push(
+                Diagnostic::warning("subsequent #precision pragma ignored; first one wins")
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+            );
+            continue;
+        }
+        first_seen = true;
 
         // First-seen pragma: interpret its args.
         match pragma.args.as_slice() {
@@ -63,8 +74,5 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                 // in later steps.
             }
         }
-
-        // First-seen wins; later #precision pragmas are handled in step-8.
-        return;
     }
 }
