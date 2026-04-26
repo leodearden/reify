@@ -4,7 +4,8 @@ use reify_constraints::CpSatSolver;
 use reify_test_support::builders::*;
 use reify_test_support::values::*;
 use reify_types::{
-    AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Type, Value, ValueMap,
+    AutoParam, ConstraintSolver, DiagnosticCode, ResolutionProblem, SolveResult, Type, Value,
+    ValueMap,
 };
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,47 @@ fn boolean_infeasible_contradiction() {
             assert!(!diagnostics.is_empty(), "expected non-empty diagnostics");
         }
         other => panic!("expected Infeasible, got {:?}", other),
+    }
+}
+
+/// `a && !a` — infeasible diagnostic must carry DiagnosticCode::ConstraintUnsatisfiable.
+/// Companion to `boolean_infeasible_contradiction`: that test asserts only non-empty
+/// diagnostics; this test asserts the typed code on the same setup.
+#[test]
+fn cpsat_infeasible_diagnostic_carries_constraint_unsatisfiable_code() {
+    let solver = CpSatSolver;
+
+    let a_id = vcid("Part", "a");
+    let a_ref = value_ref_typed("Part", "a", Type::Bool);
+
+    // constraint: a && !a — contradictory, no satisfying assignment
+    let constraint_expr = and(a_ref.clone(), not(a_ref));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: a_id.clone(),
+            param_type: Type::Bool,
+            bounds: None,
+            free: false,
+        }],
+        constraints: vec![(cnid("Part", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintUnsatisfiable)),
+                "infeasible diagnostic must carry ConstraintUnsatisfiable code; got: {:?}",
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            );
+        }
+        other => panic!("expected Infeasible for a && !a contradiction, got {:?}", other),
     }
 }
 
