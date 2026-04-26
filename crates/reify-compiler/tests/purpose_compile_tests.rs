@@ -995,10 +995,11 @@ fn compile_purpose_user_defined_structure_named_structure_bypasses_validation() 
     // A user-declared structure that happens to share the wildcard sentinel name.
     // Accessing the non-existent member `bogus` must be silent today because the
     // magic-string guard treats any `Structure`-typed subject as the wildcard form.
-    // `subject.mass` references a *real* param — also silent under the same guard
-    // (defense-in-depth: if a future refactor narrows the guard so it depends on
-    // the registry, `mass` would catch a silent-rejection regression that `bogus`
-    // alone would not).
+    // `subject.mass` references a *real* param of the declared template — it is
+    // included as a real-param probe so the combined `no_member_errors` filter
+    // covers both a spurious member access (`bogus`) and a legitimate one (`mass`).
+    // If a future refactor makes the wildcard guard registry-aware, `mass` would
+    // start failing the combined filter for the right reason.
     let source = r#"
 structure Structure {
     param mass : Mass = 1kg
@@ -1049,25 +1050,6 @@ purpose check(subject : Structure) {
          'Structure'), but got: {:#?}\n\
          If this fails after a semantic-predicate refactor, see the test doc-comment.",
         no_member_errors
-    );
-
-    // Defense-in-depth: the second constraint references `subject.mass` — a real
-    // param of the user-declared template above.  Today the magic-string guard
-    // suppresses ALL `Structure`-typed member accesses, so this is silent for the
-    // same reason `bogus` is silent.  If a future refactor narrows the wildcard
-    // guard (e.g., "wildcard only when no template with that name is registered"),
-    // `mass` would catch a silent-rejection regression that `bogus` alone would not.
-    let no_mass_member_errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("has no member") && d.message.contains("mass"))
-        .collect();
-    assert!(
-        no_mass_member_errors.is_empty(),
-        "expected no 'has no member' diagnostics for `mass` (a real param of \
-         the user-declared `Structure` template) under the wildcard-name \
-         guard, but got: {:#?}",
-        no_mass_member_errors
     );
 
     // ── Bail-out safety net (third layer) ─────────────────────────────────────
