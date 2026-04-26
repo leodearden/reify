@@ -47589,11 +47589,11 @@
         "description": "Extend `tests/edit_source.rs::edit_source_panics_on_unrepresentable_cell_type` (lines 3480-3522) to iterate over both unrepresentable variants `Type::TypeParam(\"T\".into())` and `Type::Geometry`, matching the style of the in-crate unit test `invariant_tests::panics_on_unrepresentable_cell_types`. Today only Type::TypeParam is exercised, leaving a drift risk between the variant list in `assert_value_cell_types_representable` and the edit-path coverage.",
         "details": "Suggestion from task 2132 review (reviewer_comprehensive, test_coverage_gap).\n\nCurrent test (tests/edit_source.rs:3495-3501) builds a single bad_module with Type::TypeParam(\"T\"). Wrap the bad-module construction + engine seeding + panic::catch_unwind block in `for ty in [Type::TypeParam(\"T\".into()), Type::Geometry] { ... }` so both variants exercise the edit-path assertion.\n\nNote: the engine may need to be re-created inside the loop since edit_source mutates state; confirm by rerunning.\n\nSource: engine_eval.rs:60 matches both `Type::TypeParam(_)` and `Type::Geometry` — pairing the integration test with the guard list prevents the variant list and the test from drifting.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T08:35:15.205Z",
+        "updatedAt": "2026-04-26T06:43:16.673Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/edit_source.rs"
@@ -47605,6 +47605,9 @@
               "edit_source role-flip probe run_probe_scenario helper",
               "Task 2214 edit_source role-flip probe tests extract run_probe_scenario"
             ]
+          },
+          "done_provenance": {
+            "commit": "969fc9a0aec7337602810f8f7db3526250359e73"
           }
         }
       },
@@ -48066,14 +48069,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:39:19.661Z",
+      "lastModified": "2026-04-26T06:43:16.673Z",
       "taskCount": 2228,
-      "completedCount": 1985,
+      "completedCount": 1986,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T06:43:11.646Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
