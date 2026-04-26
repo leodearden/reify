@@ -138,12 +138,72 @@ impl fmt::Display for Severity {
     }
 }
 
+/// Typed identifier for the *kind* of diagnostic emitted, decoupled from the
+/// human-readable message text.
+///
+/// Test assertions and downstream tooling (e.g. the MCP wire layer) match on
+/// `DiagnosticCode` rather than on substrings of `Diagnostic.message`, so
+/// reword-the-message changes do not break tests or downstream consumers.
+///
+/// `#[non_exhaustive]` lets future variants be added without breaking external
+/// match exhaustiveness. The serde derives are feature-gated to mirror the
+/// `Severity` enum, and `rename_all = "PascalCase"` keeps the wire identifier
+/// stable (e.g. `"TraitNotImplemented"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "PascalCase"))]
+#[non_exhaustive]
+pub enum DiagnosticCode {
+    /// Origin: `crates/reify-compiler/src/expr.rs` (instance qualified-access).
+    /// Replaces canonical message:
+    /// `"sub-component '<name>' (type '<structure>') does not implement trait '<trait>'"`.
+    TraitNotImplemented,
+    /// Origin: `crates/reify-compiler/src/trait_requirements.rs::collect_all_requirements`.
+    /// Replaces canonical message: `"unresolved trait: '<name>'"`.
+    UnresolvedTrait,
+    /// Origin: `crates/reify-compiler/src/trait_requirements.rs::collect_all_requirements`.
+    /// Replaces canonical message:
+    /// `"trait refinement chain too deep (exceeded <N> levels) at '<trait>'"`.
+    TraitRefinementChainTooDeep,
+    /// Origin: `crates/reify-compiler/src/trait_requirements.rs` (Param/Let path).
+    /// Replaces canonical message:
+    /// `"conflicting trait requirements for '<name>': trait '…' requires …, trait '…' requires …"`.
+    ConflictingTraitRequirements,
+    /// Origin: `crates/reify-compiler/src/trait_requirements.rs` (Sub path).
+    /// Replaces canonical message:
+    /// `"conflicting trait sub requirements for '<name>': trait '…' requires sub '…', …"`.
+    ConflictingTraitSubRequirements,
+    /// Origin: `crates/reify-compiler/src/trait_requirements.rs` (Let-binding default conflict).
+    /// Replaces canonical message:
+    /// `"conflicting trait let bindings for '<name>': trait '…' and trait '…' provide different expressions"`.
+    ConflictingTraitLetBindings,
+    /// Origin: `crates/reify-compiler/src/trait_requirements.rs` (Param/Constraint default conflict).
+    /// Replaces canonical message:
+    /// `"conflicting trait defaults for '<name>': trait '…' has …, trait '…' has …"`.
+    ConflictingTraitDefaults,
+    /// Origin: `crates/reify-compiler/src/conformance` (forward-completeness; not yet wired).
+    /// Reserved for the conformance-checker producer that emits "missing required member …".
+    MissingRequiredMember,
+    /// Origin: `crates/reify-compiler/src/conformance` (forward-completeness; not yet wired).
+    /// Reserved for the conformance-checker producer that emits "missing required sub-component …".
+    MissingRequiredSubComponent,
+    /// Origin: `crates/reify-compiler/src/conformance` (forward-completeness; not yet wired).
+    /// Reserved for the conformance-checker producer that emits "type mismatch for trait member …".
+    TypeMismatchForTraitMember,
+    /// Origin: `crates/reify-compiler/src/conformance` (forward-completeness; not yet wired).
+    /// Reserved for the conformance-checker producer that emits "type does not conform to trait …".
+    TypeNotConformingToTrait,
+}
+
 /// A diagnostic message with location and optional labels.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub severity: Severity,
     pub message: String,
     pub labels: Vec<DiagnosticLabel>,
+    /// Typed kind of this diagnostic. `None` for legacy emissions that have
+    /// not yet been migrated. Producers attach a code via [`Diagnostic::with_code`].
+    pub code: Option<DiagnosticCode>,
 }
 
 impl Diagnostic {
@@ -152,6 +212,7 @@ impl Diagnostic {
             severity: Severity::Error,
             message: message.into(),
             labels: Vec::new(),
+            code: None,
         }
     }
 
@@ -160,6 +221,7 @@ impl Diagnostic {
             severity: Severity::Warning,
             message: message.into(),
             labels: Vec::new(),
+            code: None,
         }
     }
 
@@ -168,11 +230,22 @@ impl Diagnostic {
             severity: Severity::Info,
             message: message.into(),
             labels: Vec::new(),
+            code: None,
         }
     }
 
     pub fn with_label(mut self, label: DiagnosticLabel) -> Self {
         self.labels.push(label);
+        self
+    }
+
+    /// Attach a typed [`DiagnosticCode`] to this diagnostic.
+    ///
+    /// Mirrors [`Diagnostic::with_label`]: builder-fluent, takes ownership,
+    /// returns `Self`. Callers chain `.with_code(DiagnosticCode::X)` between
+    /// `Diagnostic::error(...)` and `.with_label(...)`.
+    pub fn with_code(mut self, code: DiagnosticCode) -> Self {
+        self.code = Some(code);
         self
     }
 }

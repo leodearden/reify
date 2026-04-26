@@ -677,6 +677,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
                     final_max_residual
                 ),
                 labels: vec![],
+                code: None,
             }],
         };
     }
@@ -887,6 +888,7 @@ impl ConstraintSolver for DimensionalSolver {
                                           for exploration"
                                     .to_string(),
                                 labels: vec![],
+                                code: None,
                             }],
                         }
                     }

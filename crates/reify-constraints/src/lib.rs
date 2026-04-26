@@ -47,6 +47,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                 severity: Severity::Error,
                                 message: format!("constraint {} violated", id),
                                 labels: vec![],
+                                code: None,
                             }],
                         },
                     ),
@@ -60,6 +61,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                     id
                                 ),
                                 labels: vec![],
+                                code: None,
                             }],
                         },
                     ),
@@ -73,6 +75,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                     id
                                 ),
                                 labels: vec![],
+                                code: None,
                             }],
                         },
                     ),

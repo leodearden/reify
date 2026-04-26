@@ -25,7 +25,8 @@ pub use constraint::{
     OptimizedImplOutput, ResolutionProblem, SolveResult,
 };
 pub use diagnostics::{
-    Diagnostic, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan,
+    Diagnostic, DiagnosticCode, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity,
+    SourceSpan,
 };
 pub use dimension::{DimensionVector, Rational};
 pub use expr::{

@@ -438,6 +438,7 @@ impl ConstraintChecker for LabelEmittingChecker {
                     severity: Severity::Error,
                     message: format!("constraint {} violated", id_str),
                     labels: vec![label],
+                    code: None,
                 };
                 ConstraintResult {
                     id: id.clone(),

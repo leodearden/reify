@@ -456,6 +456,7 @@ mod tests {
                 message: "constraint unsatisfiable".to_string(),
                 severity: Severity::Error,
                 labels: vec![],
+                code: None,
             }],
         };
         match &result {

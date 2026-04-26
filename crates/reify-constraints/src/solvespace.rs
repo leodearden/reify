@@ -957,6 +957,7 @@ impl ConstraintSolver for SolveSpaceSolver {
                         failed_ids.len()
                     ),
                     labels: vec![],
+                    code: None,
                 }],
             },
             SlvsSolveResult::DidntConverge => SolveResult::NoProgress {
