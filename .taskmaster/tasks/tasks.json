@@ -42784,7 +42784,7 @@
         "description": "`crates/reify-eval/src/geometry_ops.rs:298-310` implements `ModifyKind::Draft` by taking `step_handles.last()` as the plane reference instead of evaluating the `plane` argument expression. A comment acknowledges the placeholder.\n\nResult: Draft produces incorrect output whenever the plane argument doesn't happen to be the most recent step. The `target_id` is correctly resolved via `resolve_geom_ref`, but `plane_id` is hard-coded.\n\nFix:\n1. Plumb the plane argument through as a `GeomRef` (or full expression that evaluates to a face/plane reference), then resolve it via `resolve_geom_ref` like `target`.\n2. Add an integration test that draft-operates on a non-most-recent step to catch regression.\n\nAlso audit related ops in this file for the same placeholder pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -42811,9 +42811,12 @@
               "geometry functions draft evaluate plane expression",
               "geometry ops draft compile evaluate non-geom-target fallback"
             ]
+          },
+          "done_provenance": {
+            "note": "branch already on main at workflow start (pre-PLAN recovery)"
           }
         },
-        "updatedAt": "2026-04-26T11:44:42.942Z"
+        "updatedAt": "2026-04-26T11:44:49.546Z"
       },
       {
         "id": "2011",
@@ -49004,9 +49007,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:44:42.951Z",
+      "lastModified": "2026-04-26T11:44:49.546Z",
       "taskCount": 2261,
-      "completedCount": 2025,
+      "completedCount": 2026,
       "tags": [
         "master"
       ]
