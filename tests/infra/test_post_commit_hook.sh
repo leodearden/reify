@@ -448,5 +448,101 @@ assert "Check 9: hook stderr contains WARN" \
 assert "Check 9: hook stderr contains task id 555" \
     grep -q "555" "$_stderr9pc"
 
+# ==============================================================================
+# Check 10: non-task commits must NOT invoke the briefing script
+# ==============================================================================
+# Regression: a README.md change with message "docs: update" must not trigger
+# step (3.5). We replace the briefing script with a stub that writes a sentinel
+# file so we can detect whether it was called.
+echo ""
+echo "--- Check 10: non-task commit does not invoke briefing script ---"
+
+mk_repo_fixture _repo10
+cp "$REFRESH_SCRIPT" "$_repo10/scripts/refresh_briefing_known_gaps.py"
+chmod +x "$_repo10/scripts/refresh_briefing_known_gaps.py"
+
+mkdir -p "$_repo10/review"
+cat > "$_repo10/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps: []
+YAML
+
+mkdir -p "$_repo10/.taskmaster/tasks"
+cat > "$_repo10/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[]}}
+JSON
+
+# Replace the briefing script with a sentinel stub.
+_sentinel10="$_tmpdir/sentinel10.txt"
+cat > "$_repo10/scripts/refresh_briefing_known_gaps.py" <<STUB
+#!/usr/bin/env python3
+import sys
+with open("$_sentinel10", "w") as f:
+    f.write("called\n")
+sys.exit(0)
+STUB
+chmod +x "$_repo10/scripts/refresh_briefing_known_gaps.py"
+
+# Seed HEAD (no-verify so hook doesn't fire on the seed).
+git -C "$_repo10" add .
+git -C "$_repo10" commit --no-verify -m "chore: seed" -q
+
+# Commit an unrelated file with a non-matching message.
+echo "hello" > "$_repo10/README.md"
+git -C "$_repo10" add README.md
+git -C "$_repo10" commit -m "docs: update readme" 2>/dev/null || true
+
+assert "Check 10: non-task commit does not invoke briefing script (sentinel absent)" \
+    test ! -f "$_sentinel10"
+
+# ==============================================================================
+# Check 11: in-progress task commit must NOT invoke the briefing script
+# ==============================================================================
+# Regression: set_task_status(555=in-progress) must NOT match the done pattern.
+echo ""
+echo "--- Check 11: in-progress task commit does not invoke briefing script ---"
+
+mk_repo_fixture _repo11
+cp "$REFRESH_SCRIPT" "$_repo11/scripts/refresh_briefing_known_gaps.py"
+chmod +x "$_repo11/scripts/refresh_briefing_known_gaps.py"
+
+mkdir -p "$_repo11/review"
+cat > "$_repo11/review/briefing.yaml" <<'YAML'
+subprojects:
+  tooling:
+    known_gaps: []
+YAML
+
+mkdir -p "$_repo11/.taskmaster/tasks"
+cat > "$_repo11/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[]}}
+JSON
+
+# Replace the briefing script with a sentinel stub.
+_sentinel11="$_tmpdir/sentinel11.txt"
+cat > "$_repo11/scripts/refresh_briefing_known_gaps.py" <<STUB
+#!/usr/bin/env python3
+import sys
+with open("$_sentinel11", "w") as f:
+    f.write("called\n")
+sys.exit(0)
+STUB
+chmod +x "$_repo11/scripts/refresh_briefing_known_gaps.py"
+
+# Seed HEAD then make the in-progress commit.
+git -C "$_repo11" add .
+git -C "$_repo11" commit --no-verify -m "chore: seed" -q
+
+# Make a new tasks.json change so the tasks.json gate passes (step 4).
+echo '{"master":{"tasks":[{"id":"555","status":"in-progress"}]}}' \
+    > "$_repo11/.taskmaster/tasks/tasks.json"
+git -C "$_repo11" add .taskmaster/tasks/tasks.json
+git -C "$_repo11" commit -m "chore(tasks): auto-commit after set_task_status(555=in-progress)" \
+    2>/dev/null || true
+
+assert "Check 11: in-progress commit does not invoke briefing script (sentinel absent)" \
+    test ! -f "$_sentinel11"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
