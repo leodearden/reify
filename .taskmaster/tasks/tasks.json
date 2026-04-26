@@ -47790,11 +47790,11 @@
         "description": "phase_entities (crates/reify-compiler/src/compile_builder/entities_phase.rs:107-113) unconditionally emits warning `import \"X\" noted; module resolution not yet implemented` for every user import declaration. The warning fires even when ModuleDag::compile_module successfully resolves the import (both paths share compile_with_prelude_refs → phase_entities), so users see a stale \"not implemented\" warning on imports that *do* resolve.\n\nAdditionally, the standard single-module entry point compile_with_stdlib (used by LSP/CLI/MCP) does not recurse into imported user files at all. It collects imports into ctx.imports and produces this warning, but never loads or compiles the imported file.\n\nDone: the warning text accurately reflects what happens. Either:\n  (a) ModuleDag-resolved imports are silent and only single-module compile emits a more specific \"single-module compile cannot resolve user imports — use ModuleDag\" warning, or\n  (b) compile_with_stdlib gains an opt-in resolver path so user imports from LSP/CLI/MCP work end-to-end.\n\nPick one before implementing. Option (b) closes a real user-facing gap; option (a) is a quick fix for the misleading wording.",
         "details": "## Background\n\nTask #69 (\"Module DAG + import resolution\") landed ModuleDag with all import forms, cycle detection, and module loading. ModuleDag is exercised by tests and by some compile_project paths.\n\nThe user-facing tools (LSP/CLI/MCP) all call `reify_compiler::compile_with_stdlib(&parsed)` which is single-module. Stdlib types resolve via the prelude context (task #2176), but `import \"foo.ri\"` declarations in user files do not — the file isn't loaded.\n\n## Files\n- crates/reify-compiler/src/compile_builder/entities_phase.rs:107-113 (warning emission)\n- crates/reify-compiler/src/lib.rs:106 (compile_with_stdlib entry point)\n- crates/reify-compiler/src/module_dag.rs (existing multi-module path)\n\n## Memory hints\n- search: \"ModuleDag compile_module import resolution\"\n- search: \"compile_with_stdlib LSP CLI\"\n- entity: \"ModuleDag\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:09:32.460Z",
+        "updatedAt": "2026-04-26T11:09:38.973Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/compile_builder",
@@ -48945,7 +48945,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:09:38.149Z",
+      "lastModified": "2026-04-26T11:09:38.973Z",
       "taskCount": 2259,
       "completedCount": 2022,
       "tags": [
