@@ -900,6 +900,53 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
 
 // ── task-2268: wording-parity locks ────────────────────────────────────────────
 
+/// Shared assertion helper for the eval-vs-eval_cached wording-parity tests below.
+///
+/// Asserts that exactly one diagnostic matching `predicate` is emitted by each
+/// path, and that the two messages are byte-identical.  Now that both paths route
+/// through a shared helper, divergence is mechanically impossible unless the helper
+/// itself is modified — at which point the count assertions still catch off-by-one
+/// regressions.
+fn assert_diag_parity<F>(
+    eval_diags: &[Diagnostic],
+    cached_diags: &[Diagnostic],
+    predicate: F,
+    label: &str,
+) where
+    F: Fn(&Diagnostic) -> bool,
+{
+    let msgs_eval: Vec<&str> = eval_diags
+        .iter()
+        .filter(|d| predicate(d))
+        .map(|d| d.message.as_str())
+        .collect();
+    let msgs_cached: Vec<&str> = cached_diags
+        .iter()
+        .filter(|d| predicate(d))
+        .map(|d| d.message.as_str())
+        .collect();
+
+    assert_eq!(
+        msgs_eval.len(),
+        1,
+        "eval() must emit exactly one {label} diagnostic; got: {eval_diags:?}",
+    );
+    assert_eq!(
+        msgs_cached.len(),
+        1,
+        "eval_cached() must emit exactly one {label} diagnostic; got: {cached_diags:?}",
+    );
+    assert_eq!(
+        msgs_eval[0],
+        msgs_cached[0],
+        "{label} must be byte-identical between eval() and eval_cached();\n\
+         eval():        {:?}\n\
+         eval_cached(): {:?}",
+        msgs_eval[0],
+        msgs_cached[0],
+    );
+}
+
 /// Pin the wording-parity contract for param_override rejection warnings.
 ///
 /// Asserts that `eval()` and `eval_cached()` emit **byte-identical** warning
@@ -941,46 +988,14 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
         engine_b.set_param_and_invalidate(&x_id, Value::Bool(true));
         let result_b = engine_b.eval_cached(&module, VersionId(1));
 
-        let msgs_a: Vec<&str> = result_a
-            .diagnostics
-            .iter()
-            .filter(|d| {
+        assert_diag_parity(
+            &result_a.diagnostics,
+            &result_b.eval_result.diagnostics,
+            |d| {
                 d.message.contains("param_override for")
                     && d.message.contains("type-kind mismatch")
-            })
-            .map(|d| d.message.as_str())
-            .collect();
-        let msgs_b: Vec<&str> = result_b
-            .eval_result
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.message.contains("param_override for")
-                    && d.message.contains("type-kind mismatch")
-            })
-            .map(|d| d.message.as_str())
-            .collect();
-
-        assert_eq!(
-            msgs_a.len(),
-            1,
-            "eval() must emit exactly one TypeKindMismatch warning; got: {:?}",
-            result_a.diagnostics,
-        );
-        assert_eq!(
-            msgs_b.len(),
-            1,
-            "eval_cached() must emit exactly one TypeKindMismatch warning; got: {:?}",
-            result_b.eval_result.diagnostics,
-        );
-        assert_eq!(
-            msgs_a[0],
-            msgs_b[0],
-            "TypeKindMismatch warning must be byte-identical between eval() and eval_cached();\n\
-             eval():        {:?}\n\
-             eval_cached(): {:?}",
-            msgs_a[0],
-            msgs_b[0],
+            },
+            "TypeKindMismatch param_override rejection warning",
         );
     }
 
@@ -1016,46 +1031,14 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
         engine_b.set_param_and_invalidate(&x_id, mass_val);
         let result_b = engine_b.eval_cached(&module, VersionId(1));
 
-        let msgs_a: Vec<&str> = result_a
-            .diagnostics
-            .iter()
-            .filter(|d| {
+        assert_diag_parity(
+            &result_a.diagnostics,
+            &result_b.eval_result.diagnostics,
+            |d| {
                 d.message.contains("param_override for")
                     && d.message.contains("dimension mismatch")
-            })
-            .map(|d| d.message.as_str())
-            .collect();
-        let msgs_b: Vec<&str> = result_b
-            .eval_result
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.message.contains("param_override for")
-                    && d.message.contains("dimension mismatch")
-            })
-            .map(|d| d.message.as_str())
-            .collect();
-
-        assert_eq!(
-            msgs_a.len(),
-            1,
-            "eval() must emit exactly one ScalarDimensionMismatch warning; got: {:?}",
-            result_a.diagnostics,
-        );
-        assert_eq!(
-            msgs_b.len(),
-            1,
-            "eval_cached() must emit exactly one ScalarDimensionMismatch warning; got: {:?}",
-            result_b.eval_result.diagnostics,
-        );
-        assert_eq!(
-            msgs_a[0],
-            msgs_b[0],
-            "ScalarDimensionMismatch warning must be byte-identical between eval() and eval_cached();\n\
-             eval():        {:?}\n\
-             eval_cached(): {:?}",
-            msgs_a[0],
-            msgs_b[0],
+            },
+            "ScalarDimensionMismatch param_override rejection warning",
         );
     }
 }
@@ -1100,40 +1083,11 @@ fn eval_and_eval_cached_emit_byte_identical_circular_let_diagnostic() {
         Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
-    let msgs_a: Vec<&str> = result_a
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("circular let-binding dependency"))
-        .map(|d| d.message.as_str())
-        .collect();
-    let msgs_b: Vec<&str> = result_b
-        .eval_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("circular let-binding dependency"))
-        .map(|d| d.message.as_str())
-        .collect();
-
-    assert_eq!(
-        msgs_a.len(),
-        1,
-        "eval() must emit exactly one circular-let diagnostic; got: {:?}",
-        result_a.diagnostics,
-    );
-    assert_eq!(
-        msgs_b.len(),
-        1,
-        "eval_cached() must emit exactly one circular-let diagnostic; got: {:?}",
-        result_b.eval_result.diagnostics,
-    );
-    assert_eq!(
-        msgs_a[0],
-        msgs_b[0],
-        "Circular let-binding diagnostic must be byte-identical between eval() and eval_cached();\n\
-         eval():        {:?}\n\
-         eval_cached(): {:?}",
-        msgs_a[0],
-        msgs_b[0],
+    assert_diag_parity(
+        &result_a.diagnostics,
+        &result_b.eval_result.diagnostics,
+        |d| d.message.contains("circular let-binding dependency"),
+        "circular let-binding diagnostic",
     );
 }
 
@@ -1174,39 +1128,10 @@ fn eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning() {
             .with_solver(Box::new(solver_b));
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
-    let msgs_a: Vec<&str> = result_a
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("Constraint solver made no progress"))
-        .map(|d| d.message.as_str())
-        .collect();
-    let msgs_b: Vec<&str> = result_b
-        .eval_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("Constraint solver made no progress"))
-        .map(|d| d.message.as_str())
-        .collect();
-
-    assert_eq!(
-        msgs_a.len(),
-        1,
-        "eval() must emit exactly one NoProgress warning; got: {:?}",
-        result_a.diagnostics,
-    );
-    assert_eq!(
-        msgs_b.len(),
-        1,
-        "eval_cached() must emit exactly one NoProgress warning; got: {:?}",
-        result_b.eval_result.diagnostics,
-    );
-    assert_eq!(
-        msgs_a[0],
-        msgs_b[0],
-        "NoProgress warning must be byte-identical between eval() and eval_cached();\n\
-         eval():        {:?}\n\
-         eval_cached(): {:?}",
-        msgs_a[0],
-        msgs_b[0],
+    assert_diag_parity(
+        &result_a.diagnostics,
+        &result_b.eval_result.diagnostics,
+        |d| d.message.contains("Constraint solver made no progress"),
+        "solver NoProgress warning",
     );
 }

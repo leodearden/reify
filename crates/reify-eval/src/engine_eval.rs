@@ -358,16 +358,20 @@ fn build_solver_problem(
     values: &ValueMap,
     functions: &[CompiledFunction],
 ) -> Option<ResolutionProblem> {
-    let auto_ids: std::collections::HashSet<ValueCellId> = template
+    // Collect auto cells once; derive both the id-set (for constraint
+    // filtering) and the AutoParam list from the same filtered slice to
+    // avoid walking value_cells twice.
+    let auto_cells: Vec<_> = template
         .value_cells
         .iter()
         .filter(|cell| cell.kind.is_auto())
-        .map(|cell| cell.id.clone())
         .collect();
 
-    if auto_ids.is_empty() {
+    if auto_cells.is_empty() {
         return None;
     }
+
+    let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
 
     let filtered_constraints: Vec<_> = template
         .constraints
@@ -379,10 +383,8 @@ fn build_solver_problem(
         .map(|c| (c.id.clone(), c.expr.clone()))
         .collect();
 
-    let auto_param_list: Vec<AutoParam> = template
-        .value_cells
+    let auto_param_list: Vec<AutoParam> = auto_cells
         .iter()
-        .filter(|cell| cell.kind.is_auto())
         .map(|cell| AutoParam {
             id: cell.id.clone(),
             param_type: cell.cell_type.clone(),
@@ -1651,9 +1653,10 @@ impl Engine {
             // the circular-dependency diagnostic if any cycle is found.  Mirroring
             // evaluate_let_bindings() ordering fixes forward-reference resolution in
             // eval_cached (previously let cells evaluated in declaration order only).
-            // `_let_traces` is ignored here — eval_cached recomputes per-cell traces in
-            // the cache-miss arm via `extract_dependency_trace(expr)`.
-            let (_let_cells, _let_traces, sorted_lets) =
+            // `let_traces` is reused in the cache-miss arm below to avoid recomputing
+            // `extract_dependency_trace` for each let cell; `_let_cells` is unused here
+            // (eval_cached uses `cell.default_expr` directly).
+            let (_let_cells, let_traces, sorted_lets) =
                 detect_let_cycle(template, &mut diagnostics);
 
             // Second pass: evaluate Let bindings in topological order.
@@ -1734,8 +1737,10 @@ impl Engine {
                         &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
                     );
 
-                    // Build dependency trace from expression refs
-                    let trace = extract_dependency_trace(expr);
+                    // Reuse the trace already built by detect_let_cycle; fall back to
+                    // recomputing only if the cell was not in the trace map (defensive).
+                    let trace = let_traces.get(&node_id).cloned()
+                        .unwrap_or_else(|| extract_dependency_trace(expr));
 
                     let cached_result =
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
