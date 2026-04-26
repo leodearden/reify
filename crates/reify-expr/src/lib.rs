@@ -3528,4 +3528,112 @@ mod tests {
             other => panic!("expected Complex, got {:?}", other),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Full truth-table characterization tests for eval-level Kleene operators.
+    // These pin end-to-end behavior through eval_expr so that the step-4
+    // refactor (delegating to kleene::*) cannot silently drift.
+    // -----------------------------------------------------------------------
+
+    /// Assert that evaluating `expr` (a BinOp or UnOp literal) yields `expected`.
+    fn check(expr: CompiledExpr, expected: Value) {
+        let values = ValueMap::new();
+        let got = eval_expr(&expr, &EvalContext::simple(&values));
+        assert_eq!(got, expected, "eval result mismatch");
+    }
+
+    #[test]
+    fn eval_binop_and_truth_table_full() {
+        // Row: L  ∧  R  =  expected
+        let cases: &[(Value, Value, Value)] = &[
+            (Value::Bool(true), Value::Bool(true), Value::Bool(true)),
+            (Value::Bool(true), Value::Bool(false), Value::Bool(false)),
+            (Value::Bool(true), Value::Undef, Value::Undef),
+            (Value::Bool(false), Value::Bool(true), Value::Bool(false)),
+            (Value::Bool(false), Value::Bool(false), Value::Bool(false)),
+            (Value::Bool(false), Value::Undef, Value::Bool(false)), // absorbing
+            (Value::Undef, Value::Bool(true), Value::Undef),
+            (Value::Undef, Value::Bool(false), Value::Bool(false)), // absorbing
+            (Value::Undef, Value::Undef, Value::Undef),
+        ];
+        for (l, r, expected) in cases {
+            let expr = CompiledExpr::binop(
+                BinOp::And,
+                lit(l.clone(), Type::Bool),
+                lit(r.clone(), Type::Bool),
+                Type::Bool,
+            );
+            check(expr, expected.clone());
+        }
+    }
+
+    #[test]
+    fn eval_binop_or_truth_table_full() {
+        // Row: L  ∨  R  =  expected
+        let cases: &[(Value, Value, Value)] = &[
+            (Value::Bool(true), Value::Bool(true), Value::Bool(true)),
+            (Value::Bool(true), Value::Bool(false), Value::Bool(true)),
+            (Value::Bool(true), Value::Undef, Value::Bool(true)), // absorbing
+            (Value::Bool(false), Value::Bool(true), Value::Bool(true)),
+            (Value::Bool(false), Value::Bool(false), Value::Bool(false)),
+            (Value::Bool(false), Value::Undef, Value::Undef),
+            (Value::Undef, Value::Bool(true), Value::Bool(true)), // absorbing
+            (Value::Undef, Value::Bool(false), Value::Undef),
+            (Value::Undef, Value::Undef, Value::Undef),
+        ];
+        for (l, r, expected) in cases {
+            let expr = CompiledExpr::binop(
+                BinOp::Or,
+                lit(l.clone(), Type::Bool),
+                lit(r.clone(), Type::Bool),
+                Type::Bool,
+            );
+            check(expr, expected.clone());
+        }
+    }
+
+    #[test]
+    fn eval_unop_not_truth_table_full() {
+        // ¬T=F, ¬F=T, ¬U=U
+        let cases: &[(Value, Value)] = &[
+            (Value::Bool(true), Value::Bool(false)),
+            (Value::Bool(false), Value::Bool(true)),
+            (Value::Undef, Value::Undef),
+        ];
+        for (operand, expected) in cases {
+            let expr = CompiledExpr::unop(UnOp::Not, lit(operand.clone(), Type::Bool), Type::Bool);
+            check(expr, expected.clone());
+        }
+    }
+
+    #[test]
+    fn eval_binop_and_non_bool_left_is_undef() {
+        // Non-bool left operand → Value::Undef (type-error catch-all)
+        let expr = CompiledExpr::binop(
+            BinOp::And,
+            lit(Value::Int(3), Type::Int),
+            lit(Value::Bool(true), Type::Bool),
+            Type::Bool,
+        );
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    #[test]
+    fn eval_binop_or_non_bool_left_is_undef() {
+        // Non-bool left operand → Value::Undef (type-error catch-all)
+        let expr = CompiledExpr::binop(
+            BinOp::Or,
+            lit(Value::Int(3), Type::Int),
+            lit(Value::Bool(false), Type::Bool),
+            Type::Bool,
+        );
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    #[test]
+    fn eval_unop_not_non_bool_is_undef() {
+        // Non-bool operand → Value::Undef (type-error catch-all)
+        let expr = CompiledExpr::unop(UnOp::Not, lit(Value::Int(3), Type::Int), Type::Bool);
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
 }
