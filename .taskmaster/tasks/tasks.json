@@ -51293,6 +51293,20 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "2385",
+        "title": "auto type-param: per-candidate feasibility filter reusing value-auto primitives",
+        "description": "Implement a feasibility filter for auto type parameters by instantiating parameterized definitions with each candidate and using value-auto solver primitives.",
+        "details": "This task involves creating a feasibility filter for auto type parameters. For each candidate, instantiate the parameterized definition and apply the value-auto solver's feasibility primitives to the resulting scope's constraints. Treat undefined constraints as feasible, ensuring monotonic behavior as per architecture section 2.5. Reference the PRD document at `docs/prds/auto-type-param-resolution.md`, specifically task 2. Ensure integration with the existing candidate enumeration logic from Task #2384 and utilize the trait conformance predicates established in Task #66.",
+        "testStrategy": "1. Develop unit tests to verify that the feasibility filter correctly processes each candidate and applies the solver primitives.\n2. Ensure that undefined constraints are treated as feasible and do not block resolution.\n3. Test integration with candidate enumeration to confirm seamless operation.\n4. Simulate scenarios with various constraint configurations to validate monotonic behavior.",
+        "status": "pending",
+        "dependencies": [
+          "66",
+          "2384"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51305,7 +51319,7 @@
       ],
       "created": "2026-04-26T20:24:55.735Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:24:59.909Z"
+      "updated": "2026-04-26T20:25:04.186Z"
     }
   }
 }
