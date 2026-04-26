@@ -456,9 +456,11 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
 /// After an initial `eval()`, writing an override via `set_param_and_invalidate`
 /// on a guarded-group Param (inside a `where guard { param x ... }` block) and
 /// calling `eval()` again must surface the overridden value — NOT the compiled
-/// module default.  Currently FAILS because the cold-eval third pass at
-/// engine_eval.rs:576-613 evaluates `cell.default_expr` directly without
-/// consulting `self.param_overrides`.
+/// module default.  Pre-task-2154 baseline: FAILED because the cold-eval
+/// third-pass `members` loop in `Engine::eval` evaluated `cell.default_expr`
+/// directly without consulting `self.param_overrides`.  Task-2154 consolidated
+/// the resolution into `eval_guarded_group_param_cell`, which now backs both
+/// call sites.
 #[test]
 fn eval_honors_override_on_guarded_group_active_member_param() {
     let mut engine = fresh_engine();
@@ -492,9 +494,11 @@ fn eval_honors_override_on_guarded_group_active_member_param() {
 /// After an initial `eval()`, writing an override via `set_param_and_invalidate`
 /// on a guarded-group Param inside the `else { ... }` branch and calling `eval()`
 /// again must surface the overridden value — NOT the compiled module default.
-/// Currently FAILS because the cold-eval third pass else_members loop at
-/// engine_eval.rs:615-652 evaluates `cell.default_expr` directly without
-/// consulting `self.param_overrides`.
+/// Pre-task-2154 baseline: FAILED because the cold-eval third-pass
+/// `else_members` loop in `Engine::eval` evaluated `cell.default_expr` directly
+/// without consulting `self.param_overrides`.  Task-2154 consolidated the
+/// resolution into `eval_guarded_group_param_cell`, which now backs both call
+/// sites.
 #[test]
 fn eval_honors_override_on_guarded_group_else_member_param() {
     let mut engine = fresh_engine();
