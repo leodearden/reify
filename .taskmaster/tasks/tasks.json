@@ -50330,7 +50330,7 @@
         "id": "2325",
         "title": "Implement OCCT FFI for center_of_mass and moment_of_inertia with density",
         "description": "Develop foreign function interface (FFI) bindings for calculating center of mass and moment of inertia using OCCT, incorporating density.",
-        "details": "Utilize the BRepGProp_VolumeProperties class from OCCT to compute the center of mass and moment of inertia for a given solid with a specified density. Implement stdlib bindings to expose two functions: `center_of_mass(solid, density) -> Point3<Length>` and `moment_of_inertia(solid, density) -> Tensor<2,3,MomentOfInertia>`. Ensure the implementation correctly handles the density parameter and integrates with existing geometry processing functions. Reference the PRD documentation in `docs/prds/topology-selectors.md`, task 3, for additional context and requirements.",
+        "details": "Utilize the BRepGProp_VolumeProperties class from OCCT to compute the center of mass and moment of inertia for a given solid with a specified density. Implement stdlib bindings to expose two functions: `center_of_mass(solid, density) -> Point3<Length>` and `moment_of_inertia(solid, density) -> Tensor<2,3,MomentOfInertia>`. Ensure the implementation correctly handles the density parameter and integrates with existing geometry processing functions. Reference the PRD documentation in `docs/prds/topology-selectors.md`, task 3, for additional context and requirements.\n<info added on 2026-04-26T20:21:53.590Z>\nTriage note (esc-2325-47, 2026-04-26): Original PRD reference `docs/prds/topology-selectors.md` does not exist. Typed signatures `Point3<Length>` and `Tensor<2,3,MomentOfInertia>` cannot be implemented today: stdlib lacks `Tensor` parametric type and `MomentOfInertia` unit. Sibling task 329 used `Real` placeholders. \n\nRecommended split:\n- (a) stdlib type-system: add `MomentOfInertia` unit + parametric `Tensor<rank, dim, unit>` (prerequisite)\n- (b) FFI-only: `query_inertia_tensor(shape, density) -> [9 doubles]` using `GProp_GProps::MatrixOfInertia()` scaled by density, exposed via cxx as `[[Real; 3]; 3]`\n- (c) stdlib wiring once (a) lands — original 2325 scope\n\nExisting surface to extend:\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:1435` — `query_centroid` (Point3, no density)\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:1482` — `query_moment_of_inertia(shape, ax, ay, az)` returning scalar about a single axis\n</info added on 2026-04-26T20:21:53.590Z>",
         "testStrategy": "Verify the implementation by comparing the results against analytical formulas for a box shape. Specifically, check that the moment of inertia calculations match the formula `I_xx = (1/12)*m*(W^2+H^2)` and similar for other axes. Conduct unit tests using a variety of solid shapes and densities to ensure accuracy and robustness. Use `cargo test -p reify-eval -- occt_ffi` to run the test suite.",
         "status": "blocked",
         "dependencies": [
@@ -50956,7 +50956,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:21:46.234Z",
+      "description": "Tasks for master context"
     }
   }
 }
