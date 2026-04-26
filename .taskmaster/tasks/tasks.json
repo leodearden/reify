@@ -48283,7 +48283,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T07:43:38.838Z"
+        "updatedAt": "2026-04-26T07:43:38.838Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/src/diagnostics.rs"
+          ]
+        }
       },
       {
         "id": "2249",
@@ -48295,7 +48300,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T07:54:53.363Z"
+        "updatedAt": "2026-04-26T07:54:53.363Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Reconciliation Stage 2: add Mem0 flag_for_stage2 search at startup"
+            ]
+          }
+        }
       },
       {
         "id": "2250",
@@ -48317,7 +48330,9 @@
       "completedCount": 2001,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T07:54:55.508Z",
+      "description": "Tasks for master context"
     }
   }
 }
