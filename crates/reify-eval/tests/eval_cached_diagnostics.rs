@@ -687,15 +687,18 @@ fn eval_cached_repeat_call_with_unchanged_module_re_emits_circular_diagnostic() 
 
 // ── task-2269: sub-component repeat-call regression lock ──────────────────────
 
-/// Calling eval_cached twice on a module whose template has a sub_component
+/// Calling eval_cached three times on a module whose template has a sub_component
 /// referencing a non-existent structure must continue to surface the
-/// "references unknown structure" diagnostic on BOTH calls.
+/// "references unknown structure" diagnostic on ALL calls: cold start, same-version
+/// fast-path hit, and bumped-version repeat (1, 1, 2 cadence mirrors the
+/// param_override repeat-call tests).
 ///
 /// This locks the LSP requirement that sub-component validation surfaces on every
 /// keystroke. Without this lock, a future change that gates the validation pass at
 /// `engine_eval.rs:1696-1703` on `any_auto_miss` or similar cache-coherence flag
-/// would silently drop the diagnostic on the second call (bumped version / cache-hit
-/// path), breaking the LSP's real-time error reporting.
+/// would silently drop the diagnostic on the second call (same-version fast-path hit),
+/// breaking the LSP's real-time error reporting. The same-version call is the
+/// canonical scenario that an `any_auto_miss`-style gate would break.
 ///
 /// Should pass immediately because the sub-component validation pass already
 /// iterates `template.sub_components` unconditionally inside the per-template loop.
@@ -712,7 +715,7 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
 
     let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
 
-    // First call — cold start
+    // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
     let result1 = engine.eval_cached(&module, VersionId(1));
     assert!(
         result1.eval_result.diagnostics.iter().any(|d| {
@@ -724,18 +727,33 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
         result1.eval_result.diagnostics,
     );
 
-    // Second call — bumped version (models LSP keystroke: each keypress increments
-    // the version). The sub-component validation pass must run unconditionally and
-    // must NOT be gated on cache state or any_auto_miss.
-    let result2 = engine.eval_cached(&module, VersionId(2));
+    // Second call — same version (fast-path hit). Must still surface the diagnostic.
+    // This is the canonical scenario that an any_auto_miss-style gate would break:
+    // on a same-version repeat every cell hits the fast-path, so any_auto_miss=false.
+    let result2 = engine.eval_cached(&module, VersionId(1));
     assert!(
         result2.eval_result.diagnostics.iter().any(|d| {
             d.message.contains("sub-component")
                 && d.message.contains("references unknown structure")
                 && d.message.contains("DoesNotExist")
         }),
-        "second eval_cached call must also emit unknown-structure diagnostic \
-         (must not drop on cache hit); got: {:?}",
+        "second eval_cached call (same version, fast-path hit) must also emit \
+         unknown-structure diagnostic (must not drop on cache hit); got: {:?}",
         result2.eval_result.diagnostics,
+    );
+
+    // Third call — bumped version (models LSP keystroke: each keypress increments
+    // the version). The sub-component validation pass must run unconditionally and
+    // must NOT be gated on cache state or any_auto_miss.
+    let result3 = engine.eval_cached(&module, VersionId(2));
+    assert!(
+        result3.eval_result.diagnostics.iter().any(|d| {
+            d.message.contains("sub-component")
+                && d.message.contains("references unknown structure")
+                && d.message.contains("DoesNotExist")
+        }),
+        "third eval_cached call (bumped version) must also emit unknown-structure \
+         diagnostic (must not drop on cache hit); got: {:?}",
+        result3.eval_result.diagnostics,
     );
 }
