@@ -9,7 +9,10 @@ briefing.
 Usage:
     python3 scripts/refresh_briefing_known_gaps.py [--briefing PATH] [--tasks PATH] [--json] [--quiet]
 
-Exits 0 if no stale gaps found, 1 if any stale gaps found, 2 on I/O or parse error.
+Exit codes:
+    0  — no stale gaps found
+    1  — one or more stale gaps found (mismatches)
+    2  — I/O or parse error (bad path, malformed YAML/JSON)
 """
 
 import argparse
