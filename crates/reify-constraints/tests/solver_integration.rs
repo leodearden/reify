@@ -3,6 +3,8 @@
 //! Tests the solver through the ConstraintSolver trait object interface,
 //! using reify-test-support helpers for expression construction.
 
+use std::sync::Arc;
+
 use reify_constraints::DimensionalSolver;
 use reify_test_support::*;
 use reify_types::{
@@ -31,7 +33,7 @@ fn single_param_feasibility_via_trait_object() {
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -74,7 +76,7 @@ fn maximize_objective() {
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -111,7 +113,7 @@ fn send_sync_verification() {
         constraints: vec![],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
     let result = solver.solve(&problem);
     assert!(matches!(result, SolveResult::Solved { .. }));
@@ -145,7 +147,7 @@ fn false_negative_small_violation() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -192,7 +194,7 @@ fn false_negative_multiple_small_violations() {
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: current,
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -254,7 +256,7 @@ fn false_negative_mixed_scale() {
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: current,
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -286,7 +288,7 @@ fn bounds_dont_hide_infeasibility() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -330,7 +332,7 @@ fn compound_and_constraint() {
         constraints: vec![(cnid("Part", 0), compound)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -375,7 +377,7 @@ fn minimize_undef_objective_returns_no_progress() {
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -413,7 +415,7 @@ fn maximize_undef_objective_returns_no_progress() {
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -447,7 +449,7 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
         constraints: vec![(cnid("Box", 0), gt_expr), (cnid("Box", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     // This should not panic — the solver should configure NelderMead correctly
@@ -499,7 +501,7 @@ fn optimize_with_feasible_initial_point() {
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -550,7 +552,7 @@ fn maximize_with_feasible_initial_point() {
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -617,7 +619,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -668,7 +670,7 @@ fn infeasible_with_objective_still_detected() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -725,7 +727,7 @@ fn warm_start_optimizes_when_possible() {
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -802,7 +804,7 @@ fn warm_start_scales_iterations_with_dimension() {
         constraints,
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -900,7 +902,7 @@ fn warm_start_budget_exhaustion_stays_feasible() {
         constraints,
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -998,7 +1000,7 @@ fn warm_start_feasible_no_objective_early_exit() {
         constraints,
         current_values: current,
         objective: None, // No objective — should trigger early-exit
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1054,7 +1056,7 @@ fn infeasible_initial_not_rescued_by_fallback() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1140,7 +1142,7 @@ fn multi_param_warm_start_with_objective() {
         constraints,
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1231,7 +1233,7 @@ fn partial_feasibility_infeasible_when_unreachable() {
         constraints,
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1312,7 +1314,7 @@ fn partial_feasibility_solved_when_close_to_boundary() {
         constraints,
         current_values: current,
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1378,7 +1380,7 @@ fn warm_start_budget_requires_objective_invariant() {
         constraints: constraints.clone(),
         current_values: current.clone(),
         objective: Some(OptimizationObjective::Minimize(x_ref.clone())),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     match solver.solve(&problem_with_obj) {
@@ -1403,7 +1405,7 @@ fn warm_start_budget_requires_objective_invariant() {
         constraints,
         current_values: current,
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     match solver.solve(&problem_no_obj) {
@@ -1486,7 +1488,7 @@ fn warm_start_fallback_returns_exact_initial_values() {
         constraints,
         current_values: current,
         objective: Some(objective),
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1541,7 +1543,7 @@ fn strict_auto_unique_solution_returns_unique_true() {
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1583,7 +1585,7 @@ fn free_auto_skips_uniqueness_returns_unique_false() {
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1638,7 +1640,7 @@ fn strict_auto_non_unique_returns_infeasible() {
         constraints: vec![(cnid("Part", 0), gt_x), (cnid("Part", 1), gt_y)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1692,7 +1694,7 @@ fn free_auto_resolves_underdetermined_system() {
         constraints: vec![(cnid("Part", 0), gt_x), (cnid("Part", 1), gt_y)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1734,7 +1736,7 @@ fn infeasible_diagnostic_carries_constraint_unsatisfiable_code() {
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);
@@ -1789,7 +1791,7 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
-        functions: vec![],
+        functions: Arc::new(vec![]),
     };
 
     let result = solver.solve(&problem);

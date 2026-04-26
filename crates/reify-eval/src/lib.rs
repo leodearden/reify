@@ -1091,7 +1091,7 @@ structure S {
         use reify_test_support::{
             CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
         };
-        use reify_types::{ModulePath, Type, Value, ValueCellId};
+        use reify_types::{ModulePath, Type, ValueCellId};
         use std::collections::HashMap;
         use std::sync::Arc;
 
