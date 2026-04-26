@@ -8298,7 +8298,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -8318,10 +8318,15 @@
               "resolution for: Review: Compiler trait conformance refactoring (23 suggestions from task 193)"
             ]
           },
-          "files_note": "conformance.rs removed by intervening tasks (1834/2034/2036/1914/2158/1951/366/403); functionality migrated to trait_requirements.rs"
+          "files_note": "conformance.rs removed by intervening tasks (1834/2034/2036/1914/2158/1951/366/403); functionality migrated to trait_requirements.rs",
+          "done_provenance": {
+            "commit": "944aa781f1929996df3fd2bfaea8d447ad9c2c14",
+            "commit_input": "944aa781f",
+            "note": "All 23 review suggestions addressed (17 by intervening tasks, 4 on this branch, 2 deferred with rationale per esc-387-38). HEAD is fully on main via fast-forward (19 commits ahead, 0 behind)."
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-26T06:43:52.857Z"
+        "updatedAt": "2026-04-26T06:44:55.735Z"
       },
       {
         "id": "388",
@@ -48087,14 +48092,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:44:40.212Z",
+      "lastModified": "2026-04-26T06:44:55.737Z",
       "taskCount": 2229,
-      "completedCount": 1986,
+      "completedCount": 1987,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T06:44:50.497Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
