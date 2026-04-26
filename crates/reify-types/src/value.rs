@@ -2633,6 +2633,32 @@ mod tests {
         assert!(!format!("{:?}", r).is_empty());
     }
 
+    // ── ErrorRef tests (step-3) ──────────────────────────────────────────────
+
+    #[test]
+    fn test_error_ref_new() {
+        let err = ErrorRef::new("oops");
+        assert_eq!(err.message(), "oops");
+    }
+
+    #[test]
+    fn test_error_ref_from_eval_error() {
+        let e = EvalError("boom".to_string());
+        let via_method = ErrorRef::from_eval_error(e.clone());
+        let via_from = ErrorRef::from(e);
+        assert_eq!(via_method, via_from);
+        assert_eq!(via_method.message(), "boom");
+    }
+
+    #[test]
+    fn test_error_ref_display_clone_eq() {
+        let err = ErrorRef::new("boom");
+        assert_eq!(format!("{}", err), "boom");
+        let err2 = err.clone();
+        assert_eq!(err, err2);
+        assert!(!format!("{:?}", err).is_empty());
+    }
+
     #[test]
     fn test_eval_error_display() {
         let err = EvalError("division by zero".to_string());
