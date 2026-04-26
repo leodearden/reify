@@ -180,16 +180,12 @@ pub fn compute_diagnostics_with_state(
     }
 
     // Merge eval-time diagnostics (circular let-bindings, solver warnings, etc.).
-    // Defensive: eval diagnostics never use the "constraint {id} violated" format
-    // (those originate in the constraint dispatch layer via check/check_snapshot),
-    // so this filter is a no-op today. Routing through violated_messages provides
-    // forward compatibility — if eval ever emits a constraint-style message on a
-    // future eager-check path, it won't double-emit alongside the span-aware
-    // violation generated below.
+    // No filter needed: eval() never emits "constraint {id} violated" format messages
+    // (locked by the eval_diagnostics_never_use_constraint_violation_format regression
+    // test). If that invariant ever breaks, the regression test fails loudly and a
+    // maintainer must re-add the violated_messages filter here.
     for diag in &eval_diagnostics {
-        if !violated_messages.contains(&diag.message) {
-            diagnostics.push(convert::convert_diagnostic(diag, source, uri));
-        }
+        diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
 
     // Generate explicit diagnostics for constraint violations with source spans
