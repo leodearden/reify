@@ -48406,11 +48406,11 @@
         "description": "Inline `phase3_skip_group` (called only from inside `group_needs_phase3` via negation) into a single unified helper named for the question Phase 3 actually asks. The current factoring works correctly but encodes the relationship by negation, forcing readers to mentally re-NOT the truth table when reasoning about the four call sites.",
         "details": "Source: post-merge review on task 2146 (esc-2146-46, reviewer_comprehensive).\n\nScope: crates/reify-eval/src/engine_edit.rs\n\nCurrent state (lines ~239-249): `group_needs_phase3(group, values, old_guard_val, phase1)` returns `!phase3_skip_group(...)` when the guard cell is present, plus an absent-cell case. Four call sites use `group_needs_phase3` (one `.any()` early-exit predicate plus per-group `continue` checks in both edit_param and edit_source Phase 3 loops).\n\nSuggested fix: collapse to a single function `group_needs_phase3(group, values, old_guard_val, phase1)` with the full case analysis inlined. Drop the separate `phase3_skip_group` and update the four call sites + tests accordingly.\n\nWhile touching this code, also add a one-line comment in edit_param Phase 1 (after the `if guard_value_unchanged(...)` skip near line 737-743) explaining that groups skipped at this point intentionally fall through to case (c) on the Phase 3 side, and that wave2 flips would still be caught by `old_guard_val != current`. Same applies to edit_source Phase 1.\n\nPriority: low — purely readability / comment improvement, no behavior change.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:27:08.119Z",
+        "updatedAt": "2026-04-26T11:51:56.103Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_edit.rs"
@@ -48425,6 +48425,9 @@
               "phase 3 guard cell missing handling edit_param edit_source",
               "cross-phase dedup phase3 group skipping consolidation"
             ]
+          },
+          "done_provenance": {
+            "commit": "f3db43ab4e081fc30fba8e2db1703457768ee387"
           }
         }
       },
@@ -49021,9 +49024,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:50:40.474Z",
+      "lastModified": "2026-04-26T11:51:56.103Z",
       "taskCount": 2261,
-      "completedCount": 2026,
+      "completedCount": 2027,
       "tags": [
         "master"
       ]
