@@ -258,6 +258,11 @@ pub struct Engine {
     /// absent from all three sets after a role-flip-only edit, confirming that
     /// `ValueCellNode::content_hash` does not incorporate the member/else_member
     /// role (task 2170).
+    ///
+    /// Unlike the `usize` instrumentation fields (which are read via `+=` even
+    /// without cfg-gating), this field is written via plain assignment and read
+    /// only through the cfg-gated accessor, so dead_code must be silenced here.
+    #[allow(dead_code)]
     last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
     /// Event journal recording evaluation events.
     journal: EventJournal,
