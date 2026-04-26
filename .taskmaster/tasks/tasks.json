@@ -50251,6 +50251,17 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:00:26.011Z"
+      },
+      {
+        "id": "2326",
+        "title": "Freshness: extend NodeCache to carry freshness field with single-API read/write",
+        "description": "PRD docs/prds/freshness-4-variant.md. Extend NodeCache (or equivalent cache entry struct) per arch §4.3 lines 524-532 to include freshness: Freshness. Default to Final on existing reads; existing tests must stay green. Provide single API surface for reading/writing freshness. Memory hint: 7ac9d86f notes EvalState is public and last_content_hash is decoupled — that's the integration point.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50260,7 +50271,10 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:01:03.561Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:01:03.585Z"
     }
   }
 }
