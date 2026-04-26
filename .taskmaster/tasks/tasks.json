@@ -50468,15 +50468,19 @@
       },
       {
         "id": "2340",
-        "title": "Warm-state eviction: add memory budget config and per-state metadata to WarmStatePool",
-        "description": "PRD docs/prds/warm-state-eviction.md. Per arch §4.3 lines 524-540 add to WarmStatePool: memory_budget_bytes (configurable, project-level), and per-pooled-state metadata size_bytes, last_accessed: Instant, cost_per_byte: f64 (estimated_cold_compute_time / state_size_bytes). Plumb budget from project config or env var; default to a documented sensible cap (e.g. 2GB). No-op if budget is None / unlimited; existing tests stay green. Builds on #27.",
-        "details": "",
-        "testStrategy": "",
+        "title": "Warm-state eviction: add budget config, per-state metadata, and cost-per-byte LRU eviction loop to WarmStatePool",
+        "description": "PRD docs/prds/warm-state-eviction.md. Implement the complete warm-state eviction feature in WarmStatePool per arch §4.3 lines 524-540: (1) add memory_budget_bytes (configurable, project-level; plumb from project config or env var; default to a documented sensible cap e.g. 2 GB; no-op when None/unlimited), and per-pooled-state metadata size_bytes, last_accessed: Instant, cost_per_byte: f64 (estimated_cold_compute_time / state_size_bytes); (2) when an insertion or return-to-pool would push aggregate warm-state usage above the configured budget, evict states in cost_per_byte ascending order until aggregate usage drops below the threshold, with LRU recency (last_accessed) as tiebreak among equal cost_per_byte values. Existing tests must stay green. Unit test: synthetic states {500 MB / 1 s, 10 MB / 30 s, 100 MB / 5 s} with budget 200 MB asserts the 500 MB/1 s state (lowest cost_per_byte = 1/500M) evicts first. Builds on #27.",
         "status": "in-progress",
         "dependencies": [],
         "priority": "high",
+        "details": "- Add `memory_budget_bytes: Option<u64>` to WarmStatePool; plumb from project config or env var; document default (e.g. 2 GB); treat None as unlimited (no eviction)\n- Add per-pooled-state metadata struct fields: `size_bytes: u64`, `last_accessed: Instant`, `cost_per_byte: f64` (= estimated_cold_compute_time_secs / size_bytes)\n- On every insertion into the pool and every return-to-pool, compute aggregate usage; if it exceeds `memory_budget_bytes`, run the eviction loop:\n  - Sort pooled states by `cost_per_byte` ascending; tiebreak by `last_accessed` ascending (least recently used first)\n  - Evict states one by one until aggregate usage falls below the budget\n- No-op path: if `memory_budget_bytes` is None, skip all eviction logic; all existing tests must stay green\n- Unit test with synthetic states {500 MB / 1 s, 10 MB / 30 s, 100 MB / 5 s} and budget 200 MB: assert the 500 MB / 1 s state is evicted first (cost_per_byte = 1s / 500MB ≈ 2e-9, lowest of the three)\n- cost_per_byte for the three states: 500MB/1s → 1/500e6; 10MB/30s → 30/10e6 = 3e-6; 100MB/5s → 5/100e6 = 5e-8; ascending order = 500MB/1s, 100MB/5s, 10MB/30s",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:05:47.924Z"
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Task 2340 is pending, combine_eligible, high-priority, and is precisely the metadata foundation the candidate explicitly declares it builds on (cost_per_byte, last_accessed, size_bytes, memory_budget_bytes). Both tasks touch the same WarmStatePool subsystem, will serialize on the same module lock, and together form a single coherent deliverable — the complete warm-state eviction feature. Combining loses zero parallelism and means context is loaded once. Both tasks list no specific files_to_modif",
+          "combined_at": "2026-04-26T20:06:53.293036+00:00"
+        }
       },
       {
         "id": "2341",
@@ -50498,23 +50502,21 @@
         "description": "Add a new crate crates/reify-doc to the workspace as the foundation for the `reify doc` documentation generator. Define DocModel and its child types (ModuleDoc, ItemDoc, ParamDoc, PortDoc, ConstraintDoc, SubComponentDoc, RealizationDoc, AnnotationDoc, PragmaDoc, CrossRefs) in src/model.rs as pure data with serde derives. No formatters yet. Add reify-doc to Cargo.toml workspace.members and workspace.dependencies. Empty `cargo test -p reify-doc` should pass green. Doc-comment / annotation / pragma / meta / sub-component / port plumbing already exists in CompiledModule (tasks #214–#217 and pragma tasks done). PRD: docs/prds/reify-doc-tool.md task slice 1.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:07:08.056Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:05:48.644Z",
-      "taskCount": 2330,
+      "lastModified": "2026-04-26T20:07:08.074Z",
+      "taskCount": 2331,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:06:52.949Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:06:52.973Z"
+      ]
     }
   }
 }
