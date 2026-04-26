@@ -48,13 +48,12 @@ fn guarded_module(active: bool, x_type: &str, x_default: &str) -> CompiledModule
 }
 
 /// Sibling of `guarded_module` for shape-2 tests that exercise the `else { ... }` branch.
-/// All current call sites in this file pass `active = false`; the active-branch
-/// `param x : Scalar = 5mm` is invariant across those sites, so only the else-branch
-/// `param y` type and default vary. The `active` parameter is kept so future tests can
-/// activate the guarded group (e.g. to exercise re-eval after a transient mismatch).
-fn guarded_module_with_else(active: bool, y_type: &str, y_default: &str) -> CompiledModule {
+/// `active = false` is hardcoded — every test that exercises the else-branch needs the
+/// guard inactive so the `else_members` loop runs. When a test genuinely needs `active = true`
+/// it should use `guarded_module` (members-branch) or inline its source.
+fn guarded_module_with_else(y_type: &str, y_default: &str) -> CompiledModule {
     compile_source(&format!(
-        "structure S {{ param active : Bool = {active}\n where active {{ param x : Scalar = 5mm }} else {{ param y : {y_type} = {y_default} }} }}"
+        "structure S {{ param active : Bool = false\n where active {{ param x : Scalar = 5mm }} else {{ param y : {y_type} = {y_default} }} }}"
     ))
 }
 
@@ -499,7 +498,7 @@ fn eval_honors_override_on_guarded_group_active_member_param() {
 #[test]
 fn eval_honors_override_on_guarded_group_else_member_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module_with_else(false, "Scalar", "10mm");
+    let module = guarded_module_with_else("Scalar", "10mm");
     let x_id = ValueCellId::new("S", "x");
     let y_id = ValueCellId::new("S", "y");
 
@@ -646,6 +645,17 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
         "dimension-mismatch warning should mention 'dimension', got: {:?}",
         warnings[0].message
     );
+    // Also lock total warning count so spurious unrelated warnings are caught.
+    assert_eq!(
+        result_b
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .count(),
+        1,
+        "expected exactly one Warning diagnostic in total, got: {:?}",
+        result_b.diagnostics
+    );
 
     // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
     let module_a_again = guarded_module(true, "Scalar", "5mm");
@@ -683,13 +693,13 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
 
     // Module A: y is Scalar[LENGTH] in the else-branch (guard = false). Set a
     // matching LENGTH override.
-    let module_a = guarded_module_with_else(false, "Scalar", "10mm");
+    let module_a = guarded_module_with_else("Scalar", "10mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
 
     // Module B: y is now an Int inside the else-branch. The Scalar override is
     // type-kind incompatible.
-    let module_b = guarded_module_with_else(false, "Int", "7");
+    let module_b = guarded_module_with_else("Int", "7");
     let result_b = engine.eval(&module_b);
 
     // (a) The Int default wins, not the (now-mismatched) Scalar override.
@@ -718,12 +728,100 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
     );
 
     // (c) The override is RETAINED — re-eval Module A: the Scalar override resurfaces.
-    let module_a_again = guarded_module_with_else(false, "Scalar", "10mm");
+    let module_a_again = guarded_module_with_else("Scalar", "10mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&y_id),
         Some(&length_scalar(0.12)),
         "override must survive a transient type-kind mismatch eval on guarded-group else-member Param"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2234: dimension mismatch on guarded-group ELSE-member emits warning
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A guarded-group Param in the `else { ... }` branch whose Scalar override carries
+/// a different SI dimension (here: LENGTH override against a Mass/MASS cell) is
+/// type-kind compatible — both sides are Scalar — so this path exercises
+/// ScalarDimensionMismatch, not TypeKindMismatch. eval() must detect the dimension
+/// drift, skip the override, emit a Warning mentioning "dimension", retain the
+/// override, fall back to the Mass default.
+///
+/// Closes the symmetry gap left by task-2154: the members-branch has [type-kind,
+/// dimension, survival] tests; the else_members-branch had [type-kind, survival]
+/// — this test adds the missing dimension test for the else-branch.
+///
+/// `eval_guarded_group_param_cell` (engine_eval.rs:216) is invoked from BOTH the
+/// `members` loop and the `else_members` loop. A future change special-casing the
+/// branches inside the helper would silently regress this path without the test.
+///
+/// Mirrors `eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning`
+/// (the members-branch sibling) — only the cell name (`y` vs `x`), the active flag
+/// (`false` vs `true`), and the source skeleton (else vs members) differ.
+#[test]
+fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning() {
+    let mut engine = fresh_engine();
+    let y_id = ValueCellId::new("S", "y");
+
+    // Module A: y is Scalar[LENGTH] in the else-branch (guard = false). Set a
+    // LENGTH override.
+    let module_a = guarded_module_with_else("Scalar", "10mm");
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
+
+    // Module B: y is now Mass (still Scalar kind; type-kind guard passes,
+    // ScalarDimensionMismatch fires on the else-branch helper invocation).
+    let module_b = guarded_module_with_else("Mass", "2kg");
+    let result_b = engine.eval(&module_b);
+
+    // (a) The Mass default wins (2kg → 2.0 SI).
+    let expected_mass_default = Value::Scalar {
+        si_value: 2.0,
+        dimension: DimensionVector::MASS,
+    };
+    assert_eq!(
+        result_b.values.get(&y_id),
+        Some(&expected_mass_default),
+        "dimension-mismatched override must be skipped in favour of Mass default on guarded-group else-member Param"
+    );
+
+    // (b) Exactly one Warning mentions the cell + the word "dimension".
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.y"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.y, got: {:?}",
+        result_b.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("dimension"),
+        "dimension-mismatch warning should mention 'dimension', got: {:?}",
+        warnings[0].message
+    );
+    // Also lock total warning count so spurious unrelated warnings are caught.
+    assert_eq!(
+        result_b
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .count(),
+        1,
+        "expected exactly one Warning diagnostic in total, got: {:?}",
+        result_b.diagnostics
+    );
+
+    // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
+    let module_a_again = guarded_module_with_else("Scalar", "10mm");
+    let result_a2 = engine.eval(&module_a_again);
+    assert_eq!(
+        result_a2.values.get(&y_id),
+        Some(&length_scalar(0.12)),
+        "override must survive a transient dimension-mismatch eval on guarded-group else-member Param"
     );
 }
 
@@ -1100,7 +1198,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
 /// (engine_eval.rs else_members loop). Step-4 updated BOTH call sites; this test
 /// would catch a partial fix that only updated the `members` call site.
 ///
-/// Setup: `guarded_module_with_else(false, "Scalar", "10mm")` — guard is
+/// Setup: `guarded_module_with_else("Scalar", "10mm")` — guard is
 /// `active: Bool = false`, so the `else_members` loop runs the helper on `S.y`.
 /// With a fresh engine (no override), the default-eval path fires and produces
 /// `Value::Scalar { si_value: 0.01, dimension: LENGTH }` (10mm = 0.01 m SI).
@@ -1111,7 +1209,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
 #[test]
 fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module_with_else(false, "Scalar", "10mm");
+    let module = guarded_module_with_else("Scalar", "10mm");
     engine.eval(&module);
 
     let y_id = ValueCellId::new("S", "y");
