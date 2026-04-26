@@ -3702,4 +3702,49 @@ mod tests {
             Value::Bool(false)
         );
     }
+
+    /// Pins that `eval_or` short-circuits on a non-bool left operand:
+    /// the right operand is **never evaluated** when the left is not bool/undef.
+    ///
+    /// Contract: non-bool left → `Value::Undef`, right NOT evaluated
+    /// (see `eval_or` at lib.rs:1141-1157, type-error branch).
+    ///
+    /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
+    /// silently starts evaluating the right operand on this path, the test panics
+    /// with "MetaAccess evaluation requires meta context in EvalContext".
+    #[test]
+    fn eval_or_short_circuit_on_non_bool_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::Or,
+            lit(Value::Int(3), Type::Int),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    /// Pins that `eval_or` short-circuits on the absorbing element `True`:
+    /// the right operand is **never evaluated** when the left is `Bool(true)`.
+    ///
+    /// Contract: `True` left → `Value::Bool(true)`, right NOT evaluated
+    /// (see `eval_or` at lib.rs:1147-1150, absorbing-element branch).
+    ///
+    /// The right operand is a `panic_on_eval_sentinel()`: if the implementation
+    /// silently starts evaluating the right operand on this path, the test panics
+    /// with "MetaAccess evaluation requires meta context in EvalContext".
+    #[test]
+    fn eval_or_short_circuit_on_true_absorbing_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::Or,
+            lit(Value::Bool(true), Type::Bool),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(true)
+        );
+    }
 }
