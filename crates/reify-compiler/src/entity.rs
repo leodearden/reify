@@ -941,39 +941,10 @@ pub(crate) fn compile_entity(
                 // recurse into nested OptionSome / ListLiteral / SetLiteral /
                 // MapLiteral nodes.
                 //
-                // Cost note (task 2280): the `compiled_arg.clone()` below is
-                // O(literal-tree-size) per arg — e.g. a `List<Option<MaterialSpec>>`
-                // with 200 `some(Steel())` elements deep-clones ~800-1200 nested
-                // boxed nodes.  See the timing bench:
-                //   crates/reify-compiler/tests/trait_arg_conformance_bench.rs
-                //   cargo test -p reify-compiler --test trait_arg_conformance_bench \
-                //     -- --ignored --nocapture
-                //
-                // Why a tactical Rc swap (changing only the variant field to
-                // `Rc<CompiledExpr>`) yields NO benefit: `compiled_args` is
-                // subsequently moved into `SubComponentDecl.args` (see the
-                // `compiled_args` move ~30 lines below).  If the pending check
-                // already holds an `Rc`, `Rc::try_unwrap` fails (refcount > 1) and
-                // the conversion back to the owned `Vec<(String, CompiledExpr)>`
-                // required by `SubComponentDecl.args` still performs a full deep
-                // clone via `(*rc).clone()` — one full clone per arg, no win.
-                //
-                // A real win requires one of two broader changes, both out of scope
-                // for this task:
-                //   (a) Switch `SubComponentDecl.args` itself to
-                //       `Vec<(String, Rc<CompiledExpr>)>` — propagates through
-                //       ~15 read-sites across reify-compiler (scc.rs, connect.rs,
-                //       termination.rs, 4 test bins), reify-test-support
-                //       (builders/topology.rs, fixtures.rs), and reify-eval
-                //       (unfold.rs, 2 test bins).
-                //   (b) Introduce a `CompilationCtx`-owned arena so compiled
-                //       expressions can be borrowed rather than cloned — currently
-                //       `compile_builder/ctx.rs` owns only `Vec<T>` registries, not
-                //       an arena (see the rationale comment at ctx.rs:5-8).
-                //
-                // Originating review suggestion: esc-2227-7 (task 2227 review).
-                // Profiling task: 2280.  Retained as-is pending a measurement that
-                // shows the cost is intolerable at realistic design sizes.
+                // Cost note (task 2280): `compiled_arg.clone()` below is O(literal-tree-size)
+                // per arg.  See the `PendingBoundCheck::TraitArgConformance` doc-comment below
+                // for the Rc/arena trade-off analysis, and `tests/trait_arg_conformance_bench.rs`
+                // for the timing bench (run with `-- --ignored --nocapture`).
                 for ((_, arg_expr), (arg_name, compiled_arg)) in
                     sub.args.iter().zip(compiled_args.iter())
                 {

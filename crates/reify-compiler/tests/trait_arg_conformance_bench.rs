@@ -10,59 +10,33 @@
 //! `OptionSome`, `BinOp`, `UnOp`, etc.; `Vec<CompiledExpr>` for `ListLiteral`
 //! and similar), so the clone is O(literal-tree-size) per arg.
 //!
-//! This bench constructs a `List<Option<MaterialSpec>>` arg whose list literal
-//! contains `N` `some(Steel())` elements and measures how long a single
-//! `compile_source_with_stdlib` call takes.  The result is printed via
-//! `eprintln!` for manual inspection; no ratio-assertion is made (the timing is
-//! inherently sensitive to the host machine and CI runner load).
+//! ## Tests in this file
 //!
-//! The `#[ignore]` attribute keeps wall-clock work out of normal `cargo test`
-//! runs, matching the precedent set by
-//! `crates/reify-lsp/tests/incremental_eval_benchmark.rs`.
+//! - [`trait_arg_conformance_correctness_small`]: a small (N=4) **non-ignored** test
+//!   that guards against regressions in the recursive `walk_param_against_arg`
+//!   dispatcher and runs in every normal `cargo test` invocation.
+//! - [`compile_large_literal_trait_arg_conformance_timing`]: an `#[ignore]`'d
+//!   timing test that compiles at N=20 and N=200 and prints both elapsed
+//!   durations so the per-element cost can be inferred by comparison.
 //!
-//! ## Correctness double-duty
-//!
-//! The bench also asserts that compilation produces **zero `Error`-severity
-//! diagnostics**.  This makes it a regression guard for the recursive
-//! `walk_param_against_arg` dispatcher introduced in task 2227: if a bug is
-//! introduced in the `Type::List → ListLiteral` or
-//! `Type::Option → OptionSome` arms of
-//! `crates/reify-compiler/src/conformance/mod.rs`, the assertion fires even
-//! on a non-timing run.
-//!
-//! ## How to run
+//! ## How to run the timing bench
 //!
 //! ```text
 //! cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture
 //! ```
-//!
-//! Adjust `N` in the test body to dial the workload up or down.
 
 use std::time::Instant;
 
 use reify_test_support::compile_source_with_stdlib;
 use reify_types::Severity;
 
-/// Timing bench: compile a design with `N` nested `some(Steel())` elements
-/// inside a `List<Option<MaterialSpec>>` arg.
-///
-/// The bench exercises the full per-arg `compiled_arg.clone()` path at
-/// `entity.rs:949` and the post-pass conformance walker at
-/// `conformance/mod.rs:132`.  Timing is printed via `eprintln!`; the only
-/// hard assertion is that compilation produces no `Error`-severity diagnostics.
-///
-/// Ignored in normal CI runs — run with `cargo test ... -- --ignored --nocapture`.
-#[test]
-#[ignore]
-fn compile_large_literal_trait_arg_conformance_timing() {
-    const N: usize = 200;
-
-    // Build N copies of "some(Steel()), " to form the list literal body.
-    let list_elements = "some(Steel()), ".repeat(N);
-    // Strip the trailing ", " for clean syntax.
+/// Builds the Reify source for a design that embeds `n` `some(Steel())` elements
+/// in a `List<Option<MaterialSpec>>` arg.
+fn make_source(n: usize) -> String {
+    let list_elements = "some(Steel()), ".repeat(n);
+    // `trim_end_matches` removes the trailing ", " for clean syntax.
     let list_body = list_elements.trim_end_matches(", ");
-
-    let source = format!(
+    format!(
         r#"
         structure def Steel : MaterialSpec {{
             param density : Real = 7850.0
@@ -73,14 +47,20 @@ fn compile_large_literal_trait_arg_conformance_timing() {
             sub x = Host(ms: [{list_body}])
         }}
     "#
-    );
+    )
+}
 
-    let t = Instant::now();
-    let module = compile_source_with_stdlib(&source);
-    let elapsed = t.elapsed();
-
-    eprintln!("[task-2280] compiled N={N} List<Option<MaterialSpec>> in {elapsed:?}");
-
+/// Correctness regression guard for the recursive `walk_param_against_arg`
+/// dispatcher introduced in task 2227.  Runs on every `cargo test` invocation
+/// (not `#[ignore]`'d).
+///
+/// Exercises the `Type::List → ListLiteral` and `Type::Option → OptionSome`
+/// arms of `crates/reify-compiler/src/conformance/mod.rs`.  A regression in
+/// either arm will cause `Error`-severity diagnostics and fail this test.
+#[test]
+fn trait_arg_conformance_correctness_small() {
+    const N: usize = 4;
+    let module = compile_source_with_stdlib(&make_source(N));
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -90,4 +70,34 @@ fn compile_large_literal_trait_arg_conformance_timing() {
         errors.is_empty(),
         "expected no Error-severity diagnostics for N={N} some(Steel()) elements, got: {errors:#?}",
     );
+}
+
+/// Timing bench: compiles at N=20 and N=200 and prints both elapsed durations,
+/// allowing the per-element clone cost to be inferred by comparison.
+///
+/// The `#[ignore]` attribute keeps wall-clock work out of normal `cargo test`
+/// runs, matching the precedent set by
+/// `crates/reify-lsp/tests/incremental_eval_benchmark.rs`.
+/// Run with:
+///   `cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn compile_large_literal_trait_arg_conformance_timing() {
+    for &n in &[20_usize, 200_usize] {
+        let source = make_source(n);
+        let t = Instant::now();
+        let module = compile_source_with_stdlib(&source);
+        let elapsed = t.elapsed();
+        eprintln!("[task-2280] compiled N={n} List<Option<MaterialSpec>> in {elapsed:?}");
+        // Verify correctness at each size so a walker regression surfaces here too.
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "expected no Error-severity diagnostics for N={n} some(Steel()) elements, got: {errors:#?}",
+        );
+    }
 }
