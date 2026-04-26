@@ -793,3 +793,84 @@ structure S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── Task 1296 structural: guard_compile_failed field wiring ─────────────────
+
+/// Verifies the three possible states of (guard_expr, guard_compile_failed) on
+/// a compiled SubComponentDecl:
+///
+/// (a) Valid guard: `guard_expr == Some(_)`, `guard_compile_failed == false`
+/// (b) Broken guard: `guard_expr == None`, `guard_compile_failed == true`
+/// (c) No guard:    `guard_expr == None`, `guard_compile_failed == false`
+///
+/// State (b) and (c) have identical `guard_expr` but different `guard_compile_failed`,
+/// which is the discriminator that allows the termination check to produce the
+/// right diagnostic in each case.
+#[test]
+fn broken_guard_marks_guard_compile_failed_field() {
+    // (a) Valid guard: field should be false, guard_expr should be Some.
+    let source_valid = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where n > 0
+}
+"#;
+    let (template, _) = compile_first_template(source_valid);
+    let child = template
+        .sub_components
+        .iter()
+        .find(|s| s.name == "child")
+        .expect("expected sub named 'child'");
+    assert!(
+        !child.guard_compile_failed,
+        "(a) valid guard: expected guard_compile_failed == false, got true"
+    );
+    assert!(
+        child.guard_expr.is_some(),
+        "(a) valid guard: expected guard_expr == Some(_), got None"
+    );
+
+    // (b) Broken guard: field should be true, guard_expr should be None.
+    let source_broken = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where unknown_var > 0
+}
+"#;
+    let (template, _) = compile_first_template(source_broken);
+    let child = template
+        .sub_components
+        .iter()
+        .find(|s| s.name == "child")
+        .expect("expected sub named 'child'");
+    assert!(
+        child.guard_compile_failed,
+        "(b) broken guard: expected guard_compile_failed == true, got false"
+    );
+    assert!(
+        child.guard_expr.is_none(),
+        "(b) broken guard: expected guard_expr == None, got Some(_)"
+    );
+
+    // (c) No guard: field should be false, guard_expr should be None.
+    let source_no_guard = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1)
+}
+"#;
+    let (template, _) = compile_first_template(source_no_guard);
+    let child = template
+        .sub_components
+        .iter()
+        .find(|s| s.name == "child")
+        .expect("expected sub named 'child'");
+    assert!(
+        !child.guard_compile_failed,
+        "(c) no guard: expected guard_compile_failed == false, got true"
+    );
+    assert!(
+        child.guard_expr.is_none(),
+        "(c) no guard: expected guard_expr == None, got Some(_)"
+    );
+}
