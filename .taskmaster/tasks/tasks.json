@@ -48303,23 +48303,21 @@
         "description": "Inline `phase3_skip_group` (called only from inside `group_needs_phase3` via negation) into a single unified helper named for the question Phase 3 actually asks. The current factoring works correctly but encodes the relationship by negation, forcing readers to mentally re-NOT the truth table when reasoning about the four call sites.",
         "details": "Source: post-merge review on task 2146 (esc-2146-46, reviewer_comprehensive).\n\nScope: crates/reify-eval/src/engine_edit.rs\n\nCurrent state (lines ~239-249): `group_needs_phase3(group, values, old_guard_val, phase1)` returns `!phase3_skip_group(...)` when the guard cell is present, plus an absent-cell case. Four call sites use `group_needs_phase3` (one `.any()` early-exit predicate plus per-group `continue` checks in both edit_param and edit_source Phase 3 loops).\n\nSuggested fix: collapse to a single function `group_needs_phase3(group, values, old_guard_val, phase1)` with the full case analysis inlined. Drop the separate `phase3_skip_group` and update the four call sites + tests accordingly.\n\nWhile touching this code, also add a one-line comment in edit_param Phase 1 (after the `if guard_value_unchanged(...)` skip near line 737-743) explaining that groups skipped at this point intentionally fall through to case (c) on the Phase 3 side, and that wave2 flips would still be caught by `old_guard_val != current`. Same applies to edit_source Phase 1.\n\nPriority: low — purely readability / comment improvement, no behavior change.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T07:52:54.856Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T07:50:29.898Z",
-      "taskCount": 2238,
+      "lastModified": "2026-04-26T07:52:54.856Z",
+      "taskCount": 2239,
       "completedCount": 2001,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T07:51:05.168Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T07:52:51.488Z"
+      ]
     }
   }
 }
