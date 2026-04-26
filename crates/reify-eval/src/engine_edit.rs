@@ -1023,6 +1023,11 @@ impl Engine {
                         new_snapshot.graph.value_cells.remove(&scoped_id);
                         new_snapshot.values.remove(&scoped_id);
                         values.remove(&scoped_id);
+                        // Task 2184 (mirrors task 2086 Fix 1 in edit_source): invalidate cache
+                        // so a subsequent edit_param that re-grows this collection sub at the
+                        // same scoped index evaluates freshly instead of returning a stale
+                        // CachedResult from a prior incarnation.
+                        self.cache.invalidate(&NodeId::Value(scoped_id));
                     }
                 }
 
