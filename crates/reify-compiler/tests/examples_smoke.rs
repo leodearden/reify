@@ -102,6 +102,14 @@ fn skip_set_entries_exist_under_examples_dir() {
 ///
 /// This is the canonical form used as SKIP_SET keys and in failure reports,
 /// so that same-basename files in different subdirectories are unambiguous.
+///
+/// # Panics
+///
+/// Panics if `path` does not begin with the lexical `EXAMPLES_DIR` prefix.
+/// **Callers must pass paths produced by [`discover_ri_files`]** — i.e. paths
+/// that are constructed by walking `EXAMPLES_DIR` without canonicalization.
+/// Canonicalized paths (which resolve `..` components) will not match the
+/// lexical prefix string and will panic.
 fn relative_to_examples_dir(path: &Path) -> String {
     let rel = path
         .strip_prefix(EXAMPLES_DIR)
@@ -174,6 +182,22 @@ fn relative_to_examples_dir_output_round_trips_to_existing_file() {
         rel,
         joined
     );
+}
+
+/// Verify that every path returned by `discover_ri_files()` is accepted by
+/// `relative_to_examples_dir` without panicking.
+///
+/// This locks the contract between the two functions: if `discover_ri_files`
+/// ever begins canonicalizing paths (which would resolve `..` and break the
+/// lexical `strip_prefix` inside `relative_to_examples_dir`), this test will
+/// fail, surfacing the regression before it silently corrupts SKIP_SET lookups
+/// or failure reports.
+#[test]
+fn relative_to_examples_dir_accepts_all_discovered_paths() {
+    for path in discover_ri_files() {
+        // Will panic if path is not lexically rooted under EXAMPLES_DIR.
+        let _ = relative_to_examples_dir(&path);
+    }
 }
 
 /// Parse `path`, compile it with the stdlib prelude, and append an entry to
