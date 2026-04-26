@@ -319,29 +319,14 @@ fn shared_edges_with_out_of_range_face_index_returns_query_failed() {
     }
 }
 
-/// Helper: count the number of faces of `shape` by probing
-/// `AdjacentFaces` for indices 0..N and stopping at the first
-/// out-of-range error. Returns N (the count of in-range face indices).
-fn face_count(kernel: &OcctKernel, shape: GeometryHandleId) -> usize {
-    for n in 0..256 {
-        match kernel.query(&GeometryQuery::AdjacentFaces {
-            shape,
-            face_index: n,
-        }) {
-            Ok(_) => continue,
-            Err(QueryError::QueryFailed(msg)) if msg.contains("out of range") => return n,
-            Err(other) => panic!("unexpected error probing face count at {}: {:?}", n, other),
-        }
-    }
-    panic!("face_count probe ran past 256 without hitting out-of-range");
-}
-
 #[test]
-fn topology_selectors_on_fused_two_box_solid_handle_complex_topology() {
-    // Build two 10x10x10 boxes; translate the second by +10 along X so
-    // it abuts the first along one face; union them. The resulting solid
-    // is more complex than a single box (additional internal-or-merged
-    // edges + non-trivial face count) and exercises the FFI's robustness.
+fn topology_selectors_on_fused_two_box_solid_match_known_geometry() {
+    // Build two 10x10x10 boxes; translate the second by +10 along X so it
+    // abuts the first; union them. The resulting solid has a deterministic
+    // topology: 10 outer faces (each of top/bottom/front/back is split along
+    // X=10 into two sub-faces; plus the two end faces at X=0 and X=20). The
+    // shared interior face at X=10 collapses, contributing only the seam
+    // edges to the outer topology.
     let mut kernel = OcctKernel::new();
     let box_a = kernel
         .execute(&GeometryOp::Box {
@@ -373,52 +358,96 @@ fn topology_selectors_on_fused_two_box_solid_handle_complex_topology() {
         .expect("Union should succeed");
     let fused_id = fused.id;
 
-    let n_faces = face_count(&kernel, fused_id);
-    assert!(
-        n_faces >= 6,
-        "fused two-box solid should have at least 6 faces, got {}",
-        n_faces
-    );
-
-    // Assert AdjacentFaces returns Ok(Value::List(_)) for every face;
-    // at least one face must have a nonempty neighbor list.
-    let mut any_nonempty = false;
-    for face in 0..n_faces {
-        let result = kernel.query(&GeometryQuery::AdjacentFaces {
+    // Verified empirically: two abutting 10x10x10 boxes fused yield exactly
+    // 10 outer faces. We probe the boundary (index 10 must be out-of-range,
+    // index 9 must be in-range) instead of using a brittle string-match
+    // helper.
+    const EXPECTED_FACES: usize = 10;
+    for face in 0..EXPECTED_FACES {
+        let r = kernel.query(&GeometryQuery::AdjacentFaces {
             shape: fused_id,
             face_index: face,
         });
-        let items = match result {
-            Ok(Value::List(items)) => items,
-            Ok(other) => panic!("expected Value::List for face {}, got {:?}", face, other),
-            Err(e) => panic!("AdjacentFaces({}) returned Err: {:?}", face, e),
-        };
-        if !items.is_empty() {
-            any_nonempty = true;
+        assert!(
+            matches!(r, Ok(Value::List(_))),
+            "face {} should be in range and return a list, got {:?}",
+            face,
+            r
+        );
+    }
+    match kernel.query(&GeometryQuery::AdjacentFaces {
+        shape: fused_id,
+        face_index: EXPECTED_FACES,
+    }) {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("out of range"),
+                "expected 'out of range' for face {}, got: {msg}",
+                EXPECTED_FACES
+            );
+        }
+        other => panic!(
+            "expected QueryFailed for index {}, got {:?}",
+            EXPECTED_FACES, other
+        ),
+    }
+
+    // Each face of this solid touches at least 3 other faces: the two end
+    // faces (X=0 and X=20) are bordered by 4 sub-faces each; every split
+    // sub-face is bordered by an end face, two perpendicular sub-faces, and
+    // its co-planar partner across the X=10 seam — also 4 neighbors. So
+    // every face should have >=3 neighbors as a generous lower bound.
+    let neighbors: Vec<std::collections::HashSet<i64>> = (0..EXPECTED_FACES)
+        .map(|i| neighbors_of(&kernel, fused_id, i))
+        .collect();
+    for (i, set) in neighbors.iter().enumerate() {
+        assert!(
+            set.len() >= 3,
+            "face {} of fused solid should have ≥3 neighbors, got {} ({:?})",
+            i,
+            set.len(),
+            set
+        );
+        // All neighbor indices must be in [0, EXPECTED_FACES) and distinct
+        // from `i` itself.
+        for &n in set {
+            assert!(
+                (0..EXPECTED_FACES as i64).contains(&n) && n != i as i64,
+                "face {} has invalid neighbor {} (expected in [0, {}) and != {})",
+                i,
+                n,
+                EXPECTED_FACES,
+                i
+            );
         }
     }
-    assert!(
-        any_nonempty,
-        "expected at least one face of the fused solid to have neighbors"
-    );
 
-    // Sample a couple of in-range face pairs and assert SharedEdges
-    // succeeds (Ok(Value::List(_))). Both empty and nonempty results
-    // are acceptable — the regression check is "no panic, no Err".
-    let pairs: &[(usize, usize)] = &[(0, 1), (0, n_faces - 1)];
-    for &(a, b) in pairs {
-        let result = kernel.query(&GeometryQuery::SharedEdges {
-            shape: fused_id,
-            face_a: a,
-            face_b: b,
-        });
-        match result {
-            Ok(Value::List(_)) => {}
-            Ok(other) => panic!(
-                "expected Value::List for SharedEdges({}, {}), got {:?}",
-                a, b, other
-            ),
-            Err(e) => panic!("SharedEdges({}, {}) returned Err: {:?}", a, b, e),
+    // Adjacency is symmetric.
+    for a in 0..EXPECTED_FACES {
+        for b in 0..EXPECTED_FACES {
+            let a_in_b = neighbors[b].contains(&(a as i64));
+            let b_in_a = neighbors[a].contains(&(b as i64));
+            assert_eq!(
+                a_in_b, b_in_a,
+                "adjacency asymmetric at ({}, {}): a_in_b={} b_in_a={}",
+                a, b, a_in_b, b_in_a
+            );
+        }
+    }
+
+    // For every (face, neighbor) pair, SharedEdges should return a nonempty
+    // list — adjacency by definition means they share at least one edge.
+    // This is a meaningful correctness check on fused topology, not just
+    // a "no panic" smoke probe.
+    for (face, face_neighbors) in neighbors.iter().enumerate() {
+        for &n in face_neighbors {
+            let edges = shared_edges_of(&kernel, fused_id, face, n as usize);
+            assert!(
+                !edges.is_empty(),
+                "adjacent faces ({}, {}) should share ≥1 edge, got empty",
+                face,
+                n
+            );
         }
     }
 }
