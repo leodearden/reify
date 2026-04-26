@@ -3,6 +3,7 @@
 //! Tests for compiling `#name` and `#name(args)` pragmas at module and block level.
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
+use reify_types::Severity;
 
 /// Helper: filter warnings whose message contains the given substring.
 fn pragma_warnings<'a>(
@@ -731,5 +732,40 @@ fn precision_pragma_with_non_length_unit_warns_and_does_not_set_tolerance() {
         "expected exactly 1 warning mentioning 'Length' for #precision(0.001s), got {}: {:?}",
         warns.len(),
         warns
+    );
+}
+
+/// `#precision(float64)` is the legacy ident form: emit a single Info-severity
+/// diagnostic explaining it is recognised but ignored, and tell the user to
+/// use a Length literal instead. Does not set `default_tolerance`.
+#[test]
+fn precision_pragma_with_legacy_float64_ident_emits_info() {
+    let module = compile_source("#precision(float64)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for #precision(float64), got {:?}",
+        module.default_tolerance
+    );
+
+    let infos: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Info
+                && d.message.contains("recognised but ignored")
+                && d.message.contains("Length literal")
+        })
+        .collect();
+    assert_eq!(
+        infos.len(),
+        1,
+        "expected exactly 1 info diagnostic for #precision(float64), got {}: {:?}",
+        infos.len(),
+        infos
     );
 }
