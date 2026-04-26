@@ -43,6 +43,11 @@ fn assert_arg_count_label(source: &str, needle: &str) {
         "expected non-empty span on '{}' label",
         needle
     );
+    assert_eq!(
+        first.labels[0].message, "wrong number of arguments",
+        "expected 'wrong number of arguments' label text on '{}' diagnostic",
+        needle
+    );
 }
 
 // ── box() ──────────────────────────────────────────────────────────────
@@ -132,6 +137,21 @@ fn mirror_arg_count_diagnostic_has_span_label() {
             }
         "#,
         "mirror() expects 7 arguments",
+    );
+}
+
+// ── linear_pattern_2d() ────────────────────────────────────────────────
+
+#[test]
+fn linear_pattern_2d_arg_count_diagnostic_has_span_label() {
+    // linear_pattern_2d() expects 11 arguments — passing 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let p = linear_pattern_2d(box(10mm, 10mm, 10mm), 1mm)
+            }
+        "#,
+        "linear_pattern_2d() expects 11 arguments",
     );
 }
 
