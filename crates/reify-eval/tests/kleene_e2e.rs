@@ -16,11 +16,19 @@
 //! regressions where the Kleene operators work in isolation but break under
 //! the real stdlib type-inference registry — e.g., `Bool` being widened to a
 //! type that the Kleene evaluator doesn't recognise.
+//!
+//! # Relationship to `tests/integration_corner_cases.rs`
+//! That file tests the same Kleene AND/OR/implies scenarios (see
+//! `kleene_and_false_absorbs_undef`, `kleene_or_true_absorbs_undef`,
+//! `kleene_implies_vacuous_true`) but uses `reify_compiler::compile()` (no
+//! stdlib).  The deliberate overlap is intentional: this file pins the
+//! `compile_with_stdlib` integration vector; the other file pins the
+//! plain-compile vector.  Do NOT merge them — they test different code paths.
 
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_types::{Severity, Value, ValueCellId};
 
 // ── Path constant ─────────────────────────────────────────────────────────────
@@ -121,24 +129,5 @@ fn kleene_e2e_forall_undef_propagates() {
         result.values.get(&id).expect("Foo.p4 not found"),
         &Value::Undef,
         "forall over [true, undef, true] should be Undef (spec §9.2.6)"
-    );
-}
-
-/// Belt-and-braces guard: the compiled module is well-formed under the stdlib registry.
-///
-/// `parse_and_compile_with_stdlib` already panics on compile errors, so `compiled()`
-/// succeeding is the primary guard. This test makes the invariant explicit and documents
-/// it for future readers: any diagnostics present must be non-Error severity.
-///
-/// Rationale: without this assertion, a future regression where `Bool` type inference
-/// under stdlib silently produces poison literals (`Value::Undef` of `Type::Error`)
-/// could cause p1/p2/p3/p4 to be "green by accident" via cascade-poison rather than
-/// via correct Kleene logic.
-#[test]
-fn kleene_e2e_compile_with_stdlib_clean() {
-    let errors = collect_errors(&compiled().diagnostics);
-    assert!(
-        errors.is_empty(),
-        "compiled kleene_e2e.ri should have no Error-severity diagnostics: {errors:?}"
     );
 }
