@@ -48199,23 +48199,21 @@
         "description": "Two minor polish items in `crates/reify-compiler/tests/purpose_compile_tests.rs::compile_purpose_user_defined_structure_named_structure_bypasses_validation` flagged by reviewer_comprehensive on task 2241 (esc-2241-43):\n\n1. **Inverted doc-comment (lines ~1001-1002).** The current rationale reads:\n   \"If a future refactor makes the wildcard guard registry-aware, `mass` would start failing the combined filter for the right reason.\"\n   This is backwards. In a registry-aware world, `mass` is a legitimate param of `Structure` and should remain silent; only `subject.bogus` should produce a \"has no member\" diagnostic. Either drop the `subject.mass > 0` constraint (single `bogus` probe suffices and matches the test's stated purpose) or fix the comment to read something like: \"`bogus` would start producing a 'has no member' diagnostic for the right reason while `mass` would remain silent because it is a legitimate member.\"\n\n2. **Redundant `is_some()` + `unwrap()` (line ~1030).** The pair\n   ```rust\n   assert!(registered.is_some(), \"...{:?}\", names);\n   let template = registered.unwrap();\n   ```\n   has two failure paths. Collapse to a single `let template = registered.unwrap_or_else(|| panic!(\"...{:?}\", names));` (or `expect(\"...\")` if the panic message can be a literal) so a future refactor that reorders the asserts cannot cause a context-less panic.\n\nBoth are pure test-code polish — no production behavior change. Source: esc-2241-43 suggestions S1 and S2.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T07:20:29.958Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T07:13:34.095Z",
-      "taskCount": 2232,
+      "lastModified": "2026-04-26T07:20:29.958Z",
+      "taskCount": 2233,
       "completedCount": 1997,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T07:20:22.801Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T07:20:22.846Z"
+      ]
     }
   }
 }
