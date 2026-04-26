@@ -49005,7 +49005,7 @@
         "description": "Three small follow-up cleanups in `crates/reify-eval/src/engine_eval.rs` from the post-merge review of task-2251 (esc-2251-72). All are localised to the third-pass guarded-group region and the surrounding Param branch.",
         "details": "From reviewer_comprehensive on esc-2251-72 (post-merge review of task-2251):\n\n1. **Reuse the GuardedParamCtx across both arms (engine_eval.rs ~754, ~810).**\n   `members_ctx` and `else_ctx` are constructed identically with the same five fields. After the members loop, `members_ctx`'s borrows on `self.journal` / `self.cache` are released, so the second instance is unnecessary. Either:\n   - drop the `let mut else_ctx = ...` and pass `&mut members_ctx` to the else-loop call site, or\n   - lift a single `param_ctx` (rename suggested) above both loops.\n\n2. **Trim the `GuardedParamCtx` doc-comment (engine_eval.rs:163-176).**\n   The current doc mentions \"from 10 to 6\" arg counts and the removed `#[allow(clippy::too_many_arguments)]` — implementation-history that will rot. Replace with a single line such as:\n   `/// Engine-scoped state shared by `eval_guarded_group_param_cell` callers within `Engine::eval`'s third pass.`\n\n3. **Hoist VersionId wrap once in Engine::eval (engine_eval.rs:687-708).**\n   `record_eval_completed` now takes `VersionId`, but the top-level Param branch still threads a `u64 version_id` and wraps `VersionId(version_id)` at every call site. Introduce a single `let version = VersionId(version_id);` near the start of the Param eval pass and pass `version` to `record_eval_completed`, mirroring how `GuardedParamCtx` already carries `VersionId`.\n\nLock with the existing journal+cache regression tests in `crates/reify-eval/tests/eval_param_overrides.rs`. No behaviour change expected.\n\nSource: esc-2251-72, reviewer_comprehensive.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -49028,9 +49028,12 @@
               "eval_guarded_group_param_cell context struct signature task 2251",
               "GuardedParamCtx doc-comment engine_eval.rs"
             ]
+          },
+          "done_provenance": {
+            "commit": "84cd42499903416c3ead85a92d1385545d9d791b"
           }
         },
-        "updatedAt": "2026-04-26T14:29:01.467Z"
+        "updatedAt": "2026-04-26T14:52:02.355Z"
       },
       {
         "id": "2271",
@@ -49422,9 +49425,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T14:35:04.479Z",
+      "lastModified": "2026-04-26T14:52:02.356Z",
       "taskCount": 2273,
-      "completedCount": 2043,
+      "completedCount": 2044,
       "tags": [
         "master"
       ]
