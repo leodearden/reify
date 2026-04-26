@@ -49395,11 +49395,11 @@
         "description": "Two coverage gaps in the new wrapper conformance test block (crates/reify-compiler/tests/trait_typed_param_tests.rs:633-1147):\n(1) No negative test for a non-conforming MAP KEY — only the value position is exercised. The walker recurses into `key_p`, so a regression there would slip past.\n(2) Only `List<Option<T>>` is exercised; not `Option<List<MaterialSpec>>` or `Map<Option<...>, ...>`.",
         "details": "Add two short tests that mirror the existing list-of-option pattern:\n- `map_trait_typed_param_rejects_non_conforming_key`: use a custom enum/struct as map key trait; pass a non-conforming value at the key position; assert `TypeNotConformingToTrait` diagnostic fires for `arg_name` matching the param.\n- `option_list_trait_typed_param_rejects_non_conforming_inner_element`: outer `Option<List<MaterialSpec>>`; assert non-conforming inner element triggers diagnostic; positive case should still pass.\n\nThese guard against arm-ordering regressions in the recursive walker cheaply.\n\nSource: review suggestion on task 2227 (esc-2227-7).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:03:56.349Z",
+        "updatedAt": "2026-04-26T19:34:02.165Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
@@ -49415,7 +49415,12 @@
               "conformance test infrastructure non-conformance"
             ]
           },
-          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
+          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd",
+          "done_provenance": {
+            "commit": "a9ceec122e6c375ca86ec4154f0b5d076dbfbb27",
+            "commit_input": "a9ceec122",
+            "note": "task 2282's three new conformance tests landed on main; verify-pipeline escalation was an unrelated pre-existing GUI vitest flake"
+          }
         }
       },
       {
@@ -49721,14 +49726,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:24:04.820Z",
+      "lastModified": "2026-04-26T19:34:02.165Z",
       "taskCount": 2282,
-      "completedCount": 2057,
+      "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:25:21.691Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
