@@ -262,6 +262,32 @@ mod tests {
     }
 
     #[test]
+    fn indeterminate_constraint_carries_constraint_indeterminate_code() {
+        let checker = SimpleConstraintChecker;
+        let expr = thickness_gt_2mm();
+        let values = ValueMap::new(); // thickness is Undef
+
+        let input = ConstraintInput {
+            constraints: vec![(cnid("Bracket", 0), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            results[0].diagnostics.messages[0].severity,
+            Severity::Warning,
+        );
+        assert_eq!(
+            results[0].diagnostics.messages[0].code,
+            Some(DiagnosticCode::ConstraintIndeterminate),
+        );
+    }
+
+    #[test]
     fn violated_constraint_carries_constraint_violated_code() {
         let checker = SimpleConstraintChecker;
         let expr = thickness_gt_2mm();
