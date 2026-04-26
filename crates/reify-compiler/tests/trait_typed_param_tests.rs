@@ -1482,3 +1482,127 @@ fn valueref_of_list_passed_to_map_trait_param_emits_shape_mismatch() {
         errors
     );
 }
+
+// ─── amend (task 2282): Map-key + Option<List<T>> wrapper conformance coverage ───
+//
+// Two coverage gaps locked in here:
+//   Gap #1 — Map KEY non-conformance was untested (walker at conformance/mod.rs:219-224
+//             recurses into both key_p and val_p; only val_p had regression coverage).
+//   Gap #2 — Option<List<MaterialSpec>> was untested (only List<Option<MaterialSpec>>
+//             existed); inverting the wrapper order exercises the same arms in a
+//             different traversal sequence.
+// Both walker arms are already implemented; these are pure regression-coverage tests.
+
+/// Negative test (gap #1): a map literal with a non-conforming KEY passed to
+/// `Map<MaterialSpec, String>` must produce a `TypeNotConformingToTrait`
+/// diagnostic naming the param. Mirrors `map_trait_typed_param_rejects_non_conforming_value`
+/// (line 763) but flipped to the key position. Locks in the walker's `key_p`
+/// recursion at `conformance/mod.rs:219-224` against arm-ordering regressions.
+#[test]
+fn map_trait_typed_param_rejects_non_conforming_key() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : Map<MaterialSpec, String> }
+        structure def Top {
+            sub x = Host(ms: map{Steel() => "good", NotAMaterial() => "bad"})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                && d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")
+                && d.message.contains("param 'ms'")
+        }),
+        "expected a TypeNotConformingToTrait error naming param 'ms' for NotAMaterial at the key position of Map<MaterialSpec, String>, got: {:?}",
+        errors
+    );
+}
+
+/// Negative test (gap #2): a non-conforming inner element inside an
+/// `Option<List<MaterialSpec>>` arg must produce a `TypeNotConformingToTrait`
+/// diagnostic. Mirrors `nested_wrapper_list_option_rejects_non_conforming_inner_element`
+/// (line 1090) with the wrapper order inverted. Locks in the walker's
+/// Option-then-List recursion at `conformance/mod.rs:201-211`.
+///
+/// Walk sequence:
+/// 1. `(Type::Option(List<MaterialSpec>), OptionSome(ListLiteral([Steel(), NotAMaterial()])))` → recurse on inner
+/// 2. `(Type::List(MaterialSpec), ListLiteral([Steel(), NotAMaterial()]))` → recurse on each elem
+/// 3. `(Type::TraitObject("MaterialSpec"), FunctionCall("NotAMaterial"))` → leaf check fails → emit
+#[test]
+fn option_list_trait_typed_param_rejects_non_conforming_inner_element() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : Option<List<MaterialSpec>> }
+        structure def Top {
+            sub x = Host(ms: some([Steel(), NotAMaterial()]))
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                && d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")
+                && d.message.contains("param 'ms'")
+        }),
+        "expected a TypeNotConformingToTrait error naming param 'ms' for NotAMaterial inside Option<List<MaterialSpec>>, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test (gap #2 companion): an `Option<List<MaterialSpec>>` arg whose
+/// inner list elements all conform must compile without errors. Pairs with
+/// `option_list_trait_typed_param_rejects_non_conforming_inner_element` to lock
+/// in the false-positive direction — a regression that emitted spurious
+/// `TypeNotConformingToTrait` for `some([Steel(), Steel(...)])` would be caught
+/// here. Mirrors `nested_wrapper_list_option_accepts_all_conforming_inner_elements`
+/// (line 1124) with the wrapper order inverted.
+#[test]
+fn option_list_trait_typed_param_accepts_all_conforming_inner_elements() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : Option<List<MaterialSpec>> }
+        structure def Top {
+            sub x = Host(ms: some([Steel(), Steel(density: 1000.0)]))
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for some([Steel(), Steel(density: 1000.0)]) passed to Option<List<MaterialSpec>> param, got: {:?}",
+        errors
+    );
+}
