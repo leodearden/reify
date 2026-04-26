@@ -1172,4 +1172,47 @@ mod tests {
             kernel_err_diag.labels[0].span
         );
     }
+
+    // ── effective_tessellation_tolerance unit tests ──────────────────────────
+
+    /// When `module.default_tolerance` is `Some(v)`, the helper returns `v`
+    /// (in SI metres) verbatim — the module-level `#precision` pragma value
+    /// overrides the engine's hardcoded default.
+    #[test]
+    fn effective_tessellation_tolerance_uses_module_default_when_set() {
+        use reify_test_support::builders::CompiledModuleBuilder;
+        use reify_types::ModulePath;
+
+        let mut module = CompiledModuleBuilder::new(ModulePath::single("t")).build();
+        module.default_tolerance = Some(0.005);
+
+        assert_eq!(
+            Engine::effective_tessellation_tolerance(&module),
+            0.005,
+            "effective_tessellation_tolerance must return module.default_tolerance \
+             when it is Some(_)"
+        );
+    }
+
+    /// When `module.default_tolerance` is `None`, the helper falls back to
+    /// `Engine::DEFAULT_TESSELLATION_TOLERANCE` — preserving v0.1 behaviour
+    /// for modules without a `#precision` pragma.
+    #[test]
+    fn effective_tessellation_tolerance_falls_back_to_default_when_none() {
+        use reify_test_support::builders::CompiledModuleBuilder;
+        use reify_types::ModulePath;
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("t")).build();
+        assert!(
+            module.default_tolerance.is_none(),
+            "fresh module from CompiledModuleBuilder should have default_tolerance == None"
+        );
+
+        assert_eq!(
+            Engine::effective_tessellation_tolerance(&module),
+            Engine::DEFAULT_TESSELLATION_TOLERANCE,
+            "effective_tessellation_tolerance must fall back to \
+             Engine::DEFAULT_TESSELLATION_TOLERANCE when default_tolerance is None"
+        );
+    }
 }
