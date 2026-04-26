@@ -1,0 +1,18 @@
+// Kleene 3-valued logic end-to-end fixture.
+//
+// Spec §9.2.3 – boolean operators under Kleene semantics (AND/OR absorption)
+// Spec §9.2.6 – quantifiers: forall propagates undef when no false but an undef exists
+//
+// `a` has no default → Value::Undef of type Bool throughout all lets.
+// `b = false` is the absorbing element for AND and negated operand for de-Morgan.
+
+structure def Foo {
+    param a : Bool          // no default → Value::Undef
+    param b : Bool = false
+
+    let p1 = a && b         // Kleene AND absorption: undef && false = false
+    let p2 = a || true      // Kleene OR absorption: undef || true = true
+    let p3 = !b || a        // b implies a (de-Morgan); b=false makes the premise vacuously true → result Bool(true) regardless of a
+    let xs : List<Bool> = [true, a, true]   // a injects Value::Undef into the Bool list
+    let p4 = forall x in xs: x              // expect Undef: no false to short-circuit, but `a` is undef
+}
