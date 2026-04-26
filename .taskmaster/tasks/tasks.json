@@ -49169,7 +49169,18 @@
             "crates/reify-eval/tests/eval_instrumentation_counters.rs",
             "crates/reify-lsp/Cargo.toml",
             "crates/reify-lsp/src/diagnostics.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine::eval_cached"
+            ],
+            "queries": [
+              "eval-diagnostics regression-lock cluster sanity_check structural signals counter_handle",
+              "task 2248 eval-diagnostics amend remove helper drop eval filter diagnostics.rs",
+              "eval diagnostics cluster negative invariant no constraint-violated format"
+            ]
+          },
+          "_causation_id": "c33dfab8-7303-4c9c-b2df-2285b4d4b6e0"
         }
       },
       {
