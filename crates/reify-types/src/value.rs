@@ -2096,23 +2096,36 @@ impl From<EvalError> for ErrorRef {
     }
 }
 
-/// Freshness of a cached value (for incremental evaluation).
+/// Four-variant evaluation lifecycle tag for cached nodes.
 ///
-/// M2 model: tracks evaluation lifecycle with richer state than M1's
-/// simple Fresh/Stale/Uncomputed.
+/// The four variants model the full lifecycle of a node in the incremental
+/// evaluation cache: `Final | Intermediate | Pending | Failed`.  All four
+/// share the same cache infrastructure (see arch §7.1 line 728).
+///
+/// See arch §7.1 lines 716-728, arch §9.2 lines 880-890,
+/// and spec §9.6 lines 1799-1819.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Freshness {
-    /// Value is fully computed and up-to-date.
+    /// Committed, fully evaluated; the cached value is authoritative.
+    ///
+    /// See arch §7.1 lines 716-728.
     Final,
-    /// Value is a provisional result from an in-progress evaluation pass.
+    /// Still refining; generation monotonically increases across passes.
+    ///
+    /// See arch §7.1 lines 716-728.
     Intermediate { generation: u64 },
-    /// Value has been requested but not yet computed.
-    /// `last_substantive` holds the content hash of the last known-good value, if any.
-    Pending {
-        last_substantive: Option<ContentHash>,
-    },
-    /// Evaluation failed with an error.
-    Failed { error: EvalError },
+    /// Gated; not recalculated, showing previous best.
+    ///
+    /// `last_substantive` carries the opaque identity of the last
+    /// known-good result (if any); use [`ResultRef::none()`] when no
+    /// prior result exists.
+    ///
+    /// See arch §7.1 lines 716-728.
+    Pending { last_substantive: ResultRef },
+    /// Computation failure — see arch §9.2.
+    ///
+    /// See arch §9.2 lines 880-890 and spec §9.6 lines 1799-1819.
+    Failed { error: ErrorRef },
 }
 
 /// Sort captures by ValueCellId for deterministic comparison/hashing.
