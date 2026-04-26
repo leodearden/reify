@@ -64,6 +64,10 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             ),
             ("std.analysis", include_str!("../stdlib/analysis.ri")),
             ("std.tolerancing", include_str!("../stdlib/tolerancing.ri")),
+            (
+                "std.geometry.traits",
+                include_str!("../stdlib/geometry_traits.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
