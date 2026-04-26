@@ -398,6 +398,8 @@ fn build_solver_problem(
         constraints: filtered_constraints,
         current_values: values.clone(),
         objective: template.objective.clone(),
+        // Arc::clone is O(1) — a refcount bump into the merged table
+        // already held by Engine.functions (tasks #1997, #2286).
         functions: Arc::clone(functions),
     })
 }
