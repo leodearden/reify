@@ -47960,12 +47960,12 @@
       {
         "id": "2234",
         "title": "Add eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning",
-        "description": "Two test-quality improvements to `crates/reify-eval/tests/eval_param_overrides.rs` in the guarded-group Param helper system:\n\n1. **Drop unused `active` parameter from `guarded_module_with_else`** (line ~53): The helper was introduced by task 2194 with an `active: bool` parameter; every existing caller passes `false` (lines ~500, 684, 690, 719) and the doc comment acknowledges the parameter is speculative. Drop the parameter, inline `param active : Bool = false` in the format string, and update all four call sites.\n\n2. **Add else_members dimension-mismatch test**: Test coverage for `eval_guarded_group_param_cell` is asymmetric — the members-loop has type-kind + dimension + override-survival tests, but the else_members-loop only has type-kind + override-survival (no dimension test). Add `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning` to cover this gap. Dimension-mismatch on the else-branch goes through the same helper today; a future change that special-cases members vs else_members inside the helper would not be caught without this test.",
+        "description": "Three test-quality improvements to `crates/reify-eval/tests/eval_param_overrides.rs` in the guarded-group Param helper system: remove a dead parameter from a shared fixture helper, add missing else-member dimension-mismatch coverage, and loosen four task-2195 journal-shape assertions so they survive future guard-cell re-evaluation passes.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "details": "**S1 — Drop unused active param from guarded_module_with_else (~line 53)**\n\nThe signature `guarded_module_with_else(active: bool, y_type: &str, y_default: &str)` has `active` unused by every caller. Simplify to `guarded_module_with_else(y_type: &str, y_default: &str)` and hardcode `param active : Bool = false` in the format string body. Update call sites at approximately lines 500, 684, 690, 719 (remove the `false` argument).\n\nAcceptance: all existing callers compile with one fewer argument; `cargo test -p reify-eval` still green.\n\n**S2 — Add else_members dimension-mismatch test**\n\nTask 2234's original scope: test coverage for `eval_guarded_group_param_cell` is asymmetric:\n- members-loop: type-kind + dimension + override-survival tests ✓\n- else_members-loop: type-kind + override-survival ONLY — **no dimension test** ✗\n\nAdd `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning`:\n- Construct a guarded group where `y` is in `else_members`\n- Supply a dimension-mismatched override for `y`\n- Assert the override is skipped and a warning diagnostic is emitted\n- Mirror the structure of the existing dimension-mismatch test for `members` so the two tests are symmetric\n\nAcceptance: new test passes; `cargo test -p reify-eval eval_skips_dimension` green.",
-        "testStrategy": "",
+        "details": "**S1 — Drop unused active param from guarded_module_with_else (~line 53)**\n\nThe signature `guarded_module_with_else(active: bool, y_type: &str, y_default: &str)` has `active` unused by every caller. Simplify to `guarded_module_with_else(y_type: &str, y_default: &str)` and hardcode `param active : Bool = false` in the format string body. Update call sites at approximately lines 500, 684, 690, 719 (remove the `false` argument).\n\nAcceptance: all existing callers compile with one fewer argument; `cargo test -p reify-eval` still green.\n\n**S2 — Add else_members dimension-mismatch test**\n\nTest coverage for `eval_guarded_group_param_cell` is asymmetric:\n- members-loop: type-kind + dimension + override-survival tests ✓\n- else_members-loop: type-kind + override-survival ONLY — **no dimension test** ✗\n\nAdd `eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning`:\n- Construct a guarded group where `y` is in `else_members`\n- Supply a dimension-mismatched override for `y`\n- Assert the override is skipped and a warning diagnostic is emitted\n- Mirror the structure of the existing dimension-mismatch test for `members` so the two tests are symmetric\n\nAcceptance: new test passes; `cargo test -p reify-eval eval_skips_dimension` green.\n\n**S3 — Relax strict events.len()==2 assertions in four task-2195 journal-shape tests (~lines 1185-1197 and three sibling tests)**\n\nThe four tests added by task-2195 assert `events.len() == 2` (exactly one Started+Completed pair). If `post_solver_re_eval_guard_cells` (engine_eval.rs:138 area) or any future guard-cell re-evaluation path is ever invoked for guarded-group Param cells — even when user-visible behaviour stays correct — these strict equality assertions will break.\n\nReplace each strict equality with the looser shape:\n\n```rust\nassert!(matches!(events[0].kind, EventKind::Started));\nassert!(matches!(events[1].kind, EventKind::Completed { .. }));\nlet started = events.iter().filter(|e| matches!(e.kind, EventKind::Started)).count();\nlet completed = events.iter().filter(|e| matches!(e.kind, EventKind::Completed { .. })).count();\nassert_eq!(started, completed, \"Started/Completed must be paired\");\n```\n\nThis still catches a missing-pair regression (the count equality fails) and the original Started→Completed ordering, but tolerates legitimate additional re-eval events.\n\nApply to all four task-2195 strict-shape tests:\n- `eval_records_journal_pair_and_cache_entry_for_s4_top_level_param` (or similarly named)\n- `eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_param`\n- `eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param`\n- `eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override_no_default_param`\n\nAcceptance: `cargo test -p reify-eval eval_records_journal` green with the looser assertions.",
+        "testStrategy": null,
         "subtasks": [],
         "metadata": {
           "modules": [
@@ -47982,8 +47982,8 @@
             ]
           },
           "curator_action": "combine",
-          "curator_justification": "Both candidates are tiny (< 300 chars real detail, 1 file each) and touch only `crates/reify-eval/tests/eval_param_overrides.rs`. Task 2234 is pending + combine_eligible, covers the same helper system (guarded_module_with_else / eval_guarded_group_param_cell), and will be serialized on the same module lock regardless. Combining loses zero parallelism and avoids a full second orchestrator cycle for a one-liner parameter removal.",
-          "combined_at": "2026-04-26T06:56:41.266926+00:00"
+          "curator_justification": "The candidate touches only `crates/reify-eval/tests/eval_param_overrides.rs`, identical to Task 2234's single file. Both are tiny low-priority test-quality improvements that will serialize on the same module lock. All four combine rules hold: (1) unified concern = \"test-quality improvements to eval_param_overrides.rs\" fits one sentence; (2) lock stays within the same 1 file; (3) 3 distinct concerns, 1 file — well under budget; (4) neither task is on a critical path.",
+          "combined_at": "2026-04-26T08:11:02.294943+00:00"
         }
       },
       {
@@ -48380,6 +48380,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T08:07:16.367Z"
+      },
+      {
+        "id": "2252",
+        "title": "engine_eval: document EvalOutcome variant change in S4 rejected-override-no-default rationale",
+        "description": "Doc-only nit at `crates/reify-eval/src/engine_eval.rs:663-680`. Add a sentence to the rationale comment explicitly noting that the `Completed` event's `EvalOutcome` is now whatever `cache.record_evaluation` returns (typically `New` on first eval), no longer hardcoded `Unchanged`.",
+        "details": "Task-2195 introduced `cache.record_evaluation` on the S4 (rejected-override-no-default) top-level Param branch. Before that change, the `EvalEvent { kind: EventKind::Completed { outcome } }` record on this path hardcoded `EvalOutcome::Unchanged`; now `outcome` is whatever `cache.record_evaluation` returns — `New` on first eval, `Unchanged` only on identical re-record.\n\nAny downstream consumer that pattern-matches on the old fixed `Unchanged` outcome for this path will now see a different variant. The existing rationale comment at `engine_eval.rs:663-680` (which acknowledges the deferred-cache reversal) and the doc-comment on `record_eval_completed` should call out this Completed-outcome shape change so a future bisect ties the journal-shape diff to task-2195.\n\nNo code change required — comment only. Add roughly:\n\n```text\n// Note: the `Completed` event's `EvalOutcome` is now whatever\n// cache.record_evaluation returns (typically `New` on first eval,\n// `Unchanged` only on identical re-record), no longer hardcoded\n// `Unchanged` as it was before task-2195.\n```\n\nSource: review of task-2195 by reviewer_comprehensive (esc-2195-45).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48389,7 +48400,10 @@
       "completedCount": 2003,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T08:11:02.313Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T08:11:20.075Z"
     }
   }
 }
