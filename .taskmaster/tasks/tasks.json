@@ -50427,6 +50427,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:04:15.355Z"
+      },
+      {
+        "id": "2337",
+        "title": "Freshness: surface 4-variant Freshness to GUI and LSP for distinct badge rendering",
+        "description": "PRD docs/prds/freshness-4-variant.md. Thread Freshness through diagnostic / outline / parameters panels (gui/) and LSP-served diagnostics so UI shows distinct badges for Final (no badge), Intermediate (spinner / progress), Pending (warning), Failed (error). Constraint-violation rendering stays on the existing `violated` channel, NOT the Failed channel. Smoke-test by opening an example with intermediate / failed nodes and confirming visual distinction.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50438,7 +50449,8 @@
         "master"
       ],
       "created": "2026-04-26T20:04:30.805Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:04:35.726Z"
     }
   }
 }
