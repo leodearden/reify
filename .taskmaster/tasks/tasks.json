@@ -49762,6 +49762,17 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2297",
+        "title": "Stdlib: declare seven geometry-conformance traits in geometry_traits.ri",
+        "description": "Declare Bounded, Watertight, Closed, Manifold, Orientable, Convex, Connected as marker traits in crates/reify-compiler/stdlib/geometry_traits.ri with the Watertight : Closed + Manifold inheritance edge. No fields — these are pure marker traits; the compiler attaches inferred conformance via metadata, not user-written params.",
+        "details": "## Implementation\n- New file: crates/reify-compiler/stdlib/geometry_traits.ri\n- Seven trait decls per stdlib §3.10 — all marker traits (no params)\n- Inheritance edge: trait Watertight : Closed + Manifold\n- Confirm stdlib loader picks the file up via the existing prelude glob\n\n## Tests\n- Parse + compile via loader smoke test\n- All seven trait names resolve from prelude in user .ri sources\n- Watertight inheritance graph: parents == [Closed, Manifold]\n\n## References\n- PRD: /home/leo/src/reify/docs/prds/geometry-traits.md (task 1)\n- Pattern: structural_physical.ri / materials_mechanical.ri",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49774,7 +49785,7 @@
       ],
       "created": "2026-04-26T19:36:17.765Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T19:40:36.731Z"
+      "updated": "2026-04-26T19:40:37.386Z"
     }
   }
 }
