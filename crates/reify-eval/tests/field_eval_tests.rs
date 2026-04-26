@@ -56,7 +56,7 @@ fn extract_eigenvalues_panics_on_too_many_items() {
 
 #[test]
 fn eval_analytical_field_at_point() {
-    let result = eval_source("field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
+    let result = eval_source("field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }");
 
     // The field should be stored in the values map
     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "temp");
@@ -100,9 +100,10 @@ fn eval_analytical_field_at_point() {
 fn eval_sample_field_point() {
     // Define a field and a structure that uses sample() to query it at a point.
     // The analytical field is `|p| p` (identity), so sample(field, 42) should return 42.
+    // Uses Real -> Real so the body type (Real) matches the declared codomain (Real).
     let result = eval_source(
         r#"
-field def identity_field : Scalar -> Scalar { source = analytical { |p| p } }
+field def identity_field : Real -> Real { source = analytical { |p| p } }
 
 structure S {
     let val = sample(identity_field, 42)
@@ -146,7 +147,7 @@ fn eval_field_snapshot_consistency() {
     // in snapshot.values (not just the cold values map).
     // This ensures incremental re-evaluation via edit_param/warm-starting
     // can see field values.
-    let source = "field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
+    let source = "field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }";
     let compiled = parse_and_compile(source);
     let mut engine = make_engine();
     let _result = engine.eval(&compiled);

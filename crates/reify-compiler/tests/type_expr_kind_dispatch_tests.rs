@@ -291,7 +291,14 @@ fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
                             span: dummy_span(),
                         }],
                         body: Box::new(Expr {
-                            kind: ExprKind::NumberLiteral(1.0),
+                            // Use a Scalar literal (1.0m) so the lambda body's inferred type
+                            // matches the declared codomain `Scalar`. This prevents the new
+                            // FieldCodomainMismatch check from firing a second diagnostic on
+                            // top of the expected "unresolved field type" domain error.
+                            kind: ExprKind::QuantityLiteral {
+                                value: 1.0,
+                                unit: "m".to_string(),
+                            },
                             span: dummy_span(),
                         }),
                     },
