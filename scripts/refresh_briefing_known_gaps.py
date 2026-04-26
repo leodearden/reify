@@ -126,9 +126,11 @@ def main() -> int:
         if tracking_id is None:
             continue
         tracking_id = str(tracking_id)
+        # Orphan tracking IDs (task deleted or never existed) are not
+        # actionable from a briefing-refresh perspective — silently skip.
+        # A separate scrub-list audit can surface stale tracking: fields.
         task = tasks_index.get(tracking_id)
         if task is None:
-            # Orphan tracking ID — task not in tasks.json, skip silently.
             continue
         # Only exact "done" status counts.  In-progress, blocked, deferred,
         # and pending tasks may still legitimately represent open gaps from
