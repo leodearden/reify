@@ -51065,6 +51065,20 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2370",
+        "title": "specialization-scope: forbidden-kind + permitted-body + nested/match-arm tests",
+        "description": "Develop tests for specialization-scope validation covering forbidden kinds, permitted bodies, and nested/match-arm scenarios.",
+        "details": "Implement a comprehensive test suite to validate specialization-scope rules as outlined in the PRD document `docs/prds/specialization-scope.md`. The tests should cover the following scenarios: (1) Each forbidden kind (`param`, `port`, `sub`) in isolation within a specialization scope, ensuring the correct error is emitted. (2) A combination of all three forbidden kinds in a single scope. (3) Negative tests for permitted-only bodies to ensure no errors are emitted when only allowed declarations are present. (4) Nested `sub` declarations where the nested body contains a forbidden declaration. (5) `match`-arm `sub` bodies that include forbidden declarations. Use mock AST nodes to simulate these scenarios and verify that the validator correctly identifies and reports violations.",
+        "testStrategy": "Create unit tests for each scenario using mock AST nodes. Verify that the `E_SPECIALIZATION_FORBIDDEN_DECL` error is emitted with the correct message and span for forbidden declarations. Ensure that permitted-only bodies do not trigger errors. For nested and match-arm scenarios, confirm that the validator correctly processes nested scopes and emits errors as expected. Run the full test suite to ensure no regressions are introduced.",
+        "status": "pending",
+        "dependencies": [
+          "2368",
+          "2369"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51077,7 +51091,7 @@
       ],
       "created": "2026-04-26T20:23:03.361Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:23:12.497Z"
+      "updated": "2026-04-26T20:23:17.583Z"
     }
   }
 }
