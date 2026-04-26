@@ -173,11 +173,13 @@ fn post_solver_re_eval_guard_cells(
 /// one place — the triple-copy divergence that produced the guarded-group
 /// override bug (task 2154) cannot recur.
 ///
-/// **Cache / journal**: neither the EvalEvent journal nor the eval cache is
-/// consulted here — see the deferred-cache rationale at the top-level Param
-/// branch S4 arm (top-level Param branch, rejected-no-default arm). Task-2195
-/// resolved that deferral for the top-level S4 path; the helper still omits
-/// journal/cache recording (to be addressed in a follow-up if needed).
+/// **Cache / journal**: every value-write path in this helper records a
+/// `Started` event before resolution and a `Completed { outcome }` event after
+/// calling `cache.record_evaluation`, mirroring the top-level Param branch
+/// pattern (engine_eval.rs:546-628). Task-2195 added journal+cache recording
+/// here to make guarded-group Param evals fully visible to tooling that joins
+/// journal events against cache state.
+#[allow(clippy::too_many_arguments)]
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
@@ -186,7 +188,20 @@ fn eval_guarded_group_param_cell(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
+    journal: &mut crate::journal::EventJournal,
+    cache: &mut crate::cache::CacheStore,
+    version_id: u64,
 ) {
+    let node_id = NodeId::Value(cell.id.clone());
+    let start = Instant::now();
+    journal.record(EvalEvent {
+        timestamp: start,
+        node_id: node_id.clone(),
+        kind: EventKind::Started,
+        version: VersionId(version_id),
+        payload: None,
+    });
+
     let override_val = match param_overrides.get(&cell.id) {
         None => {
             // No override stored AND no default_expr: write (Undef, Undetermined)
@@ -204,6 +219,19 @@ fn eval_guarded_group_param_cell(
                     cell.id.clone(),
                     (Value::Undef, DeterminacyState::Undetermined),
                 );
+                let outcome = cache.record_evaluation(
+                    node_id.clone(),
+                    CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+                    VersionId(version_id),
+                    DependencyTrace::default(),
+                );
+                journal.record(EvalEvent {
+                    timestamp: Instant::now(),
+                    node_id,
+                    kind: EventKind::Completed { outcome },
+                    version: VersionId(version_id),
+                    payload: Some(EventPayload::Duration(start.elapsed())),
+                });
                 return;
             }
             None
@@ -239,19 +267,44 @@ fn eval_guarded_group_param_cell(
         // Override existed but was rejected AND no default_expr.
         // Write (Undef, Undetermined) into both maps so external readers of
         // EvalResult.values see a well-defined Undef instead of a missing key.
-        //
-        // Cache/journal recording is intentionally omitted here — see the
-        // deferred-cache rationale at engine_eval.rs:487-496 (top-level Param
-        // branch, rejected-no-default arm). The same reasoning applies here.
+        // Record in cache + journal — mirrors the top-level S4 arm (task-2195).
         values.insert(cell.id.clone(), Value::Undef);
         snapshot.values.insert(
             cell.id.clone(),
             (Value::Undef, DeterminacyState::Undetermined),
         );
+        let outcome = cache.record_evaluation(
+            node_id.clone(),
+            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+            VersionId(version_id),
+            DependencyTrace::default(),
+        );
+        journal.record(EvalEvent {
+            timestamp: Instant::now(),
+            node_id,
+            kind: EventKind::Completed { outcome },
+            version: VersionId(version_id),
+            payload: Some(EventPayload::Duration(start.elapsed())),
+        });
         return;
     };
+
+    // Override-accepted or default-eval path: write determined value.
     values.insert(cell.id.clone(), val.clone());
-    snapshot.values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
+    snapshot.values.insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
+    let outcome = cache.record_evaluation(
+        node_id.clone(),
+        CachedResult::Value(val, DeterminacyState::Determined),
+        VersionId(version_id),
+        DependencyTrace::default(),
+    );
+    journal.record(EvalEvent {
+        timestamp: Instant::now(),
+        node_id,
+        kind: EventKind::Completed { outcome },
+        version: VersionId(version_id),
+        payload: Some(EventPayload::Duration(start.elapsed())),
+    });
 }
 
 impl Engine {
@@ -687,6 +740,9 @@ impl Engine {
                                 &functions,
                                 &self.meta_map,
                                 &mut diagnostics,
+                                &mut self.journal,
+                                &mut self.cache,
+                                version_id,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
@@ -739,6 +795,9 @@ impl Engine {
                                 &functions,
                                 &self.meta_map,
                                 &mut diagnostics,
+                                &mut self.journal,
+                                &mut self.cache,
+                                version_id,
                             );
                         } else if cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
