@@ -2111,6 +2111,7 @@ pub(crate) fn compile_expr_guarded(
                         "sub-component '{}' (type '{}') does not implement trait '{}'",
                         sub_name, structure_name, trait_name
                     ))
+                    .with_code(DiagnosticCode::TraitNotImplemented)
                     .with_label(DiagnosticLabel::new(expr.span, "trait not implemented")),
                 );
             }

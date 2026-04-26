@@ -64,9 +64,10 @@ use std::collections::{HashMap, HashSet};
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DeterminacyPredicateKind,
-    Diagnostic, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, OptimizationObjective,
-    RealizationNodeId, ResolvedFunction, SelectorKind, Severity, SourceSpan, TAG_CONDITIONAL,
-    TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, Type, UnOp, Value, ValueCellId,
+    Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX,
+    OptimizationObjective, RealizationNodeId, ResolvedFunction, SelectorKind, Severity, SourceSpan,
+    TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, Type, UnOp, Value,
+    ValueCellId,
 };
 
 /// Compile a parsed module into a compiled module.
