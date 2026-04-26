@@ -791,6 +791,72 @@ mod tests {
 
     // --- step-5 regression lock: eval diagnostics never use constraint-violation format ---
 
+    /// Pins the contract of the `matches_constraint_violation_format` helper.
+    ///
+    /// The helper mirrors `format!("constraint {} violated", entry.id)` where
+    /// `entry.id: ConstraintNodeId` has Display `<entity>#constraint[<index>]`.
+    ///
+    /// POSITIVES — formats the production builder can produce — must return `true`.
+    /// NEGATIVES — must return `false`, including the previously-loose "no-spaces"
+    /// heuristic which would accept "constraint foo violated" (no `#constraint[N]`
+    /// shape). Shared by the six-test regression-lock cluster that follows.
+    #[test]
+    fn matches_constraint_violation_format_helper_is_precise() {
+        // POSITIVES: must return true
+        assert!(
+            matches_constraint_violation_format("constraint S#constraint[0] violated"),
+            "canonical single-token entity should match"
+        );
+        assert!(
+            matches_constraint_violation_format("constraint Bracket#constraint[7] violated"),
+            "multi-character entity, non-zero index should match"
+        );
+        assert!(
+            matches_constraint_violation_format("constraint S.sub#constraint[2] violated"),
+            "dotted entity (sub-component) should match"
+        );
+        assert!(
+            matches_constraint_violation_format("constraint S.sub[0]#constraint[2] violated"),
+            "collection-sub entity with bracket suffix should match"
+        );
+
+        // NEGATIVES: must return false
+        assert!(
+            !matches_constraint_violation_format("constraint foo violated"),
+            "single-token middle without #constraint[N] shape must not match"
+        );
+        assert!(
+            !matches_constraint_violation_format("constraint #constraint[0] violated"),
+            "empty entity must not match"
+        );
+        assert!(
+            !matches_constraint_violation_format("constraint S #constraint[0] violated"),
+            "whitespace before marker (entity contains space) must not match"
+        );
+        assert!(
+            !matches_constraint_violation_format("constraint S#constraint[abc] violated"),
+            "non-numeric index must not match"
+        );
+        assert!(
+            !matches_constraint_violation_format("constraint S#constraint[] violated"),
+            "empty index must not match"
+        );
+        assert!(
+            !matches_constraint_violation_format(
+                "constraint inference failed because X was violated"
+            ),
+            "extra prose between prefix and trailing ' violated' must not match"
+        );
+        assert!(
+            !matches_constraint_violation_format("some random message"),
+            "no prefix must not match"
+        );
+        assert!(
+            !matches_constraint_violation_format(""),
+            "empty string must not match"
+        );
+    }
+
     /// Invariant: `eval()` never emits diagnostics in the "constraint {id} violated" format.
     ///
     /// The `violated_messages` HashSet in `compute_diagnostics_with_state` is built from
