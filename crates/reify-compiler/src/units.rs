@@ -136,6 +136,21 @@ pub struct UnitEntry {
     pub source_module: Option<String>,
 }
 
+impl From<&CompiledUnit> for UnitEntry {
+    fn from(cu: &CompiledUnit) -> Self {
+        UnitEntry {
+            name: cu.name.clone(),
+            dimension: cu.dimension,
+            factor: cu.factor,
+            offset: cu.offset,
+            is_pub: cu.is_pub,
+            span: SourceSpan::empty(0),
+            content_hash: cu.content_hash,
+            source_module: None,
+        }
+    }
+}
+
 /// Registry mapping unit names to compiled unit entries.
 /// Built incrementally during the unit pre-pass so later units can reference earlier ones.
 pub struct UnitRegistry {
