@@ -48009,6 +48009,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T06:34:29.820Z"
+      },
+      {
+        "id": "2239",
+        "title": "Strengthen CASES coverage check: assert unique-variant set, not just count",
+        "description": "In `crates/reify-compiler/src/geometry_modify.rs:415-419`, the compile-time assert `CASES.len() == ModifyKind::VARIANT_COUNT` only verifies count parity. A CASES table with the right count but a duplicated variant and a missing one (e.g. two `Chamfer` rows and zero `Draft`) would silently pass. The no-wildcard sentinel closure above also doesn't catch this — it only enforces variant acknowledgement at the type level.\n\nOptional hardening: at the top of `compile_modify_op_non_geometry_target_fallback_all_single_geom_target_kinds` (or as a `#[test]`), build a `HashSet<ModifyKind>` from `CASES.iter().map(|(k, ..)| *k).collect()` and assert its length equals `ModifyKind::VARIANT_COUNT`. This catches duplicate-with-omission edits.\n\nReviewer flagged this as low priority — variant set is small and the closure already draws attention to CASES during edits. Treat as \"nice-to-have hardening\" rather than a defect.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48018,7 +48029,10 @@
       "completedCount": 1982,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T06:35:25.697Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T06:35:25.716Z"
     }
   }
 }
