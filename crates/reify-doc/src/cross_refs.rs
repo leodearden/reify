@@ -83,12 +83,25 @@ pub fn build_cross_refs(templates: &[reify_compiler::TopologyTemplate]) -> Cross
                 .or_default()
                 .push(template.name.clone());
         }
+
+        // entity → containers index
+        for sub in &template.sub_components {
+            result
+                .entity_to_containers
+                .entry(sub.structure_name.clone())
+                .or_default()
+                .push(template.name.clone());
+        }
     }
 
     // Post-process: sort + dedup inner vecs for deterministic output.
     for conformers in result.trait_to_conformers.values_mut() {
         conformers.sort();
         conformers.dedup();
+    }
+    for containers in result.entity_to_containers.values_mut() {
+        containers.sort();
+        containers.dedup();
     }
 
     result
