@@ -1545,7 +1545,7 @@ impl Engine {
                             &mut diagnostics,
                             &cell.id,
                             &cell.cell_type,
-                            *override_val,
+                            override_val,
                             rej,
                         );
                     }
