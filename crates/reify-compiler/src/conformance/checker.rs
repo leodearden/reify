@@ -841,6 +841,7 @@ pub(super) fn check_phase_check_members_against_requirements(
                             "type mismatch for trait member '{}': expected {}, got {}",
                             req.name, expected_type, actual_type
                         ))
+                        .with_code(DiagnosticCode::TypeMismatchForTraitMember)
                         .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
                     );
                 }
@@ -868,6 +869,7 @@ pub(super) fn check_phase_check_members_against_requirements(
                                  requirement expects {}, available default has {}",
                                 req.name, expected_type, default_type
                             ))
+                            .with_code(DiagnosticCode::TypeMismatchForTraitMember)
                             .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
                         );
                     }
@@ -1171,6 +1173,7 @@ pub(super) fn check_phase_inject_defaults(
                                 "type mismatch for trait let '{}': annotation expects {}, expression evaluates to {}",
                                 name, annotation_ty, compiled_expr.result_type
                             ))
+                            .with_code(DiagnosticCode::TypeMismatchForTraitMember)
                             .with_label(DiagnosticLabel::new(default.span, "type mismatch")),
                         );
                     }
