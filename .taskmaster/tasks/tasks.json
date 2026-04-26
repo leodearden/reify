@@ -46997,7 +46997,7 @@
         "id": "2195",
         "title": "engine_eval: unify EvalEvent journal and cache recording across all Param-cell eval paths",
         "description": "Two gaps in `crates/reify-eval/src/engine_eval.rs` leave Param-cell evaluations invisible to the journal and/or cache while other top-level Param paths record both:\n\n1. **S4 rejected-override-no-default path** (lines ~480-489): `cache.record_evaluation(...)` is deliberately omitted even though a `Started`/`Completed` EvalEvent pair IS emitted — tooling joining journal events against cache state finds the mismatch surprising, since every other top-level Param branch records both.\n\n2. **`eval_guarded_group_param_cell` helper** (~lines 180-254): emits neither `EvalEvent` records nor `cache.record_evaluation` calls, leaving all guarded-group Param evaluations invisible to both journal and cache while top-level Param evaluations are fully visible. The pre-task-2154 inline code skipped these too, so this is not a regression — but the asymmetry will surface as missing journal entries for consumers that join guarded-group Param evals against the cache.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "details": "- Add `cache.record_evaluation(...)` to the S4 rejected-override-no-default path in the top-level Param-cell loop (~lines 480-489) so journal EvalEvent entries and cache entries are always paired.\n- Emit `EvalEvent` journal records (Started/Completed) and call `cache.record_evaluation(...)` in `eval_guarded_group_param_cell` (~lines 180-254) to match the top-level Param branch behaviour.\n- Add or extend regression tests in `crates/reify-eval/tests/eval_param_overrides.rs` covering both gaps: (a) S4 path produces a cache entry alongside its EvalEvent pair, and (b) guarded-group Param evals appear in the journal and cache.\n- If the `cache.rs` interface needs extension to support either recording path, scope the change to `crates/reify-eval/src/cache.rs`.\n- If concurrent evaluation touches the same recording paths, update `crates/reify-runtime/src/concurrent.rs` accordingly.",
@@ -47023,9 +47023,12 @@
           },
           "curator_action": "combine",
           "curator_justification": "The candidate and task 2195 share the same root cause: Param-cell eval paths in engine_eval.rs that silently skip journal/cache recording while the remaining top-level paths record both. Task 2195 fixes the S4 top-level path missing cache.record_evaluation (EvalEvent is already emitted); the candidate fixes eval_guarded_group_param_cell missing both EvalEvent emission and cache.record_evaluation. Both are tiny (1–4 files each), serialize on the same reify-eval module lock, and touch the same fil",
-          "combined_at": "2026-04-25T08:53:56.377164+00:00"
+          "combined_at": "2026-04-25T08:53:56.377164+00:00",
+          "done_provenance": {
+            "commit": "95daeeb97ec25130ec059a5f17ece2f568edc622"
+          }
         },
-        "updatedAt": "2026-04-26T06:57:05.876Z"
+        "updatedAt": "2026-04-26T08:11:36.722Z"
       },
       {
         "id": "2196",
@@ -48396,9 +48399,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T08:11:30.542Z",
+      "lastModified": "2026-04-26T08:11:36.722Z",
       "taskCount": 2241,
-      "completedCount": 2003,
+      "completedCount": 2004,
       "tags": [
         "master"
       ]
