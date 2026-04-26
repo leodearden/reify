@@ -236,8 +236,10 @@ fn record_eval_completed(
 ///
 /// **Cache / journal**: every value-write path in this helper records a
 /// `Started` event before resolution and a `Completed { outcome }` event after
-/// calling `cache.record_evaluation`, mirroring the top-level Param branch
-/// pattern (engine_eval.rs:546-628). Task-2195 added journal+cache recording
+/// calling `cache.record_evaluation`, mirroring the top-level Param branch in
+/// `Engine::eval`'s first pass — the symmetric S4 arm is tagged
+/// `REJECTED-OVERRIDE-NO-DEFAULT`, and both sites funnel through the shared
+/// `record_eval_completed` helper. Task-2195 added journal+cache recording
 /// here to make guarded-group Param evals fully visible to tooling that joins
 /// journal events against cache state.
 fn eval_guarded_group_param_cell(
@@ -263,12 +265,12 @@ fn eval_guarded_group_param_cell(
             // No override stored AND no default_expr: write (Undef, Undetermined)
             // and return early.  This mirrors the inactive-member treatment a few
             // lines below in the calling loop (the `else` arm that writes Undef
-            // for deactivated cells) — NOT the top-level Param branch
-            // (engine_eval.rs:402-424), which bare-continues without inserting
-            // into `values` (a pre-task-2017 baseline preserved to avoid a
-            // cross-cutting behaviour change). Guarded-group cells always write
-            // Undef so all cells appear in EvalResult.values regardless of
-            // override presence.
+            // for deactivated cells) — NOT the top-level Param branch's
+            // no-override-no-default `None` arm (search `PARTIAL-MAP INVARIANT`
+            // in this file), which bare-continues without inserting into `values`
+            // (a pre-task-2017 baseline preserved to avoid a cross-cutting
+            // behaviour change). Guarded-group cells always write Undef so all
+            // cells appear in EvalResult.values regardless of override presence.
             if cell.default_expr.is_none() {
                 values.insert(cell.id.clone(), Value::Undef);
                 snapshot.values.insert(
