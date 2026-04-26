@@ -50244,14 +50244,14 @@
         "description": "Extend CompiledGeometryOp to attach metadata tags and integrate with runtime shape tagging for persistent topology naming.",
         "details": "This task involves extending the `CompiledGeometryOp` to attach metadata tags such as `(source_line, step_kind, sub_index)` as the OCCT shape is realized. Additionally, a per-ShapeId tag table should be added on the runtime shape to support persistent topology naming. The task requires wiring one already-shipped selector, `edges_at_height` from Task #318, through the new path as a proof-of-concept. This involves ensuring that the existing tests for Task #318 still pass after integration. Reference the `CompiledAdHocPort` from Task #249 for the plumbing pattern to ensure consistency and reliability in the implementation.",
         "testStrategy": "1. Verify that the `CompiledGeometryOp` correctly attaches the metadata tags during shape realization.\n2. Ensure that the per-ShapeId tag table is correctly populated and accessible at runtime.\n3. Integrate the `edges_at_height` selector and verify its functionality through the new path.\n4. Run existing tests from Task #318 to confirm they pass without modifications.\n5. Conduct additional tests to validate the persistence and accuracy of topology naming under various scenarios.",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "318",
           "249"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:59:05.333Z"
+        "updatedAt": "2026-04-26T20:12:31.630Z"
       },
       {
         "id": "2324",
@@ -50675,7 +50675,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:12:18.115Z",
+      "lastModified": "2026-04-26T20:12:31.630Z",
       "taskCount": 2342,
       "completedCount": 2059,
       "tags": [
