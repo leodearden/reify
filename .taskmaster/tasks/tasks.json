@@ -50003,23 +50003,21 @@
         "description": "Tracker task for v0.2 deferred work. PRD at docs/prds/v0_2/per-purpose-tolerance.md. Covers tolerance-keyed RealizationNodes (entity, repr_kind, tolerance), per-purpose tolerance scoping, conversion-chain budget allocation, imported-geometry tolerance promise (arch §10.4, §14.4, open question §16 #1). Tracker only; do not start in v0.1 phase.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:52:02.723Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:51:31.288Z",
-      "taskCount": 2299,
+      "lastModified": "2026-04-26T19:52:02.723Z",
+      "taskCount": 2300,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:51:58.387Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:51:58.414Z"
+      ]
     }
   }
 }
