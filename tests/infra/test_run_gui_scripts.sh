@@ -358,6 +358,9 @@ chmod +x "$_t25_tmpdir/bin/npm"
 # unrelated vite dev server from a concurrent task).  The polling loop must
 # reach the `kill -0 "$VITE_PID"` death-detection branch, not the
 # curl-success branch.
+# Exit 7 = CURLE_COULDNT_CONNECT, mimicking the real "no listener on :1420"
+# behaviour. The script only checks curl's success/failure (`if curl ...; then`),
+# so any non-zero exit works; 7 is chosen for semantic accuracy.
 cat > "$_t25_tmpdir/bin/curl" <<'CURL_STUB'
 #!/usr/bin/env bash
 exit 7
