@@ -50666,23 +50666,21 @@
         "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.3 lines 751-767 add NodePolicyOverrides struct supporting per-instance and per-type overrides for: CommitIfSlow (default), AlwaysCancelWhenStale, OnlyRunOnFinalInputs. Override resolution order: instance > type > default. Settable from project config and/or programmatically. Unit tests for override-precedence: instance-set wins over type-set wins over default.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:12:17.077Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:11:55.727Z",
-      "taskCount": 2341,
+      "lastModified": "2026-04-26T20:12:17.077Z",
+      "taskCount": 2342,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:12:11.943Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:12:11.997Z"
+      ]
     }
   }
 }
