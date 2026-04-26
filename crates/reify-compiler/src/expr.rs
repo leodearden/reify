@@ -1846,16 +1846,17 @@ pub(crate) fn compile_expr_guarded(
             match selector_kind {
                 SelectorKind::Face | SelectorKind::Edge => {
                     if args.len() != 1 {
-                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                        return make_poison_literal(
-                            diagnostics,
-                            Diagnostic::error(format!(
+                        // Anti-cascade (task-448/task-1912/task-1921): helper pushes; propagate poison.
+                        push_labeled_arg_count_error(
+                            format!(
                                 "@{} expects exactly 1 argument (a string name), got {}",
                                 selector,
                                 args.len()
-                            ))
-                            .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
+                            ),
+                            expr.span,
+                            diagnostics,
                         );
+                        return propagate_poison();
                     }
                     // Check that the argument is a string literal (type check)
                     if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind {
@@ -1875,15 +1876,16 @@ pub(crate) fn compile_expr_guarded(
                 }
                 SelectorKind::Point => {
                     if args.len() != 3 {
-                        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                        return make_poison_literal(
-                            diagnostics,
-                            Diagnostic::error(format!(
+                        // Anti-cascade (task-448/task-1912/task-1921): helper pushes; propagate poison.
+                        push_labeled_arg_count_error(
+                            format!(
                                 "@point expects exactly 3 coordinate arguments, got {}",
                                 args.len()
-                            ))
-                            .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
+                            ),
+                            expr.span,
+                            diagnostics,
                         );
+                        return propagate_poison();
                     }
                 }
             }
