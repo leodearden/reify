@@ -359,4 +359,42 @@ mod tests {
         let pool = WarmStatePool::new(1024);
         assert_eq!(pool.budget_bytes(), Some(1024));
     }
+
+    // --- Step 3: env-var parsing tests (compile-fails until step-4) ---
+
+    #[test]
+    fn default_budget_is_two_gib() {
+        assert_eq!(DEFAULT_BUDGET_BYTES, 2 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn budget_env_var_name() {
+        assert_eq!(BUDGET_ENV_VAR, "REIFY_WARM_STATE_BUDGET_BYTES");
+    }
+
+    #[test]
+    fn from_env_value_none_uses_default() {
+        let pool = WarmStatePool::from_env_value(None);
+        assert_eq!(pool.budget_bytes(), Some(DEFAULT_BUDGET_BYTES));
+    }
+
+    #[test]
+    fn from_env_value_numeric_parses() {
+        let pool = WarmStatePool::from_env_value(Some("1024"));
+        assert_eq!(pool.budget_bytes(), Some(1024));
+    }
+
+    #[test]
+    fn from_env_value_unlimited_disables_budget() {
+        // All three case variants must work
+        assert_eq!(WarmStatePool::from_env_value(Some("unlimited")).budget_bytes(), None);
+        assert_eq!(WarmStatePool::from_env_value(Some("UNLIMITED")).budget_bytes(), None);
+        assert_eq!(WarmStatePool::from_env_value(Some("Unlimited")).budget_bytes(), None);
+    }
+
+    #[test]
+    fn from_env_value_invalid_falls_back_to_default() {
+        let pool = WarmStatePool::from_env_value(Some("not-a-number"));
+        assert_eq!(pool.budget_bytes(), Some(DEFAULT_BUDGET_BYTES));
+    }
 }
