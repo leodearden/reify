@@ -723,4 +723,37 @@ mod tests {
             _ => panic!("expected NurbsCurve variant"),
         }
     }
+
+    #[test]
+    fn geometry_query_topology_variants_can_be_constructed_and_matched() {
+        let adj = GeometryQuery::AdjacentFaces {
+            shape: GeometryHandleId(1),
+            face_index: 0,
+        };
+        match &adj {
+            GeometryQuery::AdjacentFaces { shape, face_index } => {
+                assert_eq!(*shape, GeometryHandleId(1));
+                assert_eq!(*face_index, 0);
+            }
+            _ => panic!("expected AdjacentFaces variant"),
+        }
+
+        let shared = GeometryQuery::SharedEdges {
+            shape: GeometryHandleId(1),
+            face_a: 0,
+            face_b: 1,
+        };
+        match &shared {
+            GeometryQuery::SharedEdges {
+                shape,
+                face_a,
+                face_b,
+            } => {
+                assert_eq!(*shape, GeometryHandleId(1));
+                assert_eq!(*face_a, 0);
+                assert_eq!(*face_b, 1);
+            }
+            _ => panic!("expected SharedEdges variant"),
+        }
+    }
 }
