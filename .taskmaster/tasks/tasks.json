@@ -51278,6 +51278,21 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2384",
+        "title": "auto type-param: candidate enumeration with cap-of-10 + bound dispatch",
+        "description": "Implement candidate enumeration for auto type parameters, capping results at 10 and using trait conformance predicates.",
+        "details": "This task involves walking the in-scope type table at the use site to collect concrete types that satisfy the specified bounds (trait, kind, or composite). Utilize the trait conformance predicate from Task #66 to ensure types meet the necessary criteria. If more than 10 candidates are found, trigger the `E_AUTO_TYPE_PARAM_POOL_OVERFLOW` error, listing the first 10 candidates alphabetically. Refer to the PRD document at `docs/prds/auto-type-param-resolution.md` task 1 and specification section §3.9 for detailed requirements and constraints.",
+        "testStrategy": "1. Create unit tests to verify that candidate enumeration correctly identifies all valid types within scope.\n2. Test the integration with trait conformance predicates to ensure only compliant types are selected.\n3. Simulate scenarios with more than 10 candidates to confirm the overflow error is triggered and handled correctly.\n4. Validate that the candidates are listed alphabetically when overflow occurs.\n5. Conduct regression tests to ensure existing functionality remains unaffected.",
+        "status": "pending",
+        "dependencies": [
+          "66",
+          "17",
+          "21"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51287,7 +51302,10 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:24:55.735Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:24:59.909Z"
     }
   }
 }
