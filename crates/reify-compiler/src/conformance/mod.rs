@@ -2058,7 +2058,7 @@ mod tests {
     /// are counted — the warning is tolerated and the expression is cached normally.
     ///
     /// Assertions:
-    ///   (a) Exactly 1 diagnostic, with `severity == Severity::Warning`.
+    ///   (a) At least 1 diagnostic emitted, and ALL diagnostics have non-Error severity.
     ///   (b) `pass2_compile_errors` is empty — the warning must NOT be classified as failure.
     ///   (c) `("x", Let)` is present in `inferred_let_exprs`.
     ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::Real))`.
@@ -2111,18 +2111,19 @@ mod tests {
             &mut diagnostics,
         );
 
-        // (a) Exactly one Warning diagnostic emitted by compile_expr for the empty list.
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "Expected exactly 1 diagnostic (the empty-list-literal warning); got: {:?}",
-            diagnostics
+        // (a) At least one diagnostic was emitted and none are Error-severity.
+        //     The contract under test is "no Error ⇒ expression is cached", not the exact count.
+        //     Pinning to exactly 1 Warning would break if compile_expr adds a future Info/note
+        //     without any real regression.
+        assert!(
+            !diagnostics.is_empty(),
+            "Expected at least one diagnostic (the empty-list-literal warning); got none"
         );
-        assert_eq!(
-            diagnostics[0].severity,
-            Severity::Warning,
-            "Expected the diagnostic to be a Warning, not an Error; got: {:?}",
-            diagnostics[0]
+        assert!(
+            diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "Expected NO Error-severity diagnostic — warning-only compile_expr must be treated \
+             as success; got: {:?}",
+            diagnostics
         );
 
         // (b) The warning must NOT be classified as a compile failure.
