@@ -10,7 +10,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
 /// Helper: build a kernel containing one 10×10×10 box, return the kernel
 /// and the handle id of the box.
@@ -137,4 +137,29 @@ fn box_every_face_has_four_adjacent_faces_and_adjacency_is_symmetric() {
         all, expected,
         "union of all adjacency lists should cover faces 0..6 exactly"
     );
+}
+
+#[test]
+fn adjacent_faces_with_out_of_range_face_index_returns_query_failed() {
+    let (kernel, box_id) = box_kernel();
+
+    let result = kernel.query(&GeometryQuery::AdjacentFaces {
+        shape: box_id,
+        face_index: 99,
+    });
+
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("out of range"),
+                "expected error containing 'out of range', got: {msg}"
+            );
+            assert!(
+                msg.contains("99"),
+                "expected error containing the offending index '99', got: {msg}"
+            );
+        }
+        Ok(v) => panic!("expected Err(QueryFailed), got Ok({:?})", v),
+        Err(other) => panic!("expected QueryFailed, got {:?}", other),
+    }
 }
