@@ -48797,6 +48797,28 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T10:44:00.259Z"
+      },
+      {
+        "id": "2267",
+        "title": "eval_cached: param_override validation warning dropped on fast-path (same bug class as solver/cycle)",
+        "description": "In `crates/reify-eval/src/engine_eval.rs:1362-1376`, the Param branch of eval_cached's first pass calls `try_fast_path(&node_id, version)` BEFORE the override-validation block (lines 1417-1453). When the override is rejected, the warning is only emitted on a cache-miss path. On a same-version repeat call where the rejected-override result is cached, the fast-path returns the cached (fallback) Value and the validation warning is silently skipped — the override is still rejected from the user's mental model but no diagnostic is surfaced.\n\nThis contradicts the broader goal of task 2259: every eval_cached call must re-emit eval-time diagnostics for the LSP. It is the same architectural bug class that step-10/step-11 fixed for the solver and cycle-detection passes, but eval_cached's existing param-override tests call eval_cached only once per scenario, so the regression isn't locked.\n\nFix: move the override-validation diagnostic emission outside the cache fast-path and reuse gating so it fires on every call when an override is set, mirroring how the solver and cycle-detection passes are run unconditionally. Add a regression test asserting the param-override warning is re-emitted on a second eval_cached call (with same and bumped versions) on the same module.\n\nDone means: param_override TypeKindMismatch and ScalarDimensionMismatch warnings surface on every eval_cached call when a rejected override is set, matching cold-start eval() behavior; new repeat-call regression test added.\n\nSpawned from review of task 2259 (esc-2259-71, suggestion 4).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2268",
+        "title": "Refactor: extract shared helpers between eval() and eval_cached (cycle detection + solver invocation)",
+        "description": "Two large blocks of `crates/reify-eval/src/engine_eval.rs::eval_cached` were copy-pasted from their `eval()` counterparts during task 2259. Both sites format identical messages and identical control flow; any future fix to one will silently fail to propagate to the other.\n\n(a) Cycle detection (eval_cached lines 1491-1531 vs evaluate_let_bindings lines ~1768-1805): build let_cells map, extract traces, topological_sort, emit cyclic_members diagnostic. Extract a private helper `fn detect_let_cycle(template, diagnostics) -> (Vec<NodeId>, HashSet<NodeId>)` (or similar) and call from both sites. Alternatively, refactor `evaluate_let_bindings` itself so eval_cached can call it directly with the right cache/snapshot adapters.\n\n(b) Solver invocation (eval_cached lines 1665-1740 vs eval() lines ~1006-1158): auto_ids HashSet, filtered_constraints filter on dependency traces, AutoParam list construction, ResolutionProblem build, match on SolveResult. ~60 lines of structural duplication; the only difference is eval_cached's intentionally empty `Solved` arm. Extract `fn build_resolution_problem(&self, template, values) -> Option<ResolutionProblem>` returning None when no auto cells exist; both eval() and eval_cached dispatch on SolveResult locally. The Infeasible/NoProgress diagnostic-emission arms are identical and could be a second helper.\n\nDone means: cycle detection logic appears once; solver-invocation scaffolding appears once; existing tests pass with no behavioral change.\n\nSpawned from review of task 2259 (esc-2259-71, suggestions 2 and 3).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48806,7 +48828,10 @@
       "completedCount": 2020,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T10:45:04.928Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T10:45:05.216Z"
     }
   }
 }
