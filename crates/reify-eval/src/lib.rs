@@ -1079,12 +1079,6 @@ structure S {
     /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
     /// `Arc::strong_count >= 2`). This proves the per-solver-call construction is
     /// O(1) (a refcount bump), not an O(N) deep clone of the entire function table.
-    ///
-    /// Expected compile-failure before impl-2: `ResolutionProblem.functions` is
-    /// `Vec<CompiledFunction>`, not `Arc<Vec<CompiledFunction>>`, so
-    /// `Arc::ptr_eq(&engine.functions, &problem.functions)` is a type error
-    /// (`error[E0308]: mismatched types`). Both fields must be Arc'd before this
-    /// test can compile (task #2286).
     #[test]
     fn eval_resolution_problem_shares_functions_arc_with_engine() {
         use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
