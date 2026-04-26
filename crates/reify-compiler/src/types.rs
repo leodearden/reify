@@ -610,7 +610,7 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    pub(crate) const ALL: [Self; 5] = [
+    const ALL: [Self; 5] = [
         Self::Fillet,
         Self::Chamfer,
         Self::Shell,
