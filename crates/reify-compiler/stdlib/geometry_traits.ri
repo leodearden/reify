@@ -4,7 +4,10 @@
 // orientations) and attached as metadata; user `.ri` sources only need to
 // reference these names — no fields are required for conformance.
 //
-// Reference: docs/reify-stdlib-reference.md §3.10.
+// Reference: docs/reify-stdlib-reference.md §3.10. Scope: marker traits only.
+// §3.10's `Geometry` / `Transformable` supertraits and the Plane / Axis /
+// BoundingBox structures (with helpers like plane_xy) are deferred to a
+// follow-up task.
 
 // ── Spatial extent ──────────────────────────────────────────────────────────
 
