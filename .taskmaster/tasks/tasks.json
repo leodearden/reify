@@ -50258,10 +50258,11 @@
         "description": "PRD docs/prds/freshness-4-variant.md. Extend NodeCache (or equivalent cache entry struct) per arch §4.3 lines 524-532 to include freshness: Freshness. Default to Final on existing reads; existing tests must stay green. Provide single API surface for reading/writing freshness. Memory hint: 7ac9d86f notes EvalState is public and last_content_hash is decoupled — that's the integration point.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:15.829Z"
       },
       {
         "id": "2327",
@@ -50269,13 +50270,14 @@
         "description": "Develop FFI bindings for adjacent_faces and shared_edges topology selectors, enabling topology iteration and evaluation.",
         "details": "Implement the OCCT FFI for topology-relational selectors as specified in the PRD document. For adjacent_faces, iterate over a face's edge loop, collecting faces that share each edge. For shared_edges, intersect the edge lists of two faces to find shared edges. Integrate these functionalities into the standard library bindings and ensure they are correctly wired for evaluation. Consider edge cases such as non-manifold edges and ensure robust error handling. Use the OCCT API to access and manipulate the topology data efficiently.",
         "testStrategy": "Create tests using a box geometry to verify that each face has exactly four adjacent faces and that each adjacent pair shares exactly one edge. Validate the correct operation of both adjacent_faces and shared_edges selectors. Include tests for edge cases such as non-manifold edges and ensure that the system handles these gracefully without errors.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "249",
           "250"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:01:16.139Z"
       },
       {
         "id": "2328",
@@ -50306,15 +50308,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:00:26.013Z",
-      "taskCount": 2314,
+      "lastModified": "2026-04-26T20:01:16.139Z",
+      "taskCount": 2318,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:01:03.561Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:01:15.381Z"
+      ]
     }
   }
 }
