@@ -245,7 +245,19 @@ pub(crate) fn compile_field(
                 expr: compiled_expr,
             }
         }
-        reify_syntax::FieldSource::Imported { .. } => CompiledFieldSource::Imported,
+        reify_syntax::FieldSource::Imported { .. } => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "imported field sources are deferred to v0.2; v0.1 supports analytical, sampled, and composed only",
+                )
+                .with_code(DiagnosticCode::FieldImportedV02)
+                .with_label(DiagnosticLabel::new(
+                    field_def.span,
+                    "imported field source is deferred to v0.2",
+                )),
+            );
+            CompiledFieldSource::Imported
+        }
     };
 
     // Compute content hash
