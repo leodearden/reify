@@ -2795,7 +2795,7 @@ mod execute_with_config_tests {
     //! Tests for execute_with_config: priority, commitment, overrides.
     use super::*;
     use reify_runtime::Priority;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride};
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride, NodeKind, NodePolicyOverrides};
     use reify_runtime::concurrent::{SchedulerConfig, SchedulerError};
     use reify_runtime::priority_promotion::SharedPriorityPromoter;
     use std::sync::Mutex;
@@ -3578,6 +3578,71 @@ mod execute_with_config_tests {
         assert!(
             !result.skipped.contains(&node_a),
             "node_a should NOT be in skipped (default CommitIfSlow, evaluated normally)"
+        );
+    }
+
+    /// Test that a type-level override in NodePolicyOverrides routes through resolve().
+    ///
+    /// Two Value nodes at the same level; `set_type(NodeKind::Value, OnlyRunOnFinalInputs)`
+    /// is the only override — no per-instance entries. `has_intermediate_inputs` returns
+    /// `true` for all nodes. Both nodes should appear in `result.skipped` because the
+    /// type-level override is resolved by `NodePolicyOverrides::resolve` even without a
+    /// per-instance entry — proving the scheduler honours type-level overrides after migration.
+    #[tokio::test]
+    async fn test_type_level_override_routes_through_resolve() {
+        let e = "TYPE_OVERRIDE";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+
+        // Set type-level override for all Value nodes — no instance overrides
+        let mut node_overrides = NodePolicyOverrides::new();
+        node_overrides.set_type(NodeKind::Value, NodeCommitmentOverride::OnlyRunOnFinalInputs);
+
+        // has_intermediate_inputs returns true for all nodes
+        let config = SchedulerConfig {
+            node_overrides,
+            has_intermediate_inputs: Arc::new(|_| true),
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // Both Value nodes should be skipped by the type-level OnlyRunOnFinalInputs override
+        assert!(
+            result.skipped.contains(&node_a),
+            "node_a should be in skipped (type-level OnlyRunOnFinalInputs with intermediate inputs)"
+        );
+        assert!(
+            result.skipped.contains(&node_b),
+            "node_b should be in skipped (type-level OnlyRunOnFinalInputs with intermediate inputs)"
+        );
+        assert!(
+            !result.changed.contains(&node_a),
+            "node_a should NOT be in changed set"
+        );
+        assert!(
+            !result.changed.contains(&node_b),
+            "node_b should NOT be in changed set"
         );
     }
 } // mod execute_with_config_tests
