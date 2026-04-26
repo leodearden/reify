@@ -50104,7 +50104,16 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:55:00.971Z"
+        "updatedAt": "2026-04-26T19:55:00.971Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs",
+            "crates/reify-compiler/tests/unit_registry_tests.rs",
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": "2314",
@@ -50421,7 +50430,9 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:04:30.805Z",
+      "description": "Tasks for master context"
     }
   }
 }
