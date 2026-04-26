@@ -727,6 +727,83 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// task-2234: dimension mismatch on guarded-group ELSE-member emits warning
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A guarded-group Param in the `else { ... }` branch whose Scalar override carries
+/// a different SI dimension (here: LENGTH override against a Mass/MASS cell) is
+/// type-kind compatible — both sides are Scalar — so this path exercises
+/// ScalarDimensionMismatch, not TypeKindMismatch. eval() must detect the dimension
+/// drift, skip the override, emit a Warning mentioning "dimension", retain the
+/// override, fall back to the Mass default.
+///
+/// Closes the symmetry gap left by task-2154: the members-branch has [type-kind,
+/// dimension, survival] tests; the else_members-branch had [type-kind, survival]
+/// — this test adds the missing dimension test for the else-branch.
+///
+/// `eval_guarded_group_param_cell` (engine_eval.rs:216) is invoked from BOTH the
+/// `members` loop and the `else_members` loop. A future change special-casing the
+/// branches inside the helper would silently regress this path without the test.
+///
+/// Mirrors `eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning`
+/// (the members-branch sibling) — only the cell name (`y` vs `x`), the active flag
+/// (`false` vs `true`), and the source skeleton (else vs members) differ.
+#[test]
+fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_warning() {
+    let mut engine = fresh_engine();
+    let y_id = ValueCellId::new("S", "y");
+
+    // Module A: y is Scalar[LENGTH] in the else-branch (guard = false). Set a
+    // LENGTH override.
+    let module_a = guarded_module_with_else("Scalar", "10mm");
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
+
+    // Module B: y is now Mass (still Scalar kind; type-kind guard passes,
+    // ScalarDimensionMismatch fires on the else-branch helper invocation).
+    let module_b = guarded_module_with_else("Mass", "2kg");
+    let result_b = engine.eval(&module_b);
+
+    // (a) The Mass default wins (2kg → 2.0 SI).
+    let expected_mass_default = Value::Scalar {
+        si_value: 2.0,
+        dimension: DimensionVector::MASS,
+    };
+    assert_eq!(
+        result_b.values.get(&y_id),
+        Some(&expected_mass_default),
+        "dimension-mismatched override must be skipped in favour of Mass default on guarded-group else-member Param"
+    );
+
+    // (b) Exactly one Warning mentions the cell + the word "dimension".
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.y"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.y, got: {:?}",
+        result_b.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("dimension"),
+        "dimension-mismatch warning should mention 'dimension', got: {:?}",
+        warnings[0].message
+    );
+
+    // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
+    let module_a_again = guarded_module_with_else("Scalar", "10mm");
+    let result_a2 = engine.eval(&module_a_again);
+    assert_eq!(
+        result_a2.values.get(&y_id),
+        Some(&length_scalar(0.12)),
+        "override must survive a transient dimension-mismatch eval on guarded-group else-member Param"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // task-2179 S4: rejected-override-with-no-default inserts Undef into result.values
 // ──────────────────────────────────────────────────────────────────────────────
 
