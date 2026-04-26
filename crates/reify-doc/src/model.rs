@@ -28,4 +28,28 @@ mod tests {
         assert_eq!(model, back);
         assert!(back.modules.is_empty());
     }
+
+    #[test]
+    fn annotation_doc_serde_round_trip() {
+        let ann = AnnotationDoc {
+            name: "deprecated".to_string(),
+            args: vec!["\"use foo instead\"".to_string(), "since = \"1.0\"".to_string()],
+        };
+        let json = serde_json::to_string(&ann).expect("serialize");
+        let back: AnnotationDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(ann, back);
+        assert_eq!(back.args.len(), 2);
+    }
+
+    #[test]
+    fn pragma_doc_serde_round_trip() {
+        let pragma = PragmaDoc {
+            name: "inline".to_string(),
+            args: vec!["always".to_string()],
+        };
+        let json = serde_json::to_string(&pragma).expect("serialize");
+        let back: PragmaDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(pragma, back);
+        assert_eq!(back.args.len(), 1);
+    }
 }
