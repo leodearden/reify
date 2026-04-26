@@ -48841,13 +48841,13 @@
           ],
           "memory_hints": {
             "entities": [
-              "Engine::eval_cached",
-              "Engine::eval"
+              "Engine::eval_cached"
             ],
             "queries": [
-              "eval_cached param_override validation warning fast-path cache-hit",
-              "eval_cached diagnostics repeat-call emission engine_eval.rs",
-              "Engine::eval_cached silently drops eval-time diagnostics fix task 2259"
+              "eval_cached param_override fast-path validation",
+              "eval_cached fast-path skip conditions same bug class solver cycle",
+              "param_override handling eval vs eval_cached divergence",
+              "eval_cached silent diagnostics drop fix"
             ]
           },
           "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4"
