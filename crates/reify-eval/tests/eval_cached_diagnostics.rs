@@ -1059,3 +1059,80 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
         );
     }
 }
+
+/// Pin the wording-parity contract for circular let-binding diagnostics.
+///
+/// Asserts that `eval()` and `eval_cached()` emit **byte-identical** error
+/// messages for a template with two mutually-recursive let cells (`let a = b + 1.0`,
+/// `let b = a + 1.0`).
+///
+/// Passes today (wording is already identical at both call sites) and locks the
+/// contract: a future "improvement" of the error message at one site that
+/// forgets the other will cause this test to fail.
+#[test]
+fn eval_and_eval_cached_emit_byte_identical_circular_let_diagnostic() {
+    // Same cyclic fixture as eval_cached_emits_circular_let_binding_diagnostic
+    let expr_a = binop(
+        BinOp::Add,
+        value_ref_typed("S", "b", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+    let expr_b = binop(
+        BinOp::Add,
+        value_ref_typed("S", "a", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .let_binding("S", "a", Type::Real, expr_a)
+        .let_binding("S", "b", Type::Real, expr_b)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine_a =
+        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result_a = engine_a.eval(&module);
+
+    let mut engine_b =
+        Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+    let msgs_a: Vec<&str> = result_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("circular let-binding dependency"))
+        .map(|d| d.message.as_str())
+        .collect();
+    let msgs_b: Vec<&str> = result_b
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("circular let-binding dependency"))
+        .map(|d| d.message.as_str())
+        .collect();
+
+    assert_eq!(
+        msgs_a.len(),
+        1,
+        "eval() must emit exactly one circular-let diagnostic; got: {:?}",
+        result_a.diagnostics,
+    );
+    assert_eq!(
+        msgs_b.len(),
+        1,
+        "eval_cached() must emit exactly one circular-let diagnostic; got: {:?}",
+        result_b.eval_result.diagnostics,
+    );
+    assert_eq!(
+        msgs_a[0],
+        msgs_b[0],
+        "Circular let-binding diagnostic must be byte-identical between eval() and eval_cached();\n\
+         eval():        {:?}\n\
+         eval_cached(): {:?}",
+        msgs_a[0],
+        msgs_b[0],
+    );
+}
