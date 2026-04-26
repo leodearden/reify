@@ -10,7 +10,7 @@
 //! the two passes run at different phases and emit non-overlapping diagnostic sets.
 
 use reify_syntax::{ParsedModule, PragmaArg, PragmaValue};
-use reify_types::{Diagnostic, DiagnosticLabel, DimensionVector, Value};
+use reify_types::{Diagnostic, DiagnosticLabel, DimensionVector, SourceSpan, Value};
 
 use crate::types::CompiledModule;
 use crate::units::unit_to_scalar;
@@ -19,6 +19,60 @@ use crate::units::unit_to_scalar;
 /// mutating typed fields and pushing diagnostics in place.
 pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledModule) {
     apply_precision_pragma(parsed, module);
+    warn_block_level_precision(module);
+}
+
+/// Walk every block-level pragma container on the assembled module and emit
+/// one "ignored in v0.1; per-block tolerance deferred to v0.2" warning per
+/// `#precision` pragma found.
+///
+/// PRD §2: per-block tolerance is deferred to v0.2. The complementary
+/// `validate_pragmas` pre-pass deliberately does NOT warn on `#precision` (it
+/// is in `KNOWN_BLOCK_PRAGMAS`), so this is the single site that flags
+/// block-level usage.
+///
+/// The walk collects spans first to avoid borrow conflicts between iterating
+/// the `&module` slices and pushing into `module.diagnostics`.
+fn warn_block_level_precision(module: &mut CompiledModule) {
+    let mut spans: Vec<SourceSpan> = Vec::new();
+
+    for i in 0..module.templates.len() {
+        for pragma in &module.templates[i].pragmas {
+            if pragma.name == "precision" {
+                spans.push(pragma.span);
+            }
+        }
+    }
+    for i in 0..module.trait_defs.len() {
+        for pragma in &module.trait_defs[i].pragmas {
+            if pragma.name == "precision" {
+                spans.push(pragma.span);
+            }
+        }
+    }
+    for i in 0..module.compiled_purposes.len() {
+        for pragma in &module.compiled_purposes[i].pragmas {
+            if pragma.name == "precision" {
+                spans.push(pragma.span);
+            }
+        }
+    }
+    for i in 0..module.constraint_defs.len() {
+        for pragma in &module.constraint_defs[i].pragmas {
+            if pragma.name == "precision" {
+                spans.push(pragma.span);
+            }
+        }
+    }
+
+    for span in spans {
+        module.diagnostics.push(
+            Diagnostic::warning(
+                "#precision is ignored in v0.1; per-block tolerance deferred to v0.2",
+            )
+            .with_label(DiagnosticLabel::new(span, "ignored in v0.1")),
+        );
+    }
 }
 
 /// Process the first well-formed module-level `#precision(<Length-quantity>)` pragma:
