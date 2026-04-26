@@ -49148,11 +49148,11 @@
         "description": "Three related test-cleanup suggestions on the eval-diagnostics regression-lock cluster in `crates/reify-lsp/src/diagnostics.rs` (the `eval_diagnostics_regression_lock_cluster` test added by task 2248):\n\n1. **Split the single `#[test]` into per-emitter tests.** All five fixtures (param_override_type_kind_mismatch, param_override_dimension_mismatch, sub_component_unknown_structure, solver_infeasible, solver_no_progress) currently run inside one `#[test]`. The first failure aborts the rest, so a regression that breaks two emitters is reported as a single failure — losing diagnostic value. The fixtures are independent (own engine, own source) so there is no shared expensive setup that would justify bundling. Split into five `#[test]` functions named after the emitter (e.g. `eval_diag_format_param_override_type_kind`, `..._dimension`, `..._sub_component_unknown`, `..._solver_infeasible`, `..._solver_no_progress`).\n\n2. **Drop the `Fixture` struct + `Vec<Box<dyn Fn>>` machinery.** Once split per (1), the dynamic-dispatch / boxed-closure scaffolding (`Box<dyn Fn(&[Diagnostic]) -> bool>` / `Box<dyn Fn() -> Vec<Diagnostic>>` in a `Vec<Fixture>`) is unnecessary noise — there's no runtime parametrization or tabular extension. Replace with a small helper `assert_no_violation_format(diags: &[Diagnostic], label: &str)` that each test calls inline.\n\n3. **Drop cross-file line-number references in doc-comments and `sanity_desc`.** The doc-comments and inline `sanity_desc` strings pin specific line numbers in `engine_eval.rs` (282-287, 289-293, 877-880, 1165-1169, 1170-1175) and `unfold.rs:518`. These rot every time those files are touched, but nothing actually fails when they go stale — they degrade silently. Drop the `:NNN-NNN` suffixes and refer to the emitter by symbol/path (e.g. \"engine_eval.rs param_override path\", \"engine_eval.rs sub-component lookup\"); keep the call-site description.\n\nThe anchor assertion (lines 879–892) and the `counter > 0` solver-dispatch checks must be preserved across the split. Source: post-merge `reviewer_comprehensive` suggestions on task 2248.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T12:36:36.136Z",
+        "updatedAt": "2026-04-26T13:15:50.347Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -49164,7 +49164,10 @@
               "per-emitter test split diagnostics.rs eval-diagnostics cluster"
             ]
           },
-          "_causation_id": "c33dfab8-7303-4c9c-b2df-2285b4d4b6e0"
+          "_causation_id": "c33dfab8-7303-4c9c-b2df-2285b4d4b6e0",
+          "done_provenance": {
+            "commit": "50dba0ecd103ee3b858fbc53dc6b706c82e51d51"
+          }
         }
       },
       {
@@ -49243,9 +49246,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T13:07:30.447Z",
+      "lastModified": "2026-04-26T13:15:50.347Z",
       "taskCount": 2267,
-      "completedCount": 2035,
+      "completedCount": 2036,
       "tags": [
         "master"
       ]
