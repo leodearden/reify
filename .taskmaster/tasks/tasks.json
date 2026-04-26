@@ -48986,11 +48986,25 @@
         "description": "Replace `guard_expr: Option<CompiledExpr>` + `guard_compile_failed: bool` on `SubComponentDecl` (crates/reify-compiler/src/types.rs:367-374) with a single enum to make the invariant unrepresentable.\n\nCurrently the two fields encode three valid states (valid/broken/absent) but one combination — `Some(_)` + `guard_compile_failed=true` — is invalid and only documented via a doc-comment.\n\nProposed:\n```rust\nenum GuardState {\n    None,            // user wrote no guard\n    Broken,          // user wrote a guard but it failed to compile\n    Compiled(CompiledExpr),\n}\n```\n\nThe termination-check switch becomes a `match` over three arms with no need to skip-and-then-check.\n\nNot blocking — current encoding is correct. Source: post-merge review suggestion S1 from esc-1296-114 on task 1296.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:43:48.083Z"
+        "updatedAt": "2026-04-26T11:50:40.473Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/connect.rs",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/scc.rs",
+            "crates/reify-compiler/src/termination.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/termination_check_tests.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/unfold.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs",
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": "2272",
@@ -49007,7 +49021,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:44:49.546Z",
+      "lastModified": "2026-04-26T11:50:40.474Z",
       "taskCount": 2261,
       "completedCount": 2026,
       "tags": [
