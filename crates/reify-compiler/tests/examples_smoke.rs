@@ -2,7 +2,7 @@
 //! with no Error-severity diagnostics.
 //!
 //! Motivation: per-file test wrappers (m5_integration, m8_stdlib_integration,
-//! m11_full_integration, …) cover a subset of the 42 example files, but files
+//! m11_full_integration, …) cover a subset of the example files, but files
 //! without a wrapper drift silently.  This test walks the directory and catches
 //! every file at once.
 
