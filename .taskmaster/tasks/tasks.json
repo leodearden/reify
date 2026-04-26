@@ -47256,14 +47256,13 @@
       {
         "id": "2205",
         "title": "Introduce diagnostic codes to replace wording-coupled test assertions",
-        "description": "Tests currently assert substring matches on human-readable diagnostic messages (e.g. qualified_access_compile_tests.rs:281-298 pins the phrase \"does not implement trait\"). Any rewording of the conformance error breaks these tests without catching a behavioral regression. Introduce a `DiagnosticCode` enum (e.g. `TraitNotImplemented`, `ConflictingTraitRequirements`, etc.) attached to `Diagnostic`, then migrate tests from substring matching to `d.code == DiagnosticCode::TraitNotImplemented`. This is a cross-cutting infra change: define the enum and wire the most commonly asserted-on diagnostics first, then migrate tests incrementally. Note: only the canonical \"does not implement trait\" substring assertion is in place today (task 387); broader rollout comes as tests are touched.",
-        "details": "<info added on 2026-04-24T11:33:19.237Z>\nArchitectural context discovered during implementation (2026-04-24): There are two `code` fields in the diagnostics pipeline that must be kept distinct. (1) `Diagnostic.code: Option<DiagnosticCode>` — the new typed enum this task introduces, attached to the internal runtime Diagnostic for test assertions. (2) `DiagnosticInfo.code: Option<String>` — an existing field in `crates/reify-types/src/diagnostics.rs` used on the serde/MCP wire boundary; populated from `crates/reify-cli/src/mcp_context.rs:228`. The mapping from the typed enum to the wire string must happen in `mcp_context.rs`. Do not collapse these two fields — they serve different layers.\n</info added on 2026-04-24T11:33:19.237Z>",
-        "testStrategy": "",
+        "description": "Tests currently assert substring matches on human-readable diagnostic messages (e.g. qualified_access_compile_tests.rs:281-298 pins the phrase \"does not implement trait\"). Any rewording of the conformance error breaks these tests without catching a behavioral regression. Introduce a `DiagnosticCode` enum (e.g. `TraitNotImplemented`, `ConflictingTraitRequirements`, `MissingRequiredMember`, `MissingRequiredSubComponent`, `TypeMismatchForTraitMember`, `TypeNotConformingToTrait`) attached to `Diagnostic`, migrate the wording-coupled assertions to code-based assertions, and at the same time resolve the serde wire-format ambiguity on `DiagnosticCode` (see Serde wire format section below).",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
+        "details": "## Architecture note (two distinct code fields)\nTwo `code` fields in the diagnostics pipeline must be kept distinct:\n1. `Diagnostic.code: Option<DiagnosticCode>` — the new typed enum attached to the internal runtime Diagnostic, used for test assertions.\n2. `DiagnosticInfo.code: Option<String>` — existing field in `crates/reify-types/src/diagnostics.rs` used on the serde/MCP wire boundary; populated from `crates/reify-cli/src/mcp_context.rs:228`.\nThe mapping from the typed enum to the wire string must happen in `mcp_context.rs`. Do not collapse these two fields — they serve different layers.\n\n## Producer wiring (conformance-checker call sites)\nFour DiagnosticCode variants are already defined in `crates/reify-types/src/diagnostics.rs` (lines 184-201) but not yet attached at the producer sites:\n- `MissingRequiredMember`\n- `MissingRequiredSubComponent`\n- `TypeMismatchForTraitMember`\n- `TypeNotConformingToTrait`\n\nWire `.with_code(DiagnosticCode::X)` at the matching `diagnostics.push(...)` sites in:\n- `crates/reify-compiler/src/conformance/checker.rs` (~lines 810, 840, 866, 890, 895)\n- `crates/reify-compiler/src/conformance/mod.rs` (~lines 191, 197, 210, 240)\n\nIf any variant has no clear producer counterpart after inspection, drop the unused variant rather than leaving dead code.\n\n## Test migration\nMigrate conformance-related tests from substring matching to code-based assertions (`d.code == DiagnosticCode::...`) in:\n- `crates/reify-compiler/tests/trait_conformance_tests.rs`\n- `crates/reify-compiler/tests/collection_sub_tests.rs`\n- `crates/reify-compiler/tests/qualified_access_compile_tests.rs` (especially lines 281-298)\n- `crates/reify-compiler/tests/m9_error_cases.rs`\n\nDo not delete the human-readable message assertions entirely — keep at least one per diagnostic kind to prevent silent message regressions. The goal is to make code assertions the primary discriminator and message assertions secondary.\n\n## Serde wire format (DiagnosticCode)\n`crates/reify-types/src/diagnostics.rs:154` applies `#[serde(rename_all = \"PascalCase\")]` to `DiagnosticCode` whose variants are already PascalCase — the attribute is a no-op today but silently commits the wire identifier to the variant name forever, and would silently rewrite a future two-word camelCase variant. The doc comment's stability claim comes from the variant name, not the attribute. Choose one of the following two resolutions:\n- **Drop the attribute**: variant names already produce the desired wire format; removing it has no behavioral effect and removes a false sense of enforcement.\n- **Add a pin test**: keep the attribute and add a `#[cfg(test)]` serde round-trip test in `diagnostics.rs` that serializes each `DiagnosticCode` variant and asserts the exact output string, making the wire-format contract explicit and load-bearing.\n\nDo not leave the attribute in place without a pin test.",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:09.751Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -47288,7 +47287,10 @@
               "DiagnosticCode Option runtime Diagnostic enum typed",
               "mcp_context.rs line 228 code field mapping diagnostics"
             ]
-          }
+          },
+          "curator_action": "combine",
+          "curator_justification": "The candidate is tiny (1 file, ~250 chars of real detail) and is spawned directly from task 2205, which is PENDING and combine_eligible=true. Task 2205 is the task that *creates* DiagnosticCode in crates/reify-types/src/diagnostics.rs — the exact same file and enum the candidate concerns. The serde rename_all no-op question is naturally resolved at the same moment the implementer writes the enum, so combining loses zero parallelism and avoids a separate orchestrator cycle for a trivial cleanup. ",
+          "combined_at": "2026-04-26T08:31:49.214308+00:00"
         }
       },
       {
@@ -48409,6 +48411,17 @@
             "crates/reify-eval/src/engine_eval.rs"
           ]
         }
+      },
+      {
+        "id": "2253",
+        "title": "Extend DiagnosticCode with constraint-domain variants and migrate constraint-solver sites",
+        "description": "In crates/reify-constraints, Diagnostic literals at src/lib.rs:50, 64, 78; src/solver.rs:680; src/solvespace.rs:960 are constructed with code: None even though the failures are well-typed (constraint violation, unsatisfiable, divergence/no progress). Task 2205 added code: None to keep struct literals compiling, but skipping the natural follow-on means future test/wire consumers still substring-match these messages. Add ConstraintViolated / ConstraintUnsatisfiable / ConstraintDivergence (or similar) variants to DiagnosticCode and migrate the five sites.",
+        "details": "Follow-up to task 2205. The reviewer flagged this explicitly as out of scope of the original task but worth tracking. If preferred over migration, document in the DiagnosticCode enum doc that constraint diagnostics are deliberately deferred — but a typed code is the higher-value option.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48418,7 +48431,10 @@
       "completedCount": 2006,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T08:24:56.744Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T08:32:07.288Z"
     }
   }
 }
