@@ -11,11 +11,12 @@
 //! The tests are grouped with TDD step numbers in comments for traceability.
 
 use reify_eval::Engine;
+use reify_eval::cache::NodeId;
 use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver};
 use reify_test_support::*;
 use reify_types::{
-    BinOp, CompiledExpr, Diagnostic, DimensionVector, ModulePath, Type, Value, ValueCellId,
-    VersionId,
+    BinOp, CompiledExpr, Diagnostic, DimensionVector, ModulePath, Severity, Type, Value,
+    ValueCellId, VersionId,
 };
 
 // ── step-1: circular let-binding ────────────────────────────────────────────
@@ -755,5 +756,123 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
         "third eval_cached call (bumped version) must also emit unknown-structure \
          diagnostic (must not drop on cache hit); got: {:?}",
         result3.eval_result.diagnostics,
+    );
+}
+
+// ── task-2266: cyclic let-cells must not be cached or appear in values ────────
+
+/// Cyclic let cells must not be written to the cache or to `eval_result.values`
+/// by `eval_cached`, mirroring `eval()`'s behavior in `evaluate_let_bindings()`.
+///
+/// Today (before the fix) `eval_cached` appends cyclic cells to `ordered_let_cells`
+/// and iterates them in the second pass, calling `cache.record_evaluation` and
+/// `values.insert` with forward-reference lookups that produce Undef-derived garbage.
+/// This persists garbage entries in the cache and diverges `eval_cached`'s value-map
+/// shape from `eval()`'s.
+///
+/// The test asserts:
+/// - Cache parity: `cache_store().get(&node_id).is_none()` for BOTH the `eval()` engine
+///   and the `eval_cached()` engine.  Asserting both sides pins the symmetric invariant.
+/// - Value-map parity: `.values.get(&cell_id).is_none()` for BOTH result maps.
+/// - The circular diagnostic is still emitted on the eval_cached side (defensive).
+///
+/// The test FAILS today on the eval_cached side because `cache.get(&node_id)` returns
+/// `Some` (garbage was cached) and `values.get(&cell_id)` returns `Some(Value::Undef)`
+/// (the garbage value was inserted into the map).
+#[test]
+fn eval_cached_does_not_cache_cyclic_let_cells() {
+    // `a = b + 1.0`  and  `b = a + 1.0` — mutually recursive (same shape as
+    // eval_cached_emits_circular_let_binding_diagnostic)
+    let expr_a = binop(
+        BinOp::Add,
+        value_ref_typed("S", "b", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+    let expr_b = binop(
+        BinOp::Add,
+        value_ref_typed("S", "a", Type::Real),
+        literal(Value::Real(1.0)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .let_binding("S", "a", Type::Real, expr_a)
+        .let_binding("S", "b", Type::Real, expr_b)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let cell_a = ValueCellId::new("S", "a");
+    let cell_b = ValueCellId::new("S", "b");
+    let node_a = NodeId::Value(cell_a.clone());
+    let node_b = NodeId::Value(cell_b.clone());
+
+    // Engine A: eval() path (the reference / known-good side)
+    let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result_a = engine_a.eval(&module);
+
+    // Engine B: eval_cached() path (the side under fix)
+    let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+    // ── cache parity ─────────────────────────────────────────────────────────
+    assert!(
+        engine_a.cache_store().get(&node_a).is_none(),
+        "eval() engine must NOT have a cache entry for cyclic cell 'a'; got: {:?}",
+        engine_a.cache_store().get(&node_a),
+    );
+    assert!(
+        engine_a.cache_store().get(&node_b).is_none(),
+        "eval() engine must NOT have a cache entry for cyclic cell 'b'; got: {:?}",
+        engine_a.cache_store().get(&node_b),
+    );
+    assert!(
+        engine_b.cache_store().get(&node_a).is_none(),
+        "eval_cached() engine must NOT have a cache entry for cyclic cell 'a'; got: {:?}",
+        engine_b.cache_store().get(&node_a),
+    );
+    assert!(
+        engine_b.cache_store().get(&node_b).is_none(),
+        "eval_cached() engine must NOT have a cache entry for cyclic cell 'b'; got: {:?}",
+        engine_b.cache_store().get(&node_b),
+    );
+
+    // ── value-map parity ──────────────────────────────────────────────────────
+    assert!(
+        result_a.values.get(&cell_a).is_none(),
+        "eval() result must NOT contain a value for cyclic cell 'a'; got: {:?}",
+        result_a.values.get(&cell_a),
+    );
+    assert!(
+        result_a.values.get(&cell_b).is_none(),
+        "eval() result must NOT contain a value for cyclic cell 'b'; got: {:?}",
+        result_a.values.get(&cell_b),
+    );
+    assert!(
+        result_b.eval_result.values.get(&cell_a).is_none(),
+        "eval_cached() result must NOT contain a value for cyclic cell 'a'; got: {:?}",
+        result_b.eval_result.values.get(&cell_a),
+    );
+    assert!(
+        result_b.eval_result.values.get(&cell_b).is_none(),
+        "eval_cached() result must NOT contain a value for cyclic cell 'b'; got: {:?}",
+        result_b.eval_result.values.get(&cell_b),
+    );
+
+    // ── diagnostic still emitted on eval_cached side (defensive) ─────────────
+    // Assert structural shape only: exactly one error-severity diagnostic.
+    // Wording is already pinned by `eval_cached_emits_circular_let_binding_diagnostic`.
+    let error_count = result_b
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        error_count,
+        1,
+        "eval_cached must emit exactly one error-severity diagnostic for a cyclic-let module; got: {:?}",
+        result_b.eval_result.diagnostics,
     );
 }
