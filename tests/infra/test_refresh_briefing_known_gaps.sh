@@ -148,5 +148,36 @@ assert "Check 3: stderr contains task id 42" \
 assert "Check 3: stderr contains gap text 'thing X'" \
     grep -q "thing X" "$_stderr3"
 
+# ==============================================================================
+# Checks 4–6: non-done statuses (in-progress, pending, blocked) → exit 0, no WARN
+# ==============================================================================
+echo ""
+echo "--- Checks 4-6: non-done statuses are not flagged as mismatches ---"
+
+for _status in "in-progress" "pending" "blocked"; do
+    _brief_s="$_tmpdir/briefing_${_status}.yaml"
+    _tasks_s="$_tmpdir/tasks_${_status}.json"
+
+    cat > "$_brief_s" <<YAML
+subprojects:
+  proj:
+    known_gaps:
+      - what: "some gap"
+        tracking: "100"
+YAML
+
+    printf '{"master":{"tasks":[{"id":"100","title":"Task 100","status":"%s"}]}}\n' "$_status" > "$_tasks_s"
+
+    _stderr_s="$_tmpdir/stderr_${_status}.txt"
+    _exit_s=0
+    python3 "$REFRESH_SCRIPT" --briefing "$_brief_s" --tasks "$_tasks_s" 2>"$_stderr_s" || _exit_s=$?
+
+    assert "status=$_status: exit code is 0 (not done — no mismatch)" \
+        test "$_exit_s" -eq 0
+
+    assert "status=$_status: stderr contains no WARN" \
+        bash -c "! grep -q 'WARN' '$_stderr_s'"
+done
+
 # -- Summary ------------------------------------------------------------------
 test_summary
