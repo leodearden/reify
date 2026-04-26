@@ -47834,11 +47834,13 @@
           ],
           "memory_hints": {
             "entities": [
-              "TraitConformance"
+              "DiagnosticCode",
+              "Conformance"
             ],
             "queries": [
-              "trait conformance Option TraitObject collection-typed params call site check",
-              "conformance mod.rs TODO follow-up known gap trait params"
+              "Option<TraitObject> collection-typed trait param conformance",
+              "conformance call site trait param handling",
+              "DiagnosticCode conformance producer variants 2258"
             ]
           },
           "_causation_id": "94644130-2f15-41ed-9dc9-f2551db2f971"
