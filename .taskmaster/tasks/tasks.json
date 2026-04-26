@@ -47422,7 +47422,7 @@
         "id": "2213",
         "title": "Replace magic-string \"Structure\" wildcard guard in purpose member validation with a named constant",
         "description": "Two no-behavior-change code-clarity improvements in the purpose-body section of `crates/reify-compiler/src/expr.rs`: (1) move the ~40-line task-2199 FIXME blocker analysis out of the hot compile path and replace it with a short pointer comment; (2) extract the magic-string \"Structure\" wildcard guard to a named constant so the convention is greppable.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "**Hook points:**\n- `expr.rs:1141-1180` — FIXME blocker analysis block (Blocker 1: list population at activate_purpose; Blocker 2: quantifier identity carry-through; Blocker 3: element-type lockstep w/ task-1904)\n- `expr.rs:1183-1218` — purpose-subject regular-member-access branch, `struct_name != \"Structure\"` guard\n\n---\n\n**(A) Relocate task-2199 FIXME blocker analysis (esc-2199-15 S2)**\n\nMove the multi-blocker analysis block to either (a) the task-2199 details/notes in the task DB, or (b) a `docs/notes/purpose-reflective-aggregation.md`-style file. Replace the inline ~40 lines with a short pointer comment, e.g.:\n\n```rust\n// Reflective aggregation placeholder — emits empty list so forall is vacuously\n// true. Runtime expansion deferred; see task-2199 notes for the three blockers\n// (list population, quantifier identity carry-through, element-type lockstep)\n// and the §8 characterization test in purpose_activation.rs.\nreturn CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));\n```\n\nDo NOT change the placeholder behavior itself — that remains the scope of task 2199. Source: esc-2199-15 S2 (reviewer_comprehensive on task 2199).\n\n---\n\n**(B) Extract \"Structure\" wildcard guard to named constant (esc-2200-41 S2)**\n\n**Problem:** The guard `struct_name != \"Structure\"` at line 1187 is a magic-string comparison. A stdlib (or user) structure literally named `Structure` would silently bypass validation — a fragile invariant that depends on the entire system never registering that name.\n\n**Approach:**\n1. Introduce a constant `WILDCARD_STRUCTURE_KIND: &str = \"Structure\"` colocated with the entity_kind wildcard logic in `expr.rs` near the purpose-subject branch (or in a shared location if other wildcard kinds, e.g. `Occurrence`, eventually join it).\n2. Replace the bare string literal at line 1187 with the constant.\n3. (Optional / stretch) If a more semantic predicate (e.g. `entity_kind.is_wildcard()`) can be cheaply introduced, prefer it — otherwise the named constant is sufficient.\n\n**Acceptance:**\n- Inline FIXME block at `expr.rs:1141-1180` replaced with a ≤5-line pointer comment; placeholder runtime behavior unchanged.\n- No remaining bare `\"Structure\"` string compare in the purpose-subject branch.\n- A grep for `WILDCARD_STRUCTURE_KIND` (or chosen name) finds the rule in exactly one location.\n- Existing tests in `purpose_compile_tests.rs` still pass (the wildcard characterization test in particular).\n- `cargo clippy --workspace -- -D warnings` and `cargo fmt --check` clean.",
@@ -47444,9 +47444,12 @@
           "_causation_id": "6964b007-e4e0-4e06-a277-cb1ab4f1ea89",
           "curator_action": "combine",
           "curator_justification": "Both tasks are tiny, no-behavior-change code-clarity edits in the same file (`crates/reify-compiler/src/expr.rs`) within the same contiguous purpose-body section (lines 1141–1218). They serialize on the same module lock, so combining loses zero parallelism. The union of files_to_modify stays within the same 2-file lock set already held by task 2213. An implementer loads the purpose-body section once and handles both cleanups in a single pass.",
-          "combined_at": "2026-04-25T08:30:48.535886+00:00"
+          "combined_at": "2026-04-25T08:30:48.535886+00:00",
+          "done_provenance": {
+            "commit": "2fc4320066ffbe30323ce83eb2c0ec9f10c80b2e"
+          }
         },
-        "updatedAt": "2026-04-25T08:31:20.537Z"
+        "updatedAt": "2026-04-26T06:55:02.910Z"
       },
       {
         "id": "2214",
@@ -48111,9 +48114,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T06:54:58.068Z",
+      "lastModified": "2026-04-26T06:55:02.912Z",
       "taskCount": 2230,
-      "completedCount": 1989,
+      "completedCount": 1990,
       "tags": [
         "master"
       ]
