@@ -49936,13 +49936,14 @@
         "description": "Declare Bounded, Watertight, Closed, Manifold, Orientable, Convex, Connected as marker traits in the geometry_traits.ri file.",
         "details": "Implement the marker traits Bounded, Watertight, Closed, Manifold, Orientable, Convex, and Connected in the `crates/reify-compiler/stdlib/geometry_traits.ri` file. These traits should be defined as empty traits to serve as markers for geometric properties. Follow the specifications outlined in the PRD document `docs/prds/geometry-traits.md`, specifically task 1. Ensure that the traits are correctly documented and integrated into the existing stdlib structure. Consider how these traits might interact with existing geometry-related traits and structures.",
         "testStrategy": "1. Verify that the `geometry_traits.ri` file compiles without errors.\n2. Ensure each marker trait is correctly declared and accessible.\n3. Write unit tests to check that objects can implement these traits without additional requirements.\n4. Confirm that the traits are documented and appear in generated documentation.\n5. Run `cargo test -p reify-compiler -- geometry_traits` to ensure all tests pass.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "326",
           "329"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:50:02.093Z"
       },
       {
         "id": "2308",
@@ -49950,23 +49951,21 @@
         "description": "Test 25 (\"vite-process-death early-exit branch\") in tests/infra/test_run_gui_scripts.sh hardcodes port 1420 and assumes nothing is listening on it. When another worktree has a live vite dev server on 127.0.0.1:1420 (e.g. /home/leo/src/reify/.claude/worktrees/gui-smoke-test), the test's polling loop's `curl -fsS http://127.0.0.1:1420/` succeeds against the OTHER worktree's vite, sets VITE_READY=1, and the script proceeds to `cargo build` in the test's tmpdir (no Cargo.toml) — exits with rc=101 instead of via the expected vite-death branch. The \"exits non-zero\" assertion passes but \"emits 'vite process exited'\" fails, blocking verify for any task whose verify runs while the gui-smoke-test worktree's vite is alive.\n\nRepro confirmed during task-2289 verify: PID 3743829 in /home/leo/src/reify/.claude/worktrees/gui-smoke-test held :1420; Test 25 failed exactly as described above (verified by `ss -tlnp | grep 1420` and the failing assertion's symptom pattern).\n\nTwo viable fixes:\n(a) Preflight skip — at the top of Test 25, check `ss -tln | grep -q ':1420 '`; if bound, mark the test as skipped/flake with a clear log line. Cheapest, but still flaky on coincident dev sessions.\n(b) Configurable port — make scripts/run-gui-dev.sh accept a port via env var (e.g. REIFY_VITE_PORT, default 1420) and have Test 25 pass an ephemeral free port (`python3 -c 'import socket;s=socket.socket();s.bind((\"\",0));print(s.getsockname()[1])'`). Durable; eliminates collision class entirely.\n\nPrefer (b). Files: scripts/run-gui-dev.sh (parameterize the `--port` flag and the curl readiness URL), tests/infra/test_run_gui_scripts.sh Test 25 (use ephemeral port; also Tests 14/15 may need to assert `--port \\$REIFY_VITE_PORT` instead of literal 1420).\n\nAcceptance: with another worktree's vite bound to :1420, Test 25 still passes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:50:02.365Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:48:39.072Z",
-      "taskCount": 2295,
+      "lastModified": "2026-04-26T19:50:02.365Z",
+      "taskCount": 2297,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:48:41.024Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:49:51.910Z"
+      ]
     }
   }
 }
