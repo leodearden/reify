@@ -163,3 +163,64 @@ fn adjacent_faces_with_out_of_range_face_index_returns_query_failed() {
         Err(other) => panic!("expected QueryFailed, got {:?}", other),
     }
 }
+
+/// Helper: query `SharedEdges` and assert `Ok(Value::List(_))` of `Value::Int`,
+/// returning the indices as an `i64` Vec for further assertions.
+fn shared_edges_of(
+    kernel: &OcctKernel,
+    shape: GeometryHandleId,
+    face_a: usize,
+    face_b: usize,
+) -> Vec<i64> {
+    let result = kernel
+        .query(&GeometryQuery::SharedEdges {
+            shape,
+            face_a,
+            face_b,
+        })
+        .unwrap_or_else(|e| {
+            panic!(
+                "SharedEdges(face_a={}, face_b={}) returned Err: {:?}",
+                face_a, face_b, e
+            )
+        });
+    let items = match result {
+        Value::List(v) => v,
+        other => panic!("expected Value::List, got {:?}", other),
+    };
+    items
+        .into_iter()
+        .map(|v| match v {
+            Value::Int(i) => i,
+            other => panic!("expected Value::Int edge index, got {:?}", other),
+        })
+        .collect()
+}
+
+#[test]
+fn box_two_adjacent_faces_share_exactly_one_edge() {
+    let (kernel, box_id) = box_kernel();
+
+    for face in 0..6 {
+        let neighbors = neighbors_of(&kernel, box_id, face);
+        for &neighbor in &neighbors {
+            let neighbor_idx = neighbor as usize;
+            let edges = shared_edges_of(&kernel, box_id, face, neighbor_idx);
+            assert_eq!(
+                edges.len(),
+                1,
+                "adjacent box faces ({}, {}) should share exactly 1 edge, got {} ({:?})",
+                face,
+                neighbor_idx,
+                edges.len(),
+                edges
+            );
+            let edge_idx = edges[0];
+            assert!(
+                edge_idx >= 0 && edge_idx < 12,
+                "edge index {} out of expected box edge range [0, 12)",
+                edge_idx
+            );
+        }
+    }
+}
