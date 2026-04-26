@@ -48477,15 +48477,16 @@
           "memory_hints": {
             "entities": [
               "EvalOutcome",
-              "Engine::eval"
+              "Engine::eval",
+              "eval_guarded_group_param_cell"
             ],
             "queries": [
-              "EvalOutcome rejected-override-no-default variant S4 rationale",
-              "param_overrides rejected override no default EvalOutcome",
-              "eval_guarded_group_param_cell EvalOutcome variant documentation",
-              "engine_eval S4 phase rationale decisions"
+              "EvalOutcome variant rejected override no default Undef Undetermined S4 rationale",
+              "Task 2179 rejected-override-no-default code path insertion",
+              "engine_eval EvalOutcome variant change documentation rationale"
             ]
-          }
+          },
+          "_causation_id": "fb7c6bb3-6a7d-4560-a692-e3568c4fe90b"
         }
       },
       {
