@@ -51117,6 +51117,19 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2373",
+        "title": "match-block decls: union typing + guard-narrowing on MemberAccess",
+        "description": "Implement union typing and guard-narrowing for MemberAccess when the receiver resolves to a GuardedDeclGroup.",
+        "details": "When a MemberAccess receiver resolves to a GuardedDeclGroup, modify the type resolution process to build the union of all arm-types. Utilize the existing guard implication checker to apply guard-narrowing at the reference site. This involves updating the type resolution logic to handle the union of types from different match arms and ensuring that guard conditions are correctly applied to narrow the types based on the context. Reference the specification in docs/prds/match-block-decls.md task 2 for detailed requirements.",
+        "testStrategy": "1. Create unit tests to verify that the union of arm-types is correctly formed when accessing members of a GuardedDeclGroup.\n2. Add tests to ensure guard-narrowing is applied correctly using the guard implication checker.\n3. Validate that existing tests for MemberAccess still pass, ensuring no regressions.\n4. Run `cargo test` across relevant crates to confirm all tests pass.",
+        "status": "pending",
+        "dependencies": [
+          "2372"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51129,7 +51142,7 @@
       ],
       "created": "2026-04-26T20:23:53.945Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:23:58.518Z"
+      "updated": "2026-04-26T20:24:03.674Z"
     }
   }
 }
