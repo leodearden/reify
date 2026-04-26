@@ -50766,7 +50766,8 @@
         "testStrategy": "",
         "status": "pending",
         "dependencies": [
-          "2335"
+          "2335",
+          "2353"
         ],
         "priority": "high",
         "subtasks": [],
@@ -50819,7 +50820,9 @@
         "details": "",
         "testStrategy": "",
         "status": "in-progress",
-        "dependencies": [],
+        "dependencies": [
+          "2335"
+        ],
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:15:42.687Z"
@@ -50846,7 +50849,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:17:05.362Z",
+      "description": "Tasks for master context"
     }
   }
 }
