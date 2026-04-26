@@ -7,7 +7,7 @@ mod entity;
 mod expr;
 mod functions;
 mod geometry;
-mod geometry_arg_check;
+mod arg_check;
 mod geometry_boolean;
 mod geometry_curve;
 mod geometry_modify;
@@ -41,7 +41,7 @@ pub(crate) use expr::*;
 #[allow(unused_imports)]
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
-pub(crate) use geometry_arg_check::*;
+pub(crate) use arg_check::*;
 pub(crate) use geometry_boolean::*;
 pub(crate) use geometry_curve::*;
 pub(crate) use geometry_modify::*;
