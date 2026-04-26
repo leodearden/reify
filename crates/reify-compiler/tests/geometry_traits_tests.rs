@@ -224,3 +224,37 @@ structure def Box : Bounded {
         template.trait_bounds
     );
 }
+
+// ─── step-13: Watertight resolves from prelude with multi-refinement ─────────
+
+/// Step 13: End-to-end multi-refinement check. A user structure conforming
+/// to Watertight (which refines Closed + Manifold, both declared in the same
+/// stdlib file) compiles cleanly and the trait bound lands. Distinct from
+/// step 11 because Watertight is the only behaviorally novel case in this
+/// task (all six others are zero-refinement markers).
+#[test]
+fn watertight_resolves_from_prelude_with_multi_refinement() {
+    let source = r#"
+structure def Shell : Watertight {
+    param x : Real = 1.0
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "Shell : Watertight should compile without errors via the prelude, got: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+    assert!(
+        template.trait_bounds.contains(&"Watertight".to_string()),
+        "Shell should have 'Watertight' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+}
