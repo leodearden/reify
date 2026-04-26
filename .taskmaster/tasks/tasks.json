@@ -49014,7 +49014,19 @@
             "crates/reify-eval/src/unfold.rs",
             "crates/reify-eval/tests/recursive_unfold.rs",
             "crates/reify-test-support/src/builders"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "SubComponentDecl",
+              "GuardState"
+            ],
+            "queries": [
+              "SubComponentDecl guard fields broken guard None Compiled encoded states",
+              "termination check guard encoding invalid state representable",
+              "broken_guard_does_not_emit_no_termination_error test sanity assertion",
+              "GuardLookup enum pattern reify-compiler enum refactor"
+            ]
+          }
         }
       },
       {
@@ -49049,7 +49061,9 @@
       "completedCount": 2028,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T11:57:38.458Z",
+      "description": "Tasks for master context"
     }
   }
 }
