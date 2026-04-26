@@ -1,7 +1,7 @@
 //! Collection sub-structure tests (task 64).
 
 use reify_test_support::{compile_source, parse_and_compile};
-use reify_types::{CompiledExprKind, Severity};
+use reify_types::{CompiledExprKind, DiagnosticCode, Severity};
 
 /// Helper: compile source and assert no error-severity diagnostics.
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
@@ -779,12 +779,14 @@ fn mixed_sub_types_wrong_trait_diagnostic() {
         errors
     );
 
-    // Every error must mention "does not implement trait".
+    // Every error must carry the typed `TraitNotImplemented` diagnostic code
+    // (introduced in task 2205 — decouples the assertion from message wording).
     for err in &errors {
-        assert!(
-            err.message.contains("does not implement trait"),
-            "error message should contain 'does not implement trait': {:?}",
-            err.message
+        assert_eq!(
+            err.code,
+            Some(DiagnosticCode::TraitNotImplemented),
+            "error code should be DiagnosticCode::TraitNotImplemented: {:?}",
+            err
         );
     }
 

@@ -279,22 +279,21 @@ structure def Outer {
         "expected error diagnostic: Inner does not implement A"
     );
 
-    // Strengthen: at least one error must carry the canonical phrase produced by
-    // compile_instance_qualified_access_expr (expr.rs):
-    //   "does not implement trait 'A'"
-    // Anchoring to this single production-owned phrase avoids coupling to
+    // Strengthen: at least one error must carry the typed `TraitNotImplemented`
+    // diagnostic code produced by compile_instance_qualified_access_expr (expr.rs).
+    // Anchoring to the typed code (introduced in task 2205) decouples the test from
     // human-readable wording while still distinguishing a genuine conformance
     // failure from an unrelated parse or type error.
-    let canonical_phrase = "does not implement trait";
     let mentions_trait_conformance = errors
         .iter()
-        .any(|d| d.message.contains(canonical_phrase));
+        .any(|d| d.code == Some(DiagnosticCode::TraitNotImplemented));
     assert!(
         mentions_trait_conformance,
-        "expected at least one error containing {:?} \
-         (canonical conformance-failure phrase), got: {:?}",
-        canonical_phrase,
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        "expected at least one error with code DiagnosticCode::TraitNotImplemented, got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 }
 
