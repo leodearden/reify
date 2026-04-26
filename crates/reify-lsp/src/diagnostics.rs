@@ -189,11 +189,18 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Merge eval-time diagnostics (circular let-bindings, solver warnings, etc.).
-    // No filter needed: eval() never emits "constraint {id} violated" format messages
-    // (locked by the eval_diagnostics_never_use_constraint_violation_format regression
-    // test). If that invariant ever breaks, the regression test fails loudly and a
-    // maintainer must re-add the violated_messages filter here.
+    // Merge eval-time diagnostics. The invariant "eval() never emits the
+    // `constraint <entity>#constraint[<index>] violated` format" lets us merge
+    // without a filter. The regression-lock cluster covers every known eval-time
+    // emitter:
+    //   - circular let-binding (unfold.rs / engine_eval.rs)
+    //   - param_override type-kind / dimension mismatch (engine_eval.rs)
+    //   - sub-component lookup failure (engine_eval.rs)
+    //   - solver Infeasible / NoProgress (engine_eval.rs)
+    // Each test asserts the diagnostic shape via `matches_constraint_violation_format`
+    // (mirroring `format!("constraint {} violated", entry.id)` over `ConstraintNodeId`'s
+    // Display). If any test fails, re-introduce the `violated_messages` filter on the
+    // eval merge below or update the merge loop.
     for diag in &eval_diagnostics {
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
