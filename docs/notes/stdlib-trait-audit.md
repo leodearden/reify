@@ -96,3 +96,143 @@ traits.  This is noted individually but is a systemic inheritance gap.
 | `Ductile` | §6.2, line 667 | `materials_mechanical.ri:106` | `Material` | — | `elongation_at_break: Real`, `reduction_of_area: Real = undef` | `elongation: Real`, `reduction_of_area: Real` | **Parent gap** (systemic). **Param rename:** spec `elongation_at_break`; current `elongation`. **Default gap:** spec `reduction_of_area = undef` (optional); current is required. |
 | `ImpactResistant` | §6.2, line 671 | `materials_mechanical.ri:113` | `Material` | — | `charpy_impact: Energy = undef`, `izod_impact: Energy = undef` | `impact_energy: Real` | **Parent gap** (systemic). **Param collapse:** spec has two distinct test-method params (`charpy_impact`, `izod_impact`); current collapses to one `impact_energy: Real`. Both spec params are optional (undef); current param is required. **Type gap:** Energy → Real. |
 | `Damping` | §6.2, line 675 | `materials_mechanical.ri:122` | `Material` | — | `loss_factor: Real` | `damping_ratio: Real`, `loss_factor: Real` | **Parent gap** (systemic). **Extra param:** `damping_ratio: Real` present in current; absent from spec. |
+
+---
+
+## §6.3 `std.materials.thermal`
+
+Spec location: `docs/reify-stdlib-reference.md` lines 680–694
+Expected source file: `materials_thermal.ri` — **does not exist**
+
+Despite task 328 being marked `done` in Taskmaster, no `materials_thermal.ri` (or
+equivalent) file was produced.  All traits in this section are **MISSING**.
+
+| Trait | Spec § (line) | Declared In Source | Spec Parents | Current Parents | Spec Params (summary) | Current Params (summary) | Gaps / Notes |
+|-------|--------------|-------------------|--------------|-----------------|----------------------|--------------------------|--------------|
+| `ThermallyCharacterized` | §6.3, line 683 | **MISSING** | `Material` | — | `thermal_conductivity: ThermalConductivity`, `specific_heat: SpecificHeat`, `thermal_expansion: Real / Temperature`, `melting_point: Temperature = undef`, `max_service_temperature: Temperature = undef`, `glass_transition: Temperature = undef` | *(not implemented)* | No `.ri` file. Candidate follow-up: create `crates/reify-compiler/stdlib/materials_thermal.ri`. |
+| `Refractory` | §6.3, line 691 | **MISSING** | `ThermallyCharacterized` | — | *(no extra params — adds constraint only)* | *(not implemented)* | No `.ri` file. Depends on `ThermallyCharacterized`. Spec adds `constraint max_service_temperature >= 1500degC`. |
+
+---
+
+## §6.4 `std.materials.electrical`
+
+Spec location: `docs/reify-stdlib-reference.md` lines 696–711
+Expected source file: `materials_electrical.ri` — **does not exist**
+
+All traits in this section are **MISSING**.
+
+| Trait | Spec § (line) | Declared In Source | Spec Parents | Current Parents | Spec Params (summary) | Current Params (summary) | Gaps / Notes |
+|-------|--------------|-------------------|--------------|-----------------|----------------------|--------------------------|--------------|
+| `ElectricallyCharacterized` | §6.4, line 699 | **MISSING** | `Material` | — | `resistivity: Scalar<Voltage * Length / Current>`, `dielectric_constant: Real = undef`, `dielectric_strength: Scalar<Voltage / Length> = undef`, `magnetic_permeability: Real = undef` | *(not implemented)* | No `.ri` file. Candidate follow-up: create `materials_electrical.ri`. Note: `std.structural.ElectricallyConductive` currently carries `electrical_conductivity` and `resistivity` (Real) as free params; those should migrate to reference this trait once it exists. |
+| `Conductive` | §6.4, line 705 | **MISSING** | `ElectricallyCharacterized` | — | *(no extra params — adds constraint only)* | *(not implemented)* | Spec constraint: `resistivity < 1e-4ohm*m`. |
+| `Insulating` | §6.4, line 708 | **MISSING** | `ElectricallyCharacterized` | — | *(no extra params — adds constraints only)* | *(not implemented)* | Spec constraints: `resistivity > 1e6ohm*m` and `determined(dielectric_strength)`. |
+
+---
+
+## §6.5 `std.materials.optical`
+
+Spec location: `docs/reify-stdlib-reference.md` lines 713–722
+Expected source file: `materials_optical.ri` — **does not exist**
+
+All traits in this section are **MISSING**.
+
+| Trait | Spec § (line) | Declared In Source | Spec Parents | Current Parents | Spec Params (summary) | Current Params (summary) | Gaps / Notes |
+|-------|--------------|-------------------|--------------|-----------------|----------------------|--------------------------|--------------|
+| `OpticallyCharacterized` | §6.5, line 717 | **MISSING** | `Material` | — | `refractive_index: Real`, `absorption_coefficient: Real = undef`, `transmittance: Real = undef`, `reference_thickness: Length = undef` | *(not implemented)* | No `.ri` file. Candidate follow-up: create `materials_optical.ri`. |
+
+---
+
+## §6.6 `std.materials.chemical`
+
+Spec location: `docs/reify-stdlib-reference.md` lines 724–736
+Expected source file: `materials_chemical.ri` — **does not exist**
+
+All traits and enums in this section are **MISSING**.
+
+| Trait / Enum | Spec § (line) | Declared In Source | Spec Parents | Current Parents | Spec Params (summary) | Current Params (summary) | Gaps / Notes |
+|-------------|--------------|-------------------|--------------|-----------------|----------------------|--------------------------|--------------|
+| `CorrosionResistant` | §6.6, line 728 | **MISSING** | `Material` | — | `corrosion_class: CorrosionClass` | *(not implemented)* | No `.ri` file. Candidate follow-up: create `materials_chemical.ri`. |
+| `CorrosionClass` *(enum)* | §6.6, line 731 | **MISSING** | — | — | Variants: `C1, C2, C3, C4, C5` | *(not implemented)* | Required by `CorrosionResistant`. |
+| `Biocompatible` | §6.6, line 732 | **MISSING** | `Material` | — | `biocompatibility_class: BiocompatibilityClass` | *(not implemented)* | No `.ri` file. |
+| `BiocompatibilityClass` *(enum)* | §6.6, line 735 | **MISSING** | — | — | Variants: `USP_Class_I, USP_Class_VI, ISO_10993` | *(not implemented)* | Required by `Biocompatible`. |
+
+---
+
+## Summary of Gaps and Recommended Follow-ups
+
+### (a) `Material` trait → `MaterialSpec` rename (closed via task 1876)
+
+The spec still refers to the trait as `Material`; the implementation renamed it to
+`MaterialSpec` in task 1876 to free the identifier for the new first-class struct.  The
+rename is a deliberate, documented breaking change (see `materials_mechanical.ri:6–25`).
+**Consumer migration is required** for any external `.ri` file that references the old
+trait name under one of the four patterns documented in the BREAKING CHANGE block.
+*Recommendation:* update the spec at §6.1 line 629 to reflect `MaterialSpec` as the
+canonical trait name, or add a spec note that `Material` denotes the struct and
+`MaterialSpec` denotes the trait.
+
+### (b) `TemperatureDependent` missing
+
+The base material trait `TemperatureDependent` (spec §6.1, line 634) is not implemented
+in any `.ri` file.  *Candidate task:* add `TemperatureDependent` to
+`crates/reify-compiler/stdlib/materials_mechanical.ri` (or a new `materials_base.ri`).
+
+### (c) Entire §6.3–6.6 missing (thermal / electrical / optical / chemical)
+
+Eight traits (`ThermallyCharacterized`, `Refractory`, `ElectricallyCharacterized`,
+`Conductive`, `Insulating`, `OpticallyCharacterized`, `CorrosionResistant`,
+`Biocompatible`) and two enums (`CorrosionClass`, `BiocompatibilityClass`) have no `.ri`
+implementation, despite task 328 being marked done.  *Candidate tasks (one per
+subsection):*
+- **§6.3:** create `stdlib/materials_thermal.ri` with `ThermallyCharacterized` + `Refractory`.
+- **§6.4:** create `stdlib/materials_electrical.ri` with `ElectricallyCharacterized`, `Conductive`, `Insulating`.
+- **§6.5:** create `stdlib/materials_optical.ri` with `OpticallyCharacterized`.
+- **§6.6:** create `stdlib/materials_chemical.ri` with `CorrosionResistant`, `CorrosionClass`, `Biocompatible`, `BiocompatibilityClass`.
+
+### (d) §6.2 mechanical traits lack `MaterialSpec` parent
+
+All eight §6.2 traits (`Elastic`, `Strong`, `Hard`, `FatigueRated`, `FractureTough`,
+`Ductile`, `ImpactResistant`, `Damping`) are declared free-standing; spec mandates each
+refines `Material` (now `MaterialSpec`).  Adding `: MaterialSpec` to each would also
+require their consumers (e.g. `Physical : MaterialSpec`) to be reconsidered for potential
+redundancy.  *Candidate task:* update `materials_mechanical.ri` to add `: MaterialSpec`
+to all eight traits, then verify that `structural_physical.ri` still compiles cleanly.
+
+### (e) §4 parameter-shape gaps (`geometry`/`material` vs flat `Real`)
+
+`Physical` and its subtypes use flat scalar `Real` params (`volume`, `centroid_x/y/z`)
+where the spec expects a `geometry: Solid` object and `material: Material` trait-object
+with computed lets driven by geometry query functions (`volume(geometry)`,
+`centroid(geometry)`, `moment_of_inertia(geometry, material.density)`).  Closing this gap
+requires the `Solid` geometry type and its query functions to be available in the stdlib.
+*Candidate task:* once `std.geometry.Solid` lands, migrate `Physical` and `Rigid` to the
+spec's geometry-driven form and replace the three `centroid_x/y/z` params with a single
+computed `centroid` let.
+
+### (f) §4 inheritance gaps (`Flexible`, `ElasticallyDeformable`, `Plastic`)
+
+- `Flexible` should inherit `Physical` (spec); currently free-standing.
+- `ElasticallyDeformable` should inherit `Flexible` (spec); currently inherits `Elastic`
+  (a material trait — semantically different).
+- `Plastic` should inherit `Flexible` (spec); currently free-standing.
+- `ThermallyConductive` and `ElectricallyConductive` should inherit `Physical` (spec);
+  currently free-standing and carry extra params that arguably belong in §6.3/§6.4.
+
+*Candidate task:* reconcile §4 structural trait hierarchy once the geometry/material type
+system (gap (e)) is resolved, as the parent changes are entangled with the param-shape
+migration.
+
+### (g) §6.2 parameter-name discrepancies
+
+| Trait | Spec param name | Current param name | Note |
+|-------|-----------------|--------------------|------|
+| `Strong` | `ultimate_tensile_strength` | `uts` | Abbreviated |
+| `FatigueRated` | `fatigue_limit` | `endurance_limit` | Renamed; `fatigue_strength_at` and `fatigue_cycles` absent |
+| `Ductile` | `elongation_at_break` | `elongation` | Truncated |
+| `ImpactResistant` | `charpy_impact` + `izod_impact` | `impact_energy` | Collapsed to single param |
+| `Damping` | *(only `loss_factor`)* | + `damping_ratio` | Extra param in current |
+
+*Candidate task:* rename params in `materials_mechanical.ri` to match spec, restore
+missing params, and remove or document the extra `damping_ratio` param.  Coordinate with
+any consumer code that references `uts`, `endurance_limit`, `elongation`, or
+`impact_energy`.
