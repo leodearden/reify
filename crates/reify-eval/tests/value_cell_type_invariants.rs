@@ -37,11 +37,12 @@ fn assert_template_cells_representable(template: &TopologyTemplate) {
         // documents that `Type::StructureRef` is intentionally NOT checked
         // (task 1876 — user code may declare `param x : SomeStruct =
         // SomeStruct(...)`; the struct-call default evaluates to `Value::Undef`
-        // which passes the kind-match for any type), and (b) the runtime
-        // invariant in crates/reify-eval/src/engine_eval.rs which forbids
-        // only `Type::TypeParam(_) | Type::Geometry`.
+        // which passes the kind-match for any type), and (b) the shared
+        // predicate `reify_eval::is_representable_cell_type` which is the
+        // single source of truth consumed by both this walker and the runtime
+        // invariant in crates/reify-eval/src/engine_eval.rs.
         assert!(
-            !matches!(&cell.cell_type, Type::TypeParam(_) | Type::Geometry),
+            reify_eval::is_representable_cell_type(&cell.cell_type),
             "{}: template `{}` cell `{}` has cell_type {:?}",
             reify_eval::ASSERT_MSG_PREFIX,
             template.name,
