@@ -155,6 +155,20 @@ structure def Vehicle : HasEngine {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
+    let has_code = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::MissingRequiredSubComponent)
+            && d.message.contains("missing required sub-component")
+            && d.message.contains("engine")
+    });
+    assert!(
+        has_code,
+        "expected DiagnosticCode::MissingRequiredSubComponent mentioning 'engine', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
     let first = errors[0];
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
