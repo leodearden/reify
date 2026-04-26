@@ -473,7 +473,7 @@ subprojects:
 YAML
 
 cat > "$_tasks15" <<'JSON'
-{"master":{"tasks":[]},"feature-branch":{"tasks":[{"id":"200","title":"Feature task","status":"done"}]}}
+{"master":{"tasks":[]},"feature-branch":{"tasks":[{"id":"200","title":"Fix feature gap","status":"done"}]}}
 JSON
 
 _stderr15="$_tmpdir/stderr15.txt"

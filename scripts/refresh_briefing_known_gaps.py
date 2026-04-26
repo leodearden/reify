@@ -121,28 +121,42 @@ def main() -> int:
         return 0
 
     # ------------------------------------------------------------------ #
-    # Build task index from tasks.json master tag                          #
+    # Build task index from all tasks.json tag namespaces                  #
     # ------------------------------------------------------------------ #
+    # Iterate all tag namespaces (master, feature-branch, etc.) so that
+    # stale-gap detection works regardless of which tag a task lives under.
+    # Mirrors the multi-tag iteration pattern in scripts/normalize_tasks_json.py.
+    #
+    # First-occurrence wins on cross-tag task-id collision: tasks.json
+    # conventionally lists "master" first, so master entries win deterministically.
     # Index top-level tasks AND subtasks so that dotted tracking IDs like
     # "1751.2" resolve correctly.  Reify uses dotted subtask IDs extensively;
     # conflating "subtask exists but not indexed" with "task does not exist"
     # would silently treat done subtasks as orphans — a real coverage hole.
     tasks_index: dict[str, dict] = {}
-    master = tasks_data.get("master", {}) if isinstance(tasks_data, dict) else {}
-    if isinstance(master, dict):
-        for task in master.get("tasks", []):
-            if isinstance(task, dict):
-                task_id = task.get("id")
-                if task_id is not None:
-                    task_id_str = str(task_id)
-                    tasks_index[task_id_str] = task
-                    # Index subtasks as "{parent_id}.{subtask_id}" using the
-                    # dotted-ID convention Reify uses (e.g. "1751.2").
-                    for subtask in task.get("subtasks", []):
-                        if isinstance(subtask, dict):
-                            subtask_id = subtask.get("id")
-                            if subtask_id is not None:
-                                tasks_index[f"{task_id_str}.{subtask_id}"] = subtask
+    if isinstance(tasks_data, dict):
+        for tag_data in tasks_data.values():
+            if not isinstance(tag_data, dict):
+                continue
+            tasks_list = tag_data.get("tasks", [])
+            if not isinstance(tasks_list, list):
+                continue
+            for task in tasks_list:
+                if isinstance(task, dict):
+                    task_id = task.get("id")
+                    if task_id is not None:
+                        task_id_str = str(task_id)
+                        # First occurrence wins — skip if already indexed.
+                        if task_id_str in tasks_index:
+                            continue
+                        tasks_index[task_id_str] = task
+                        # Index subtasks as "{parent_id}.{subtask_id}" using the
+                        # dotted-ID convention Reify uses (e.g. "1751.2").
+                        for subtask in task.get("subtasks", []):
+                            if isinstance(subtask, dict):
+                                subtask_id = subtask.get("id")
+                                if subtask_id is not None:
+                                    tasks_index[f"{task_id_str}.{subtask_id}"] = subtask
 
     # ------------------------------------------------------------------ #
     # Cross-reference: find gaps whose tracked task is "done"             #
