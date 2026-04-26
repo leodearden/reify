@@ -48501,6 +48501,19 @@
             ]
           }
         }
+      },
+      {
+        "id": "2255",
+        "title": "Extend DiagnosticCode for remaining constraint-solver sites (NonUnique + cpsat builder)",
+        "description": "Follow-up to task 2253. Two additional `code: None` constraint-domain Diagnostic emissions exist in reify-constraints that were intentionally left out of 2253's scope. Migrate them to typed DiagnosticCodes and flip the related substring-matching test.",
+        "details": "Spawned from esc-2253-61 (cleanup_needed, info). Task 2253 migrates the five Diagnostic struct-literal sites it lists explicitly; these two share the same anti-pattern but were observed during planning and intentionally left out of scope:\n\n1. `crates/reify-constraints/src/solver.rs:884-893` — `DimensionalSolver` emits `SolveResult::Infeasible` with `code: None` for \"strict auto parameter resolution is not uniquely determined …\". Semantically distinct from `ConstraintUnsatisfiable` (multiple solutions, not zero) — needs a fourth variant such as `ConstraintNonUnique` / `ConstraintUnderdetermined` added to `DiagnosticCode`.\n\n2. `crates/reify-constraints/src/cpsat.rs:249-255` — `CpSatSolver` emits Infeasible via `Diagnostic::error(format!(…))` (implicit `code: None` from the `Diagnostic::error` builder). Likely maps to `ConstraintUnsatisfiable`, but the migration shape is `.with_code(...)` builder chain rather than struct-literal mutation — a different idiom from 2253's five sites.\n\nTest to flip: `crates/reify-constraints/tests/solver_integration.rs::strict_auto_non_unique_returns_infeasible` (~line 1646) currently substring-matches \"not uniquely determined\" — switch to a typed-code assertion (e.g. `DiagnosticCode::ConstraintNonUnique`) once the variant lands. This is exactly the fragility the parent task is retiring.\n\nAcceptance:\n- Add `ConstraintNonUnique` (or equivalent) variant to DiagnosticCode in reify-diagnostics.\n- Migrate solver.rs:891 to set the new code; migrate cpsat.rs:249 via `.with_code(DiagnosticCode::ConstraintUnsatisfiable)`.\n- Update `strict_auto_non_unique_returns_infeasible` to assert on the typed code instead of message substring.\n- Depends on task 2253 landing first (introduces ConstraintViolated / ConstraintIndeterminate / ConstraintUnsatisfiable variants).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "2253"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48510,7 +48523,10 @@
       "completedCount": 2009,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T09:07:10.234Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T09:07:10.384Z"
     }
   }
 }
