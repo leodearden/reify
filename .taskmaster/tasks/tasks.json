@@ -50405,17 +50405,18 @@
         "description": "Implement type-checking for the lambda body in analytical field sources against declared Domain -> Codomain signatures.",
         "details": "Enhance the analytical field source kind by implementing type-checking for the lambda body within `field def F { source = analytical { |p| ... } }`. Ensure the lambda's codomain matches the declared field's codomain. If a mismatch occurs, such as the lambda returning `Scalar<Length>` while the field declares `Scalar<Temperature>`, emit an error `E_FIELD_CODOMAIN_MISMATCH`. Modify the evaluation logic so that `sample(field, point)` invokes the compiled lambda with the given point and propagates undefined values according to Kleene's three-valued logic rules. Update the documentation in `docs/prds/field-source-kinds.md` to reflect these changes.",
         "testStrategy": "Create tests to verify that codomain mismatches are correctly diagnosed with `E_FIELD_CODOMAIN_MISMATCH`. Additionally, implement tests for scenarios where the codomain matches, ensuring the lambda executes correctly. Use sample inputs to test the `sample(field, point)` function, confirming it handles undefined values as expected.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:04:15.355Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:04:14.647Z",
+      "lastModified": "2026-04-26T20:04:15.355Z",
       "taskCount": 2325,
       "completedCount": 2059,
       "tags": [
