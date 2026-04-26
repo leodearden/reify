@@ -2,8 +2,8 @@
 
 use reify_compiler::stdlib_loader;
 use reify_test_support::{
-    CompiledModuleBuilder, EXPECTED_MATERIAL_TRAITS, collect_errors, steel_elastic_source,
-    steel_strong_source,
+    CompiledModuleBuilder, EXPECTED_GEOMETRY_TRAITS, EXPECTED_MATERIAL_TRAITS, collect_errors,
+    steel_elastic_source, steel_strong_source,
 };
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash,
@@ -64,6 +64,28 @@ fn materials_mechanical_traits_present() {
         .collect();
 
     for name in EXPECTED_MATERIAL_TRAITS {
+        assert!(
+            all_traits.contains(name),
+            "expected trait '{}' in stdlib, found: {:?}",
+            name,
+            all_traits
+        );
+    }
+}
+
+/// geometry_traits.ri traits are present in the stdlib (Bounded, Closed,
+/// Manifold, Orientable, Convex, Connected, Watertight).
+#[test]
+fn geometry_traits_present() {
+    let modules = stdlib_loader::load_stdlib();
+
+    // Collect all trait names across all stdlib modules
+    let all_traits: Vec<&str> = modules
+        .iter()
+        .flat_map(|m| m.trait_defs.iter().map(|t| t.name.as_str()))
+        .collect();
+
+    for name in EXPECTED_GEOMETRY_TRAITS {
         assert!(
             all_traits.contains(name),
             "expected trait '{}' in stdlib, found: {:?}",
