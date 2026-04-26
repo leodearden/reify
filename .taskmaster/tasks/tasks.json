@@ -49020,6 +49020,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-26T11:44:38.734Z"
+      },
+      {
+        "id": "2273",
+        "title": "eval_cached: avoid cloning param_override Value on fast-path pre-check",
+        "description": "In `crates/reify-eval/src/engine_eval.rs:1384-1387`, the `override_check` binding clones the override `Value` unconditionally when computing the validation result, even though the cache fast-path / cache-reuse arms (lines ~1419-1457) never consume the cloned value — only the rejection diagnostic uses it. Pre-task-2267 the clone only happened in the success arm of the cache-miss `match` via `self.param_overrides.get(...)`.\n\nFix: split the pre-check from value retention. Compute `override_rejection: Option<Result<(), ParamOverrideRejection>>` from `self.param_overrides.get(&cell.id).map(|v| validate_param_override(v, &cell.cell_type))` (no clone). For the diagnostic formatting, re-borrow `self.param_overrides.get(&cell.id)` inside the `if let Some(rejection) = ...` block to access the value without holding a clone alive across the fast-path. In the cache-miss match below, also re-borrow `self.param_overrides.get(&cell.id)` and clone only in the `Ok(())` arm.\n\nDone means: no `Value::clone` on the LSP-keystroke fast-path when an override is set; existing param_override tests (incl. task-2267 step-3 regression locks) still pass; the validate_param_override-once invariant from amend 5f328bd1cf is preserved (single call per eval_cached invocation per cell).\n\nSpawned from review of task 2267 (esc-2267-2, suggestion 1).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49029,7 +49040,10 @@
       "completedCount": 2027,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T11:54:02.719Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T11:54:02.758Z"
     }
   }
 }
