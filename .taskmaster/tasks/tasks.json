@@ -49274,10 +49274,11 @@
         "description": "Investigate eager `compiled_arg.clone()` at crates/reify-compiler/src/entity.rs:949. The clone is now performed for every named arg of every sub-component, and CompiledExpr can carry deeply-nested literal trees (e.g. `List<Option<...>>` with hundreds of elements). The previous design only cloned `result_type` (cheap) plus an Option&lt;String&gt; name.",
         "details": "For workloads with large-literal-heavy designs, this is an O(literal-tree-size) per arg allocation that previously did not exist; the cloned expr is also retained until the post-pass dispatch.\n\nPlan:\n1. Add benchmark or profile a representative large-literal design (e.g. List with hundreds of Option<TraitObject> elements).\n2. If hot, switch `PendingBoundCheck::TraitArgConformance` to hold `Rc<CompiledExpr>` (or borrow into a CompilationCtx-owned arena if one exists), since the walker only reads.\n3. Otherwise, leave as-is and document the rationale.\n\nSource: review suggestion on task 2227 (esc-2227-7).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T13:58:47.792Z"
       },
       {
         "id": "2281",
@@ -49294,7 +49295,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T13:58:47.025Z",
+      "lastModified": "2026-04-26T13:58:47.792Z",
       "taskCount": 2270,
       "completedCount": 2038,
       "tags": [
