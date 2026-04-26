@@ -50762,10 +50762,11 @@
         "description": "Implement crates/reify-doc/src/fmt_html.rs rendering DocModel as a single self-contained HTML file (no external CSS, no JS, no external resource references). Sections mirror the markdown formatter: TOC nav with `position: sticky; top: 0;`, per-item `<section id=\"…\">` blocks, semantic HTML (`<table>` for params/ports, `<dl>` for meta, `<p>` for doc paragraphs, `<code>` for code spans). Hand-written embedded `<style>` block ≤100 lines: monospace fallback for code, max-width 900px on body, generous line-height. No syntax highlighting in v0.1. Snapshot test against examples/integration_full_v01.ri verifying the output renders in a browser (no external requests). PRD: docs/prds/reify-doc-tool.md slice 5.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:15:44.624Z"
       },
       {
         "id": "2360",
@@ -50773,15 +50774,16 @@
         "description": "PRD docs/prds/node-trait-composition.md. Per arch §7.6: PROGRESSIVE-tagged nodes emit intermediate results over time; scheduler expects multiple cache updates per evaluation. Cross-check with freshness-propagation: each intermediate emission updates the cache and triggers a freshness-only downstream walk (#2335). Integration test with a synthetic progressive node emitting 3 intermediates then Final, assert downstream sees Intermediate then Final transitions. Depends on Freshness PRD #2319, #2326, #2328, #2335.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:15:42.687Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:15:34.970Z",
+      "lastModified": "2026-04-26T20:15:44.624Z",
       "taskCount": 2349,
       "completedCount": 2060,
       "tags": [
