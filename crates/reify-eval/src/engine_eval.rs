@@ -689,13 +689,18 @@ impl Engine {
                         // (Undef, Undetermined) result here makes the S4 path
                         // symmetric with every other Param branch that produces
                         // a journal Started/Completed pair backed by a cache entry.
-                        // Note: the `EvalOutcome` in the emitted `Completed`
-                        // event is now whatever `cache.record_evaluation`
-                        // returns — `New` on first eval, `Unchanged` only on
-                        // identical re-record — not the hardcoded
-                        // `EvalOutcome::Unchanged` the pre-task-2195 code
-                        // would have produced.  See task-2195 for the
-                        // journal-shape diff this introduces.
+                        // Note — two-stage timeline: pre-task-2154 this
+                        // branch had no `Completed` event at all (the
+                        // `continue` above skipped it entirely).
+                        // Post-task-2154 but pre-task-2195 a `Completed`
+                        // event was added but `cache.record_evaluation` was
+                        // still skipped, so `EvalOutcome::Unchanged` was
+                        // hardcoded as a placeholder.  Task-2195 resolves
+                        // both gaps: the `EvalOutcome` in the emitted
+                        // `Completed` is now sourced from the cache call —
+                        // `New` on first eval, `Unchanged` only on identical
+                        // re-record.  See task-2195 for the journal-shape
+                        // diff.
                         record_eval_completed(
                             &mut self.journal,
                             &mut self.cache,
