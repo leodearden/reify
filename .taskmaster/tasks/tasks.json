@@ -49123,7 +49123,19 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/eval_cached_diagnostics.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine::eval_cached",
+              "eval_cached"
+            ],
+            "queries": [
+              "eval_cached repeat-call regression lock param_override sub-component test count==1",
+              "eval_cached diagnostics fast-path silent drop tasks 2259 2267",
+              "task 2269 eval_cached repeat-call regression locks added"
+            ]
+          },
+          "_causation_id": "c33dfab8-7303-4c9c-b2df-2285b4d4b6e0"
         }
       },
       {
