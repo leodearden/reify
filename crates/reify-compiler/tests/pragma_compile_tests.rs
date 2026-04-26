@@ -612,3 +612,51 @@ fn default_tolerance_none_when_no_precision_pragma() {
         module.default_tolerance
     );
 }
+
+/// `#precision(0.001m)` at module level sets `default_tolerance = Some(0.001)`.
+#[test]
+fn precision_pragma_with_metres_quantity_sets_default_tolerance() {
+    let module = compile_source("#precision(0.001m)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.default_tolerance,
+        Some(0.001),
+        "expected default_tolerance Some(0.001) for #precision(0.001m)"
+    );
+}
+
+/// `#precision(1mm)` converts to 0.001 metres on `default_tolerance`.
+#[test]
+fn precision_pragma_with_mm_unit_converts_to_metres() {
+    let module = compile_source("#precision(1mm)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.default_tolerance,
+        Some(0.001),
+        "expected default_tolerance Some(0.001) for #precision(1mm)"
+    );
+}
+
+/// `#precision(2cm)` converts to 0.02 metres on `default_tolerance`.
+#[test]
+fn precision_pragma_with_cm_unit_converts_to_metres() {
+    let module = compile_source("#precision(2cm)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.default_tolerance,
+        Some(0.02),
+        "expected default_tolerance Some(0.02) for #precision(2cm)"
+    );
+}
