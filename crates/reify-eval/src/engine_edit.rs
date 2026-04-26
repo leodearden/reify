@@ -41,8 +41,8 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::{
-    CheckResult, Engine, EngineError, EvalResult, GuardLookup, eval_ctx_with_meta,
-    guard_state_fingerprint,
+    CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
+    eval_ctx_with_meta, guard_state_fingerprint,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -248,6 +248,17 @@ fn group_needs_phase3(
     }
 }
 
+/// Look up the pre-edit snapshot guard value for `gc` from the engine's
+/// `eval_state`, returning a borrowed `&Value` (lifetime tied to `eval_state`).
+///
+/// Used at the outer `.any(|group| group_needs_phase3(...))` predicate **and**
+/// the per-group `continue` check inside the Phase 3 loop in both `edit_param`
+/// and `edit_source` — four call sites total — so the extraction lives in one
+/// place rather than being repeated verbatim each time.
+fn old_guard_for<'a>(eval_state: Option<&'a EvaluationState>, gc: &ValueCellId) -> Option<&'a Value> {
+    eval_state.and_then(|s| s.snapshot.values.get(gc)).map(|(v, _)| v)
+}
+
 /// Build a role map from a slice of `GuardedGroupInfo` for the role-flip
 /// probe in `Engine::edit_source`.
 ///
@@ -342,32 +353,6 @@ fn guard_value_unchanged(
         .and_then(|vs| vs.get(guard_cell))
         .map(|(v, _)| v)
         == Some(new_val)
-}
-
-/// Returns `true` when any guarded group's guard cell has a different value in
-/// `values` vs. the pre-edit snapshot, indicating that Phase 3
-/// re-elaboration is needed.
-///
-/// Accepts the snapshot `values` map directly (rather than the full
-/// `EvaluationState`) to keep callers and unit tests dependency-free.
-///
-/// Test-only: superseded by `group_needs_phase3`, which additionally accounts
-/// for Phase 1's `phase1_reelaborated` map (wave2 flip detection — task 2146).
-/// The unit tests below pin this helper's pure pass-through semantics so any
-/// future re-introduction at a callsite is still covered.
-#[cfg(test)]
-fn phase3_guard_changed(
-    groups: &[GuardedGroupInfo],
-    values: &ValueMap,
-    snapshot_values: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
-) -> bool {
-    groups.iter().any(|group| {
-        let new_val = values.get(&group.guard_cell);
-        let old_val = snapshot_values
-            .and_then(|vs| vs.get(&group.guard_cell))
-            .map(|(v, _)| v);
-        new_val != old_val
-    })
 }
 
 /// Generic identity/equivalence diff between two `PersistentMap<Id, Node>`
@@ -982,11 +967,7 @@ impl Engine {
         // (task 2146).
         {
             let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
-                let old_guard_val = self
-                    .eval_state
-                    .as_ref()
-                    .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                    .map(|(v, _)| v);
+                let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
                 group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated)
             });
 
@@ -1001,16 +982,16 @@ impl Engine {
                     // Cross-phase dedup — see `group_needs_phase3` (tasks 2140 / 2146).
                     // The unified predicate also handles the wave2 flip case where
                     // Phase 1 recorded a different guard value than the current one.
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
+                    let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
                     if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
                         continue;
                     }
-                    // Site 3: guard cell must be present — eval() has completed and populated all
-                    // guard cells into the values map. A missing guard cell here is a logic error.
+                    // `group_needs_phase3` only returns `true` here when `values` contains the
+                    // guard cell (the `None` arm returns `false` when `old_guard_val` is `None`,
+                    // so an absent guard cell with no prior snapshot value is always skipped).
+                    // A guard cell absent from `values` but present in the old snapshot is a
+                    // logic error (structural removal without going through Phase 1) — the
+                    // `.expect()` below surfaces it as a panic rather than silently skipping.
                     let guard_val = values
                         .get(&group.guard_cell)
                         .cloned()
@@ -2060,11 +2041,7 @@ impl Engine {
         // (task 2146).
         {
             let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
-                let old_guard_val = self
-                    .eval_state
-                    .as_ref()
-                    .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                    .map(|(v, _)| v);
+                let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
                 group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated)
             });
 
@@ -2082,11 +2059,7 @@ impl Engine {
                     // did not fire → fall back to old-vs-new skip. Phase 3 has no
                     // added-member or role-flip exception (those are Phase 1 concerns
                     // only).
-                    let old_guard_val = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(&group.guard_cell))
-                        .map(|(v, _)| v);
+                    let old_guard_val = old_guard_for(self.eval_state.as_ref(), &group.guard_cell);
                     if !group_needs_phase3(group, &values, old_guard_val, &phase1_reelaborated) {
                         continue;
                     }
@@ -2376,8 +2349,8 @@ mod tests {
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
     use super::{
-        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, phase3_guard_changed,
-        phase3_skip_group, reelaborate_guarded_group,
+        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, phase3_skip_group,
+        reelaborate_guarded_group,
     };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
@@ -3138,97 +3111,6 @@ mod tests {
         let guard_cell = ValueCellId::new("E", "guard");
 
         assert!(!guard_value_unchanged(None, &guard_cell, &Value::Bool(true)));
-    }
-
-    // ── phase3_guard_changed ──────────────────────────────────────────────
-
-    /// (a) Empty groups slice → no guard to diff → returns false.
-    #[test]
-    fn phase3_guard_changed_returns_false_for_empty_groups() {
-        let values = ValueMap::default();
-        let snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-        assert!(!phase3_guard_changed(&[], &values, Some(&snapshot)));
-    }
-
-    /// (b) One group, values and snapshot both contain guard_cell = Bool(true)
-    /// → unchanged → returns false.
-    #[test]
-    fn phase3_guard_changed_returns_false_when_guard_unchanged() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true));
-        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
-
-        assert!(!phase3_guard_changed(&[group], &values, Some(&snapshot)));
-    }
-
-    /// (c) One group, values has Bool(true) and snapshot has Bool(false)
-    /// → changed → returns true.
-    #[test]
-    fn phase3_guard_changed_returns_true_when_guard_value_differs() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true));
-        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-        snapshot.insert(guard_cell.clone(), (Value::Bool(false), DeterminacyState::Determined));
-
-        assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
-    }
-
-    /// (d) One group, values has Bool(true) and snapshot_values = None
-    /// → Some(&Bool(true)) != None → returns true.
-    #[test]
-    fn phase3_guard_changed_returns_true_when_snapshot_is_none() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let mut values = ValueMap::default();
-        values.insert(guard_cell.clone(), Value::Bool(true));
-
-        assert!(phase3_guard_changed(&[group], &values, None));
-    }
-
-    /// (e) One group, values does NOT contain guard_cell but snapshot does
-    /// → None != Some(&Bool(true)) → returns true.
-    #[test]
-    fn phase3_guard_changed_returns_true_when_new_val_absent_but_old_present() {
-        let guard_cell = ValueCellId::new("E", "guard");
-        let group = GuardedGroupInfo {
-            guard_cell: guard_cell.clone(),
-            members: vec![],
-            else_members: vec![],
-            constraints: vec![],
-            else_constraints: vec![],
-        };
-        let values = ValueMap::default(); // guard_cell not present in new values
-        let mut snapshot: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::default();
-        snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
-
-        assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
     }
 
     // ── phase3_skip_group ─────────────────────────────────────────────────
