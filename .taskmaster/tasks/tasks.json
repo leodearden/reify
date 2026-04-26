@@ -49040,11 +49040,11 @@
         "description": "Replace `guard_expr: Option<CompiledExpr>` + `guard_compile_failed: bool` on `SubComponentDecl` (crates/reify-compiler/src/types.rs:367-374) with a single enum to make the invariant unrepresentable.\n\nCurrently the two fields encode three valid states (valid/broken/absent) but one combination — `Some(_)` + `guard_compile_failed=true` — is invalid and only documented via a doc-comment.\n\nProposed:\n```rust\nenum GuardState {\n    None,            // user wrote no guard\n    Broken,          // user wrote a guard but it failed to compile\n    Compiled(CompiledExpr),\n}\n```\n\nThe termination-check switch becomes a `match` over three arms with no need to skip-and-then-check.\n\nNot blocking — current encoding is correct. Source: post-merge review suggestion S1 from esc-1296-114 on task 1296.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T14:52:05.378Z",
+        "updatedAt": "2026-04-26T15:18:11.570Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/connect.rs",
@@ -49069,6 +49069,9 @@
               "broken_guard_does_not_emit_no_termination_error test sanity assertion",
               "GuardLookup enum pattern reify-compiler enum refactor"
             ]
+          },
+          "done_provenance": {
+            "commit": "7b82ce0576c38aafdd6c18d2d11c5bc1f04f664b"
           }
         }
       },
@@ -49443,14 +49446,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T14:55:58.356Z",
+      "lastModified": "2026-04-26T15:18:11.571Z",
       "taskCount": 2273,
-      "completedCount": 2045,
+      "completedCount": 2046,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T14:58:42.394Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
