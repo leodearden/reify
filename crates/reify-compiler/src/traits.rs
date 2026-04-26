@@ -271,7 +271,9 @@ pub(crate) fn compile_purpose(
             ))
             .with_label(DiagnosticLabel::new(
                 purpose_def.params[1].span,
-                "second StructureRef param".to_string(),
+                // "first extra" is self-explanatory for 3+ params too, where params[2..] are
+                // unhighlighted — the message text already says "has N StructureRef params".
+                "first extra StructureRef param".to_string(),
             )),
         );
     }

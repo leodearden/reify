@@ -1148,14 +1148,15 @@ purpose check(a : Structure, b : Structure) {
         module.diagnostics
     );
 
+    // Match on the stable '(task-2201)' tag rather than prose that may be reworded.
     let rejection_errors: Vec<_> = errors
         .iter()
-        .filter(|d| d.message.contains("multi-StructureRef purpose params not supported"))
+        .filter(|d| d.message.contains("(task-2201)"))
         .collect();
 
     assert!(
         !rejection_errors.is_empty(),
-        "expected at least one error containing 'multi-StructureRef purpose params not supported', \
+        "expected at least one error tagged '(task-2201)' for multi-StructureRef purpose, \
          but no such error was found.\nAll errors: {:#?}",
         errors
     );
@@ -1176,11 +1177,11 @@ purpose check(a : Structure, b : Structure) {
 /// `activate_purpose`, this assertion will fail immediately.
 #[test]
 fn compile_purpose_single_param_still_emits_purpose_name_stamped_valueref() {
+    // No structure template needed: subject : Structure is the wildcard kind and
+    // member resolution falls through without consulting any template.  Including a
+    // Bracket structure would be dead context that misleads the reader into thinking
+    // subject.mass is resolved against it.
     let source = r#"
-structure Bracket {
-    param mass : Mass = 5kg
-}
-
 purpose lightweight(subject : Structure) {
     constraint subject.mass > 0
 }
@@ -1188,14 +1189,15 @@ purpose lightweight(subject : Structure) {
     let module = compile_module_with_diagnostics(source);
 
     // (a) No multi-param rejection diagnostic emitted.
+    // Match on the stable '(task-2201)' tag rather than prose that may be reworded.
     let rejection_errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.message.contains("multi-StructureRef purpose params not supported"))
+        .filter(|d| d.message.contains("(task-2201)"))
         .collect();
     assert!(
         rejection_errors.is_empty(),
-        "expected NO 'multi-StructureRef' rejection for a single-param purpose, \
+        "expected NO '(task-2201)' rejection for a single-param purpose, \
          but got: {:#?}",
         rejection_errors
     );
