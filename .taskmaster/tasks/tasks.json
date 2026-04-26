@@ -50380,7 +50380,10 @@
         "details": "",
         "testStrategy": "",
         "status": "in-progress",
-        "dependencies": [],
+        "dependencies": [
+          "275",
+          "276"
+        ],
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:02:06.084Z"
@@ -50420,6 +50423,8 @@
         "testStrategy": "",
         "status": "pending",
         "dependencies": [
+          "275",
+          "276",
           "2331"
         ],
         "priority": "medium",
@@ -50493,7 +50498,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "275"
+        ],
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:11:55.722Z",
