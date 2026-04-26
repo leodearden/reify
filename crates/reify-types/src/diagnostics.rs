@@ -193,6 +193,21 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/conformance` (forward-completeness; not yet wired).
     /// Reserved for the conformance-checker producer that emits "type does not conform to trait …".
     TypeNotConformingToTrait,
+    /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
+    /// Replaces canonical messages:
+    /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
+    /// - `"constraint <id> evaluated to non-boolean value"` (non-bool fallback, Severity::Error)
+    ConstraintViolated,
+    /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
+    /// Replaces canonical message:
+    /// `"constraint <id> indeterminate: undefined inputs"` (Undef branch, Severity::Warning)
+    ConstraintIndeterminate,
+    /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver` and
+    ///          `crates/reify-constraints/src/solvespace.rs::SolveSpaceSolver`.
+    /// Replaces canonical messages:
+    /// - `"constraints could not be satisfied (max absolute residual: …)"` (solver.rs, Severity::Error)
+    /// - `"geometric constraints are inconsistent (<n> failed)"` (solvespace.rs, Severity::Error)
+    ConstraintUnsatisfiable,
 }
 
 /// A diagnostic message with location and optional labels.

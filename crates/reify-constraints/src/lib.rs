@@ -15,7 +15,7 @@ pub use solvespace::SolveSpaceSolver;
 
 use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
-    Satisfaction, Severity, Value,
+    DiagnosticCode, Satisfaction, Severity, Value,
 };
 
 /// Simple constraint checker for M1: evaluates constraint expressions
@@ -47,7 +47,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                 severity: Severity::Error,
                                 message: format!("constraint {} violated", id),
                                 labels: vec![],
-                                code: None,
+                                code: Some(DiagnosticCode::ConstraintViolated),
                             }],
                         },
                     ),
@@ -75,7 +75,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                     id
                                 ),
                                 labels: vec![],
-                                code: None,
+                                code: Some(DiagnosticCode::ConstraintViolated),
                             }],
                         },
                     ),
