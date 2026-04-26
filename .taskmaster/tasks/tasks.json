@@ -49756,12 +49756,13 @@
         "description": "Implement the v0.1 #precision pragma: parse a Length literal at module level (e.g. #precision(0.001m)), store it on CompiledModule.default_tolerance, and plumb to the OCCT kernel binding so dispatch uses it as the global default tolerance. v0.1 uses a single global tolerance; per-block #precision is in KNOWN_BLOCK_PRAGMAS already, emit \"ignored in v0.1; per-block tolerance deferred to v0.2\" warning. Accept #precision(float64) as legacy/numeric-format spelling per spec §12.2 with an info-level \"recognised but ignored\" diagnostic. Pragma framework (#278) is done; this is the value-extraction + plumbing pass. PRD: docs/prds/pragmas.md item 2.</description>\n<parameter name=\"details\">Add new field on CompiledModule (crates/reify-compiler/src/types.rs): pub default_tolerance: Option<f64> in metres. Add a new module crates/reify-compiler/src/module_pragmas.rs with apply_module_pragmas(parsed, &mut module, &mut diagnostics). Validation rules:\n- Multiple #precision pragmas at module level: warning on subsequent ones, first wins.\n- Block-level #precision: \"ignored in v0.1\" warning.\n- Negative or non-finite values: error.\n- #precision(float64): info diagnostic, ignored.\nPlumbing: reify-geometry::DispatchPlanner and the OCCT kernel binding read compiled_module.default_tolerance (or fall back to existing default constant). Locate the existing default constant during architect phase.\n\nTests in crates/reify-compiler/tests/pragma_compile_tests.rs covering each diagnostic path and the round-trip to default_tolerance.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "278"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:40:40.956Z"
       },
       {
         "id": "2297",
@@ -49777,15 +49778,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:35:29.627Z",
-      "taskCount": 2283,
+      "lastModified": "2026-04-26T19:40:40.956Z",
+      "taskCount": 2286,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:36:17.765Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:40:37.386Z"
+      ]
     }
   }
 }
