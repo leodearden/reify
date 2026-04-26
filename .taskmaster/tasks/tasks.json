@@ -48942,7 +48942,20 @@
           ],
           "modules": [
             "crates/reify-eval/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "GuardedParamCtx",
+              "VersionId",
+              "Engine::eval"
+            ],
+            "queries": [
+              "GuardedParamCtx reuse across arms eval third pass",
+              "VersionId wrap hoisting engine_eval param branch",
+              "eval_guarded_group_param_cell context struct signature task 2251",
+              "GuardedParamCtx doc-comment engine_eval.rs"
+            ]
+          }
         }
       }
     ],
@@ -48953,7 +48966,9 @@
       "completedCount": 2023,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T11:22:44.049Z",
+      "description": "Tasks for master context"
     }
   }
 }
