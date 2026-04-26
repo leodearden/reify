@@ -697,3 +697,39 @@ fn multiple_module_level_precision_pragmas_first_wins() {
         warns
     );
 }
+
+/// `#precision(0.001s)` (a Time quantity, not a Length) emits a warning that
+/// mentions "Length" and does not set `default_tolerance`. Crucially the
+/// warning must NOT be the generic "unknown pragma" warning (which is reserved
+/// for unrecognised pragma NAMES, not unrecognised arg shapes).
+#[test]
+fn precision_pragma_with_non_length_unit_warns_and_does_not_set_tolerance() {
+    let module = compile_source("#precision(0.001s)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for non-Length unit, got {:?}",
+        module.default_tolerance
+    );
+
+    // Exactly one warning whose message mentions "Length" (case-insensitive)
+    // and is NOT the generic "unknown pragma" warning.
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("length") && !m.contains("unknown pragma")
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 warning mentioning 'Length' for #precision(0.001s), got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
