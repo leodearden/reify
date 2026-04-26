@@ -1612,4 +1612,92 @@ mod tests {
         assert!(lambda_param_ids.contains(&new_id), "Lambda param_id(old) should be rewritten");
         assert!(!lambda_param_ids.contains(&old), "no Lambda param_id(old) should remain");
     }
+
+    /// step-3 (task-2289): constructor for the new
+    /// `PurposeReflectiveAggregation` variant builds a node with the expected
+    /// shape and result_type.
+    ///
+    /// RED before step-4: variant + constructor do not yet exist.
+    #[test]
+    fn purpose_reflective_aggregation_constructs_expected_kind() {
+        let expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        match &expr.kind {
+            CompiledExprKind::PurposeReflectiveAggregation {
+                param_name,
+                query_kind,
+            } => {
+                assert_eq!(param_name, "subject");
+                assert_eq!(query_kind, "params");
+            }
+            other => panic!("expected PurposeReflectiveAggregation, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::Real)));
+    }
+
+    /// step-3 (task-2289): `walk` visits the placeholder node itself but has no
+    /// children — same shape as `OptionNone` / `MetaAccess`.
+    #[test]
+    fn purpose_reflective_aggregation_walk_has_no_children() {
+        let expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        let mut count = 0;
+        expr.walk(&mut |_| count += 1);
+        assert_eq!(count, 1, "placeholder must be a leaf node");
+    }
+
+    /// step-3 (task-2289): `collect_value_refs` returns an empty Vec for the
+    /// placeholder — it has no `ValueCellId` until activation expands it.
+    #[test]
+    fn purpose_reflective_aggregation_has_no_value_refs() {
+        let expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        assert!(expr.collect_value_refs().is_empty());
+    }
+
+    /// step-3 (task-2289): structurally-equal placeholders share content_hash;
+    /// structurally-different placeholders (different `query_kind`) differ.
+    #[test]
+    fn purpose_reflective_aggregation_content_hash_is_structural() {
+        let a = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        let b = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        let different_kind = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "geometric_params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+        let different_param = CompiledExpr::purpose_reflective_aggregation(
+            "other".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        assert_eq!(a.content_hash, b.content_hash, "identical inputs → identical hashes");
+        assert_ne!(
+            a.content_hash, different_kind.content_hash,
+            "different query_kind must change the hash"
+        );
+        assert_ne!(
+            a.content_hash, different_param.content_hash,
+            "different param_name must change the hash"
+        );
+    }
 }
