@@ -80,16 +80,13 @@ pub(crate) fn phase_entities(
         )
         .collect();
 
-    // Build a set of dotted import paths that are already resolved in the
-    // prelude (e.g. "std.units", "a", "shapes.bolts"). When a prelude module
-    // covers an import, no diagnostic is needed — the import was resolved.
-    // Only emit the warning for imports that have no matching prelude entry.
-    // Note: ModulePath::to_string() uses '/' separators; use .0.join(".") to
-    // get the dotted form that matches ImportDecl.path (see task 2226).
-    let resolved_import_paths: HashSet<String> = prelude
-        .iter()
-        .map(|m| m.path.0.join("."))
-        .collect();
+    // Lazily build the set of dotted import paths that are already resolved
+    // in the prelude (e.g. "std.units", "a", "shapes.bolts"). Initialised on
+    // the first Import declaration encountered; not allocated at all when the
+    // module has no imports (the common case). Note: ModulePath::to_string()
+    // uses '/' separators; use .0.join(".") to get the dotted form that
+    // matches ImportDecl.path (see task 2226).
+    let mut resolved_import_paths: Option<HashSet<String>> = None;
 
     for decl in &parsed.declarations {
         match decl {
@@ -126,10 +123,13 @@ pub(crate) fn phase_entities(
                 // Emit a "not resolved" warning only when the import path is
                 // absent from the prelude (i.e. this entry point did not load
                 // the imported file). Resolved imports — ModuleDag user modules
-                // and stdlib modules — are already in `resolved_import_paths`
-                // and receive no diagnostic. See task 2226 for detection
-                // strategy and wording rationale.
-                if !resolved_import_paths.contains(&import.path) {
+                // and stdlib modules — are already in the set and receive no
+                // diagnostic. The set is built lazily: the first Import
+                // declaration triggers collection; subsequent ones reuse it.
+                // See task 2226 for detection strategy and wording rationale.
+                let resolved = resolved_import_paths
+                    .get_or_insert_with(|| prelude.iter().map(|m| m.path.0.join(".")).collect());
+                if !resolved.contains(&import.path) {
                     ctx.diagnostics.push(
                         Diagnostic::warning(format!(
                             "import \"{}\" not resolved: this entry point does not load imported files — use compile_project (ModuleDag) for cross-file imports",

@@ -19,6 +19,16 @@
 //!    that is not in the prelude, a Warning diagnostic is emitted with accurate
 //!    wording (references compile_project / ModuleDag; does NOT say "not yet
 //!    implemented").
+//!
+//! Amendment tests (coverage gaps from reviewer):
+//! 4. `compile_project_missing_dep_returns_err` — documents that when a dep
+//!    file is absent, compile_project returns Err (file-read error), not a
+//!    phase_entities warning. The warning path is only exercised when compile()
+//!    or compile_with_stdlib() is called directly without resolving the dep.
+//! 5. `module_dag_resolved_destructured_import_emits_no_warning` — pins the
+//!    path-form invariant: `import a.{Foo}` has path="a" in the AST, and
+//!    ModuleDag's prelude key for `a.ri` is also "a", so the gate matches and
+//!    no warning fires.
 
 use std::fs;
 
@@ -62,9 +72,7 @@ fn module_dag_resolved_user_import_emits_no_warning() {
     let import_warnings: Vec<_> = b_module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == reify_types::Severity::Warning && d.message.contains("import \"a\"")
-        })
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("import \"a\""))
         .collect();
 
     assert!(
@@ -126,38 +134,26 @@ fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
 
     let diag = import_warnings[0];
 
-    // (a) import path present
-    assert!(
-        diag.message.contains("shapes"),
-        "message must contain the import path 'shapes': {:?}",
-        diag.message
-    );
-    // (b) word "import" present
-    assert!(
-        diag.message.contains("import"),
-        "message must contain 'import': {:?}",
-        diag.message
-    );
-    // (c) old misleading phrase removed
+    // (a) old misleading phrase removed (mirrors geometry_sub_ref_e2e.rs:100)
     assert!(
         !diag.message.contains("not yet implemented"),
         "message must NOT contain 'not yet implemented': {:?}",
         diag.message
     );
-    // (d) references actionable API
+    // (b) references actionable API
     assert!(
         diag.message.contains("compile_project") || diag.message.contains("ModuleDag"),
         "message must reference 'compile_project' or 'ModuleDag': {:?}",
         diag.message
     );
-    // (e) severity is Warning
+    // (c) severity is Warning
     assert_eq!(
         diag.severity,
         Severity::Warning,
         "severity must be Warning: {:?}",
         diag
     );
-    // (f) squiggle label present
+    // (d) squiggle label present
     assert!(
         !diag.labels.is_empty(),
         "diagnostic must have at least one label: {:?}",
@@ -186,10 +182,7 @@ fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
     let import_warnings: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == reify_types::Severity::Warning
-                && d.message.contains("import \"std.units\"")
-        })
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("import \"std.units\""))
         .collect();
 
     assert!(
@@ -202,3 +195,105 @@ fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
     );
 }
 
+// ── Amendment: coverage for compile_project error path ───────────────────────
+
+/// `compile_project` with a missing dependency file returns `Err`.
+///
+/// When `b.ri` imports `z` but `z.ri` does not exist on disk, `compile_project`
+/// short-circuits with a file-read `Err` before ever reaching the entry module's
+/// `phase_entities`. This means the "not resolved" Warning from `phase_entities`
+/// is NOT emitted in this path — the caller receives file-level error diagnostics
+/// instead.
+///
+/// This test documents that behaviour: the phase_entities warning path is only
+/// exercisable via `compile()` / `compile_with_stdlib()` (when the caller has a
+/// parsed module but no dep in the prelude). The `compile_with_stdlib` path is
+/// covered by `compile_with_stdlib_unresolved_user_import_emits_specific_warning`.
+#[test]
+fn compile_project_missing_dep_returns_err() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // b.ri imports z, but z.ri does NOT exist.
+    fs::write(
+        dir.join("b.ri"),
+        "import z\nstructure B {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = compile_project(&dir.join("b.ri"), &resolver);
+
+    // compile_project must fail because z.ri cannot be read.
+    assert!(
+        result.is_err(),
+        "expected Err when dep 'z' is missing, but got Ok with {} module(s)",
+        result.unwrap().len()
+    );
+
+    // The Err contains file-read error diagnostics — NOT import warnings.
+    // Verify the old misleading phrase doesn't appear in this path either.
+    let errors = result.unwrap_err();
+    for e in &errors {
+        assert!(
+            !e.message.contains("not yet implemented"),
+            "file-read errors must not say 'not yet implemented': {:?}",
+            e.message
+        );
+    }
+}
+
+// ── Amendment: path-form invariant for destructured imports ──────────────────
+
+/// Destructured import `import a.{Foo}` is resolved silently by ModuleDag.
+///
+/// Pins the path-form invariant: the parser stores path = "a" (just the
+/// module segment) and kind = Destructured(["Foo"]). ModuleDag compiles
+/// `a.ri` and stores it under the key "a". The prelude lookup key
+/// `m.path.0.join(".")` also resolves to "a", so the gate in `phase_entities`
+/// matches and no warning fires.
+///
+/// This ensures the gate works for all import forms — not just Module-kind
+/// (`import a`) but also Destructured-kind (`import a.{Foo}`).
+#[test]
+fn module_dag_resolved_destructured_import_emits_no_warning() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // a.ri: defines pub structure Foo
+    fs::write(
+        dir.join("a.ri"),
+        "pub structure Foo {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // b.ri: destructured import of Foo from module a
+    fs::write(
+        dir.join("b.ri"),
+        "import a.{Foo}\nstructure Bar {\n    param y: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let modules = compile_project(&dir.join("b.ri"), &resolver)
+        .expect("compile_project should succeed with destructured import");
+
+    // The entry module (b) is last in topological order.
+    let b_module = modules.last().expect("expected at least one module in result");
+
+    // No Warning diagnostic should mention import "a" (destructured path).
+    let import_warnings: Vec<_> = b_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("import \"a\""))
+        .collect();
+
+    assert!(
+        import_warnings.is_empty(),
+        "expected no import-warning for resolved destructured import 'a.{{Foo}}', but got: {:?}",
+        import_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
