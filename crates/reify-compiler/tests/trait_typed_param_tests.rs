@@ -1272,15 +1272,35 @@ fn bare_struct_call_passed_to_option_trait_param_emits_shape_mismatch() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    assert!(
-        errors.iter().any(|d| {
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| {
             d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
                 && d.message.contains("does not match")
                 && d.message.contains("Option")
                 && d.message.contains("Steel")
-        }),
-        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'Steel' and 'Option' for Steel() passed to Option<MaterialSpec> param, got: {:?}",
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one wrapper-shape diagnostic, got {:?}",
+        matching
+    );
+    // Pin that the anti-cascade guard in walk_param_against_arg_type prevents
+    // secondary TypeNotConformingToTrait diagnostics from piling on top of the
+    // wrapper-shape mismatch. If this count exceeds 1, the guard is not working.
+    assert_eq!(
         errors
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+            .count(),
+        1,
+        "expected exactly one TypeNotConformingToTrait diagnostic total (anti-cascade guard), got {:?}",
+        errors
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1312,15 +1332,20 @@ fn list_literal_passed_to_option_trait_param_emits_shape_mismatch() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    assert!(
-        errors.iter().any(|d| {
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| {
             d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
                 && d.message.contains("does not match")
                 && d.message.contains("Option")
                 && d.message.contains("List")
-        }),
-        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'List' and 'Option' for [Steel()] passed to Option<MaterialSpec> param, got: {:?}",
-        errors
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one wrapper-shape diagnostic, got {:?}",
+        matching
     );
 }
 
@@ -1352,15 +1377,20 @@ fn map_literal_passed_to_list_trait_param_emits_shape_mismatch() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    assert!(
-        errors.iter().any(|d| {
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| {
             d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
                 && d.message.contains("does not match")
                 && d.message.contains("List")
                 && d.message.contains("Map")
-        }),
-        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'Map' and 'List' for map{{...}} passed to List<MaterialSpec> param, got: {:?}",
-        errors
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one wrapper-shape diagnostic, got {:?}",
+        matching
     );
 }
 
@@ -1392,15 +1422,20 @@ fn valueref_of_list_passed_to_option_slot_emits_shape_mismatch() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    assert!(
-        errors.iter().any(|d| {
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| {
             d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
                 && d.message.contains("does not match")
                 && d.message.contains("Option")
                 && d.message.contains("List<Material>")
-        }),
-        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'List<Material>' and 'Option' for List<Material> ValueRef passed to Option<Material> param, got: {:?}",
-        errors
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one wrapper-shape diagnostic, got {:?}",
+        matching
     );
 }
 
@@ -1431,15 +1466,20 @@ fn valueref_of_list_passed_to_set_trait_param_emits_shape_mismatch() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    assert!(
-        errors.iter().any(|d| {
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| {
             d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
                 && d.message.contains("does not match")
                 && d.message.contains("Set")
                 && d.message.contains("List<M>")
-        }),
-        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'Set' and 'List<M>' for List<M> ValueRef passed to Set<M> param, got: {:?}",
-        errors
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one wrapper-shape diagnostic, got {:?}",
+        matching
     );
 }
 
@@ -1471,15 +1511,20 @@ fn valueref_of_list_passed_to_map_trait_param_emits_shape_mismatch() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    assert!(
-        errors.iter().any(|d| {
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| {
             d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
                 && d.message.contains("does not match")
                 && d.message.contains("Map<")
                 && d.message.contains("List<M>")
-        }),
-        "expected a TypeNotConformingToTrait wrapper-shape-mismatch error mentioning 'Map<' and 'List<M>' for List<M> ValueRef passed to Map<String, M> param, got: {:?}",
-        errors
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one wrapper-shape diagnostic, got {:?}",
+        matching
     );
 }
 
