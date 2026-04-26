@@ -50330,10 +50330,11 @@
         "description": "Add a new prelude file crates/reify-compiler/stdlib/standard_stock.ri exposing two Length collections that @solver_hint references can point at. (1) standard_bolt_lengths: ISO 4014/4017 length series 8-100mm at the standard increments (8, 10, 12, 14, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100 mm). (2) standard_sheet_thicknesses: common metal stock gauges in mm (0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0). Both must satisfy whatever collection trait the constraint-solver discrete_set/prefer_stock integration consumes (confirm during architect — do NOT invent a new trait). Wire into crates/reify-compiler/src/stdlib_loader.rs alongside std.units, std.materials_mechanical etc., recommended module path: std.stock. Doc comments mandatory on both — they surface in LSP hover and the doc generator. Tasks #275 (compiler) and #276 (solver integration) are done; this provides the payload data they reference. PRD: docs/prds/solver-hint-payloads.md item 1.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">275, 276",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:02:06.084Z"
       },
       {
         "id": "2332",
@@ -50351,7 +50352,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:02:05.453Z",
+      "lastModified": "2026-04-26T20:02:06.084Z",
       "taskCount": 2321,
       "completedCount": 2059,
       "tags": [
