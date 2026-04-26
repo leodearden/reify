@@ -49902,12 +49902,13 @@
         "description": "Implement the v0.1 #version pragma: parse #version(0.1) (number form) or #version(\"0.1\") (string form), store on CompiledModule.declared_version: Option<(u16, u16)>, and validate against the compiler's supported version (0.1 in v0.1). Above the compiler's supported version: error \"module declares version X.Y; this compiler supports up to 0.1\". Below: warning \"declared version X.Y predates the first stable language; treating as 0.1\" — no migration in v0.1, that's deferred to v0.2. Multiple #version pragmas: error \"at most one #version declaration per module\". PRD: docs/prds/pragmas.md item 5. Migration tool deferred to v0.2.",
         "details": "Add CompiledModule.declared_version: Option<(u16, u16)> in crates/reify-compiler/src/types.rs. Extend apply_module_pragmas. Already in MODULE_ONLY_PRAGMAS so block-level warning is automatic.\n\nArgument grammar:\n- PragmaValue::Number(0.1) parsed as MAJOR=0, MINOR=1.\n- String form \"0.1\" / \"0.2\" parsed via str::split('.').\n\nTests: crates/reify-compiler/tests/pragma_compile_tests.rs covering valid 0.1 (number + string), too-new (error wording), too-old (warning), duplicate (error), malformed string.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "278"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:48:20.045Z"
       },
       {
         "id": "2306",
@@ -49923,15 +49924,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:46:40.952Z",
-      "taskCount": 2293,
+      "lastModified": "2026-04-26T19:48:20.045Z",
+      "taskCount": 2295,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:46:42.738Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:48:07.793Z"
+      ]
     }
   }
 }
