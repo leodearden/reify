@@ -1246,3 +1246,89 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
         "override must survive a transient type-kind mismatch in the helper's rejected-no-default arm"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2195 step-7: helper no-override-no-default arm records journal+cache
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression lock for the no-override-no-default early-return path inside
+/// `eval_guarded_group_param_cell` (lines 200-206 in the original). Step-4 must
+/// have covered ALL FOUR paths; this test catches a partial fix that only
+/// instrumented the success and rejected-override paths.
+///
+/// The helper's no-override-no-default arm intentionally writes Undef (diverging
+/// from the top-level Param branch which bare-continues — task-2154 design
+/// decision). Recording in journal+cache makes this write visible to tooling.
+///
+/// Setup: `structure S { param active : Bool = true\n where active { param x : Int } }`
+///   — active=true so the `members` loop runs the helper on `S.x`.
+///   — `x` has no `default_expr` and the fresh engine has no override for it.
+///   — The no-override-no-default arm fires.
+///
+/// Assertions after `engine.eval(&module)`:
+///   (a) Journal for `x` has Started + Completed.
+///   (b) Cache for `x` has `CachedResult::Value(Undef, Undetermined)`.
+///   (c) `result.values.get(&x_id) == Some(&Value::Undef)` — the intentional Undef
+///       write contract from task-2154: guarded-group cells always appear in the map.
+///   (d) No diagnostics — the no-override-no-default path is silent.
+#[test]
+fn eval_records_journal_pair_and_cache_entry_for_guarded_group_no_override_no_default_param() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure S { param active : Bool = true\n where active { param x : Int } }",
+    );
+    let result = engine.eval(&module);
+
+    let x_id = ValueCellId::new("S", "x");
+    let node_id = NodeId::Value(x_id.clone());
+
+    // (a) Journal: Started + Completed for x (no-override-no-default path).
+    let events = engine.journal().events_for_node(&node_id);
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
+        "helper no-override-no-default arm must emit Started journal event"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
+        "helper no-override-no-default arm must emit Completed journal event"
+    );
+
+    // (b) Cache: CachedResult::Value(Undef, Undetermined).
+    let entry = engine
+        .cache_store()
+        .get(&node_id)
+        .expect("helper no-override-no-default arm must write a cache entry");
+    match &entry.result {
+        CachedResult::Value(val, det) => {
+            assert_eq!(
+                *val,
+                Value::Undef,
+                "no-override-no-default cache value must be Undef"
+            );
+            assert_eq!(
+                *det,
+                DeterminacyState::Undetermined,
+                "no-override-no-default cache determinacy must be Undetermined"
+            );
+        }
+        other => panic!(
+            "expected CachedResult::Value(Undef, Undetermined) for no-override-no-default x, got {:?}",
+            other
+        ),
+    }
+
+    // (c) EvalResult.values has Undef for x — intentional Undef write (task-2154 contract).
+    assert_eq!(
+        result.values.get(&x_id),
+        Some(&Value::Undef),
+        "guarded-group no-override-no-default cell must be present as Undef in result.values \
+         (task-2154 contract: all guarded cells appear in the map)"
+    );
+
+    // (d) No diagnostics — silent write, unlike the rejected-override path which warns.
+    assert!(
+        result.diagnostics.is_empty(),
+        "no-override-no-default guarded-group Param must not emit diagnostics, got: {:?}",
+        result.diagnostics
+    );
+}
