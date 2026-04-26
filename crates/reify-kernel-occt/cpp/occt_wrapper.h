@@ -16,6 +16,12 @@ namespace occt {
 /// Every "modification" (translate, boolean, fillet, etc.) returns a fresh
 /// OcctShape. The three topology-map caches below are therefore safe to
 /// populate lazily and never need invalidation.
+///
+/// THREAD-SAFETY NOTE: The cache slots are unsynchronized (`mutable` without
+/// a mutex). Safety relies on OcctShape being accessed only via the
+/// `!Send + !Sync` `OcctKernel`, which pins all accesses to a single thread.
+/// If a future change wraps OcctShape in something `Sync`, a synchronization
+/// primitive (e.g. `std::call_once`) must be added to the lazy accessors.
 struct OcctShape {
     TopoDS_Shape shape;
 

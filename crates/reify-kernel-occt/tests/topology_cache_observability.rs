@@ -67,11 +67,15 @@ fn topology_cache_starts_empty_on_fresh_shape() {
         "fresh shape should have zero cache build counts, got {:?}",
         counts
     );
+}
 
-    // An unknown handle must return Err(GeometryError::InvalidReference(_)).
+/// `topology_cache_build_counts` with an unknown handle must propagate the
+/// `get_shape` contract: `Err(GeometryError::InvalidReference(id))`.
+#[test]
+fn topology_cache_build_counts_returns_invalid_reference_for_unknown_handle() {
+    let (kernel, _) = box_kernel();
     let bad_id = GeometryHandleId(999);
-    let result = kernel.topology_cache_build_counts(bad_id);
-    match result {
+    match kernel.topology_cache_build_counts(bad_id) {
         Err(GeometryError::InvalidReference(id)) => {
             assert_eq!(id, bad_id, "InvalidReference should carry the bad handle id");
         }
