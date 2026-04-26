@@ -50598,6 +50598,20 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2349",
+        "title": "Reconcile Inheritance for Structural Physical Traits",
+        "description": "Adjust inheritance edges for structural_physical.ri to align with specification section 4.",
+        "details": "Update the inheritance structure in the `structural_physical.ri` file to match the specification. Specifically, change `ElasticallyDeformable` to inherit from `Flexible` instead of `Elastic`, make `Plastic` inherit from `Flexible`, and ensure `ThermallyConductive` and `ElectricallyConductive` inherit from `Physical`. Review the specification document (PRD docs/prds/stdlib-trait-breadth.md task 2) for detailed guidance. Ensure that no parameter changes are made, and existing tests must still pass after these changes.",
+        "testStrategy": "Run existing tests in `structural_physical.ri` to ensure they pass without modifications. Use `cargo test -p reify-compiler -- structural` to verify that the inheritance changes do not affect the current functionality. Check that the new inheritance hierarchy aligns with the specification by reviewing the generated documentation and any relevant output logs.",
+        "status": "pending",
+        "dependencies": [
+          "329",
+          "2347"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50610,7 +50624,7 @@
       ],
       "created": "2026-04-26T20:10:26.712Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:10:31.550Z"
+      "updated": "2026-04-26T20:10:36.595Z"
     }
   }
 }
