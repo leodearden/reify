@@ -937,31 +937,16 @@ pub(crate) fn compile_entity(
                 // are available in the template registry during the post-pass.
                 // Zip sub.args (carries the original Expr with its source span)
                 // with compiled_args so we can use per-arg spans in diagnostics.
+                // The full CompiledExpr is stored so the conformance walker can
+                // recurse into nested OptionSome / ListLiteral / SetLiteral /
+                // MapLiteral nodes.
                 for ((_, arg_expr), (arg_name, compiled_arg)) in
                     sub.args.iter().zip(compiled_args.iter())
                 {
-                    // Capture the callee name from any FunctionCall expression
-                    // (e.g. `Steel()` or `Steel(density: 100.0)`).  The post-pass
-                    // promoter gates on `template_registry.contains_key(call_name)`
-                    // so non-structure calls are unaffected.
-                    //
-                    // TODO(follow-up): a cleaner approach is to have compile_expr
-                    // emit Type::StructureRef directly for FunctionCall nodes whose
-                    // callee is a known structure (subject to the same post-pass
-                    // deferral).  That would let us remove arg_call_name and the
-                    // promotion branch in conformance.rs::check_trait_arg_conformance,
-                    // collapsing the two-layer path-splitting into one.
-                    let arg_call_name = match &compiled_arg.kind {
-                        CompiledExprKind::FunctionCall { function, .. } => {
-                            Some(function.name.clone())
-                        }
-                        _ => None,
-                    };
                     pending_bound_checks.push(PendingBoundCheck::TraitArgConformance {
                         target_name: sub.structure_name.clone(),
                         arg_name: arg_name.clone(),
-                        arg_type: compiled_arg.result_type.clone(),
-                        arg_call_name,
+                        compiled_arg: compiled_arg.clone(),
                         span: arg_expr.span,
                     });
                 }
@@ -1854,19 +1839,14 @@ pub(crate) enum PendingBoundCheck {
     /// Enqueued at the sub-compile site; dispatched in the post-compilation
     /// pass where both the template registry and trait registry are available.
     ///
-    /// `arg_call_name` captures the function-call name when the arg was compiled
-    /// from any `FunctionCall` expression (e.g. `Steel()` or `Steel(density: 1.0)`
-    /// → Some("Steel")).  The post-pass uses this to recognise structure-
-    /// instantiation calls whose `arg_type` resolved to `Type::Real` (the
-    /// expression compiler's fallback for unknown calls) and promotes them to
-    /// `Type::StructureRef(name)` before walking the trait bounds.
+    /// Carries the full `CompiledExpr` so the conformance walker can recurse
+    /// into nested `OptionSome` / `ListLiteral` / `SetLiteral` / `MapLiteral`
+    /// nodes and derive `arg_call_name` from any nested `FunctionCall` for the
+    /// existing `Real|Int → StructureRef` promotion.
     TraitArgConformance {
         target_name: String,
         arg_name: String,
-        arg_type: Type,
-        /// When the compiled arg was a FunctionCall (potential structure
-        /// instantiation), the callee name. `None` for non-call expressions.
-        arg_call_name: Option<String>,
+        compiled_arg: CompiledExpr,
         span: SourceSpan,
     },
 }

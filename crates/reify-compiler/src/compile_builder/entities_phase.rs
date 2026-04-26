@@ -303,15 +303,13 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
             PendingBoundCheck::TraitArgConformance {
                 target_name,
                 arg_name,
-                arg_type,
-                arg_call_name,
+                compiled_arg,
                 span,
             } => {
                 check_trait_arg_conformance(
                     &target_name,
                     &arg_name,
-                    &arg_type,
-                    arg_call_name.as_deref(),
+                    &compiled_arg,
                     span,
                     &template_registry,
                     &trait_registry,
