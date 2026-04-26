@@ -50878,14 +50878,14 @@
         "description": "Implement crates/reify-doc/src/fmt_html.rs rendering DocModel as a single self-contained HTML file (no external CSS, no JS, no external resource references). Sections mirror the markdown formatter: TOC nav with `position: sticky; top: 0;`, per-item `<section id=\"…\">` blocks, semantic HTML (`<table>` for params/ports, `<dl>` for meta, `<p>` for doc paragraphs, `<code>` for code spans). Hand-written embedded `<style>` block ≤100 lines: monospace fallback for code, max-width 900px on body, generous line-height. No syntax highlighting in v0.1. Snapshot test against examples/integration_full_v01.ri verifying the output renders in a browser (no external requests). PRD: docs/prds/reify-doc-tool.md slice 5.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2342",
           "2357"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:15:44.624Z"
+        "updatedAt": "2026-04-26T20:18:37.103Z"
       },
       {
         "id": "2360",
@@ -50918,14 +50918,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:18:31.773Z",
+      "lastModified": "2026-04-26T20:18:37.103Z",
       "taskCount": 2350,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:18:34.088Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
