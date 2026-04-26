@@ -1,6 +1,7 @@
 mod analysis;
 mod calculus;
 mod complex;
+pub mod kleene;
 mod sanitize;
 
 use std::collections::HashMap;
