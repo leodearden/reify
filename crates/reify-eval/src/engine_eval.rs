@@ -174,9 +174,10 @@ fn post_solver_re_eval_guard_cells(
 /// override bug (task 2154) cannot recur.
 ///
 /// **Cache / journal**: neither the EvalEvent journal nor the eval cache is
-/// consulted here — see the deferred-cache rationale at
-/// `engine_eval.rs:487-496` (top-level Param branch, rejected-no-default arm).
-/// The same reasoning applies to both active-branch call sites.
+/// consulted here — see the deferred-cache rationale at the top-level Param
+/// branch S4 arm (top-level Param branch, rejected-no-default arm). Task-2195
+/// resolved that deferral for the top-level S4 path; the helper still omits
+/// journal/cache recording (to be addressed in a follow-up if needed).
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
@@ -581,22 +582,26 @@ impl Engine {
                             cell.id.clone(),
                             (Value::Undef, DeterminacyState::Undetermined),
                         );
-                        // Cache recording is intentionally omitted here.
+                        // Task-2195 resolves the prior deferred-cache omission.
                         // The pre-refactor code reached `continue` before any
-                        // `self.cache.record_evaluation(...)` call, so no cache
-                        // entry was ever written for this path. Adding one now
-                        // would change incremental-eval semantics: `try_fast_path`
-                        // in `eval_cached` could start serving this Undef entry
-                        // across subsequent versions, potentially masking the
-                        // underlying source-level problem (rejected override) or
-                        // triggering stale-cache paths on module re-edits. Cache
-                        // semantics for this path are deferred to a follow-up task.
+                        // `cache.record_evaluation` call; the deferral was
+                        // preserved through the task-2154 refactor with the
+                        // rationale that adding it might mask rejected-override
+                        // conditions via the incremental fast-path. Task-2195
+                        // deliberately resolves that deferral: recording the
+                        // (Undef, Undetermined) result here makes the S4 path
+                        // symmetric with every other Param branch that produces
+                        // a journal Started/Completed pair backed by a cache entry.
+                        let outcome = self.cache.record_evaluation(
+                            node_id.clone(),
+                            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+                            VersionId(version_id),
+                            DependencyTrace::default(),
+                        );
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
-                            kind: EventKind::Completed {
-                                outcome: EvalOutcome::Unchanged,
-                            },
+                            kind: EventKind::Completed { outcome },
                             version: VersionId(version_id),
                             payload: Some(EventPayload::Duration(start.elapsed())),
                         });
