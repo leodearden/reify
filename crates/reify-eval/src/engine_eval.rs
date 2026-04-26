@@ -186,6 +186,13 @@ struct GuardedParamCtx<'a> {
 /// `node_id` is consumed: cloned once into the cache call and moved into the
 /// journal event.  `start` is the `Instant` captured before the matching
 /// `EventKind::Started` record so that `Duration` spans the full resolution.
+///
+/// **Cache / journal**: the `outcome` field of the emitted
+/// `EventKind::Completed` is forwarded directly from
+/// `cache.record_evaluation`'s return value — `New` on a first record,
+/// `Unchanged` on an identical re-record, and any other variant the cache may
+/// produce.  Callers do not control the outcome; they only supply the
+/// `CachedResult` value being stored.
 #[inline]
 fn record_eval_completed(
     journal: &mut crate::journal::EventJournal,
@@ -682,6 +689,13 @@ impl Engine {
                         // (Undef, Undetermined) result here makes the S4 path
                         // symmetric with every other Param branch that produces
                         // a journal Started/Completed pair backed by a cache entry.
+                        // Note: the `EvalOutcome` in the emitted `Completed`
+                        // event is now whatever `cache.record_evaluation`
+                        // returns — `New` on first eval, `Unchanged` only on
+                        // identical re-record — not the hardcoded
+                        // `EvalOutcome::Unchanged` the pre-task-2195 code
+                        // would have produced.  See task-2195 for the
+                        // journal-shape diff this introduces.
                         record_eval_completed(
                             &mut self.journal,
                             &mut self.cache,
