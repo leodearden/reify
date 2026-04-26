@@ -533,5 +533,50 @@ assert "Check 16: stderr contains task id 300" \
 assert "Check 16: stderr contains feature-branch task title 'Branch version'" \
     grep -q "Branch version" "$_stderr16"
 
+# ==============================================================================
+# Check 17: cross-tag collision — done wins (reverse tag order)
+# Defends scripts/refresh_briefing_known_gaps.py:167-174 (upgrade-when-done branch).
+# Check 16 exercises the early-continue path (done entry indexed first, in-progress
+# skipped). Check 17 exercises the upgrade branch: master (in-progress) is indexed
+# first; when the script processes feature-branch's done occurrence, lines 167-174
+# execute — tasks_index[task_id_str] is replaced with the done entry, so the
+# mismatch detector sees status=done and emits WARN.
+# ==============================================================================
+echo ""
+echo "--- Check 17: cross-tag collision — done wins (reverse tag order) ---"
+
+_brief17="$_tmpdir/briefing17.yaml"
+_tasks17="$_tmpdir/tasks17.json"
+
+cat > "$_brief17" <<'YAML'
+subprojects:
+  engine:
+    known_gaps:
+      - what: "collision gap"
+        tracking: "300"
+YAML
+
+# master appears FIRST as in-progress; feature-branch appears SECOND as done.
+# This is the inverse of Check 16's ordering and forces the upgrade branch to run.
+cat > "$_tasks17" <<'JSON'
+{"master":{"tasks":[{"id":"300","title":"Master version","status":"in-progress"}]},"feature-branch":{"tasks":[{"id":"300","title":"Branch version","status":"done"}]}}
+JSON
+
+_stderr17="$_tmpdir/stderr17.txt"
+_exit17=0
+python3 "$REFRESH_SCRIPT" --briefing "$_brief17" --tasks "$_tasks17" 2>"$_stderr17" || _exit17=$?
+
+assert "Check 17: exit code is 1 (done in any tag → mismatch, regardless of tag order)" \
+    test "$_exit17" -eq 1
+
+assert "Check 17: stderr contains WARN" \
+    grep -q "WARN" "$_stderr17"
+
+assert "Check 17: stderr contains task id 300" \
+    grep -q "300" "$_stderr17"
+
+assert "Check 17: stderr contains feature-branch task title 'Branch version'" \
+    grep -q "Branch version" "$_stderr17"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
