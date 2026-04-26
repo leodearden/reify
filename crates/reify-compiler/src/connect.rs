@@ -363,6 +363,7 @@ pub(crate) fn compile_connection(
             is_collection: false,
             count_cell: None,
             guard_expr: None,
+            guard_compile_failed: false,
             span,
             content_hash: conn_hash,
         });

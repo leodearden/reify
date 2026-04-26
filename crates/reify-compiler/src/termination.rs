@@ -32,6 +32,14 @@ pub(crate) fn check_recursive_termination(
                 continue;
             }
 
+            // If the user wrote a where clause but it failed to compile, skip all termination
+            // checks for this sub. The underlying compile error is already in `diagnostics`;
+            // running termination checks on a None guard would emit misleading follow-on errors
+            // (e.g. "add a where clause" when the user already wrote one).
+            if sub.guard_compile_failed {
+                continue;
+            }
+
             // Step 4: recursive sub must have a where-clause guard
             let guard = match &sub.guard_expr {
                 None => {

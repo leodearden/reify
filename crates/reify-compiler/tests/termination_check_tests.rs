@@ -7,7 +7,7 @@
 //! 4. Guard that doesn't reference Int/Bool params emits error.
 //! 5. Guard that references unmodified Int param emits error.
 //! 6. Bool param with negation is valid.
-//! 7. undef in recursive sub args is forbidden.
+//! 7. undef in guard-referenced recursive sub args is forbidden.
 //! 8. Mutual recursion without guards emits errors for both sides.
 //! 9. Non-recursive structures with subs are NOT flagged.
 //! 10. Block-level guards satisfy termination requirement.
@@ -437,9 +437,8 @@ structure S {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    // Expect exactly ONE error: the "unresolved name: unknown_var" compile error.
-    // Must NOT have a second "guard references no Int/Bool param" error from the
-    // termination check piling on.
+    // Must NOT have the specific guard-references-no-param cascading error from the
+    // termination check piling on top of the underlying "unresolved name" compile error.
     let guard_ref_error = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
         msg.contains("guard")
@@ -737,5 +736,145 @@ structure S {
         has_termination_error,
         "error should mention missing termination condition, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── Task 1296: broken guard must not cascade to "no termination" error ───────
+
+/// A where-clause that fails to compile (`where unknown_var > 0`) should NOT cause
+/// the termination check to emit "recursive sub has no termination condition: add a
+/// where clause". The user DID write a where clause — it just failed to compile.
+/// Seeing both the underlying "unresolved name" error AND the "add a where clause"
+/// error is misleading and actionably wrong.
+///
+/// Currently this test FAILS because `sub_guard_expr` is set to `None` when guard
+/// compilation emits any diagnostic, and the termination check cannot distinguish
+/// "no guard" from "broken guard" — it emits the "no termination condition" error
+/// unconditionally whenever `guard_expr == None`.
+#[test]
+fn broken_guard_does_not_emit_no_termination_error() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where unknown_var > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // (a) Sanity check: the underlying compile error for unknown_var must exist.
+    let has_compile_error = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("unresolved") || msg.contains("unknown")
+    });
+    assert!(
+        has_compile_error,
+        "expected at least the 'unresolved name: unknown_var' compile error, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (b) The termination check must NOT also emit "no termination condition: add a where clause".
+    // The user wrote a where clause — it just failed to compile. The "add a where clause"
+    // message is incorrect and actionably misleading.
+    let has_no_termination_error = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("no termination") || (msg.contains("recursive sub") && msg.contains("where clause"))
+    });
+    assert!(
+        !has_no_termination_error,
+        "termination check must NOT emit 'no termination condition: add a where clause' when the \
+         user already wrote a where clause that failed to compile; got errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── Task 1296 structural: guard_compile_failed field wiring ─────────────────
+
+/// Verifies the three possible states of (guard_expr, guard_compile_failed) on
+/// a compiled SubComponentDecl:
+///
+/// (a) Valid guard: `guard_expr == Some(_)`, `guard_compile_failed == false`
+/// (b) Broken guard: `guard_expr == None`, `guard_compile_failed == true`
+/// (c) No guard:    `guard_expr == None`, `guard_compile_failed == false`
+///
+/// State (b) and (c) have identical `guard_expr` but different `guard_compile_failed`,
+/// which is the discriminator that allows the termination check to produce the
+/// right diagnostic in each case.
+#[test]
+fn broken_guard_marks_guard_compile_failed_field() {
+    // (a) Valid guard: field should be false, guard_expr should be Some.
+    let source_valid = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where n > 0
+}
+"#;
+    let (template, _) = compile_first_template(source_valid);
+    let child = template
+        .sub_components
+        .iter()
+        .find(|s| s.name == "child")
+        .expect("expected sub named 'child'");
+    assert!(
+        !child.guard_compile_failed,
+        "(a) valid guard: expected guard_compile_failed == false, got true"
+    );
+    assert!(
+        child.guard_expr.is_some(),
+        "(a) valid guard: expected guard_expr == Some(_), got None"
+    );
+
+    // (b) Broken guard: field should be true, guard_expr should be None.
+    // compile_first_template uses partial-recovery semantics: it returns the template
+    // even when guard compilation emits Severity::Error diagnostics (same contract as
+    // conformance/checker.rs:545-557, where compile_expr errors are collected but the
+    // template is still returned). The sub is present in sub_components; only
+    // guard_expr is set to None and guard_compile_failed to true.
+    let source_broken = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where unknown_var > 0
+}
+"#;
+    let (template, _) = compile_first_template(source_broken);
+    let child = template
+        .sub_components
+        .iter()
+        .find(|s| s.name == "child")
+        .expect("expected sub named 'child'");
+    assert!(
+        child.guard_compile_failed,
+        "(b) broken guard: expected guard_compile_failed == true, got false"
+    );
+    assert!(
+        child.guard_expr.is_none(),
+        "(b) broken guard: expected guard_expr == None, got Some(_)"
+    );
+
+    // (c) No guard: field should be false, guard_expr should be None.
+    let source_no_guard = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1)
+}
+"#;
+    let (template, _) = compile_first_template(source_no_guard);
+    let child = template
+        .sub_components
+        .iter()
+        .find(|s| s.name == "child")
+        .expect("expected sub named 'child'");
+    assert!(
+        !child.guard_compile_failed,
+        "(c) no guard: expected guard_compile_failed == false, got true"
+    );
+    assert!(
+        child.guard_expr.is_none(),
+        "(c) no guard: expected guard_expr == None, got Some(_)"
     );
 }

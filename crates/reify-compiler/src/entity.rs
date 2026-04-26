@@ -967,23 +967,29 @@ pub(crate) fn compile_entity(
                 }
 
                 // Compile the sub's where_clause into guard_expr (used by termination check).
-                // If compilation emits any diagnostics (errors), store None rather than
-                // Some(broken_expr). This prevents the termination check from seeing a guard
-                // that has no ValueRefs (because the identifier failed to resolve) and then
-                // emitting a spurious "guard references no Int/Bool param" error on top of the
-                // real compilation error.
-                let sub_guard_expr = sub.where_clause.as_ref().and_then(|wc| {
-                    let diag_count_before = diagnostics.len();
-                    let compiled =
-                        compile_expr(&wc.condition, &scope, enum_defs, functions, diagnostics);
-                    if diagnostics.len() > diag_count_before {
-                        // Guard compilation emitted diagnostics — guard is unusable for
-                        // termination analysis. Return None to avoid cascading errors.
-                        None
+                // Uses Severity::Error-only filter (not any-diagnostic) so that a guard
+                // that compiles successfully but emits only warnings is still stored as
+                // Some(compiled) — matching the pattern at conformance/checker.rs:548-550.
+                let (sub_guard_expr, guard_compile_failed) =
+                    if let Some(wc) = sub.where_clause.as_ref() {
+                        let diag_count_before = diagnostics.len();
+                        let compiled =
+                            compile_expr(&wc.condition, &scope, enum_defs, functions, diagnostics);
+                        let had_error = diagnostics[diag_count_before..]
+                            .iter()
+                            .any(|d| d.severity == Severity::Error);
+                        if had_error {
+                            // Guard compilation emitted an error — the guard is unusable for
+                            // termination analysis. Record the failure so the termination check
+                            // can distinguish "user wrote no guard" from "user's guard was broken".
+                            (None, true)
+                        } else {
+                            (Some(compiled), false)
+                        }
                     } else {
-                        Some(compiled)
-                    }
-                });
+                        // No where clause at all.
+                        (None, false)
+                    };
 
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
@@ -994,6 +1000,7 @@ pub(crate) fn compile_entity(
                     is_collection: sub.is_collection,
                     count_cell: None,
                     guard_expr: sub_guard_expr,
+                    guard_compile_failed,
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
