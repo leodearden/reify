@@ -333,7 +333,7 @@ mod tests {
         let c = a; // Copy again — `a` still usable below
         assert_eq!(a, b); // PartialEq
         assert_eq!(a, c); // PartialEq
-        let _: DiagnosticCode = a.clone(); // Clone
+        let _: DiagnosticCode = Clone::clone(&a); // Clone (explicit to bypass clippy::clone_on_copy)
         let mut set: HashSet<DiagnosticCode> = HashSet::new();
         assert!(set.insert(a)); // Hash + Eq
         assert!(!set.insert(b)); // dedup on Eq

@@ -307,6 +307,7 @@ pub(crate) fn collect_all_requirements(
 /// }
 /// ctx.requirements.push(req.clone());
 /// ```
+#[allow(clippy::too_many_arguments)]
 fn try_dedup_or_conflict<V, F>(
     seen: &mut HashMap<String, (V, String)>,
     name: &str,
