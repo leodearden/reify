@@ -31,7 +31,9 @@ use reify_eval::Engine;
 use reify_test_support::{
     make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_types::{CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity};
+use reify_types::{
+    CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity, Type, ValueCellId,
+};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -865,5 +867,135 @@ purpose manufacturing_ready(subject : Structure) {
         "TRAP (task-2199 / expr.rs:1136-1150): vacuous-true — subject.params compiles \
          to an empty list, so forall iterates [] and returns true regardless of Bracket.x \
          being undetermined. When runtime expansion lands, flip this assertion to Violated.",
+    );
+}
+
+// ── §9: Reflective aggregation activation-time expansion (task-2289) ─────────
+//
+// `activate_purpose` walks each constraint's expression tree (and the objective)
+// and rewrites every `CompiledExprKind::PurposeReflectiveAggregation` placeholder
+// into a populated `ListLiteral([ValueRef(entity_ref, member), ...])` sourced
+// from the active purpose's `resolved_queries`. Element `result_type` is
+// inherited from the looked-up `ValueCellNode.cell_type` (cell-type lockstep).
+
+/// Verifies that activating `purpose check(subject : Structure) {
+/// constraint forall p in subject.params: determined(p) }` against a
+/// `Bracket` with two `Real` params expands the placeholder into a
+/// concrete `ListLiteral` of `ValueRef`s pointing at `Bracket.x` and
+/// `Bracket.y`.
+///
+/// Acceptance criteria (task-2289 step-10):
+///  (a) collection.kind is `CompiledExprKind::ListLiteral` (no longer the
+///      `PurposeReflectiveAggregation` marker).
+///  (b) the ListLiteral has exactly two elements, each a `ValueRef`.
+///  (c) the elements' cell IDs are `{Bracket.x, Bracket.y}` (any order).
+///  (d) each element's `result_type` is `Type::Real` (cell-type lockstep —
+///      `Bracket.x` / `Bracket.y` are declared as `Real`).
+#[test]
+fn activate_expands_subject_params_placeholder_to_populated_list() {
+    let source = r#"
+structure Bracket {
+    param x : Real
+    param y : Real
+}
+
+purpose check(subject : Structure) {
+    constraint forall p in subject.params: determined(p)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "fixture failed to compile cleanly"
+    );
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "fixture produced unexpected error diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("check", "Bracket");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate_purpose");
+
+    // Locate the injected constraint by its purpose-prefixed entity id.
+    let injected = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:check@Bracket"))
+        .map(|(_, data)| data.clone())
+        .expect(
+            "expected at least one constraint with entity prefix 'purpose:check@Bracket' \
+             after activation",
+        );
+
+    // The constraint expression is `forall p in subject.params: determined(p)` →
+    // a Quantifier whose collection should now be the expanded ListLiteral.
+    let collection = match &injected.expr.kind {
+        CompiledExprKind::Quantifier { collection, .. } => collection,
+        other => panic!(
+            "expected Quantifier in injected constraint expr, got {:?}",
+            other
+        ),
+    };
+
+    // (a) collection.kind is ListLiteral (no longer the placeholder marker).
+    let elements = match &collection.kind {
+        CompiledExprKind::ListLiteral(elements) => elements,
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => panic!(
+            "post-activation: collection is still the PurposeReflectiveAggregation \
+             placeholder; activate_purpose must expand it into a populated ListLiteral"
+        ),
+        other => panic!(
+            "post-activation: expected ListLiteral in Quantifier collection, got {:?}",
+            other
+        ),
+    };
+
+    // (b) exactly two elements, each a ValueRef.
+    assert_eq!(
+        elements.len(),
+        2,
+        "expected 2 ValueRef elements (Bracket.x, Bracket.y), got {}",
+        elements.len()
+    );
+
+    let mut element_cells: Vec<ValueCellId> = Vec::with_capacity(elements.len());
+    for (i, element) in elements.iter().enumerate() {
+        match &element.kind {
+            CompiledExprKind::ValueRef(id) => element_cells.push(id.clone()),
+            other => panic!(
+                "expected ValueRef element at index {} of expanded ListLiteral, got {:?}",
+                i, other
+            ),
+        }
+        // (d) cell-type lockstep — each element's result_type must equal the
+        // declared cell type (Real for Bracket.x / Bracket.y).
+        assert_eq!(
+            element.result_type,
+            Type::Real,
+            "expected element {} result_type to be Type::Real (cell-type lockstep), got {:?}",
+            i,
+            element.result_type
+        );
+    }
+
+    // (c) element cell IDs are exactly {Bracket.x, Bracket.y} (any order).
+    element_cells.sort();
+    let expected = vec![
+        ValueCellId::new("Bracket", "x"),
+        ValueCellId::new("Bracket", "y"),
+    ];
+    assert_eq!(
+        element_cells, expected,
+        "expected expanded element cell IDs to be {{Bracket.x, Bracket.y}}, got {:?}",
+        element_cells
     );
 }
