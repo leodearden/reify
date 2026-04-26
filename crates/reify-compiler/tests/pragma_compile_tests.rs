@@ -769,3 +769,64 @@ fn precision_pragma_with_legacy_float64_ident_emits_info() {
         infos
     );
 }
+
+/// `#precision(0.001)` — bare number (no unit) — emits exactly one warning that
+/// mentions "Length literal" and the example "0.001m"; default_tolerance stays
+/// None.
+#[test]
+fn precision_pragma_with_bare_number_warns_to_use_length_literal() {
+    let module = compile_source("#precision(0.001)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for bare-number #precision, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("Length literal") && d.message.contains("0.001m"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 warning mentioning 'Length literal' and '0.001m' for #precision(0.001), got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// `#precision(value=64)` — key=value form — emits exactly one warning that
+/// mentions "expected a Length literal"; default_tolerance stays None. Coexists
+/// with the existing `module_pragmas_stored_on_compiled_module` test which only
+/// checks `errors_only` (so adding a warning is safe).
+#[test]
+fn precision_pragma_with_keyvalue_arg_warns_unrecognised_form() {
+    let module = compile_source("#precision(value=64)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for key=value #precision, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("expected a Length literal"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 warning mentioning 'expected a Length literal' for #precision(value=64), got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
