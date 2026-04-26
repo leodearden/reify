@@ -49311,6 +49311,17 @@
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
           ]
         }
+      },
+      {
+        "id": "2283",
+        "title": "reify-eval: share is_representable_cell_type predicate between production and test invariants",
+        "description": "Extract a shared predicate (e.g. `pub(crate) fn is_representable_cell_type(ty: &Type) -> bool` or `#[doc(hidden)] pub`) from `engine_eval.rs::assert_value_cell_types_representable` and have `tests/value_cell_type_invariants.rs::assert_template_cells_representable` consume it. Today both sites copy-paste `Type::TypeParam(_) | Type::Geometry`; if a third unrepresentable variant is added to the production assertion, the test silently keeps passing.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49322,7 +49333,8 @@
         "master"
       ],
       "created": "2026-04-26T14:06:20.363Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T14:11:18.088Z"
     }
   }
 }
