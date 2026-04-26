@@ -607,6 +607,217 @@ fn option_trait_typed_param_accepts_none() {
     );
 }
 
+// ─── List<TraitObject> conformance tests (task 2227) ─────────────────────────
+
+/// Negative test: a list containing a non-conforming element passed to
+/// `List<MaterialSpec>` must produce a "does not conform to trait" error.
+#[test]
+fn list_trait_typed_param_rejects_non_conforming_element() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : List<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: [Steel(), NotAMaterial()])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for [Steel(), NotAMaterial()] passed to List<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: all elements in the list conform to the trait.
+#[test]
+fn list_trait_typed_param_accepts_all_conforming_elements() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : List<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: [Steel(), Steel(density: 1000.0)])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for [Steel(), Steel(density: 1000.0)] passed to List<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: an empty list is always valid for any List<T> param.
+#[test]
+fn list_trait_typed_param_accepts_empty_list() {
+    let source = r#"
+        structure def Host { param ms : List<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: [])
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    // Empty list may emit a Warning about "cannot infer element type" but
+    // should emit no Error-severity diagnostics.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for [] passed to List<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+// ─── Set<TraitObject> conformance tests (task 2227) ──────────────────────────
+
+/// Negative test: a set containing a non-conforming element passed to
+/// `Set<MaterialSpec>` must produce a "does not conform to trait" error.
+#[test]
+fn set_trait_typed_param_rejects_non_conforming_element() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : Set<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: set{Steel(), NotAMaterial()})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for set with NotAMaterial passed to Set<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: all elements in the set conform to the trait.
+#[test]
+fn set_trait_typed_param_accepts_all_conforming_elements() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : Set<MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: set{Steel(), Steel(density: 1000.0)})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for set{{Steel(), Steel(density: 1000.0)}} passed to Set<MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+// ─── Map<K, TraitObject> conformance tests (task 2227) ───────────────────────
+
+/// Negative test: a map entry with a non-conforming value passed to
+/// `Map<String, MaterialSpec>` must produce a "does not conform to trait" error.
+#[test]
+fn map_trait_typed_param_rejects_non_conforming_value() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def NotAMaterial { param density : Real = 1.0 }
+        structure def Host { param ms : Map<String, MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: map{"good" => Steel(), "bad" => NotAMaterial()})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")),
+        "expected a 'does not conform to trait MaterialSpec' error for map with NotAMaterial value passed to Map<String, MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
+/// Positive test: all map values conform to the trait.
+#[test]
+fn map_trait_typed_param_accepts_all_conforming_values() {
+    let source = r#"
+        structure def Steel : MaterialSpec {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+        structure def Host { param ms : Map<String, MaterialSpec> }
+        structure def Top {
+            sub x = Host(ms: map{"a" => Steel(), "b" => Steel(density: 1000.0)})
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for map with all-conforming values passed to Map<String, MaterialSpec> param, got: {:?}",
+        errors
+    );
+}
+
 // ─── Wrapped-trait param resolution (task 2227) ──────────────────────────────
 //
 // Each test declares a trait and a structure whose param is wrapped in one of
