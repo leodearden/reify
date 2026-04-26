@@ -15,20 +15,33 @@ struct PoolEntry {
 ///
 /// Stores `OpaqueState` keyed by `NodeId` with LRU eviction when the
 /// total estimated memory usage exceeds the configured budget.
+/// When the budget is `None` (unlimited), eviction is skipped entirely.
 pub struct WarmStatePool {
     pool: HashMap<NodeId, PoolEntry>,
-    budget_bytes: usize,
+    budget_bytes: Option<usize>,
     used_bytes: usize,
 }
 
 impl WarmStatePool {
     /// Create a new pool with the given memory budget in bytes.
+    ///
+    /// This is a back-compat wrapper around [`with_budget`](Self::with_budget).
     pub fn new(budget_bytes: usize) -> Self {
+        Self::with_budget(Some(budget_bytes))
+    }
+
+    /// Create a new pool with an explicit budget (or `None` for unlimited).
+    pub fn with_budget(budget_bytes: Option<usize>) -> Self {
         Self {
             pool: HashMap::new(),
             budget_bytes,
             used_bytes: 0,
         }
+    }
+
+    /// Create a new pool with no memory budget (unlimited; eviction is disabled).
+    pub fn unlimited() -> Self {
+        Self::with_budget(None)
     }
 
     /// Store warm-start state for a node.
@@ -49,9 +62,11 @@ impl WarmStatePool {
             self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
         }
 
-        // Evict LRU entries until the new item fits within budget
-        while self.used_bytes + size > self.budget_bytes && !self.pool.is_empty() {
-            self.evict_lru();
+        // Evict LRU entries until the new item fits within budget (unlimited pools skip this)
+        if let Some(budget) = self.budget_bytes {
+            while self.used_bytes + size > budget && !self.pool.is_empty() {
+                self.evict_lru();
+            }
         }
 
         let entry = PoolEntry {
@@ -93,8 +108,8 @@ impl WarmStatePool {
         self.used_bytes
     }
 
-    /// Configured memory budget in bytes.
-    pub fn budget_bytes(&self) -> usize {
+    /// Configured memory budget in bytes, or `None` if the pool is unlimited.
+    pub fn budget_bytes(&self) -> Option<usize> {
         self.budget_bytes
     }
 
