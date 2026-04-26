@@ -48284,7 +48284,20 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T07:42:31.138Z"
+        "updatedAt": "2026-04-26T07:42:31.138Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/src/diagnostics.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "eval_diagnostics_never_use_constraint_violation_format invariant test comment",
+              "LSP diagnostics.rs compute_diagnostics_with_state constraint violation builder line reference",
+              "task 2242 LSP diagnostics polish eval_cached limitation filter"
+            ]
+          }
+        }
       },
       {
         "id": "2248",
