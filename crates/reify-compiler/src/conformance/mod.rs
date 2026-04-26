@@ -261,9 +261,154 @@ fn walk_param_against_arg(
                 diagnostics,
             );
         }
-        // Wrapper param + non-literal arg or non-trait inner type: fall through silently.
-        // No call-site type-check is performed in the compiler today for non-trait params
-        // or for value-ref args whose wrapper structure is not a literal.
+        // Fallback: for non-literal wrapped args (e.g. ValueRef), attempt a type-level
+        // wrapper walk comparing param_type against compiled_arg.result_type. This handles
+        // cases like passing `param p : Option<Physical>` to a slot of `Option<Material>`
+        // where `Physical : Material`. Non-wrapper and non-trait params fall through
+        // silently inside walk_param_against_arg_type.
+        _ => {
+            walk_param_against_arg_type(
+                param_type,
+                &compiled_arg.result_type,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+    }
+}
+
+/// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
+///
+/// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
+/// expressions are not available for inspection. Walks the wrapper structure of
+/// `arg_type` in lockstep with `param_type`, deferring to a type-only leaf check at
+/// `Type::TraitObject`.
+///
+/// Calls `satisfies_trait_bound` for `StructureRef` arg-types and `trait_satisfies` for
+/// `TraitObject` arg-types — same diagnostic wording/code as `check_leaf_trait_conformance`.
+/// Mismatched wrapper shapes (e.g. `Option<T>` param vs `List<T>` arg) fall through
+/// silently — the compiler does not general-purpose type-check arg shapes today.
+fn walk_param_against_arg_type(
+    param_type: &Type,
+    arg_type: &Type,
+    arg_name: &str,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match (param_type, arg_type) {
+        // Wrapper pairs: recurse into inner types lockstep.
+        (Type::Option(inner_p), Type::Option(inner_a)) => {
+            walk_param_against_arg_type(
+                inner_p,
+                inner_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        (Type::List(inner_p), Type::List(inner_a)) => {
+            walk_param_against_arg_type(
+                inner_p,
+                inner_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        (Type::Set(inner_p), Type::Set(inner_a)) => {
+            walk_param_against_arg_type(
+                inner_p,
+                inner_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        (Type::Map(key_p, val_p), Type::Map(key_a, val_a)) => {
+            walk_param_against_arg_type(
+                key_p,
+                key_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+            walk_param_against_arg_type(
+                val_p,
+                val_a,
+                arg_name,
+                span,
+                template_registry,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        // Leaf: param type is a trait object — type-only conformance check.
+        // Same wording/code as check_leaf_trait_conformance; no FunctionCall promotion
+        // needed here because we're already working with the resolved result_type.
+        (Type::TraitObject(required_trait), arg_ty) => match arg_ty {
+            Type::StructureRef(struct_name) => {
+                let Some(arg_template) = template_registry.get(struct_name.as_str()) else {
+                    return;
+                };
+                if !satisfies_trait_bound(
+                    &arg_template.trait_bounds,
+                    required_trait,
+                    trait_registry,
+                ) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type '{}' does not conform to trait '{}' required by param '{}'",
+                            struct_name, required_trait, arg_name
+                        ))
+                        .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            format!(
+                                "type '{}' does not conform to trait '{}'",
+                                struct_name, required_trait
+                            ),
+                        )),
+                    );
+                }
+            }
+            Type::TraitObject(arg_trait_name) => {
+                let mut visited = HashSet::new();
+                if !trait_satisfies(arg_trait_name, required_trait, trait_registry, &mut visited) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type '{}' does not conform to trait '{}' required by param '{}'",
+                            arg_trait_name, required_trait, arg_name
+                        ))
+                        .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            format!(
+                                "trait '{}' does not refine trait '{}'",
+                                arg_trait_name, required_trait
+                            ),
+                        )),
+                    );
+                }
+            }
+            // Non-struct, non-trait arg type — cannot check, skip silently.
+            _ => {}
+        },
+        // Mismatched wrapper shapes or non-wrapper/non-trait param type — skip silently.
+        // The compiler does not general-purpose type-check arg shapes (e.g. passing
+        // StructureRef for Option<TraitObject> is a shape mismatch outside our scope).
         _ => {}
     }
 }
