@@ -23,3 +23,21 @@ field def material_density : Real -> Real { source = sampled { resolution = 100 
 
 // f(p) = 2.0 * p + 1.0  — linear stiffness composition (self-contained lambda)
 field def composed_stiffness : Real -> Real { source = composed { |p| 2.0 * p + 1.0 } }
+
+// ── Structure exercising analytical and composed fields ───────────────────────
+// Note: material_density (sampled) is NOT sampled at runtime — its lambda is
+// Value::Undef until field-data infrastructure lands (sibling tasks 2338/2341).
+
+structure def ComposedStiffnessDemo {
+    // Sample temperature_distribution at p=2.0:  300.0 + 50.0 * 2.0 = 400.0 (exact)
+    let temp_at_p = sample(temperature_distribution, 2.0)
+
+    // Sample composed_stiffness at p=4.0:  2.0 * 4.0 + 1.0 = 9.0 (exact)
+    let stiff_at_p = sample(composed_stiffness, 4.0)
+
+    // Constraints — four range bounds, all Satisfied
+    constraint temp_at_p > 399.999
+    constraint temp_at_p < 400.001
+    constraint stiff_at_p > 8.999
+    constraint stiff_at_p < 9.001
+}
