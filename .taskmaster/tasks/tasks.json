@@ -49871,14 +49871,18 @@
       {
         "id": "2303",
         "title": "Deep dot-chain warning: AST walker with depth threshold = 4",
-        "description": "Implement spec §5.7 deep-dot-chain lint. Walk MemberAccess AST nodes in left-to-right chains; when chain length > 4, emit warning W_DEEP_DOT_CHAIN with full chain text + span. v0.1 default threshold = 4 (`a.b.c.d` OK; `a.b.c.d.e` warns). Method-call chains and indexing-mid-chain are out-of-scope for v0.1 — count `.field` hops only and treat indexed expressions as fresh chain roots. PRD: docs/prds/deep-dot-chain.md.\n\nSingle-pass syntactic check on AST (no semantic info needed). Wire diagnostic code + format + LSP path.",
-        "details": "Spec §5.7 lines 1077-1087. Threshold configurable but v0.1 ships 4 hardcoded; config knob can come post-v0.1.\n\nMemory hints: search \"AST walker\", \"MemberAccess\", \"diagnostic\" in reify-compiler.",
-        "testStrategy": "",
+        "description": "Implement spec §5.7 deep-dot-chain lint and its full test suite. Walk MemberAccess AST nodes in left-to-right chains; when chain length > 4, emit warning W_DEEP_DOT_CHAIN with full chain text + span. v0.1 default threshold = 4 (`a.b.c.d` OK; `a.b.c.d.e` warns). Method-call chains and indexing-mid-chain are out-of-scope for v0.1 — count `.field` hops only and treat indexed expressions as fresh chain roots. PRD: docs/prds/deep-dot-chain.md.",
         "status": "in-progress",
         "dependencies": [],
         "priority": "high",
+        "details": "## Implementation\nSpec §5.7 lines 1077-1087. Threshold configurable but v0.1 ships 4 hardcoded; config knob can come post-v0.1.\n\nSingle-pass syntactic check on AST (no semantic info needed). Wire diagnostic correctly into the existing diagnostic pipeline.\n\nMemory hints: search \"AST walker\", \"MemberAccess\", \"diagnostic\" in reify-compiler.\n\n## Tests\nTest the dot-chain lint per PRD docs/prds/deep-dot-chain.md:\n\n- **At-threshold**: `a.b.c.d` (4 hops) — no warning emitted\n- **One-over threshold**: `a.b.c.d.e` (5 hops) — W_DEEP_DOT_CHAIN warning emitted with correct span\n- **Method-call mid-chain**: `a.b.foo().c.d` — no warn (method calls are out of scope for v0.1; treat as chain break)\n- **Indexed mid-chain**: `a.b[0].c.d.e` — treats `a.b[0]` as chain root; counts 3 hops from `[0]`, no warning at that depth\n- **Multi-chain expressions in same line**: multiple independent deep chains on one line, each evaluated independently\n- **Deep chains in let bodies**: chain as let initializer triggers warning when depth > 4\n- **Deep chains in constraint bodies**: chain in constraint predicate triggers warning when depth > 4",
+        "testStrategy": null,
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:46:22.583Z"
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Task 2303 (pending, combine_eligible) is the matching implementation task for the same spec §5.7 deep-dot-chain lint. The candidate supplies the test plan that the implementation task needs; both share the same PRD, threshold semantics, and reify-compiler module lock. Combining loads context once and avoids a race where tests land before or after implementation in separate cycles. All four combine rules hold: coherent in one sentence, same 1-module lock, well under budget, both high-priority.",
+          "combined_at": "2026-04-26T19:47:52.989674+00:00"
+        }
       },
       {
         "id": "2304",
@@ -49891,6 +49895,30 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T19:46:23.437Z"
+      },
+      {
+        "id": "2305",
+        "title": "Pragma #version: declare and validate target language version on CompiledModule",
+        "description": "Implement the v0.1 #version pragma: parse #version(0.1) (number form) or #version(\"0.1\") (string form), store on CompiledModule.declared_version: Option<(u16, u16)>, and validate against the compiler's supported version (0.1 in v0.1). Above the compiler's supported version: error \"module declares version X.Y; this compiler supports up to 0.1\". Below: warning \"declared version X.Y predates the first stable language; treating as 0.1\" — no migration in v0.1, that's deferred to v0.2. Multiple #version pragmas: error \"at most one #version declaration per module\". PRD: docs/prds/pragmas.md item 5. Migration tool deferred to v0.2.",
+        "details": "Add CompiledModule.declared_version: Option<(u16, u16)> in crates/reify-compiler/src/types.rs. Extend apply_module_pragmas. Already in MODULE_ONLY_PRAGMAS so block-level warning is automatic.\n\nArgument grammar:\n- PragmaValue::Number(0.1) parsed as MAJOR=0, MINOR=1.\n- String form \"0.1\" / \"0.2\" parsed via str::split('.').\n\nTests: crates/reify-compiler/tests/pragma_compile_tests.rs covering valid 0.1 (number + string), too-new (error wording), too-old (warning), duplicate (error), malformed string.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "278"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2306",
+        "title": "[v0.2] `reify migrate` + `#version` migration toolchain",
+        "description": "Tracker task for v0.2+ deferred work. PRD at docs/prds/v0_2/migration-toolchain.md. Activates `#version(...)` pragma for version-gated parsing and ships `reify migrate --from <ver> --to <ver>` rewriter (spec §14). Triggered by the first breaking change between v0.1 and v0.2. Tracker only; do not start in v0.1 phase.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -49902,7 +49930,8 @@
         "master"
       ],
       "created": "2026-04-26T19:46:42.738Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:48:07.793Z"
     }
   }
 }
