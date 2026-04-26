@@ -48850,11 +48850,11 @@
         "description": "In `crates/reify-eval/src/engine_eval.rs:1533-1558`, the comment claims the second-pass loop \"mirrors evaluate_let_bindings() ordering\", but it doesn't. `evaluate_let_bindings()` (engine_eval.rs:~1807) iterates only `sorted_lets` — cyclic cells are intentionally skipped, and nothing is written to `values` or the cache for them.\n\nThe new eval_cached code APPENDS cyclic cells in declaration order (lines 1548-1556) and runs the second-pass loop on them. That pass calls `cache.record_evaluation` and `values.insert` for each cyclic cell with garbage Undef-ish values derived from forward-reference lookups. Consequences:\n1. Garbage entries are written into the cache. The cache-reuse fast path on subsequent calls (~line 1583) will happily serve them back.\n2. The shape of `result.values` diverges from what eval() produces for the same module.\n\nFix: restrict `ordered_let_cells` to `sorted_lets` only (mirror eval()). The circular-let diagnostic is already emitted earlier so users still see the error. Add a regression test asserting cache contents after eval_cached on a cyclic-let module match eval()'s cache contents (i.e. neither contains entries for cyclic cells).\n\nDone means: cyclic cells are not iterated in eval_cached's second pass; cache state matches eval(); diagnostic still surfaces; all existing eval_cached tests still pass.\n\nSpawned from review of task 2259 (esc-2259-71, suggestion 1).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T10:48:12.527Z",
+        "updatedAt": "2026-04-26T12:38:16.588Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
@@ -49131,7 +49131,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T12:38:13.273Z",
+      "lastModified": "2026-04-26T12:38:16.588Z",
       "taskCount": 2265,
       "completedCount": 2033,
       "tags": [
