@@ -50332,13 +50332,13 @@
         "description": "Develop foreign function interface (FFI) bindings for calculating center of mass and moment of inertia using OCCT, incorporating density.",
         "details": "Utilize the BRepGProp_VolumeProperties class from OCCT to compute the center of mass and moment of inertia for a given solid with a specified density. Implement stdlib bindings to expose two functions: `center_of_mass(solid, density) -> Point3<Length>` and `moment_of_inertia(solid, density) -> Tensor<2,3,MomentOfInertia>`. Ensure the implementation correctly handles the density parameter and integrates with existing geometry processing functions. Reference the PRD documentation in `docs/prds/topology-selectors.md`, task 3, for additional context and requirements.\n<info added on 2026-04-26T20:21:53.590Z>\nTriage note (esc-2325-47, 2026-04-26): Original PRD reference `docs/prds/topology-selectors.md` does not exist. Typed signatures `Point3<Length>` and `Tensor<2,3,MomentOfInertia>` cannot be implemented today: stdlib lacks `Tensor` parametric type and `MomentOfInertia` unit. Sibling task 329 used `Real` placeholders. \n\nRecommended split:\n- (a) stdlib type-system: add `MomentOfInertia` unit + parametric `Tensor<rank, dim, unit>` (prerequisite)\n- (b) FFI-only: `query_inertia_tensor(shape, density) -> [9 doubles]` using `GProp_GProps::MatrixOfInertia()` scaled by density, exposed via cxx as `[[Real; 3]; 3]`\n- (c) stdlib wiring once (a) lands — original 2325 scope\n\nExisting surface to extend:\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:1435` — `query_centroid` (Point3, no density)\n- `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:1482` — `query_moment_of_inertia(shape, ax, ay, az)` returning scalar about a single axis\n</info added on 2026-04-26T20:21:53.590Z>",
         "testStrategy": "Verify the implementation by comparing the results against analytical formulas for a box shape. Specifically, check that the moment of inertia calculations match the formula `I_xx = (1/12)*m*(W^2+H^2)` and similar for other axes. Conduct unit tests using a variety of solid shapes and densities to ensure accuracy and robustness. Use `cargo test -p reify-eval -- occt_ffi` to run the test suite.",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "329"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:18:31.765Z",
+        "updatedAt": "2026-04-26T20:22:08.219Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -50968,19 +50968,30 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2364",
+        "title": "forall statement-form: elaboration emits per-element decls with element-index spans",
+        "description": "Implement the elaboration of the forall statement-form to emit per-element `connect` and `constraint` declarations with element-index span information in SchemaNode.compute().",
+        "details": "In `SchemaNode.compute()`, iterate over the bound collection when it is structurally determined. For each element, emit `connect` and `constraint` declarations into the evaluation graph. Ensure that each generated declaration carries span information back to the source `forall` statement, including the element index. This requires threading element-index span info through the elaboration process. Refer to the PRD document at `docs/prds/forall-statement-form.md` task 3 and the specification sections §5.4 and §6.2 for detailed requirements and constraints.",
+        "testStrategy": "1. Create unit tests to verify that per-element `connect` and `constraint` declarations are correctly emitted for a given collection.\n2. Ensure that each declaration includes accurate span information, linking back to the original `forall` statement and the specific element index.\n3. Test with collections of varying sizes and structures to ensure robustness.\n4. Validate against the specification in §5.4 and §6.2 to ensure compliance.",
+        "status": "pending",
+        "dependencies": [
+          "2362",
+          "2363"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:21:46.092Z",
-      "taskCount": 2351,
+      "lastModified": "2026-04-26T20:22:08.219Z",
+      "taskCount": 2353,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:21:46.234Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:22:03.779Z"
+      ]
     }
   }
 }
