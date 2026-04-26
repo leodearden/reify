@@ -7,6 +7,7 @@ members = [
     "crates/reify-compiler",
     "crates/reify-eval",
     "crates/reify-constraints",
+    "crates/reify-doc",
     "crates/reify-geometry",
     "crates/reify-kernel-occt",
     "crates/reify-runtime",
@@ -31,6 +32,7 @@ reify-syntax = { path = "crates/reify-syntax" }
 reify-compiler = { path = "crates/reify-compiler" }
 reify-eval = { path = "crates/reify-eval" }
 reify-constraints = { path = "crates/reify-constraints" }
+reify-doc = { path = "crates/reify-doc" }
 reify-geometry = { path = "crates/reify-geometry" }
 reify-kernel-occt = { path = "crates/reify-kernel-occt" }
 reify-runtime = { path = "crates/reify-runtime" }
