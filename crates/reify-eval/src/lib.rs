@@ -173,9 +173,16 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         // omitted: the default-reject case is correct for any non-Undef
         // value because we have no way to represent a structure instance.
         //
-        // If a future `Value::GeometryHandle` variant is added, add a matching
-        // arm here AND relax the runtime assertion so the compiler enforces
-        // completeness.
+        // `Type::TraitObject` is allowed for the same reason (task 2287):
+        // trait-typed params default to `Value::Undef` via the same fallthrough
+        // path, and `Value::Undef` is accepted for any type by the arm above.
+        // The `Type::TraitObject` arm is intentionally omitted: the
+        // default-reject case is correct for any non-Undef value because we
+        // have no way to represent a trait-object instance.
+        //
+        // If a future `Value::GeometryHandle`, `Value::TraitObjectInstance`, or
+        // `Value::StructureInstance` variant is added, add a matching arm here
+        // AND relax the runtime assertion so the compiler enforces completeness.
     }
 }
 
@@ -941,7 +948,7 @@ structure S {
     #[test]
     fn meta_map_arc_shared_with_concurrent_setup() {
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_test_support::{literal, CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, literal};
         use reify_types::{ModulePath, Type, Value, ValueCellId};
         use std::sync::Arc;
 
@@ -955,7 +962,12 @@ structure S {
             .template(
                 TopologyTemplateBuilder::new("Widget")
                     .meta(meta_entries)
-                    .param("Widget", "width", Type::Real, Some(literal(Value::Real(1.0))))
+                    .param(
+                        "Widget",
+                        "width",
+                        Type::Real,
+                        Some(literal(Value::Real(1.0))),
+                    )
                     .build(),
             )
             .build();
