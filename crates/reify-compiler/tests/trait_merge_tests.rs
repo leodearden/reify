@@ -1184,6 +1184,25 @@ structure def S : TraitB + TraitA {
          got {}",
         x_cells.len()
     );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Let,
+        "the single 'x' cell must be Let (from TraitB)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the 'x' Let cell must carry type Length"
+    );
+    // At least 1 constraint injected (from TraitA) — confirms TraitA's `constraint x - 1mm > 0mm`
+    // survives Param suppression and is not collateral damage of the pass1_param_skipped fix.
+    assert!(
+        !template.constraints.is_empty(),
+        "expected at least 1 constraint injected from TraitA, got {}",
+        template.constraints.len()
+    );
 }
 
 /// Constraint default coexists with a param default for the same member name.
