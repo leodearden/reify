@@ -48512,7 +48512,7 @@
         "id": "2255",
         "title": "Extend DiagnosticCode for remaining constraint-solver sites (NonUnique + cpsat builder)",
         "description": "Follow-up to task 2253. Migrate the two remaining code:None Infeasible emissions in reify-constraints (NonUnique path in solver.rs and cpsat.rs builder path), add a ConstraintNonUnique DiagnosticCode variant, flip the substring-matching test to a typed-code assertion, and add a second test case for the existing ConstraintUnsatisfiable residual-infeasibility path so future refactors that split the bounds-cap branch from the residual branch cannot silently regress code-tag wiring on either.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2253"
         ],
@@ -48536,7 +48536,8 @@
             "crates/reify-constraints/src",
             "crates/reify-constraints/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-26T09:24:48.038Z"
       },
       {
         "id": "2256",
@@ -48637,7 +48638,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T09:24:47.776Z",
+      "lastModified": "2026-04-26T09:24:48.038Z",
       "taskCount": 2249,
       "completedCount": 2011,
       "tags": [
