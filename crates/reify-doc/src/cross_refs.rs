@@ -123,6 +123,50 @@ mod tests {
     }
 
     #[test]
+    fn build_cross_refs_nested_sub_components_with_dedup() {
+        let robot = TopologyTemplateBuilder::new("Robot")
+            .sub_component("arm", "Arm", vec![])
+            .sub_component("wheel1", "Wheel", vec![])
+            .sub_component("wheel2", "Wheel", vec![])
+            .build();
+        let arm = TopologyTemplateBuilder::new("Arm")
+            .sub_component("joint", "Joint", vec![])
+            .build();
+
+        let result = build_cross_refs(&[robot, arm]);
+
+        // (a) BTreeMap key order: alphabetical
+        let keys: Vec<&str> = result.entity_to_containers.keys().map(|s| s.as_str()).collect();
+        assert_eq!(keys, vec!["Arm", "Joint", "Wheel"]);
+
+        // (b) Arm is contained by Robot
+        assert_eq!(
+            result.entity_to_containers["Arm"],
+            vec!["Robot".to_string()]
+        );
+
+        // (c) Joint is contained by Arm (nested, non-root template)
+        assert_eq!(
+            result.entity_to_containers["Joint"],
+            vec!["Arm".to_string()]
+        );
+
+        // (d) Wheel appears once despite two instances (wheel1, wheel2)
+        assert_eq!(
+            result.entity_to_containers["Wheel"],
+            vec!["Robot".to_string()]
+        );
+
+        // (e) no trait bounds → trait_to_conformers is empty
+        assert!(result.trait_to_conformers.is_empty());
+
+        // (f) serde round-trip
+        let json = serde_json::to_string(&result).expect("serialize");
+        let roundtripped: CrossRefs = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(result, roundtripped);
+    }
+
+    #[test]
     fn build_cross_refs_multi_trait_conformance() {
         let bolt = TopologyTemplateBuilder::new("Bolt")
             .trait_bound("Rigid")
