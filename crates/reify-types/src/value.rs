@@ -2015,6 +2015,41 @@ impl std::fmt::Display for EvalError {
 
 impl std::error::Error for EvalError {}
 
+/// Opaque carrier for the last substantive result referenced by
+/// [`Freshness::Pending`].
+///
+/// Wraps `Option<ContentHash>` with private inner field so callers cannot
+/// pattern-match on `Some`/`None` directly, satisfying the "opaque type"
+/// requirement of the spec.  The two-state semantics (no prior result vs.
+/// prior result identified by hash) are exposed via `none()` / `of_hash()`
+/// constructors and `is_none()` / `content_hash()` accessors.
+///
+/// See arch §7.1 lines 716-728.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultRef(Option<ContentHash>);
+
+impl ResultRef {
+    /// Construct a `ResultRef` that carries no prior substantive result.
+    pub fn none() -> Self {
+        ResultRef(None)
+    }
+
+    /// Construct a `ResultRef` that carries the given content hash.
+    pub fn of_hash(hash: ContentHash) -> Self {
+        ResultRef(Some(hash))
+    }
+
+    /// Returns `true` when no prior substantive result is available.
+    pub fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// Returns the content hash of the last substantive result, if any.
+    pub fn content_hash(&self) -> Option<ContentHash> {
+        self.0
+    }
+}
+
 /// Freshness of a cached value (for incremental evaluation).
 ///
 /// M2 model: tracks evaluation lifecycle with richer state than M1's
