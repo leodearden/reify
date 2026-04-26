@@ -51218,6 +51218,20 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2380",
+        "title": "Money dimension: dimension-mismatch diagnostic distinguishes Money vs Force",
+        "description": "Implement a diagnostic to clearly differentiate between Money and Force dimension mismatches.",
+        "details": "In the diagnostic system, enhance the logic to detect and report dimension mismatches specifically between Money and Force. Update the error reporting mechanism to provide distinct messages for these mismatches, ensuring clarity in the diagnostic output. Reference the PRD document at docs/prds/money-dimension.md task 4 for detailed requirements. Modify the existing dimension-checking logic to include specific checks for Money and Force, and ensure that the error messages are informative and actionable.",
+        "testStrategy": "Create unit tests that simulate operations resulting in Money vs Force mismatches, such as `25USD + 5N`. Verify that the diagnostic system correctly identifies and reports these mismatches with distinct messages. Run the full test suite to ensure no regressions occur in existing functionality. Additionally, validate that the error messages provide clear guidance on the nature of the mismatch.",
+        "status": "pending",
+        "dependencies": [
+          "208",
+          "209"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51230,7 +51244,7 @@
       ],
       "created": "2026-04-26T20:24:27.194Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:24:31.587Z"
+      "updated": "2026-04-26T20:24:35.466Z"
     }
   }
 }
