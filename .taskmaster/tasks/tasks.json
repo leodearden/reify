@@ -48523,7 +48523,19 @@
         "metadata": {
           "curator_action": "combine",
           "curator_justification": "Both tasks are low-priority follow-ups to task 2253, both touch crates/reify-constraints/tests/solver_integration.rs, and both are about ensuring all Infeasible emissions in the constraint solver carry typed DiagnosticCodes with full test coverage. The candidate (add residual-path test for ConstraintUnsatisfiable) and task 2255 (add ConstraintNonUnique variant, migrate two code:None sites, flip a substring test) share the same subsystem context — the implementer would load DimensionalSolver, CpS",
-          "combined_at": "2026-04-26T09:10:08.974317+00:00"
+          "combined_at": "2026-04-26T09:10:08.974317+00:00",
+          "files": [
+            "crates/reify-types/src/diagnostics.rs",
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-constraints/src/cpsat.rs",
+            "crates/reify-constraints/tests/solver_integration.rs",
+            "crates/reify-constraints/tests/cpsat_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-constraints/src",
+            "crates/reify-constraints/tests"
+          ]
         }
       },
       {
@@ -48539,7 +48551,13 @@
         "metadata": {
           "curator_action": "combine",
           "curator_justification": "Both tasks are tiny changes to the same step (3.5) of hooks/post-commit: Task 2256 fixes the regex to match dotted subtask IDs; the candidate trims the brittle Check-12 cross-reference comment. Same file, same lock, implementer loads context once. Union fits in <5 files and the unified concern — 'make step (3.5) reliable and clean' — survives one-sentence description without 'and also'. Task 2256 is the combine target (pending, combine_eligible=True).",
-          "combined_at": "2026-04-26T09:08:49.077216+00:00"
+          "combined_at": "2026-04-26T09:08:49.077216+00:00",
+          "files": [
+            "hooks/post-commit"
+          ],
+          "modules": [
+            "hooks"
+          ]
         }
       },
       {
