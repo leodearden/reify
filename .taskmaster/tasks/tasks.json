@@ -48095,6 +48095,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-26T06:44:40.209Z"
+      },
+      {
+        "id": "2241",
+        "title": "Strengthen user-declared `Structure` characterization test with positive registration assertion",
+        "description": "In `crates/reify-compiler/tests/purpose_compile_tests.rs::compile_purpose_user_defined_structure_named_structure_bypasses_validation` (lines 980-1032), the assertion that \"no 'has no member' diagnostics fire\" can pass for the wrong reason if the parser/typechecker silently rejects `structure Structure { ... }` (e.g., if `Structure` becomes a reserved name). The existing `Severity::Error`-empty guard catches loud failures but not silent name shadowing or warning-only rejection.\n\nAdd a positive confirmation that the template actually registered, e.g. by adding a constraint that references `subject.mass` (a real param of the user template) and asserting the diagnostic stream contains NO \"has no member\" for `mass`. That way, if `Structure` were silently rejected, both `bogus` and `mass` would error and the test would correctly fail. Alternative: query the module's template registry / symbol table for a `Structure` entry directly.\n\nSource: esc-2213-28 S1 (reviewer_comprehensive on task 2213).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -48104,7 +48115,10 @@
       "completedCount": 1989,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T06:54:53.454Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T06:54:53.502Z"
     }
   }
 }
