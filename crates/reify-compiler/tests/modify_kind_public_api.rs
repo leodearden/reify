@@ -17,6 +17,7 @@ use reify_compiler::ModifyKind;
 const _: usize = ModifyKind::VARIANT_COUNT;
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn variant_count_is_publicly_accessible() {
     // Read the constant to exercise the public API at runtime.  We assert only
     // that it is non-zero (sanity), not the exact value — the compile-time lock
