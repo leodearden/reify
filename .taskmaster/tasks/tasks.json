@@ -50165,10 +50165,11 @@
         "description": "PRD docs/prds/freshness-4-variant.md. Define `Freshness` in reify-types (or reify-eval if it lives closer to the cache) per arch §7.1 lines 716-728 and §9.2 lines 880-890. Variants: Final; Intermediate { generation: u64 }; Pending { last_substantive: ResultRef }; Failed { error: ErrorRef }. Doc-comment cites spec §9.6 + arch §7.1 with line numbers. No-op landing — type exists, nothing yet uses it. Existing tests must stay green.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:57:55.708Z"
       },
       {
         "id": "2320",
@@ -50186,15 +50187,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:57:07.204Z",
-      "taskCount": 2306,
+      "lastModified": "2026-04-26T19:57:55.709Z",
+      "taskCount": 2309,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:57:23.359Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:57:49.594Z"
+      ]
     }
   }
 }
