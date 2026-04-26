@@ -127,26 +127,31 @@ def main() -> int:
     # stale-gap detection works regardless of which tag a task lives under.
     # Mirrors the multi-tag iteration pattern in scripts/normalize_tasks_json.py.
     #
-    # Collision policy: "done wins".  When the same task ID appears in multiple
-    # tags, any occurrence with status "done" takes precedence over in-progress
+    # Collision policy: "done wins".  When the same ID appears in multiple tags,
+    # any occurrence with status "done" takes precedence over in-progress
     # occurrences, regardless of tag ordering in the JSON file.  This is the
     # semantics stale-gap detection needs: a gap is stale if the tracked task is
     # done *anywhere*, not only in whatever tag happens to be listed first.
     # Relying on insertion order would produce false negatives when the
     # integration target (master) is listed after a feature-branch tag.
     #
-    # Subtask limitation: subtasks are re-indexed when a parent is upgraded from
-    # in-progress to done (so the done occurrence's subtasks win).  However, if
-    # subtask status diverges across tags independently of the parent — e.g.
-    # subtask 100.1 is done in tag B while the parent task 100 is done in both
-    # tags — subtask indexing still reflects the parent that won at the parent
-    # level.  This edge case is rare; a dedicated scrub-list audit script is the
-    # appropriate tool for per-subtask cross-tag diagnostics.
+    # Done-wins is applied uniformly per key — to parent tasks AND to each
+    # subtask under its dotted ID "{parent_id}.{subtask_id}" — independently of
+    # whether the parent's done-wins merge fires.  This closes the cross-tag
+    # divergence gap: a subtask that is done in any tag is detected regardless of
+    # its parent's status across tags.
     #
     # Index top-level tasks AND subtasks so that dotted tracking IDs like
     # "1751.2" resolve correctly.  Reify uses dotted subtask IDs extensively;
     # conflating "subtask exists but not indexed" with "task does not exist"
     # would silently treat done subtasks as orphans — a real coverage hole.
+    def _done_wins_merge(index: dict, key: str, entry: dict) -> None:
+        """Insert entry under key applying done-wins collision policy."""
+        if key not in index:
+            index[key] = entry
+        elif entry.get("status") == "done" and index[key].get("status") != "done":
+            index[key] = entry
+
     tasks_index: dict[str, dict] = {}
     if isinstance(tasks_data, dict):
         for tag_data in tasks_data.values():
@@ -160,27 +165,20 @@ def main() -> int:
                     task_id = task.get("id")
                     if task_id is not None:
                         task_id_str = str(task_id)
-                        if task_id_str in tasks_index:
-                            # "Done wins": upgrade the indexed entry if this
-                            # occurrence is done and the current one is not.
-                            # Also re-index subtasks from the done occurrence.
-                            if (task.get("status") == "done"
-                                    and tasks_index[task_id_str].get("status") != "done"):
-                                tasks_index[task_id_str] = task
-                                for subtask in task.get("subtasks", []):
-                                    if isinstance(subtask, dict):
-                                        subtask_id = subtask.get("id")
-                                        if subtask_id is not None:
-                                            tasks_index[f"{task_id_str}.{subtask_id}"] = subtask
-                            continue
-                        tasks_index[task_id_str] = task
+                        _done_wins_merge(tasks_index, task_id_str, task)
                         # Index subtasks as "{parent_id}.{subtask_id}" using the
                         # dotted-ID convention Reify uses (e.g. "1751.2").
+                        # Done-wins is applied per-subtask key independently of
+                        # the parent's merge outcome.
                         for subtask in task.get("subtasks", []):
                             if isinstance(subtask, dict):
                                 subtask_id = subtask.get("id")
                                 if subtask_id is not None:
-                                    tasks_index[f"{task_id_str}.{subtask_id}"] = subtask
+                                    _done_wins_merge(
+                                        tasks_index,
+                                        f"{task_id_str}.{subtask_id}",
+                                        subtask,
+                                    )
 
     # ------------------------------------------------------------------ #
     # Cross-reference: find gaps whose tracked task is "done"             #
