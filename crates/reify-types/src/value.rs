@@ -2007,6 +2007,16 @@ impl Satisfaction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvalError(pub String);
 
+impl EvalError {
+    /// Returns the error message string.
+    ///
+    /// Provides an accessor so wrappers (e.g. [`ErrorRef`]) can delegate
+    /// without depending on the tuple-field representation.
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
 impl std::fmt::Display for EvalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -2022,7 +2032,7 @@ impl std::error::Error for EvalError {}
 /// pattern-match on `Some`/`None` directly, satisfying the "opaque type"
 /// requirement of the spec.  The two-state semantics (no prior result vs.
 /// prior result identified by hash) are exposed via `none()` / `of_hash()`
-/// constructors and `is_none()` / `content_hash()` accessors.
+/// constructors and `has_hash()` / `content_hash()` accessors.
 ///
 /// See arch §7.1 lines 716-728.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2069,14 +2079,23 @@ impl ErrorRef {
     }
 
     /// Returns the error message string.
+    ///
+    /// Delegates to [`EvalError::message`] so the wrapper depends on
+    /// `EvalError`'s API rather than its tuple-field representation.
     pub fn message(&self) -> &str {
-        &self.0.0
+        self.0.message()
     }
 }
 
 impl std::fmt::Display for ErrorRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for ErrorRef {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
     }
 }
 
@@ -2682,8 +2701,10 @@ mod tests {
         let r = ResultRef::of_hash(hash);
         let r2 = r.clone();
         assert_eq!(r, r2);
-        // Debug output must include the type name and the hash content
-        assert!(format!("{:?}", r).contains("ResultRef"));
+        // Debug output must include the type name and the inner hash content.
+        let debug_str = format!("{:?}", r);
+        assert!(debug_str.contains("ResultRef"));
+        assert!(debug_str.contains(&format!("{:?}", hash)));
     }
 
     // ── ErrorRef tests (step-3) ──────────────────────────────────────────────
