@@ -86,6 +86,54 @@ fn topology_cache_starts_empty_on_fresh_shape() {
     }
 }
 
+/// After calling `SharedEdges` for several face pairs, the edge_map cache
+/// should be built exactly once, and the face_map already populated by a
+/// prior `AdjacentFaces` call should NOT be rebuilt (both methods share the
+/// single face_map slot on OcctShape).
+#[test]
+fn shared_edges_caches_edge_map_and_reuses_face_map_built_by_adjacent_faces() {
+    let (kernel, box_id) = box_kernel();
+
+    // (a) Warm the face_map and edge_face_map via one AdjacentFaces call.
+    query_adjacent_faces(&kernel, box_id, 0);
+
+    let counts_after_adjacent = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts_after_adjacent,
+        TopologyCacheBuildCounts {
+            face_map_builds: 1,
+            edge_map_builds: 0,
+            edge_face_map_builds: 1,
+        },
+        "after 1 adjacent_faces call (pre-condition), got {:?}",
+        counts_after_adjacent
+    );
+
+    // (b) Issue five shared_edges calls on distinct face pairs.
+    for (fa, fb) in [(0, 1), (0, 2), (0, 3), (1, 2), (2, 3)] {
+        query_shared_edges(&kernel, box_id, fa, fb);
+    }
+
+    // (c) face_map must NOT be rebuilt (was already cached), edge_map must be
+    //     built exactly once across all five calls, edge_face_map stays at 1.
+    let counts_final = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+    assert_eq!(
+        counts_final,
+        TopologyCacheBuildCounts {
+            face_map_builds: 1,
+            edge_map_builds: 1,
+            edge_face_map_builds: 1,
+        },
+        "after 5 shared_edges calls: face_map unchanged (1), edge_map built once (1), \
+         edge_face_map unchanged (1). Got {:?}",
+        counts_final
+    );
+}
+
 /// After calling `AdjacentFaces` for every face of a 10×10×10 box (6 calls
 /// total), the face_map and edge_face_map caches should each have been built
 /// exactly once, and the edge_map should remain untouched (adjacent_faces
