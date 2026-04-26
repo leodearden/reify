@@ -26,10 +26,14 @@ use crate::{
 
 /// Sentinel substring included in every panic raised by
 /// [`assert_value_cell_types_representable`].  Used by the unit test
-/// (`invariant_tests::panics_on_unrepresentable_cell_types`) to assert the
-/// correct panic path fired without relying on an exact message match.
-#[cfg(debug_assertions)]
-pub(crate) const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
+/// (`invariant_tests::panics_on_unrepresentable_cell_types`) and integration
+/// tests (via `reify_eval::ASSERT_MSG_PREFIX`) to assert the correct panic
+/// path fired without relying on an exact message match.
+///
+/// The constant is intentionally always-available (no `cfg(debug_assertions)`)
+/// so that `tests/value_cell_type_invariants.rs`, which runs in both debug and
+/// release builds, can reference it as a single source of truth.
+pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
 /// evaluation graph has a `cell_type` that has a corresponding `Value`
