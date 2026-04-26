@@ -50476,6 +50476,19 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2341",
+        "title": "Implement Sampled Field Source Kind Parsing and Runtime Value Construction",
+        "description": "Parse configuration key-value pairs for grid, interpolation, and data to build SampledField runtime values.",
+        "details": "Implement parsing logic for configuration strings such as `grid = ...`, `interpolation = ...`, and `data = ...`. Support grid types RegularGrid1, RegularGrid2, and RegularGrid3, each with specific spacing and bounds attributes. Use the BoundingBox for bounds and Length for spacing. Construct the SampledField runtime value using these parsed configurations. Ensure that the sample lookup utilizes the interpolation module developed in task 2. Handle out-of-bounds scenarios by returning an undefined value and emitting a W_FIELD_OUT_OF_BOUNDS warning once per field per session.",
+        "testStrategy": "1. Create unit tests to verify correct parsing of `grid`, `interpolation`, and `data` configurations.\n2. Test the construction of SampledField runtime values with various grid types and configurations.\n3. Validate that the interpolation module is correctly integrated by comparing expected and actual sample lookup results.\n4. Simulate out-of-bounds scenarios to ensure the correct warning is emitted and undefined values are returned.\n5. Conduct integration tests to ensure the overall functionality aligns with the specifications in the PRD document.",
+        "status": "pending",
+        "dependencies": [
+          "2"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50488,7 +50501,7 @@
       ],
       "created": "2026-04-26T20:05:34.363Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-26T20:05:34.589Z"
+      "updated": "2026-04-26T20:05:43.366Z"
     }
   }
 }
