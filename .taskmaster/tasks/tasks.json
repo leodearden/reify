@@ -49517,23 +49517,21 @@
         "description": "Post-merge review suggestion from task 2287. The doc on `is_representable_cell_type` in `crates/reify-eval/src/engine_eval.rs` was extended to call out both `Type::StructureRef` (task 1876) and `Type::TraitObject` (task 2287) as intentionally permitted despite lacking a corresponding `Value` variant. The parallel comment block inside `value_type_kind_matches` in `crates/reify-eval/src/lib.rs` (~lines 155-178) still only mentions `Type::StructureRef` and not `Type::TraitObject`, so the two prose blocks are now drifting. Either (a) add a brief sentence to the lib.rs comment noting that `Type::TraitObject` is allowed for the same Undef-only reason as `Type::StructureRef`, or (b) replace the lib.rs prose with a single-line pointer to `is_representable_cell_type` so there is genuinely one source of truth (the engine_eval.rs doc already advertises itself as the SoT). No code-behavior change — pure doc consistency.</description>\n<parameter name=\"priority\">low",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T16:24:32.060Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T16:10:31.573Z",
-      "taskCount": 2276,
+      "lastModified": "2026-04-26T16:24:32.060Z",
+      "taskCount": 2277,
       "completedCount": 2048,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T16:24:30.847Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T16:24:30.872Z"
+      ]
     }
   }
 }
