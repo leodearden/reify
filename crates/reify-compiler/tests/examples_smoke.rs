@@ -122,6 +122,21 @@ fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Verify that `relative_to_examples_dir` strips the `EXAMPLES_DIR` prefix and
+/// returns a portable forward-slash-separated relative path for both top-level
+/// and nested `.ri` files.
+#[test]
+fn relative_to_examples_dir_strips_prefix_for_top_level_and_nested_files() {
+    let top_level = Path::new(EXAMPLES_DIR).join("bracket.ri");
+    let nested = Path::new(EXAMPLES_DIR).join("fields/composed_stiffness.ri");
+
+    assert_eq!(relative_to_examples_dir(&top_level), "bracket.ri");
+    assert_eq!(
+        relative_to_examples_dir(&nested),
+        "fields/composed_stiffness.ri"
+    );
+}
+
 /// Parse `path`, compile it with the stdlib prelude, and append an entry to
 /// `failures` if either parse errors or Error-severity compile diagnostics are
 /// found.  Returns without appending when the file is clean.
