@@ -50580,13 +50580,14 @@
         "description": "Conduct an audit of stdlib traits against existing specifications and produce a comprehensive report on gaps and inheritance.",
         "details": "Review the stdlib reference sections 4 and 6, comparing them with the current implementations in crates/reify-compiler/stdlib/structural_physical.ri and materials_mechanical.ri. Create a table detailing each trait's name, specification section, current declaration status, specified and current parents, fields, and any gaps. Document findings in a header comment block at the top of each .ri file or in a single consolidated notes file. This task is focused on analysis and documentation, with no code changes required at this stage.",
         "testStrategy": "Verify the completeness of the audit by ensuring all traits in the specified sections are accounted for in the report. Check that the inheritance-and-presence table accurately reflects the current state of the codebase and aligns with the specifications. Ensure the output documentation is clear and accessible, either as header comments or a separate notes file.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "328",
           "329"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:10:40.778Z"
       },
       {
         "id": "2348",
@@ -50617,7 +50618,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:10:40.198Z",
+      "lastModified": "2026-04-26T20:10:40.778Z",
       "taskCount": 2338,
       "completedCount": 2059,
       "tags": [
