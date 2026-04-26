@@ -2375,7 +2375,10 @@ mod tests {
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{deactivate_if_not_auto, guard_value_unchanged, phase3_guard_changed, reelaborate_guarded_group};
+    use super::{
+        deactivate_if_not_auto, group_needs_phase3, guard_value_unchanged, phase3_guard_changed,
+        phase3_skip_group, reelaborate_guarded_group,
+    };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -3226,5 +3229,213 @@ mod tests {
         snapshot.insert(guard_cell.clone(), (Value::Bool(true), DeterminacyState::Determined));
 
         assert!(phase3_guard_changed(&[group], &values, Some(&snapshot)));
+    }
+
+    // ── phase3_skip_group ─────────────────────────────────────────────────
+
+    /// (a) Phase 1 recorded the **same** guard value as the current one
+    /// → Phase 1's work is still valid → skip (returns true).
+    /// The `old_guard_val` is irrelevant when Phase 1 touched the group.
+    #[test]
+    fn phase3_skip_group_returns_true_when_phase1_recorded_same_value() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true));
+
+        // old = false, current = true (same as phase1 → case a)
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(true),
+            &phase1,
+            Some(&Value::Bool(false)),
+        );
+        assert!(result, "case (a): Phase 1 still valid → should skip");
+    }
+
+    /// (b) Phase 1 recorded a **different** guard value from the current one
+    /// (wave2 flipped the guard after Phase 1 ran) → must re-elaborate regardless
+    /// of what the old snapshot says → returns false.
+    ///
+    /// This is the regression-locking case for task 2146: the guard currently
+    /// matches the snapshot (both false), but Phase 1 had set it to true, so
+    /// Phase 3 must not skip this group.
+    #[test]
+    fn phase3_skip_group_returns_false_when_phase1_recorded_different_value() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true)); // Phase 1 evaluated to true
+
+        // Wave2 flipped back to false; old snapshot was also false.
+        // Even though current == old, Phase 1's record differs → case (b) → must re-elaborate.
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(false), // current (after wave2 flip)
+            &phase1,
+            Some(&Value::Bool(false)), // old snapshot
+        );
+        assert!(!result, "case (b): wave2 flip → must re-elaborate, not skip");
+    }
+
+    /// (c-skip) Phase 1 did NOT touch this group AND guard is unchanged
+    /// (current == old) → apply standard old-vs-new skip → returns true.
+    #[test]
+    fn phase3_skip_group_returns_true_when_phase1_empty_and_guard_unchanged() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(true),
+            &phase1,
+            Some(&Value::Bool(true)), // old == current → skip
+        );
+        assert!(result, "case (c): guard unchanged → skip");
+    }
+
+    /// (c-re-elaborate) Phase 1 did NOT touch this group AND guard changed
+    /// → must re-elaborate → returns false.
+    #[test]
+    fn phase3_skip_group_returns_false_when_phase1_empty_and_guard_changed() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(false), // current
+            &phase1,
+            Some(&Value::Bool(true)), // old ≠ current → must re-elaborate
+        );
+        assert!(!result, "case (c): guard changed → must re-elaborate");
+    }
+
+    /// (c-no-prior) Phase 1 did NOT touch this group AND there is no prior
+    /// guard value (None) → None ≠ Some(current) → returns false.
+    #[test]
+    fn phase3_skip_group_returns_false_when_phase1_empty_and_old_absent() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Bool(true),
+            &phase1,
+            None, // no old value → None ≠ Some(Bool(true)) → must re-elaborate
+        );
+        assert!(!result, "case (c): no prior value → must re-elaborate");
+    }
+
+    /// (b-undef) Phase 1 recorded Bool(true) but current is Undef
+    /// → values differ → case (b) → must re-elaborate → returns false.
+    #[test]
+    fn phase3_skip_group_treats_undef_as_distinct_from_bool() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true)); // Phase 1 set Bool(true)
+
+        let result = phase3_skip_group(
+            &guard_cell,
+            &Value::Undef,            // current is Undef (distinct from Bool(true))
+            &phase1,
+            Some(&Value::Bool(true)), // old value (irrelevant in case b)
+        );
+        assert!(!result, "case (b): Phase1=Bool(true), current=Undef → must re-elaborate");
+    }
+
+    // ── group_needs_phase3 ────────────────────────────────────────────────
+
+    /// When guard_cell IS in values and phase3_skip_group says skip →
+    /// group_needs_phase3 returns false.
+    #[test]
+    fn group_needs_phase3_returns_false_when_skip_says_skip() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(true)); // current
+
+        // phase1 recorded the same value → phase3_skip_group returns true → needs = false
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true));
+
+        let needs = group_needs_phase3(
+            &group,
+            &values,
+            Some(&Value::Bool(false)), // old
+            &phase1,
+        );
+        assert!(!needs, "skip_group=true → group_needs_phase3=false");
+    }
+
+    /// When guard_cell IS in values and phase3_skip_group says must re-elaborate
+    /// (case b: wave2 flip) → group_needs_phase3 returns true.
+    #[test]
+    fn group_needs_phase3_returns_true_when_skip_says_must_re_elaborate() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let mut values = ValueMap::default();
+        values.insert(guard_cell.clone(), Value::Bool(false)); // current (wave2 flipped back)
+
+        // phase1 recorded Bool(true) but current is Bool(false) → case (b) → must re-elaborate
+        let mut phase1: HashMap<ValueCellId, Value> = HashMap::new();
+        phase1.insert(guard_cell.clone(), Value::Bool(true));
+
+        let needs = group_needs_phase3(
+            &group,
+            &values,
+            Some(&Value::Bool(false)), // old == current but ≠ phase1 → must re-elaborate
+            &phase1,
+        );
+        assert!(needs, "wave2 flip: phase1≠current → group_needs_phase3=true");
+    }
+
+    /// When guard_cell is ABSENT from values AND there is no prior value
+    /// → no structural change → group_needs_phase3 returns false.
+    #[test]
+    fn group_needs_phase3_returns_false_when_guard_cell_absent_and_no_prior() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let values = ValueMap::default(); // guard_cell absent
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        let needs = group_needs_phase3(&group, &values, None, &phase1);
+        assert!(!needs, "absent guard + no prior → group_needs_phase3=false");
+    }
+
+    /// When guard_cell is ABSENT from values but WAS present before
+    /// → structural change (guard cell disappeared) → group_needs_phase3 returns true.
+    #[test]
+    fn group_needs_phase3_returns_true_when_guard_cell_disappears() {
+        let guard_cell = ValueCellId::new("E", "guard");
+        let group = GuardedGroupInfo {
+            guard_cell: guard_cell.clone(),
+            members: vec![],
+            else_members: vec![],
+            constraints: vec![],
+            else_constraints: vec![],
+        };
+        let values = ValueMap::default(); // guard_cell absent
+        let phase1: HashMap<ValueCellId, Value> = HashMap::new();
+
+        // guard_cell was present before (old_guard_val = Some)
+        let needs =
+            group_needs_phase3(&group, &values, Some(&Value::Bool(true)), &phase1);
+        assert!(needs, "guard cell disappeared → structural change → group_needs_phase3=true");
     }
 }
