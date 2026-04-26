@@ -51129,8 +51129,9 @@
         "testStrategy": "Develop automated tests to verify that E_SPECIALIZATION_FORBIDDEN_DECL is correctly reported by the LSP server. Use a set of test cases that trigger this error in different contexts, ensuring the diagnostics are accurately surfaced to the client. Validate that the error includes correct location, message, and severity. Run these tests as part of the LSP integration test suite to ensure consistent behavior across updates.",
         "status": "in-progress",
         "dependencies": [
+          "294",
           "298",
-          "294"
+          "2369"
         ],
         "priority": "high",
         "subtasks": [],
