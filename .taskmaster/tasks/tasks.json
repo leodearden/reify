@@ -50418,7 +50418,13 @@
         "metadata": {
           "curator_action": "combine",
           "curator_justification": "The candidate and Task 2330 are tightly coupled halves of the same Failed-state concern: 2330 produces Failed at error sites; the candidate propagates Failed-inputs as Pending downstream. Both reference the same PRD section (§9.1-§9.2), touch the same reify-eval/reify-types module lock, and the candidate's own test (\"forced panic in leaf ⇒ leaf Failed … mid node Pending\") directly depends on 2330's output. Loading context once for the end-to-end path is strictly better; the union stays within ≤5",
-          "combined_at": "2026-04-26T20:02:50.958567+00:00"
+          "combined_at": "2026-04-26T20:02:50.958567+00:00",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Freshness: implement Failed production and Pending propagation with diagnostic chain"
+            ]
+          }
         },
         "updatedAt": "2026-04-26T20:18:22.212Z"
       },
@@ -50743,7 +50749,14 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:11:14.289Z"
+        "updatedAt": "2026-04-26T20:11:14.289Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/lib.rs",
+            "crates/reify-types/src/node_traits.rs",
+            "crates/reify-types/tests/exports.rs"
+          ]
+        }
       },
       {
         "id": "2351",
@@ -50893,23 +50906,25 @@
         "description": "Two parts. (1) crates/reify-doc/src/fmt_json.rs: serde_json serialisation of DocModel; pretty-printed by default, --compact flag for single-line. snake_case field naming. Schema is the DocModel definition; consumers can rely on it being stable across v0.1 patch releases (no backward-compat across v0.1→v0.2 — bump #version pragma to signal). (2) crates/reify-cli/src/main.rs: new cmd_doc routing 'reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]'. Defaults: html format, stdout when -o omitted. --split markdown only (errors out for html/json). --compact json only. Exit codes: 0 ok, 1 compile errors blocked doc generation (errors printed to stderr exactly as cmd_check does), 2 CLI usage errors. Add reify-doc to reify-cli Cargo.toml. End-to-end test running 'reify doc' as subprocess via reify-test-support harness. PRD: docs/prds/reify-doc-tool.md slice 6.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "2342"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:16:24.132Z"
+        "updatedAt": "2026-04-26T20:18:27.592Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:18:22.212Z",
+      "lastModified": "2026-04-26T20:18:27.593Z",
       "taskCount": 2350,
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:18:27.744Z",
+      "description": "Tasks for master context"
     }
   }
 }
