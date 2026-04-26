@@ -49860,7 +49860,18 @@
               "KNOWN_BLOCK_PRAGMAS is_known_module_pragma pragma validation design",
               "Block-valid pragmas accept #solver at module scope"
             ]
-          }
+          },
+          "modules": [
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/pragma_compile_tests.rs",
+            "crates/reify-eval/src/engine_admin.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/solver_pragma_dispatch.rs"
+          ]
         }
       },
       {
@@ -50074,7 +50085,9 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:55:29.913Z",
+      "description": "Tasks for master context"
     }
   }
 }
