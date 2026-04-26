@@ -35,3 +35,32 @@ fn composed_stiffness_ri_parses() {
         parsed.errors
     );
 }
+
+/// Compile `examples/fields/composed_stiffness.ri` and verify all three field
+/// source kinds are present: `temperature_distribution` (analytical),
+/// `material_density` (sampled), and `composed_stiffness` (composed).
+#[test]
+fn composed_stiffness_compiles_with_stdlib() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/fields/composed_stiffness.ri should exist");
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    // Exactly three field defs must be present.
+    assert_eq!(
+        compiled.fields.len(),
+        3,
+        "expected 3 fields, got {}: {:?}",
+        compiled.fields.len(),
+        compiled.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+
+    // Verify field names in declaration order.
+    let names: Vec<&str> = compiled.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["temperature_distribution", "material_density", "composed_stiffness"],
+        "unexpected field names: {:?}",
+        names
+    );
+}
