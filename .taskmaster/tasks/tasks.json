@@ -49646,7 +49646,19 @@
           "modules": [
             "crates/reify-compiler/src/conformance",
             "crates/reify-compiler/tests/trait_typed_param_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "WalkCtx",
+              "CompiledExpr"
+            ],
+            "queries": [
+              "WalkCtx conformance walk extraction task 2279",
+              "shape-mismatch diagnostic wrapper leaf Option List task 2281",
+              "conformance StructureRef promotion check_leaf_trait_conformance",
+              "conformance test infrastructure non-conformance wrapper shape tests"
+            ]
+          }
         }
       },
       {
