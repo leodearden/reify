@@ -48426,14 +48426,13 @@
           ],
           "memory_hints": {
             "entities": [
-              "eval_guarded_group_param_cell",
-              "VersionId",
-              "EventJournal"
+              "eval_guarded_group_param_cell"
             ],
             "queries": [
-              "eval_guarded_group_param_cell too_many_arguments signature GuardedParamCtx context struct",
-              "VersionId u64 type wrapping engine_eval record_eval_completed",
-              "journal cache version meta_map functions engine-scoped state engine_eval"
+              "eval_guarded_group_param_cell context parameter signature",
+              "VersionId type in eval engine",
+              "guarded group param cell context struct design",
+              "eval_guarded_group_param_cell documentation anchors"
             ]
           }
         }
