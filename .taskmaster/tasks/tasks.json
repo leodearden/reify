@@ -49550,11 +49550,11 @@
         "description": "Post-merge review suggestion from task 2287. The doc on `is_representable_cell_type` in `crates/reify-eval/src/engine_eval.rs` was extended to call out both `Type::StructureRef` (task 1876) and `Type::TraitObject` (task 2287) as intentionally permitted despite lacking a corresponding `Value` variant. The parallel comment block inside `value_type_kind_matches` in `crates/reify-eval/src/lib.rs` (~lines 155-178) still only mentions `Type::StructureRef` and not `Type::TraitObject`, so the two prose blocks are now drifting. Either (a) add a brief sentence to the lib.rs comment noting that `Type::TraitObject` is allowed for the same Undef-only reason as `Type::StructureRef`, or (b) replace the lib.rs prose with a single-line pointer to `is_representable_cell_type` so there is genuinely one source of truth (the engine_eval.rs doc already advertises itself as the SoT). No code-behavior change — pure doc consistency.</description>\n<parameter name=\"priority\">low",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T16:24:32.060Z",
+        "updatedAt": "2026-04-26T16:39:02.265Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -49566,20 +49566,21 @@
               "TraitObject Undef-only safety reify-eval engine_eval"
             ]
           },
-          "_causation_id": "7a19d25f-861d-4fa2-9676-d4456a4bd83b"
+          "_causation_id": "7a19d25f-861d-4fa2-9676-d4456a4bd83b",
+          "done_provenance": {
+            "commit": "2e73592c3526843aea5ec4faf82ede2fa4de7f28"
+          }
         }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T16:29:09.188Z",
+      "lastModified": "2026-04-26T16:39:02.266Z",
       "taskCount": 2277,
-      "completedCount": 2049,
+      "completedCount": 2050,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T16:29:25.875Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
