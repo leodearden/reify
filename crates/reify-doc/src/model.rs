@@ -138,12 +138,22 @@ pub struct CrossRefs {
 /// A single top-level declaration documented in a module.
 ///
 /// Uses a `"kind"` tag in JSON so downstream consumers can discriminate on
-/// declaration type without manual field inspection.  The variant names map
-/// directly to the declaration kinds in `reify_syntax::Declaration`.
+/// declaration type without manual field inspection.  Variants map to the
+/// top-level declaration kinds exposed in documentation.
+///
+/// Note: `Import` declarations from `reify_syntax::Declaration` are
+/// intentionally omitted here — imported modules are reflected instead via
+/// `CrossRefs::referenced_modules` and each module's `ModuleDoc.path`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ItemDoc {
     /// A `structure` declaration — topology template with optional children.
+    ///
+    /// The payload mirrors `ItemDoc::Occurrence` field-for-field.  This
+    /// intentional duplication tracks the upstream split in
+    /// `reify_syntax::Declaration` between `Declaration::Structure` and
+    /// `Declaration::Occurrence`, keeping the future lowering pass (a later
+    /// slice) as a near-1-to-1 field walk per variant.
     Structure {
         name: String,
         doc: Option<String>,
@@ -156,9 +166,16 @@ pub enum ItemDoc {
         sub_components: Vec<SubComponentDoc>,
         realizations: Vec<RealizationDoc>,
         /// Arbitrary key-value metadata (e.g. compiler-generated tags).
+        ///
+        /// Stored as ordered `(key, value)` pairs so duplicate keys and
+        /// source insertion order are both preserved.  Serializes as a JSON
+        /// array of two-element arrays: `[["version","1.0"],["tag","alpha"]]`.
         meta: Vec<(String, String)>,
     },
     /// An `occurrence` declaration — like a structure but for occurrence-mode topologies.
+    ///
+    /// The payload mirrors `ItemDoc::Structure` field-for-field; see the
+    /// `Structure` variant doc for the rationale.
     Occurrence {
         name: String,
         doc: Option<String>,
@@ -170,6 +187,7 @@ pub enum ItemDoc {
         constraints: Vec<ConstraintDoc>,
         sub_components: Vec<SubComponentDoc>,
         realizations: Vec<RealizationDoc>,
+        /// See `ItemDoc::Structure.meta` for serialization shape rationale.
         meta: Vec<(String, String)>,
     },
     /// A `trait` declaration — interface definition.
@@ -547,6 +565,105 @@ mod tests {
         assert_eq!(back.modules.len(), 1);
         assert_eq!(back.modules[0], module);
         assert_eq!(back.modules[0].items.len(), 7);
+    }
+
+    /// Table-driven test: every `ItemDoc` variant must serialize with the
+    /// correct `"kind"` tag value.  Catches snake_case rename surprises (e.g.
+    /// `constraint_def` vs `constraintdef`) that would slip past the
+    /// round-trip tests while breaking downstream JSON consumers.
+    #[test]
+    fn item_doc_all_variant_kind_tags() {
+        let cases: Vec<(ItemDoc, &str)> = vec![
+            (
+                ItemDoc::Structure {
+                    name: "S".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![], params: vec![],
+                    ports: vec![], constraints: vec![], sub_components: vec![],
+                    realizations: vec![], meta: vec![],
+                },
+                "structure",
+            ),
+            (
+                ItemDoc::Occurrence {
+                    name: "O".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![], params: vec![],
+                    ports: vec![], constraints: vec![], sub_components: vec![],
+                    realizations: vec![], meta: vec![],
+                },
+                "occurrence",
+            ),
+            (
+                ItemDoc::Trait {
+                    name: "T".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![], members: vec![],
+                },
+                "trait",
+            ),
+            (
+                ItemDoc::Function {
+                    name: "F".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![],
+                    signature: "fn f()".into(),
+                },
+                "function",
+            ),
+            (
+                ItemDoc::Field {
+                    name: "x".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![],
+                    type_repr: "i32".into(), default_repr: None,
+                },
+                "field",
+            ),
+            (
+                ItemDoc::Purpose {
+                    name: "P".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![],
+                    expr_repr: "cost".into(), direction: "minimize".into(),
+                },
+                "purpose",
+            ),
+            (
+                ItemDoc::Enum {
+                    name: "E".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![], variants: vec![],
+                },
+                "enum",
+            ),
+            (
+                ItemDoc::Unit {
+                    name: "U".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![],
+                    base_unit: "Meter".into(), scale: "1.0".into(),
+                },
+                "unit",
+            ),
+            (
+                ItemDoc::TypeAlias {
+                    name: "A".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![],
+                    type_repr: "f64".into(),
+                },
+                "type_alias",
+            ),
+            (
+                ItemDoc::ConstraintDef {
+                    name: "C".into(), doc: None, is_pub: false,
+                    annotations: vec![], pragmas: vec![],
+                    expr_repr: "x > 0".into(),
+                },
+                "constraint_def",
+            ),
+        ];
+
+        for (item, expected_kind) in &cases {
+            let json = serde_json::to_string(item).expect("serialize");
+            let expected_tag = format!("\"kind\":\"{}\"", expected_kind);
+            assert!(
+                json.contains(&expected_tag),
+                "variant={expected_kind}: expected {expected_tag} in serialized JSON: {json}",
+            );
+        }
     }
 
     #[test]
