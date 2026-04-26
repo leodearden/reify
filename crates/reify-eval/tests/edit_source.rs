@@ -2517,11 +2517,11 @@ fn edit_source_phase1_fires_but_skips_when_guard_expr_text_changes_value_unchang
 /// never iterates.
 ///
 /// Regression catch: dropping `has_added_in_group` from the Phase 1 per-group
-/// skip condition would reduce counter to 0, meaning an added `let` on
-/// the inactive branch would silently retain a Determined value instead of
-/// being deactivated. The existing correctness test
-/// `edit_source_added_inactive_branch_member_matches_cold_eval` locks the
-/// VALUE, but this perf lock pins the clause that triggers re-elaboration.
+/// skip condition would reduce counter to 0, meaning an added member on
+/// the active branch would skip re-elaboration — the added member's
+/// `default_expr` (here `2mm`) would not be evaluated and `b` would remain
+/// Undef instead of being activated to its declared value. This perf lock
+/// pins the clause that triggers re-elaboration.
 ///
 /// Locks: the `has_added_in_group` detection logic and the
 /// has_added_in_group arm of the Phase 1 per-group skip condition.
@@ -2586,8 +2586,8 @@ fn edit_source_added_member_in_unchanged_guard_group_forces_non_skip() {
     //
     // Regression catches:
     // == 0 → `has_added_in_group` dropped from the Phase 1 per-group skip
-    //         condition; added lets on inactive branches would silently retain
-    //         Determined values instead of being deactivated.
+    //         condition; added members on the active branch would silently
+    //         retain Undef instead of being activated to their default value.
     // > 1  → Phase 3 guard_changed gate fired spuriously despite unchanged value.
     let counter = incremental.last_guard_phase_group_evals();
     assert_eq!(
