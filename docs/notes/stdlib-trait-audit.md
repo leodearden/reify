@@ -62,3 +62,37 @@ Spec location: `docs/reify-stdlib-reference.md` lines 436–464
 | `ThermallyConductive` | §4, line 459 | `structural_physical.ri:72` | `Physical` | — | *(no extra params — pure refinement of Physical)* | `thermal_conductivity: Real`, `max_service_temp: Real` | **Parent gap:** spec parent `Physical` is absent; current is free-standing. **Extra params:** `thermal_conductivity` and `max_service_temp` have no counterpart in spec (spec §4 trait is a bare refinement; thermal params belong in §6.3 `ThermallyCharacterized`). |
 | `ElectricallyConductive` | §4, line 460 | `structural_physical.ri:82` | `Physical` | — | *(no extra params — pure refinement of Physical)* | `electrical_conductivity: Real`, `resistivity: Real` | **Parent gap:** spec parent `Physical` is absent; current is free-standing. **Extra params:** `electrical_conductivity` and `resistivity` have no counterpart in spec (spec §4 trait is a bare refinement; electrical params belong in §6.4 `ElectricallyCharacterized`). |
 | `Sealed` | §4, line 461 | `structural_physical.ri:92` | — | — | `seal_rating: Pressure` | `seal_pressure_rating: Real` | **Param rename:** spec `seal_rating`; current `seal_pressure_rating`. **Type gap:** spec `Pressure`; current `Real`. |
+
+---
+
+## §6.1 `std.materials` base
+
+Source file: `crates/reify-compiler/stdlib/materials_mechanical.ri` (125 lines)
+Spec location: `docs/reify-stdlib-reference.md` lines 628–636
+
+| Trait | Spec § (line) | Declared In Source | Spec Parents | Current Parents | Spec Params (summary) | Current Params (summary) | Gaps / Notes |
+|-------|--------------|-------------------|--------------|-----------------|----------------------|--------------------------|--------------|
+| `Material` *(trait)* | §6.1, line 629 | `materials_mechanical.ri:38` as `MaterialSpec` | — | — | `density: Density`, `name: String` | `density: Real`, `name: String` | **Rename (task 1876):** spec trait `Material` was renamed to `MaterialSpec`; the identifier `Material` now names a first-class struct (see BREAKING CHANGE block at `materials_mechanical.ri:6–25`).  Migration guide in that block covers four consumer patterns.  **Type gap:** spec `density: Density`; current `density: Real` (dedicated Density type not yet in type system). |
+| `TemperatureDependent` | §6.1, line 634 | **MISSING** | — | — | `reference_temperature: Temperature = 293.15K` | *(not implemented)* | Not found in any `.ri` file.  Despite task 328 being marked done, this trait was never produced.  Candidate follow-up: add to `materials_mechanical.ri` or a new `materials_base.ri`. |
+
+---
+
+## §6.2 `std.materials.mechanical`
+
+Source file: `crates/reify-compiler/stdlib/materials_mechanical.ri` (125 lines)
+Spec location: `docs/reify-stdlib-reference.md` lines 639–678
+
+The dominant gap across all eight §6.2 traits: **spec declares each as `: Material` (now
+`MaterialSpec`); current implementations have no parent** — all eight are free-standing
+traits.  This is noted individually but is a systemic inheritance gap.
+
+| Trait | Spec § (line) | Declared In Source | Spec Parents | Current Parents | Spec Params (summary) | Current Params (summary) | Gaps / Notes |
+|-------|--------------|-------------------|--------------|-----------------|----------------------|--------------------------|--------------|
+| `Elastic` | §6.2, line 642 | `materials_mechanical.ri:60` | `Material` | — | `youngs_modulus: Pressure`, `poissons_ratio: Real`, `shear_modulus: Pressure = undef` | `youngs_modulus: Real`, `poissons_ratio: Real`, `shear_modulus: Real` | **Parent gap** (systemic — see section note). **Type gap:** spec `Pressure` for `youngs_modulus` and `shear_modulus`; current `Real`. **Default gap:** spec `shear_modulus = undef` (optional); current is required. **Constraint gap:** spec has `constraint 0 < poissons_ratio < 0.5`; current omits this constraint. |
+| `Strong` | §6.2, line 648 | `materials_mechanical.ri:70` | `Material` | — | `yield_strength: Pressure`, `ultimate_tensile_strength: Pressure`, `compressive_strength: Pressure = undef` | `yield_strength: Real`, `uts: Real`, `compressive_strength: Real` | **Parent gap** (systemic). **Param rename:** spec `ultimate_tensile_strength`; current abbreviated to `uts`. **Type gap:** all Pressure → Real. **Default gap:** spec `compressive_strength = undef` (optional); current is required. |
+| `Hard` | §6.2, line 654 | `materials_mechanical.ri:83` | `Material` | — | `hardness_value: Real`, `hardness_scale: HardnessScale` | `hardness_value: Real`, `hardness_scale: HardnessScale` | **Parent gap** (systemic). Params otherwise match spec exactly. `HardnessScale` enum declared in spec at line 658 and in implementation at line 80 — both list identical seven variants. |
+| `FatigueRated` | §6.2, line 659 | `materials_mechanical.ri:91` | `Material` | — | `fatigue_limit: Pressure = undef`, `fatigue_strength_at: Pressure = undef`, `fatigue_cycles: Int = undef` | `endurance_limit: Real` | **Parent gap** (systemic). **Param collapse:** spec has three params; current collapses to one. `endurance_limit` maps approximately to `fatigue_limit` but is renamed. `fatigue_strength_at` and `fatigue_cycles` are entirely absent. **Type gap:** Pressure → Real. |
+| `FractureTough` | §6.2, line 664 | `materials_mechanical.ri:98` | `Material` | — | `fracture_toughness: Scalar<Pressure * Length^(1/2)>` | `fracture_toughness: Real` | **Parent gap** (systemic). **Type gap:** spec composite type `Scalar<Pressure * Length^(1/2)>` (K_Ic units); current `Real`. |
+| `Ductile` | §6.2, line 667 | `materials_mechanical.ri:106` | `Material` | — | `elongation_at_break: Real`, `reduction_of_area: Real = undef` | `elongation: Real`, `reduction_of_area: Real` | **Parent gap** (systemic). **Param rename:** spec `elongation_at_break`; current `elongation`. **Default gap:** spec `reduction_of_area = undef` (optional); current is required. |
+| `ImpactResistant` | §6.2, line 671 | `materials_mechanical.ri:113` | `Material` | — | `charpy_impact: Energy = undef`, `izod_impact: Energy = undef` | `impact_energy: Real` | **Parent gap** (systemic). **Param collapse:** spec has two distinct test-method params (`charpy_impact`, `izod_impact`); current collapses to one `impact_energy: Real`. Both spec params are optional (undef); current param is required. **Type gap:** Energy → Real. |
+| `Damping` | §6.2, line 675 | `materials_mechanical.ri:122` | `Material` | — | `loss_factor: Real` | `damping_ratio: Real`, `loss_factor: Real` | **Parent gap** (systemic). **Extra param:** `damping_ratio: Real` present in current; absent from spec. |
