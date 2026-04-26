@@ -2062,8 +2062,8 @@ mod tests {
     ///   (b) `pass2_compile_errors` is empty — the warning must NOT be classified as failure.
     ///   (c) `("x", Let)` is present in `inferred_let_exprs`.
     ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::Real))`.
-    ///   (e) The scope slot for "x" is occupied after Pass 2 (a second `register_if_absent`
-    ///       call returns `Some(..)` indicating a conflict).
+    ///   (e) The scope slot for "x" is occupied after Pass 2 and holds the inferred type
+    ///       `Type::List(Real)` — verified via the non-mutating `scope.resolve("x")` probe.
     #[test]
     fn check_phase_pre_register_default_types_treats_warning_only_compile_as_success() {
         let let_decl = reify_syntax::LetDecl {
@@ -2156,13 +2156,21 @@ mod tests {
             "Expected Type::List(Real) for an empty list literal (defaulting to Real element type)"
         );
 
-        // (e) Scope slot for "x" is occupied: a second register_if_absent returns Some(..),
-        //     indicating the slot was claimed by Pass 2.
-        let conflict = scope.register_if_absent("x", Type::Int);
+        // (e) Scope slot for "x" is occupied after Pass 2 and holds the inferred type.
+        //     Use the non-mutating scope.resolve probe so the assertion cannot accidentally
+        //     insert an unrelated key if Pass 2 had failed to register silently.
+        let resolved = scope.resolve("x");
         assert!(
-            conflict.is_some(),
-            "Expected 'x' to be registered in scope by Pass 2 (register_if_absent should find \
-             the slot occupied); got None, meaning Pass 2 failed to register the inferred type"
+            resolved.is_some(),
+            "Expected 'x' to be registered in scope by Pass 2 (scope.resolve should return \
+             Some(..)); got None, meaning Pass 2 failed to register the inferred type"
+        );
+        assert_eq!(
+            resolved.unwrap().1,
+            &Type::List(Box::new(Type::Real)),
+            "Expected scope slot for 'x' to hold the inferred Type::List(Real) after Pass 2; \
+             got: {:?}",
+            resolved.unwrap().1
         );
     }
 
