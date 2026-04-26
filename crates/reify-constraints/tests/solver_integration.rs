@@ -1644,12 +1644,12 @@ fn strict_auto_non_unique_returns_infeasible() {
     let result = solver.solve(&problem);
     match result {
         SolveResult::Infeasible { diagnostics } => {
-            assert!(!diagnostics.is_empty(), "should have diagnostic message");
-            let msg = &diagnostics[0].message;
             assert!(
-                msg.contains("not uniquely determined"),
-                "diagnostic should mention non-uniqueness, got: {}",
-                msg
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
+                "infeasible diagnostic must carry ConstraintNonUnique code; got: {:?}",
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
             );
         }
         other => panic!(
