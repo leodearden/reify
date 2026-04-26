@@ -50329,7 +50329,8 @@
         "dependencies": [
           "248",
           "249",
-          "250"
+          "250",
+          "2323"
         ],
         "priority": "high",
         "subtasks": [],
@@ -50546,14 +50547,18 @@
       {
         "id": "2345",
         "title": "Warm-state eviction: wire pool.checkout None-return into compute_cold fallback",
-        "description": "PRD docs/prds/warm-state-eviction.md. Per arch §4.3 line 539: pool.checkout(node_id) returns None when state has been evicted; the recursive evaluator's existing Option<State> handling falls back to compute_cold transparently per the WarmStartable protocol (arch §4.1). Confirm all warm-startable node types (RealizationNode, ResolutionNode, ComputeNode) handle the None case correctly. Add force-eviction integration test asserting identical results between warm-fallback and cold-only runs.",
-        "details": "",
-        "testStrategy": "",
+        "description": "PRD docs/prds/warm-state-eviction.md. Wire both ends of the WarmStatePool eviction contract per arch §4.3 lines 539-540 and §6.4: (1) when a node is removed by a topology update, donate its warm state to the pool keyed by node type + path-based identity; subsequent reappearance with the same key reuses donated state; donated state counts against the memory budget and is subject to the same eviction policy per §6.4 cancellation; (2) pool.checkout(node_id) returns None when state has been evicted; the recursive evaluator's existing Option<State> handling falls back to compute_cold transparently per the WarmStartable protocol (arch §4.1); confirm all warm-startable node types (RealizationNode, ResolutionNode, ComputeNode) handle the None case correctly.",
         "status": "in-progress",
         "dependencies": [],
         "priority": "high",
+        "details": "- On topology removal, call pool.donate(key, state) with key = (node_type, path-based identity); map to the existing pool insert/storage mechanism\n- Donated state counts against memory_budget_bytes and triggers eviction if over budget (arch §6.4 cancellation)\n- pool.checkout(node_id) returns None when state has been evicted; evaluator falls back to compute_cold transparently (per arch §4.3 line 539 and WarmStartable protocol §4.1)\n- Confirm RealizationNode, ResolutionNode, and ComputeNode all handle the checkout→None case correctly\n- Integration test (donation reuse): remove-then-reappear scenario — assert donated state is reused via a counter on compute_cold calls (compute_cold NOT called on reappearance when state was donated with matching key)\n- Integration test (eviction fallback): force-eviction scenario — assert identical results between warm-fallback (checkout returns None → compute_cold) and cold-only runs",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:08:24.638Z"
+        "metadata": {
+          "curator_action": "combine",
+          "curator_justification": "Both tasks are tiny, high-priority, and wire opposite ends of the same WarmStatePool eviction contract from the same PRD section (arch §4.3). The candidate adds donation-on-removal (write path) while Task 2345 adds checkout→None→compute_cold fallback (read path). They will serialize on the same module lock, and combining loads WarmStatePool context once. Task 2345 is pending and combine_eligible. Coherence: 'Wire both ends of the WarmStatePool eviction interface — topology-removal state donation",
+          "combined_at": "2026-04-26T20:09:40.315367+00:00"
+        }
       },
       {
         "id": "2346",
@@ -50561,25 +50566,23 @@
         "description": "Create a smoke test for field source kinds using examples/fields/composed_stiffness.ri, covering analytical, sampled, and composed types.",
         "details": "Develop a smoke test script that exercises all three field source kinds (analytical, sampled, composed) as specified in the PRD document (docs/prds/field-source-kinds.md). Use the file examples/fields/composed_stiffness.ri to ship these examples in a single file. Ensure the implementation aligns with the specification outlined in §4.1.4 of the documentation. The test should be integrated into the eval test harness to verify the correct functionality of each field source kind.",
         "testStrategy": "Run the eval test harness to ensure that all three field source kinds are correctly exercised and validated. Verify that the output matches expected results as per the specification in §4.1.4. Check for any discrepancies or errors in the handling of each field source kind and ensure they are resolved.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "792"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:09:50.982Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:08:25.328Z",
-      "taskCount": 2334,
+      "lastModified": "2026-04-26T20:09:50.982Z",
+      "taskCount": 2335,
       "completedCount": 2059,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:09:36.825Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:09:40.209Z"
+      ]
     }
   }
 }
