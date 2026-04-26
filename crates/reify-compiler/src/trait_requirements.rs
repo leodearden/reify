@@ -793,8 +793,9 @@ mod tests {
     }
 
     /// Cache-hit with mismatched value: emits exactly one `Error` diagnostic with the
-    /// builder-provided message and a uniform `"conflict between '…' and '…'"` label;
-    /// returns `Break(())`; the map is unchanged.
+    /// builder-provided message, the typed `DiagnosticCode` passed in by the caller,
+    /// and a uniform `"conflict between '…' and '…'"` label; returns `Break(())`;
+    /// the map is unchanged.
     #[test]
     fn try_dedup_or_conflict_emits_diagnostic_on_mismatch() {
         use std::ops::ControlFlow;
@@ -807,6 +808,7 @@ mod tests {
             &9_i32, // different value → conflict
             "TraitB",
             SourceSpan::empty(0),
+            DiagnosticCode::ConflictingTraitRequirements,
             |name, existing, existing_trait, new, new_trait| {
                 format!(
                     "BOOM '{}': {} vs {} (traits '{}' and '{}')",
@@ -820,6 +822,10 @@ mod tests {
         assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
         assert_eq!(diags.len(), 1, "Expected exactly one diagnostic, got: {:?}", diags);
         assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::ConflictingTraitRequirements)
+        );
         assert_eq!(
             diags[0].message,
             "BOOM 'x': 7 vs 9 (traits 'TraitA' and 'TraitB')"

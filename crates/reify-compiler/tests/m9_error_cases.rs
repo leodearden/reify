@@ -15,6 +15,7 @@
 //!   - lib.rs          — duplicate entity definitions, duplicate unit declarations
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
+use reify_types::DiagnosticCode;
 
 // ── Step 1: Trait conformance error tests ─────────────────────────────────────
 
@@ -213,13 +214,19 @@ structure def S : HasX + HasXInt {
         module.diagnostics
     );
 
-    let has_msg = errors
-        .iter()
-        .any(|d| d.message.contains("conflicting trait requirements") && d.message.contains("x"));
+    let has_msg = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::ConflictingTraitRequirements)
+            // Keep the 'x' name-token check: when multiple conflicts share the
+            // same code, the member name carries semantic content beyond wording.
+            && d.message.contains("x")
+    });
     assert!(
         has_msg,
-        "expected 'conflicting trait requirements' mentioning 'x', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        "expected DiagnosticCode::ConflictingTraitRequirements mentioning 'x', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 
     let first = errors[0];

@@ -953,12 +953,15 @@ structure def S : A {
         errors
     );
 
-    assert!(
-        errors[0].message.contains("conflicting trait requirements"),
-        "expected 'conflicting trait requirements' in error message, got: {}",
-        errors[0].message
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ConflictingTraitRequirements),
+        "expected DiagnosticCode::ConflictingTraitRequirements, got: {:?}",
+        errors[0]
     );
 
+    // Keep the 'x' name-token assertion: when multiple conflicts could share the
+    // same code, the member name carries semantic content beyond wording.
     assert!(
         errors[0].message.contains("x"),
         "expected mention of 'x' in conflict message, got: {}",
@@ -1200,20 +1203,22 @@ structure def S : A + B {
         .iter()
         .filter(|d| {
             d.severity == Severity::Error
-                && d.message.contains("conflicting trait sub requirements")
+                && d.code == Some(DiagnosticCode::ConflictingTraitSubRequirements)
+                // Keep the 'hole' name-token check: more than one Sub conflict could
+                // share the same code, and the member name carries semantic content.
                 && d.message.contains("'hole'")
         })
         .collect();
 
     assert!(
         !conflict_errors.is_empty(),
-        "expected at least one 'conflicting trait sub requirements' error for 'hole' \
-         (different structure types in A vs B), got no matching errors. \
+        "expected at least one DiagnosticCode::ConflictingTraitSubRequirements error \
+         mentioning 'hole' (different structure types in A vs B), got no matching errors. \
          All diagnostics: {:?}",
         module
             .diagnostics
             .iter()
-            .map(|d| &d.message)
+            .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>()
     );
 }
