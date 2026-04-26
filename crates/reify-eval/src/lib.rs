@@ -971,4 +971,46 @@ structure S {
             "Widget.material must be 'steel'"
         );
     }
+
+    // ── Arc-sharing invariant: Engine.functions ───────────────────────────────
+
+    /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
+    /// `ConcurrentEditSetup.functions` must share the *same* Arc allocation as
+    /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
+    /// `Arc::strong_count >= 2`). This proves the per-call clone is O(1)
+    /// (a refcount bump), not an O(N) deep clone of the entire function table.
+    ///
+    /// Expected compile-failure before impl-1: `Engine.functions` is
+    /// `Vec<CompiledFunction>`, not `Arc<Vec<CompiledFunction>>`, so
+    /// `Arc::ptr_eq(&engine.functions, &setup.functions)` is a type error
+    /// (`error[E0308]: mismatched types`). Both fields must be Arc'd before
+    /// this test can compile (task #1997).
+    #[test]
+    fn prepare_concurrent_edit_shares_functions_arc_with_engine() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use std::sync::Arc;
+
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        engine.eval(&module);
+
+        let cell = ValueCellId::new("Bracket", "width");
+        let setup = engine
+            .prepare_concurrent_edit(cell, Value::length(0.1))
+            .expect("prepare_concurrent_edit must succeed after eval");
+
+        assert!(
+            Arc::ptr_eq(&engine.functions, &setup.functions),
+            "ConcurrentEditSetup.functions must share the same Arc allocation as \
+            Engine.functions — proves the per-call clone is O(1) Arc::clone, not a \
+            deep clone of the function table (task #1997)"
+        );
+        assert!(
+            Arc::strong_count(&engine.functions) >= 2,
+            "strong_count must be >= 2 (engine + setup both hold a ref); got {}",
+            Arc::strong_count(&engine.functions)
+        );
+    }
 }
