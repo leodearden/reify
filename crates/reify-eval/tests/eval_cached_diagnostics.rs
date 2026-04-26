@@ -376,13 +376,14 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
     let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
     // Push a Bool override into a Length param — type-kind mismatch
     engine.set_param_and_invalidate(&x_id, Value::Bool(true));
+    let matches = |d: &Diagnostic| {
+        d.message.contains("param_override for") && d.message.contains("type-kind mismatch")
+    };
 
     // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
     let result1 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result1.eval_result.diagnostics.iter()
-            .filter(|d| d.message.contains("param_override for") && d.message.contains("type-kind mismatch"))
-            .count(),
+        result1.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
         1,
         "first eval_cached call must emit exactly one type-kind mismatch warning; got: {:?}",
         result1.eval_result.diagnostics,
@@ -399,9 +400,7 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
     // validation — the diagnostic emission is gated on the cache-miss path.
     let result2 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result2.eval_result.diagnostics.iter()
-            .filter(|d| d.message.contains("param_override for") && d.message.contains("type-kind mismatch"))
-            .count(),
+        result2.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
         1,
         "second eval_cached call (same version, fast-path hit) must emit exactly one \
          type-kind mismatch warning (must not drop or duplicate on cache hit); got: {:?}",
@@ -417,9 +416,7 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
     // Third call — bumped version. Must still surface the warning.
     let result3 = engine.eval_cached(&module, VersionId(2));
     assert_eq!(
-        result3.eval_result.diagnostics.iter()
-            .filter(|d| d.message.contains("param_override for") && d.message.contains("type-kind mismatch"))
-            .count(),
+        result3.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
         1,
         "third eval_cached call (bumped version) must emit exactly one type-kind mismatch \
          warning; got: {:?}",
@@ -470,13 +467,14 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
             dimension: DimensionVector::MASS,
         },
     );
+    let matches = |d: &Diagnostic| {
+        d.message.contains("param_override for") && d.message.contains("dimension mismatch")
+    };
 
     // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
     let result1 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result1.eval_result.diagnostics.iter()
-            .filter(|d| d.message.contains("param_override for") && d.message.contains("dimension mismatch"))
-            .count(),
+        result1.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
         1,
         "first eval_cached call must emit exactly one dimension mismatch warning; got: {:?}",
         result1.eval_result.diagnostics,
@@ -491,9 +489,7 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
     // Second call — same version (fast-path hit). Must still surface the warning.
     let result2 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
-        result2.eval_result.diagnostics.iter()
-            .filter(|d| d.message.contains("param_override for") && d.message.contains("dimension mismatch"))
-            .count(),
+        result2.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
         1,
         "second eval_cached call (same version, fast-path hit) must emit exactly one \
          dimension mismatch warning (must not drop or duplicate on cache hit); got: {:?}",
@@ -509,9 +505,7 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
     // Third call — bumped version. Must still surface the warning.
     let result3 = engine.eval_cached(&module, VersionId(2));
     assert_eq!(
-        result3.eval_result.diagnostics.iter()
-            .filter(|d| d.message.contains("param_override for") && d.message.contains("dimension mismatch"))
-            .count(),
+        result3.eval_result.diagnostics.iter().filter(|d| matches(d)).count(),
         1,
         "third eval_cached call (bumped version) must emit exactly one dimension mismatch \
          warning; got: {:?}",
