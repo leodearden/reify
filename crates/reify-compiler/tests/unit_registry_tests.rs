@@ -2049,3 +2049,32 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
         bar.factor
     );
 }
+
+// ─── From<&CompiledUnit> for UnitEntry ────────────────────────────────────────
+
+#[test]
+fn from_compiled_unit_populates_shared_fields() {
+    use reify_compiler::CompiledUnit;
+    use reify_types::ContentHash;
+
+    let hash = ContentHash::of_str("newton");
+    let cu = CompiledUnit {
+        name: "newton".to_string(),
+        is_pub: true,
+        dimension: DimensionVector::FORCE,
+        factor: 1.5,
+        offset: Some(2.5),
+        content_hash: hash,
+    };
+
+    let entry = UnitEntry::from(&cu);
+
+    assert_eq!(entry.name, "newton");
+    assert!(entry.is_pub);
+    assert_eq!(entry.dimension, DimensionVector::FORCE);
+    assert!((entry.factor - 1.5).abs() < 1e-12, "factor mismatch: {}", entry.factor);
+    assert_eq!(entry.offset, Some(2.5));
+    assert_eq!(entry.content_hash, hash);
+    // UnitEntry-only fields take safe defaults; callers override as needed.
+    assert!(entry.source_module.is_none());
+}

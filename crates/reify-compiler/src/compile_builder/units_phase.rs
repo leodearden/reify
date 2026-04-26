@@ -57,14 +57,9 @@ pub(crate) fn phase_units(
                     );
                 }
                 ctx.unit_registry.seed_prelude_unit(UnitEntry {
-                    name: cu.name.clone(),
-                    dimension: cu.dimension,
-                    factor: cu.factor,
-                    offset: cu.offset,
-                    is_pub: cu.is_pub,
                     span: SourceSpan::prelude(),
-                    content_hash: cu.content_hash,
                     source_module: Some(module_display.clone()),
+                    ..UnitEntry::from(cu)
                 });
             }
         }
