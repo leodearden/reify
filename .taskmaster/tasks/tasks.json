@@ -48543,7 +48543,7 @@
         "id": "2256",
         "title": "post-commit: extend done-task regex to match dotted subtask IDs (e.g. NNN.M=done)",
         "description": "Two correctness/maintainability fixes to step (3.5) of hooks/post-commit that both prevent silent failures in the briefing-refresh trigger.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "details": "**Regex gap (functional bug):** The current gate `^chore(tasks): auto-commit after set_task_status([0-9]+=done)$` only matches numeric top-level task IDs. Real auto-commit messages in `git log` use dotted subtask form (e.g. `set_task_status(2106.1=done)`, `set_task_status(1612.2=done)`), so subtask completions never trigger `scripts/refresh_briefing_known_gaps.py` even though that script explicitly indexes subtasks as `{parent}.{sub}` and `tests/infra/test_refresh_briefing_known_gaps.sh` tests for them. Extend the regex to match `[0-9]+(\\.[0-9]+)?=done`. Add a test case in `tests/infra/test_post_commit_hook.sh` (or `tests/infra/test_refresh_briefing_known_gaps.sh`) verifying a dotted-subtask commit message (e.g. `chore(tasks): auto-commit after set_task_status(2106.1=done)`) triggers the script.\n\n**Comment brittleness (cosmetic/maintenance):** Step (3.5) carries a ~30-line inline comment block whose final paragraph pins the implementation detail of `tests/infra/test_post_commit_hook.sh Check 12`. Any rename or renumber of Check 12 silently invalidates the hook prose with no CI signal. Keep a 1-2 sentence rationale explaining that `|| true` absorbs failures so step (5) always runs; drop the explicit `tests/infra/test_post_commit_hook.sh Check 12 ...` cross-reference. The assertion message inside Check 12 already names the failure mode clearly.",
@@ -48558,9 +48558,12 @@
           ],
           "modules": [
             "hooks"
-          ]
+          ],
+          "done_provenance": {
+            "commit": "567a9569d31f6930682df49d1ec1370bdd9cba01"
+          }
         },
-        "updatedAt": "2026-04-26T09:24:46.186Z"
+        "updatedAt": "2026-04-26T09:50:58.371Z"
       },
       {
         "id": "2257",
@@ -48699,14 +48702,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T09:43:33.660Z",
+      "lastModified": "2026-04-26T09:50:58.371Z",
       "taskCount": 2251,
-      "completedCount": 2012,
+      "completedCount": 2013,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T09:47:09.141Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
