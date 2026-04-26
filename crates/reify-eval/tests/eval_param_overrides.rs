@@ -1147,3 +1147,102 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param
         ),
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2195 step-6: helper rejected-override-no-default arm records journal+cache
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression lock for the rejected-override-no-default early-return path inside
+/// `eval_guarded_group_param_cell` (the helper's S4-equivalent). Step-4 must have
+/// covered ALL FOUR paths including this one; this test catches a partial fix that
+/// only instrumented the success paths.
+///
+/// Two-phase setup triggering the else-branch helper's rejected-no-default arm:
+///   A) `structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Scalar = 10mm } }`
+///      — set a Scalar[LENGTH] override on `S.y` (valid override stored).
+///   B) `structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Int } }`
+///      — `y` is now `Int` with NO default; the Scalar override is type-kind
+///        incompatible → helper's rejected-override-no-default arm fires.
+///
+/// Assertions after evaluating module B:
+///   (a) Journal for `y` has Started + Completed.
+///   (b) Cache for `y` has `CachedResult::Value(Undef, Undetermined)`.
+///   (c) Exactly one Warning mentioning "S.y" and "type-kind" (existing contract).
+///   (d) Override is RETAINED — re-eval with module A resurfaces the override.
+#[test]
+fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override_no_default_param()
+{
+    let mut engine = fresh_engine();
+    let y_id = ValueCellId::new("S", "y");
+    let node_id = NodeId::Value(y_id.clone());
+
+    // Phase A: compile module with y: Scalar = 10mm. Set a valid Scalar override.
+    let module_a = compile_source(
+        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Scalar = 10mm } }",
+    );
+    let _ = engine.eval(&module_a);
+    engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
+
+    // Phase B: y is now Int (no default) — Scalar override is type-kind incompatible.
+    let module_b = compile_source(
+        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Int } }",
+    );
+    let result_b = engine.eval(&module_b);
+
+    // (a) Journal: Started + Completed for y.
+    let events = engine.journal().events_for_node(&node_id);
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
+        "helper rejected-no-default arm must emit Started journal event"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
+        "helper rejected-no-default arm must emit Completed journal event"
+    );
+
+    // (b) Cache: CachedResult::Value(Undef, Undetermined).
+    let entry = engine
+        .cache_store()
+        .get(&node_id)
+        .expect("helper rejected-no-default arm must write a cache entry");
+    match &entry.result {
+        CachedResult::Value(val, det) => {
+            assert_eq!(*val, Value::Undef, "rejected-no-default cache value must be Undef");
+            assert_eq!(
+                *det,
+                DeterminacyState::Undetermined,
+                "rejected-no-default cache determinacy must be Undetermined"
+            );
+        }
+        other => panic!(
+            "expected CachedResult::Value(Undef, Undetermined) for rejected-no-default y, got {:?}",
+            other
+        ),
+    }
+
+    // (c) Exactly one Warning mentioning S.y and "type-kind".
+    let warnings: Vec<&reify_types::Diagnostic> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("S.y"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning mentioning S.y, got: {:?}",
+        result_b.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("type-kind"),
+        "warning must mention 'type-kind', got: {:?}",
+        warnings[0].message
+    );
+
+    // (d) Override is retained — re-eval module A resurfaces the 0.12m override.
+    let result_a2 = engine.eval(&module_a);
+    assert_eq!(
+        result_a2.values.get(&y_id),
+        Some(&length_scalar(0.12)),
+        "override must survive a transient type-kind mismatch in the helper's rejected-no-default arm"
+    );
+}
