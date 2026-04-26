@@ -1072,4 +1072,71 @@ structure S {
         );
     }
 
+    // ── Arc-sharing invariant: ResolutionProblem.functions (task #2286) ───────
+
+    /// Arc-sharing invariant: after `eval()`, the `ResolutionProblem.functions`
+    /// passed to the solver must share the *same* Arc allocation as
+    /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
+    /// `Arc::strong_count >= 2`). This proves the per-solver-call construction is
+    /// O(1) (a refcount bump), not an O(N) deep clone of the entire function table.
+    ///
+    /// Expected compile-failure before impl-2: `ResolutionProblem.functions` is
+    /// `Vec<CompiledFunction>`, not `Arc<Vec<CompiledFunction>>`, so
+    /// `Arc::ptr_eq(&engine.functions, &problem.functions)` is a type error
+    /// (`error[E0308]: mismatched types`). Both fields must be Arc'd before this
+    /// test can compile (task #2286).
+    #[test]
+    fn eval_resolution_problem_shares_functions_arc_with_engine() {
+        use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
+        };
+        use reify_types::{ModulePath, Type, Value, ValueCellId};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let thickness_id = ValueCellId::new("S", "thickness");
+        let mut solved_values = HashMap::new();
+        solved_values.insert(thickness_id, mm(5.0));
+
+        let spy = SpyConstraintSolver::new_solved(solved_values);
+        let captured = spy.captured_problem();
+
+        let template = TopologyTemplateBuilder::new("S")
+            .auto_param("S", "thickness", Type::length())
+            .constraint(
+                "S",
+                0,
+                None,
+                gt(value_ref("S", "thickness"), literal(mm(2.0))),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(spy));
+
+        engine.eval(&module);
+
+        let guard = captured.lock().unwrap();
+        let problem = guard
+            .as_ref()
+            .expect("solver should have been called during eval");
+
+        assert!(
+            Arc::ptr_eq(&engine.functions, &problem.functions),
+            "ResolutionProblem.functions must share the same Arc allocation as \
+            Engine.functions — proves the per-call clone is O(1) Arc::clone, not a \
+            deep clone of the function table (task #2286)"
+        );
+        assert!(
+            Arc::strong_count(&engine.functions) >= 2,
+            "strong_count must be >= 2 (engine + captured problem both hold a ref); got {}",
+            Arc::strong_count(&engine.functions)
+        );
+    }
+
 }
