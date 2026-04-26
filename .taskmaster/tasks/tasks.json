@@ -48902,7 +48902,10 @@
               "eval_cached diagnostics repeat-call emission engine_eval.rs"
             ]
           },
-          "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4"
+          "_causation_id": "ad5be1f4-5dc9-4723-a2f1-05288db40dd4",
+          "modules": [
+            "crates/reify-eval/tests/eval_cached_diagnostics.rs"
+          ]
         }
       }
     ],
