@@ -78,6 +78,8 @@ pub fn build_cross_refs(_templates: &[reify_compiler::TopologyTemplate]) -> Cros
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(test)]
+    use reify_test_support::TopologyTemplateBuilder;
 
     #[test]
     fn build_cross_refs_empty_input_returns_default() {
@@ -99,5 +101,42 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize");
         let roundtripped: CrossRefs = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, roundtripped);
+    }
+
+    #[test]
+    fn build_cross_refs_multi_trait_conformance() {
+        let bolt = TopologyTemplateBuilder::new("Bolt")
+            .trait_bound("Rigid")
+            .trait_bound("Fastener")
+            .build();
+        let spring = TopologyTemplateBuilder::new("Spring")
+            .trait_bound("Rigid")
+            .build();
+
+        let result = build_cross_refs(&[bolt, spring]);
+
+        // (a) BTreeMap key order: alphabetical
+        let keys: Vec<&str> = result.trait_to_conformers.keys().map(|s| s.as_str()).collect();
+        assert_eq!(keys, vec!["Fastener", "Rigid"]);
+
+        // (b) Fastener has only Bolt
+        assert_eq!(
+            result.trait_to_conformers["Fastener"],
+            vec!["Bolt".to_string()]
+        );
+
+        // (c) Rigid has Bolt and Spring, sorted alphabetically
+        assert_eq!(
+            result.trait_to_conformers["Rigid"],
+            vec!["Bolt".to_string(), "Spring".to_string()]
+        );
+
+        // (d) no sub-components → entity_to_containers is empty
+        assert!(result.entity_to_containers.is_empty());
+
+        // (e) serde round-trip
+        let json = serde_json::to_string(&result).expect("serialize");
+        let roundtripped: CrossRefs = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(result, roundtripped);
     }
 }
