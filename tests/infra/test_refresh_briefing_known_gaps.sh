@@ -493,12 +493,12 @@ assert "Check 15: stderr contains gap text 'feature gap'" \
     grep -q "feature gap" "$_stderr15"
 
 # ==============================================================================
-# Check 16: cross-tag collision — first occurrence by JSON insertion order wins
-# feature-branch is listed FIRST in tasks.json (status=done) → briefing mismatch
-# master is listed SECOND (status=in-progress) → must be skipped (not override)
+# Check 16: cross-tag collision — done-wins semantics
+# task 300 is done in feature-branch; any done occurrence must trigger WARN
+# master entry (in-progress) must not suppress detection of the done occurrence
 # ==============================================================================
 echo ""
-echo "--- Check 16: cross-tag collision — first occurrence wins ---"
+echo "--- Check 16: cross-tag collision — done wins ---"
 
 _brief16="$_tmpdir/briefing16.yaml"
 _tasks16="$_tmpdir/tasks16.json"
@@ -511,8 +511,8 @@ subprojects:
         tracking: "300"
 YAML
 
-# Note deliberate tag ordering: feature-branch FIRST, master SECOND.
-# feature-branch's done status must win; master's in-progress is skipped.
+# feature-branch has status done; master has the same task as in-progress.
+# done-wins semantics: the done occurrence must be detected regardless of order.
 cat > "$_tasks16" <<'JSON'
 {"feature-branch":{"tasks":[{"id":"300","title":"Branch version","status":"done"}]},"master":{"tasks":[{"id":"300","title":"Master version","status":"in-progress"}]}}
 JSON
@@ -521,7 +521,7 @@ _stderr16="$_tmpdir/stderr16.txt"
 _exit16=0
 python3 "$REFRESH_SCRIPT" --briefing "$_brief16" --tasks "$_tasks16" 2>"$_stderr16" || _exit16=$?
 
-assert "Check 16: exit code is 1 (feature-branch done wins → mismatch)" \
+assert "Check 16: exit code is 1 (done in any tag → mismatch)" \
     test "$_exit16" -eq 1
 
 assert "Check 16: stderr contains WARN" \
@@ -530,7 +530,7 @@ assert "Check 16: stderr contains WARN" \
 assert "Check 16: stderr contains task id 300" \
     grep -q "300" "$_stderr16"
 
-assert "Check 16: stderr contains gap text 'collision gap'" \
+assert "Check 16: stderr contains feature-branch task title 'Branch version'" \
     grep -q "Branch version" "$_stderr16"
 
 # -- Summary ------------------------------------------------------------------
