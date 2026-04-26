@@ -6,8 +6,8 @@ use argmin::core::{CostFunction, Error as ArgminError, Executor, State, Terminat
 use argmin::solver::neldermead::NelderMead;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintNodeId,
-    ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem, SolveResult, Type,
-    Value, ValueCellId, ValueMap,
+    ConstraintSolver, DiagnosticCode, DimensionVector, OptimizationObjective, ResolutionProblem,
+    SolveResult, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Maximum iterations for Nelder-Mead.
@@ -677,7 +677,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
                     final_max_residual
                 ),
                 labels: vec![],
-                code: None,
+                code: Some(DiagnosticCode::ConstraintUnsatisfiable),
             }],
         };
     }
