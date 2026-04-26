@@ -1590,31 +1590,22 @@ impl Engine {
             }
 
             // Second pass: evaluate Let bindings in topological order.
-            // sorted_lets (non-cyclic, dependency-ordered) drives the pass; cyclic cells
-            // (not in sorted_set) are appended in declaration order — they get garbage
-            // values from forward refs but the diagnostic was already emitted above.
-            // This mirrors evaluate_let_bindings() ordering.
-            let ordered_let_cells: Vec<&ValueCellDecl> = {
-                let mut cells: Vec<&ValueCellDecl> = sorted_lets
-                    .iter()
-                    .filter_map(|nid| match nid {
-                        NodeId::Value(vcid) => {
-                            template.value_cells.iter().find(|c| &c.id == vcid)
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                // Append cyclic cells in declaration order
-                for cell in &template.value_cells {
-                    if cell.kind == ValueCellKind::Let
-                        && cell.default_expr.is_some()
-                        && !sorted_set.contains(&NodeId::Value(cell.id.clone()))
-                    {
-                        cells.push(cell);
+            // Mirrors evaluate_let_bindings(): iterate sorted_lets only.
+            // Cyclic cells (not in sorted_set) are intentionally skipped — the
+            // diagnostic emitted above is the only effect of cycle detection.
+            // Forward-reference lookups for cyclic cells would produce
+            // Undef-derived garbage that, if persisted, would corrupt the cache
+            // fast-path on subsequent calls and diverge eval_result.values from
+            // eval()'s shape.
+            let ordered_let_cells: Vec<&ValueCellDecl> = sorted_lets
+                .iter()
+                .filter_map(|nid| match nid {
+                    NodeId::Value(vcid) => {
+                        template.value_cells.iter().find(|c| &c.id == vcid)
                     }
-                }
-                cells
-            };
+                    _ => None,
+                })
+                .collect();
 
             for cell in ordered_let_cells {
                 if let Some(ref expr) = cell.default_expr {
