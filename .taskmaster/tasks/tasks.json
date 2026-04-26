@@ -50183,6 +50183,31 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2321",
+        "title": "Implement Specialization Escape Hatch and W_TRAIT_USER_ASSERTED Warning",
+        "description": "Implement a mechanism to treat explicit geometry trait declarations as user assertions, bypassing runtime checks and emitting a specific warning.",
+        "details": "When a structure explicitly declares a geometry trait such as `: Watertight`, it should be treated as a user assertion. This means the runtime conformance check should be skipped, and a warning `W_TRAIT_USER_ASSERTED` should be emitted once per structure determination. This involves modifying the trait checking logic to recognize explicit declarations and adjust the conformance checking process accordingly. Update the documentation in `docs/prds/geometry-traits.md` to reflect this behavior and ensure the warning is logged appropriately.",
+        "testStrategy": "1. Create a test structure that explicitly declares a geometry trait.\n2. Run the conformance check multiple times on the same structure.\n3. Verify that the warning `W_TRAIT_USER_ASSERTED` is emitted exactly once per structure determination.\n4. Ensure no runtime conformance checks are performed for explicitly declared traits.\n5. Validate that the documentation updates are correct and comprehensive.",
+        "status": "pending",
+        "dependencies": [
+          "2297",
+          "2312"
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "2322",
+        "title": "#no_prelude polish: make stdlib bootstrap explicit, add prelude regression test",
+        "description": "Two small follow-ups on the already-wired #no_prelude pragma. (1) Audit that each prelude .ri file under crates/reify-compiler/stdlib/ carries #no_prelude at the top — the current pre-pass-list-based bootstrap works but making the source explicit makes the convention self-documenting and removes the implicit special case. (2) Add a positive regression test in pragma_compile_tests.rs verifying that compiling a non-prelude module WITHOUT #no_prelude correctly imports the prelude — currently only the negative case (no_prelude_simple_structure_compiles_clean) is pinned. Bootstrap-critical because the prelude itself uses #no_prelude to avoid self-import. PRD: docs/prds/pragmas.md item 1.</description>\n<parameter name=\"priority\">high</parameter>\n<parameter name=\"dependencies\">278",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50192,7 +50217,10 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:58:46.350Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T19:58:51.352Z"
     }
   }
 }
