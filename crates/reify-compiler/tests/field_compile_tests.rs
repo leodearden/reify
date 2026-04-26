@@ -233,6 +233,27 @@ fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
     );
 }
 
+// ── Step 2336: positive-path guard — matching codomain does not emit mismatch ─
+
+#[test]
+fn compile_field_analytical_matching_codomain_does_not_emit_mismatch() {
+    // Body returns Real (2.5 * x + 1.0), codomain declared as Real — types match.
+    // No FieldCodomainMismatch diagnostic should be emitted.
+    let module = compile_source(
+        "field def linear : Real -> Real { source = analytical { |x| 2.5 * x + 1.0 } }",
+    );
+
+    let has_mismatch = module
+        .diagnostics
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::FieldCodomainMismatch));
+    assert!(
+        !has_mismatch,
+        "expected NO FieldCodomainMismatch for Real->Real field with Real body, got: {:?}",
+        module.diagnostics
+    );
+}
+
 // ── Step 2344: imported field emits v0.2 deferral diagnostic ────────────────
 
 #[test]
