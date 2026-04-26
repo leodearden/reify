@@ -136,6 +136,23 @@ pub fn compute_diagnostics_with_state(
             .eval_result
             .diagnostics
     } else {
+        // Observability: if the hash *did* match but the engine was uninitialized,
+        // that is the specific invariant violation the engine-init guard (above) was
+        // added to catch — last_content_hash was set without a preceding eval().
+        // Log a warning in debug builds so the decoupling is not silent. We cannot
+        // use debug_assert! here because the graceful-handling test intentionally
+        // constructs this state to verify the cold-start branch is taken; the right
+        // response is to handle it correctly (which we do below) and warn.
+        #[cfg(debug_assertions)]
+        if state.last_content_hash.map_or(false, |h| h == compiled.content_hash)
+            && !state.is_engine_initialized()
+        {
+            eprintln!(
+                "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
+                 — last_content_hash was set without a preceding eval(); \
+                 cold-start forced to prevent silent diagnostic loss (engine-init guard)"
+            );
+        }
         let checker = SimpleConstraintChecker;
         state.engine = reify_eval::Engine::new(Box::new(checker), None);
         state.engine.eval(&compiled).diagnostics
@@ -655,15 +672,14 @@ mod tests {
         );
     }
 
-    /// When `eval_cached()` is fixed to emit diagnostics (see engine_eval.rs:1183 —
-    /// currently `let diagnostics = Vec::new()` is never appended to), circular
-    /// let-binding errors must surface on the incremental (cached) path too.
+    /// Canary: `eval_cached()` currently returns empty diagnostics by construction
+    /// (engine_eval.rs:1183 — `let diagnostics = Vec::new()` is never appended to).
     ///
-    /// This test is intentionally ignored today because `eval_cached` returns
-    /// empty diagnostics by construction. Once that is fixed, remove the
-    /// `#[ignore]` attribute — the test should pass without further changes.
-    #[ignore = "enable when eval_cached emits diagnostics (engine_eval.rs:1183 \
-                — currently `let diagnostics = Vec::new()` is never appended to)"]
+    /// This test asserts *current* behavior so it fails loudly the moment
+    /// `eval_cached` starts emitting diagnostics — that failure is the expected
+    /// signal to update the assertion (flip `is_empty()` → `!is_empty()`).
+    /// An `#[ignore]`'d future-state test would bitrot silently; a canary that
+    /// asserts today's behavior forces maintainer attention at the right time.
     #[test]
     fn eval_cached_path_surfaces_circular_let_binding_when_fixed() {
         let mut state = EvalState::new();
@@ -684,7 +700,9 @@ mod tests {
         );
 
         // Second call: same source → content_unchanged=true → eval_cached path.
-        // After the eval_cached fix this should also surface the circular error.
+        // eval_cached() returns empty diagnostics by construction today, so the
+        // circular error is absent. This assertion is the canary: when eval_cached
+        // is fixed, this fails — flip to `!is_empty()` and remove this comment.
         let result2 = compute_diagnostics_with_state(&mut state, source, &uri);
         let circular_on_cached_path: Vec<_> = result2
             .diagnostics
@@ -696,10 +714,9 @@ mod tests {
             })
             .collect();
         assert!(
-            !circular_on_cached_path.is_empty(),
-            "eval_cached path must surface the circular let-binding diagnostic once fixed; \
-             got diagnostics: {:?}",
-            result2.diagnostics
+            circular_on_cached_path.is_empty(),
+            "eval_cached() now emits circular let-binding diagnostics (engine_eval.rs:1183 \
+             was fixed) — flip this assertion to `!is_empty()` and remove this comment",
         );
     }
 
@@ -812,11 +829,23 @@ mod tests {
              got none — check that the source is still erroneous"
         );
 
-        // None of the eval-time diagnostics must use the "constraint {id} violated" format.
+        // None of the eval-time diagnostics must match the exact "constraint {id} violated"
+        // format produced by the merge loop (compute_diagnostics_with_state:174):
+        //   format!("constraint {} violated", e.id)
+        // where `e.id` is a single-token ConstraintNodeId (no spaces).
+        // The check mirrors that construction: strip the "constraint " prefix and
+        // " violated" suffix; if both succeed and the middle is a non-empty,
+        // space-free token, the message matches the exact production format.
+        // Using strip_prefix/strip_suffix rather than starts_with/ends_with avoids
+        // false positives on messages like "constraint inference failed because X was violated".
         for diag in &result.diagnostics {
             let msg = &diag.message;
+            let matches_exact_format = msg
+                .strip_prefix("constraint ")
+                .and_then(|s| s.strip_suffix(" violated"))
+                .map_or(false, |id| !id.is_empty() && !id.contains(' '));
             assert!(
-                !(msg.starts_with("constraint ") && msg.ends_with(" violated")),
+                !matches_exact_format,
                 "eval() emitted a 'constraint {{id}} violated' format message: {:?}. \
                  The compute_diagnostics_with_state merge loop relies on eval diagnostics \
                  never using this format — re-introduce the violated_messages filter or \
