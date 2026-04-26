@@ -309,6 +309,26 @@ pub enum GeometryQuery {
         handle: GeometryHandleId,
         axis: [f64; 3],
     },
+    /// Find faces sharing at least one edge with the given face.
+    ///
+    /// `face_index` is the 0-based index into the shape's face enumeration
+    /// (TopExp_Explorer order). Returns a `Value::List` of `Value::Int`
+    /// global face indices, with the queried face itself excluded.
+    AdjacentFaces {
+        shape: GeometryHandleId,
+        face_index: usize,
+    },
+    /// Find edges shared between two faces of the same solid.
+    ///
+    /// `face_a` and `face_b` are 0-based indices into the shape's face
+    /// enumeration (TopExp_Explorer order). Returns a `Value::List` of
+    /// `Value::Int` global edge indices. When `face_a == face_b`, returns
+    /// an empty list (per design decision).
+    SharedEdges {
+        shape: GeometryHandleId,
+        face_a: usize,
+        face_b: usize,
+    },
 }
 
 /// Export formats for geometry.

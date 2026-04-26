@@ -937,6 +937,22 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(moi))
             }
+            GeometryQuery::AdjacentFaces { shape, face_index } => {
+                let _ = (shape, face_index);
+                Err(QueryError::QueryFailed(
+                    "topology selector not yet implemented".into(),
+                ))
+            }
+            GeometryQuery::SharedEdges {
+                shape,
+                face_a,
+                face_b,
+            } => {
+                let _ = (shape, face_a, face_b);
+                Err(QueryError::QueryFailed(
+                    "topology selector not yet implemented".into(),
+                ))
+            }
         }
     }
 
