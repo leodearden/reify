@@ -1049,6 +1049,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
 /// `structure_names` and `trait_names` are accepted for consistency with
 /// `resolve_parameterized_builtin_type`. Pass empty sets when this is called
 /// during alias DFS (before structures and traits are compiled).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],
