@@ -1086,3 +1086,64 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
         ),
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2195 step-5: guarded-group else-branch Param regression lock
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Regression lock for the `else_members` call site of `eval_guarded_group_param_cell`
+/// (engine_eval.rs else_members loop). Step-4 updated BOTH call sites; this test
+/// would catch a partial fix that only updated the `members` call site.
+///
+/// Setup: `guarded_module_with_else(false, "Scalar", "10mm")` — guard is
+/// `active: Bool = false`, so the `else_members` loop runs the helper on `S.y`.
+/// With a fresh engine (no override), the default-eval path fires and produces
+/// `Value::Scalar { si_value: 0.01, dimension: LENGTH }` (10mm = 0.01 m SI).
+///
+/// Assertions after `engine.eval(&module)`:
+///   (a) Journal for `y` has both Started and Completed events.
+///   (b) Cache has `CachedResult::Value(0.01m LENGTH, Determined)` for `y`.
+#[test]
+fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param() {
+    let mut engine = fresh_engine();
+    let module = guarded_module_with_else(false, "Scalar", "10mm");
+    engine.eval(&module);
+
+    let y_id = ValueCellId::new("S", "y");
+    let node_id = NodeId::Value(y_id.clone());
+
+    // (a) Journal: Started + Completed for y (else_members call site).
+    let events = engine.journal().events_for_node(&node_id);
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
+        "else-branch Param y must emit a Started journal event (else_members call site)"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
+        "else-branch Param y must emit a Completed journal event (else_members call site)"
+    );
+
+    // (b) Cache: CachedResult::Value(10mm SI, Determined) for y.
+    let entry = engine
+        .cache_store()
+        .get(&node_id)
+        .expect("else-branch Param y must have a cache entry (else_members call site)");
+    match &entry.result {
+        CachedResult::Value(val, det) => {
+            assert_eq!(
+                *val,
+                length_scalar(0.01),
+                "else-branch y cache value must be 10mm (0.01 m SI)"
+            );
+            assert_eq!(
+                *det,
+                DeterminacyState::Determined,
+                "else-branch y cache determinacy must be Determined"
+            );
+        }
+        other => panic!(
+            "expected CachedResult::Value for else-branch y, got {:?}",
+            other
+        ),
+    }
+}
