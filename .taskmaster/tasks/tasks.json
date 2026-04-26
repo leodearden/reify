@@ -49807,10 +49807,11 @@
         "description": "Test suite for the shadowing warning (PRD: docs/prds/shadowing-warning.md). Positive cases: param-shadows-param across one scope, let-shadows-param, multi-hop shadow (grandparent), shadow inside specialization scope. Negative cases: match-arm same-name guarded decls (no warn), trait-merge of identical members (no warn), sibling scopes with same name (no warn).\n\nGoldens for diagnostic message format. LSP diagnostic-channel snapshot test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:44:57.555Z"
       },
       {
         "id": "2300",
@@ -49839,15 +49840,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T19:44:09.862Z",
-      "taskCount": 2286,
+      "lastModified": "2026-04-26T19:44:57.555Z",
+      "taskCount": 2290,
       "completedCount": 2058,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T19:44:54.225Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:44:55.280Z"
+      ]
     }
   }
 }
