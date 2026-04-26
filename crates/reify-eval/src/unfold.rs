@@ -158,7 +158,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
     let next_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = child_template
         .sub_components
         .iter()
-        .filter(|s| child_template.is_recursive && s.guard_state.compiled().is_some())
+        .filter(|s| child_template.is_recursive && s.guard_state.is_compiled())
         .collect();
     let next_recursive_sub_names: Vec<&str> = next_recursive_subs
         .iter()
@@ -464,7 +464,7 @@ fn elaborate_child_lets_only<'t>(
                 // never unfolded (e.g., guard was false), so BFS terminates naturally.
                 // For structural intermediaries, the prefix check serves the same purpose.
                 for sub_decl in &entity_template.sub_components {
-                    if sub_decl.guard_state.compiled().is_some() {
+                    if sub_decl.guard_state.is_compiled() {
                         if let Some(target_tmpl) =
                             find_template(templates, &sub_decl.structure_name)
                         {

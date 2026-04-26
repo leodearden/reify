@@ -372,8 +372,14 @@ impl GuardState {
     pub fn compiled(&self) -> Option<&CompiledExpr> {
         match self {
             GuardState::Compiled(g) => Some(g),
-            _ => Option::None,
+            _ => None,
         }
+    }
+
+    /// Returns `true` if the user wrote a `where` clause that compiled successfully.
+    /// Equivalent to `self.compiled().is_some()`, but names the intent explicitly.
+    pub fn is_compiled(&self) -> bool {
+        matches!(self, GuardState::Compiled(_))
     }
 }
 
