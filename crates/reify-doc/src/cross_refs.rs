@@ -1,7 +1,7 @@
-//! Cross-reference indices over a slice of compiled topology templates.
+//! Cross-reference index types for the `reify doc` renderer.
 //!
-//! This module produces *cross-template inverted indices* that answer two
-//! questions needed by the `reify doc` renderer:
+//! This module defines the [`CrossRefs`] struct — a pair of *cross-template
+//! inverted indices* that answer two questions for the `reify doc` renderer:
 //!
 //! 1. **trait → conformers** (`CrossRefs::trait_to_conformers`): which topology
 //!    templates declare conformance to a given trait?  Used to render the
@@ -10,6 +10,13 @@
 //! 2. **entity → containers** (`CrossRefs::entity_to_containers`): which topology
 //!    templates include a given structure as a sub-component?  Used to render
 //!    the "Used by" list on a structure's or occurrence's documentation page.
+//!
+//! # Population helper
+//!
+//! The function that populates this struct from compiled templates lives in the
+//! separate `reify-doc-build` crate (`reify_doc_build::cross_refs::build_cross_refs`)
+//! to preserve this crate's serde-only embeddability — downstream consumers that
+//! only need the data model do not need to pull in the full compiler stack.
 //!
 //! # Relationship to `model::CrossRefs`
 //!
@@ -22,8 +29,7 @@
 //!
 //! - [`CrossRefs`] (this module) holds *cross-template inverted indices* computed
 //!   over the entire compiled template set.  It is not part of `DocModel`; it is
-//!   a separate artefact produced by [`build_cross_refs`] and consumed by the
-//!   formatter / renderer layer.
+//!   a separate artefact consumed by the formatter / renderer layer.
 //!
 //! Both types are disambiguated by module path:
 //! `reify_doc::cross_refs::CrossRefs` vs `reify_doc::model::CrossRefs`.
@@ -66,59 +72,9 @@ pub struct CrossRefs {
     pub entity_to_containers: BTreeMap<String, Vec<String>>,
 }
 
-/// Build cross-reference indices from a slice of compiled topology templates.
-///
-/// Both index maps use [`BTreeMap`] for deterministic key order.  Inner
-/// `Vec<String>` values are sorted alphabetically and deduplicated after
-/// population to guarantee a stable, canonical output regardless of input order.
-pub fn build_cross_refs(templates: &[reify_compiler::TopologyTemplate]) -> CrossRefs {
-    let mut result = CrossRefs::default();
-
-    for template in templates {
-        // trait → conformers index
-        for trait_name in &template.trait_bounds {
-            result
-                .trait_to_conformers
-                .entry(trait_name.clone())
-                .or_default()
-                .push(template.name.clone());
-        }
-
-        // entity → containers index
-        for sub in &template.sub_components {
-            result
-                .entity_to_containers
-                .entry(sub.structure_name.clone())
-                .or_default()
-                .push(template.name.clone());
-        }
-    }
-
-    // Post-process: sort + dedup inner vecs for deterministic output.
-    for conformers in result.trait_to_conformers.values_mut() {
-        conformers.sort();
-        conformers.dedup();
-    }
-    for containers in result.entity_to_containers.values_mut() {
-        containers.sort();
-        containers.dedup();
-    }
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(test)]
-    use reify_test_support::TopologyTemplateBuilder;
-
-    #[test]
-    fn build_cross_refs_empty_input_returns_default() {
-        let result = build_cross_refs(&[]);
-        assert!(result.trait_to_conformers.is_empty());
-        assert!(result.entity_to_containers.is_empty());
-    }
 
     #[test]
     fn cross_refs_default_has_empty_maps() {
@@ -133,132 +89,5 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize");
         let roundtripped: CrossRefs = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, roundtripped);
-    }
-
-    #[test]
-    fn build_cross_refs_input_order_independent() {
-        // Combined fixture: Bolt + Spring (traits) + Robot + Arm (sub-components)
-        let bolt = TopologyTemplateBuilder::new("Bolt")
-            .trait_bound("Rigid")
-            .trait_bound("Fastener")
-            .build();
-        let spring = TopologyTemplateBuilder::new("Spring")
-            .trait_bound("Rigid")
-            .build();
-        let robot = TopologyTemplateBuilder::new("Robot")
-            .sub_component("arm", "Arm", vec![])
-            .sub_component("wheel1", "Wheel", vec![])
-            .sub_component("wheel2", "Wheel", vec![])
-            .build();
-        let arm = TopologyTemplateBuilder::new("Arm")
-            .sub_component("joint", "Joint", vec![])
-            .build();
-
-        let bolt2 = TopologyTemplateBuilder::new("Bolt")
-            .trait_bound("Rigid")
-            .trait_bound("Fastener")
-            .build();
-        let spring2 = TopologyTemplateBuilder::new("Spring")
-            .trait_bound("Rigid")
-            .build();
-        let robot2 = TopologyTemplateBuilder::new("Robot")
-            .sub_component("arm", "Arm", vec![])
-            .sub_component("wheel1", "Wheel", vec![])
-            .sub_component("wheel2", "Wheel", vec![])
-            .build();
-        let arm2 = TopologyTemplateBuilder::new("Arm")
-            .sub_component("joint", "Joint", vec![])
-            .build();
-
-        let result_a = build_cross_refs(&[bolt, spring, robot, arm]);
-        let result_b = build_cross_refs(&[arm2, robot2, spring2, bolt2]);
-
-        // Full struct equality regardless of input order
-        assert_eq!(result_a, result_b);
-
-        // Forward-compat: deserializing empty JSON object must equal CrossRefs::default()
-        let from_empty: CrossRefs = serde_json::from_str("{}").expect("deserialize empty");
-        assert_eq!(from_empty, CrossRefs::default());
-    }
-
-    #[test]
-    fn build_cross_refs_nested_sub_components_with_dedup() {
-        let robot = TopologyTemplateBuilder::new("Robot")
-            .sub_component("arm", "Arm", vec![])
-            .sub_component("wheel1", "Wheel", vec![])
-            .sub_component("wheel2", "Wheel", vec![])
-            .build();
-        let arm = TopologyTemplateBuilder::new("Arm")
-            .sub_component("joint", "Joint", vec![])
-            .build();
-
-        let result = build_cross_refs(&[robot, arm]);
-
-        // (a) BTreeMap key order: alphabetical
-        let keys: Vec<&str> = result.entity_to_containers.keys().map(|s| s.as_str()).collect();
-        assert_eq!(keys, vec!["Arm", "Joint", "Wheel"]);
-
-        // (b) Arm is contained by Robot
-        assert_eq!(
-            result.entity_to_containers["Arm"],
-            vec!["Robot".to_string()]
-        );
-
-        // (c) Joint is contained by Arm (nested, non-root template)
-        assert_eq!(
-            result.entity_to_containers["Joint"],
-            vec!["Arm".to_string()]
-        );
-
-        // (d) Wheel appears once despite two instances (wheel1, wheel2)
-        assert_eq!(
-            result.entity_to_containers["Wheel"],
-            vec!["Robot".to_string()]
-        );
-
-        // (e) no trait bounds → trait_to_conformers is empty
-        assert!(result.trait_to_conformers.is_empty());
-
-        // (f) serde round-trip
-        let json = serde_json::to_string(&result).expect("serialize");
-        let roundtripped: CrossRefs = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(result, roundtripped);
-    }
-
-    #[test]
-    fn build_cross_refs_multi_trait_conformance() {
-        let bolt = TopologyTemplateBuilder::new("Bolt")
-            .trait_bound("Rigid")
-            .trait_bound("Fastener")
-            .build();
-        let spring = TopologyTemplateBuilder::new("Spring")
-            .trait_bound("Rigid")
-            .build();
-
-        let result = build_cross_refs(&[bolt, spring]);
-
-        // (a) BTreeMap key order: alphabetical
-        let keys: Vec<&str> = result.trait_to_conformers.keys().map(|s| s.as_str()).collect();
-        assert_eq!(keys, vec!["Fastener", "Rigid"]);
-
-        // (b) Fastener has only Bolt
-        assert_eq!(
-            result.trait_to_conformers["Fastener"],
-            vec!["Bolt".to_string()]
-        );
-
-        // (c) Rigid has Bolt and Spring, sorted alphabetically
-        assert_eq!(
-            result.trait_to_conformers["Rigid"],
-            vec!["Bolt".to_string(), "Spring".to_string()]
-        );
-
-        // (d) no sub-components → entity_to_containers is empty
-        assert!(result.entity_to_containers.is_empty());
-
-        // (e) serde round-trip
-        let json = serde_json::to_string(&result).expect("serialize");
-        let roundtripped: CrossRefs = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(result, roundtripped);
     }
 }
