@@ -51227,13 +51227,14 @@
         "description": "Implement a diagnostic to clearly differentiate between Money and Force dimension mismatches.",
         "details": "In the diagnostic system, enhance the logic to detect and report dimension mismatches specifically between Money and Force. Update the error reporting mechanism to provide distinct messages for these mismatches, ensuring clarity in the diagnostic output. Reference the PRD document at docs/prds/money-dimension.md task 4 for detailed requirements. Modify the existing dimension-checking logic to include specific checks for Money and Force, and ensure that the error messages are informative and actionable.",
         "testStrategy": "Create unit tests that simulate operations resulting in Money vs Force mismatches, such as `25USD + 5N`. Verify that the diagnostic system correctly identifies and reports these mismatches with distinct messages. Run the full test suite to ensure no regressions occur in existing functionality. Additionally, validate that the error messages provide clear guidance on the nature of the mismatch.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "208",
           "209"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:55.386Z"
       },
       {
         "id": "2381",
@@ -51261,12 +51262,26 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2383",
+        "title": "Money dimension: full acceptance test sweep + Angle/Torque regression guard",
+        "description": "Develop comprehensive tests for the Money dimension covering acceptance criteria 1-8 and ensure Angle/Torque distinction remains unaffected.",
+        "details": "Implement a full suite of tests for the Money dimension as specified in the PRD (docs/prds/money-dimension.md, task 7). This includes verifying all acceptance criteria from 1 to 8. Additionally, include a regression test to ensure that changes to the Money dimension do not impact the Angle/Torque distinction. Use existing test patterns and frameworks to ensure consistency and reliability. Focus on edge cases and potential integration issues that could arise from recent changes in the Money dimension representation.",
+        "testStrategy": "1. Develop unit tests for each acceptance criterion (1-8) as outlined in the PRD.\n2. Implement a regression test to verify that Angle/Torque distinctions are unaffected by Money dimension changes.\n3. Run all tests using `cargo test --workspace` to ensure comprehensive coverage and correctness.\n4. Validate that all tests pass and that no unintended side effects occur in related dimensions.",
+        "status": "pending",
+        "dependencies": [
+          "2377",
+          "2379"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:24:51.381Z",
-      "taskCount": 2371,
+      "lastModified": "2026-04-26T20:24:55.386Z",
+      "taskCount": 2372,
       "completedCount": 2060,
       "tags": [
         "master"
