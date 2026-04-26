@@ -49230,23 +49230,21 @@
         "description": "The cyclic-let regression test in `crates/reify-eval/tests/eval_cached_diagnostics.rs:861-880` (added under task 2266) asserts that the eval_cached engine has no cache entry and no value-map entry for cyclic cells on the FIRST call. That catches the bug task 2266 fixed.\n\nBut the docstring's stated motivation includes \"corrupt the cache fast-path on subsequent calls\" — there is no second eval_cached call asserting the absence of a stale cached Undef on re-eval at a bumped version. A follow-up `engine_b.eval_cached(&module, VersionId(2))` with the same cache-parity / value-map-parity / diagnostic-count assertions on its result would pin the persistence-across-calls invariant the comment cites, and would catch regressions where a future change re-introduces caching only after the first pass.\n\nFix: extend the existing test (or add a sibling) to perform the second `eval_cached(&module, VersionId(2))` call after the first and re-run the same assertions.\n\nSpawned from review of task 2266 (esc-2266-5, suggestion 2).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T13:07:13.157Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T12:43:35.243Z",
-      "taskCount": 2266,
+      "lastModified": "2026-04-26T13:07:13.157Z",
+      "taskCount": 2267,
       "completedCount": 2034,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T12:44:04.338Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T13:07:05.242Z"
+      ]
     }
   }
 }
