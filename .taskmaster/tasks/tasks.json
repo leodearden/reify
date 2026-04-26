@@ -49102,7 +49102,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T12:35:46.139Z"
+        "updatedAt": "2026-04-26T12:35:46.139Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/eval_cached_diagnostics.rs"
+          ]
+        }
       },
       {
         "id": "2275",
@@ -49136,7 +49141,9 @@
       "completedCount": 2033,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T12:39:27.236Z",
+      "description": "Tasks for master context"
     }
   }
 }
