@@ -24,6 +24,32 @@
 // site; the mechanical replacement above resolves it.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Trait Resolution Policy ──────────────────────────────────────────────────
+//
+// Each of the eight §6.2 mechanical-material traits (Elastic, Strong, Hard,
+// Ductile, FatigueRated, FractureTough, ImpactResistant, Damping) is declared
+// exactly once in this file and refines MaterialSpec, so that the `density`
+// and `name` requirements from MaterialSpec are inherited transitively rather
+// than restated on every trait.
+//
+// Consumer structures that need material properties do NOT compose each
+// capability trait with its own copy of MaterialSpec.  Instead they carry a
+// single `param material : MaterialSpec` slot (or a concrete `Material` value
+// slot) that supplies one material record for the whole structure:
+//
+//   structure def FatiguedBeam : FatigueRated {
+//       param material : MaterialSpec   // ONE material slot, not one per trait
+//       param endurance_limit : Real
+//   }
+//
+// A structure that needs both fatigue and damping data (for example) references
+// one `Material` value through a single slot rather than two parallel
+// inheritance chains, each carrying their own density/name copy.
+//
+// Source-of-truth: docs/reify-stdlib-reference.md §6.2
+// Audit context:  docs/notes/stdlib-trait-audit.md §6.2 (audit gap (d))
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── Base material trait ──────────────────────────────────────────────────────
 
 // MaterialSpec is the trait-level contract every material-like structure
