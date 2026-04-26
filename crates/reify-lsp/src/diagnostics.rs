@@ -600,6 +600,62 @@ mod tests {
         );
     }
 
+    /// Invariant: an uninitialized engine must take the cold-start eval() branch,
+    /// even when `last_content_hash` already matches the compiled module's hash.
+    ///
+    /// This guards against a future decoupling of EvalState's `last_content_hash`
+    /// and engine-initialization state: if `last_content_hash` is set without
+    /// initializing the engine (e.g. by a new code path), `eval_cached()` would
+    /// silently return empty diagnostics — dropping eval-time errors. The
+    /// `content_unchanged` predicate must AND in `is_engine_initialized()` to
+    /// guarantee the cold-start branch runs whenever the engine is not ready.
+    #[test]
+    fn cold_start_branch_taken_when_engine_uninitialized_with_matching_hash() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+
+        // Pre-compile to obtain the content_hash for this exact source.
+        // Must use compile_with_stdlib + ModulePath::single("test") to match
+        // what compute_diagnostics_with_state derives from "file:///test.ri".
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        // Inject a matching hash while leaving the engine uninitialized.
+        // (private-field write from child mod — same pattern as the
+        //  state.version_counter assertion at line 330)
+        state.last_content_hash = Some(compiled.content_hash);
+
+        // Sanity: engine must not be initialized — this is the precondition
+        // for the bug we are guarding against.
+        assert!(
+            !state.is_engine_initialized(),
+            "engine must be uninitialized after EvalState::new() + hash injection"
+        );
+
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        // The cold-start eval() branch must run and surface the circular error.
+        // On buggy code (before the fix): content_unchanged=true → eval_cached()
+        // → empty diagnostics → this assertion fails.
+        let circular_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.contains("circular let-binding dependency")
+                    && d.message.contains("in template S")
+            })
+            .collect();
+        assert!(
+            !circular_errors.is_empty(),
+            "cold-start branch must be taken when engine is uninitialized, \
+             surfacing the circular let-binding diagnostic; \
+             got diagnostics: {:?}",
+            result.diagnostics
+        );
+    }
+
     /// Known limitation: on the eval_cached path (content unchanged), circular
     /// let-binding diagnostics are NOT surfaced because `eval_cached()` always
     /// returns an empty `diagnostics` Vec (engine_eval.rs:1179 — immutable
