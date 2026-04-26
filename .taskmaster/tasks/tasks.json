@@ -46131,26 +46131,26 @@
         "description": "In `crates/reify-eval/src/engine_eval.rs` (~lines 85-140), the active-branch arm of `post_solver_re_eval_guard_cells` uses `if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let` with an implicit else-skip. Today only `Auto { free }` falls into the skip path, which is intended, but if a new `ValueCellKind` variant is added in the future it will be silently skipped with no compiler warning.\n\nRefactor to an exhaustive `match cell.kind { Param | Let => ..., Auto { .. } => { /* skip, solver-owned */ } }`. This converts future variants into a compile error and documents the three-way decision in the code itself. Source: post-merge review suggestion on task 2143.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T08:15:24.894Z",
+        "updatedAt": "2026-04-26T08:16:00.936Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/engine_eval.rs",
             "crates/reify-eval/tests/guard_eval.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "ValueCellKind",
-              "post_solver_re_eval_guard_cells",
-              "engine_eval.rs"
-            ],
+            "entities": [],
             "queries": [
-              "post_solver_re_eval_guard_cells active branch dispatch ValueCellKind",
-              "match exhaustive ValueCellKind Auto Param Let variants compiler warning"
+              "resolution for: Make post_solver_re_eval_guard_cells active-branch dispatch exhaustive"
             ]
+          },
+          "done_provenance": {
+            "commit": "c22eab6955447d8b4a036f5d68ab0b097f0529f0",
+            "commit_input": "c22eab6955",
+            "note": "refactor(reify-eval): make post_solver_re_eval_guard_cells active-branch dispatch exhaustive — already merged to main; regression-lock test present in crates/reify-eval/tests/guard_eval.rs (~line 3234)"
           }
         }
       },
@@ -48405,9 +48405,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T08:15:24.894Z",
+      "lastModified": "2026-04-26T08:16:00.936Z",
       "taskCount": 2241,
-      "completedCount": 2004,
+      "completedCount": 2005,
       "tags": [
         "master"
       ]
