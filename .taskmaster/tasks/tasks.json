@@ -50696,7 +50696,20 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:08:16.947Z"
+        "updatedAt": "2026-04-26T20:08:16.947Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/functions.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/field_compile_tests.rs",
+            "crates/reify-eval/src/deps.rs",
+            "crates/reify-eval/src/engine_edit.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-eval/tests/field_eval_tests.rs",
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": "2344",
@@ -51430,7 +51443,9 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:26:22.089Z",
+      "description": "Tasks for master context"
     }
   }
 }
