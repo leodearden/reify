@@ -1255,7 +1255,7 @@ impl Engine {
     /// and uses early cutoff to avoid propagating unchanged results.
     pub fn eval_cached(&mut self, module: &CompiledModule, version: VersionId) -> CachedEvalResult {
         let mut values = ValueMap::new();
-        let diagnostics = Vec::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let mut stats = CacheStats::default();
 
         // Build meta_map from module templates (same logic as eval()).
@@ -1447,6 +1447,53 @@ impl Engine {
                     }
 
                     values.insert(cell.id.clone(), val);
+                }
+            }
+
+            // Cycle detection: mirror evaluate_let_bindings:1595-1613.
+            // Build a dependency trace for every let cell and run topological_sort
+            // (Kahn's algorithm). If the sorted length is less than the total, some
+            // nodes were dropped — they form a cycle. Emit the same format string as
+            // evaluate_let_bindings so callers see an identical message on both paths.
+            {
+                use std::collections::HashSet;
+                let let_cells: std::collections::HashMap<NodeId, &reify_types::CompiledExpr> =
+                    template
+                        .value_cells
+                        .iter()
+                        .filter(|c| c.kind == ValueCellKind::Let)
+                        .filter_map(|c| {
+                            c.default_expr
+                                .as_ref()
+                                .map(|expr| (NodeId::Value(c.id.clone()), expr))
+                        })
+                        .collect();
+
+                let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
+                let let_traces: std::collections::HashMap<NodeId, DependencyTrace> = let_cells
+                    .iter()
+                    .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+                    .collect();
+
+                let sorted_lets = topological_sort(&let_node_ids, &let_traces);
+
+                if sorted_lets.len() < let_node_ids.len() {
+                    let sorted_set: std::collections::HashSet<&NodeId> =
+                        sorted_lets.iter().collect();
+                    let mut cyclic_members: Vec<&str> = let_node_ids
+                        .iter()
+                        .filter(|nid| !sorted_set.contains(nid))
+                        .filter_map(|nid| match nid {
+                            NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    cyclic_members.sort();
+                    diagnostics.push(Diagnostic::error(format!(
+                        "circular let-binding dependency in template {}: [{}]",
+                        template.name,
+                        cyclic_members.join(", "),
+                    )));
                 }
             }
 

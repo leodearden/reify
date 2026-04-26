@@ -113,18 +113,11 @@ pub fn compute_diagnostics_with_state(
 
     // Capture eval-time diagnostics from eval() / eval_cached().
     //
-    // Only the cold-start eval() path currently emits non-checker diagnostics
-    // (circular let-binding dependencies, sub-component lookup failures,
-    // param_override type/dimension mismatches, solver Infeasible / NoProgress).
+    // Both eval() and eval_cached() now emit the same diagnostic kinds:
+    // circular let-binding dependencies, sub-component lookup failures,
+    // param_override type/dimension mismatches, solver Infeasible / NoProgress.
     // These are NOT reflected in check_snapshot()'s CheckResult and would be
     // silently dropped without this capture.
-    //
-    // eval_cached() today constructs an immutable `let diagnostics = Vec::new()`
-    // (engine_eval.rs:1179) and never appends to it — a known limitation meaning
-    // eval_time errors disappear on repeat calls with unchanged content. The
-    // eval_cached capture below is forward-defensive: it is a no-op today but
-    // will surface diagnostics automatically once eval_cached is fixed, without
-    // requiring further LSP changes.
     //
     // On the rare check_snapshot → None fallback we drop the captured copy
     // because check() internally re-runs eval() and prepends those diagnostics
@@ -700,9 +693,8 @@ mod tests {
         );
 
         // Second call: same source → content_unchanged=true → eval_cached path.
-        // eval_cached() returns empty diagnostics by construction today, so the
-        // circular error is absent. This assertion is the canary: when eval_cached
-        // is fixed, this fails — flip to `!is_empty()` and remove this comment.
+        // eval_cached() now emits cycle diagnostics (task 2259 fixed the immutable
+        // `let diagnostics = Vec::new()` and inserted per-template cycle detection).
         let result2 = compute_diagnostics_with_state(&mut state, source, &uri);
         let circular_on_cached_path: Vec<_> = result2
             .diagnostics
@@ -714,9 +706,10 @@ mod tests {
             })
             .collect();
         assert!(
-            circular_on_cached_path.is_empty(),
-            "eval_cached() now emits circular let-binding diagnostics (engine_eval.rs:1183 \
-             was fixed) — flip this assertion to `!is_empty()` and remove this comment",
+            !circular_on_cached_path.is_empty(),
+            "eval_cached() must surface the circular let-binding diagnostic on cached path; \
+             got: {:?}",
+            result2.diagnostics,
         );
     }
 
