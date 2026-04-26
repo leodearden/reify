@@ -50318,10 +50318,11 @@
         "description": "PRD docs/prds/freshness-4-variant.md. Implement the Failed { error: ErrorRef } path per arch §9.1-§9.2 (lines 868-890): catch evaluation failures (panic boundary, kernel error, out-of-bounds, missing-key map lookup) and produce Failed. Emit EventKind::error realization event. Add failure-injection tests asserting forced panic in a leaf node ⇒ leaf Failed + exactly one error event emitted. Constraint violations stay separate (§9.3) — produce cached `violated`, NOT Failed; pin this with a regression test. Should reference structured DiagnosticCode variants from #2253 once available.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:02:05.453Z"
       },
       {
         "id": "2331",
@@ -50350,7 +50351,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:02:03.324Z",
+      "lastModified": "2026-04-26T20:02:05.453Z",
       "taskCount": 2321,
       "completedCount": 2059,
       "tags": [
