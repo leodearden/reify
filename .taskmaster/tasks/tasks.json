@@ -48418,23 +48418,21 @@
         "description": "In crates/reify-constraints, Diagnostic literals at src/lib.rs:50, 64, 78; src/solver.rs:680; src/solvespace.rs:960 are constructed with code: None even though the failures are well-typed (constraint violation, unsatisfiable, divergence/no progress). Task 2205 added code: None to keep struct literals compiling, but skipping the natural follow-on means future test/wire consumers still substring-match these messages. Add ConstraintViolated / ConstraintUnsatisfiable / ConstraintDivergence (or similar) variants to DiagnosticCode and migrate the five sites.",
         "details": "Follow-up to task 2205. The reviewer flagged this explicitly as out of scope of the original task but worth tracking. If preferred over migration, document in the DiagnosticCode enum doc that constraint diagnostics are deliberately deferred — but a typed code is the higher-value option.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T08:32:16.085Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T08:18:47.317Z",
-      "taskCount": 2241,
+      "lastModified": "2026-04-26T08:32:16.085Z",
+      "taskCount": 2242,
       "completedCount": 2006,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T08:24:56.744Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T08:32:07.288Z"
+      ]
     }
   }
 }
