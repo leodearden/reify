@@ -49311,7 +49311,12 @@
               "conformance entity.rs compiled_arg clone allocation large literal tree"
             ]
           },
-          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd"
+          "_causation_id": "6569e357-bdc0-4ba7-b2e0-2fac6515c0bd",
+          "modules": [
+            "crates/reify-compiler/src/compile_builder",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/trait_arg_conformance_bench.rs"
+          ]
         }
       },
       {
