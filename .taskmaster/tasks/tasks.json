@@ -50251,7 +50251,15 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T20:12:31.630Z"
+        "updatedAt": "2026-04-26T20:12:31.630Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Implement Feature-tag IR and Runtime Metadata Table for Persistent Topology Naming"
+            ]
+          }
+        }
       },
       {
         "id": "2324",
@@ -50671,6 +50679,32 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:12:17.077Z"
+      },
+      {
+        "id": "2354",
+        "title": "Integration Test for Composed Trait Bounds and Gap-Fill",
+        "description": "Develop an integration test for a DriveBelt-style structure using composed trait bounds and address gaps identified in sections §6.3-§6.6.",
+        "details": "Create a new .ri test source that defines a structure with composed trait bounds such as ElasticallyDeformable, ImpactResistant, and Damping. Ensure the structure integrates traits from the breadth set. Address any gaps identified in sections §6.3-§6.6, including ThermallyCharacterized, Refractory, ElectricallyCharacterized, Conductive, Insulating, OpticallyCharacterized, CorrosionResistant, Biocompatible, and enums CorrosionClass and BiocompatibilityClass. Implement compile and parameter-resolution assertions to verify the integration and functionality of these traits.",
+        "testStrategy": "Run cargo tests to ensure the new structure parses and compiles correctly. Verify that all trait bounds are correctly applied and that parameter resolutions are accurate. Ensure that all gap-fills are correctly integrated and functional within the test structure. Use assertions to confirm that the traits behave as expected when combined.",
+        "status": "pending",
+        "dependencies": [
+          "328",
+          "329",
+          "2347"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "2355",
+        "title": "reify-doc cross-refs: trait→conformers and entity→containers indices",
+        "description": "Implement crates/reify-doc/src/cross_refs.rs producing CrossRefs from a slice of compiled topology templates. Two indices: (1) trait→conformers — for each TopologyTemplate, push its name onto each entry of trait_bounds; rendered under \"Implementations\" on each trait page. (2) entity→containers — for each TopologyTemplate.sub_components, record the parent's name; rendered under \"Used by\" on each structure/occurrence page. Both BTreeMap<String, Vec<String>> for deterministic ordering. Out of scope for v0.1: function call graphs, geometry op references, port-connection graphs. Tests over a synthetic module with multi-trait conformance and nested sub-components. PRD: docs/prds/reify-doc-tool.md slice 3.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -50680,7 +50714,10 @@
       "completedCount": 2059,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:12:34.283Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:12:43.752Z"
     }
   }
 }
