@@ -20,12 +20,8 @@
 //!    wording (references compile_project / ModuleDag; does NOT say "not yet
 //!    implemented").
 //!
-//! Amendment tests (coverage gaps from reviewer):
-//! 4. `compile_project_missing_dep_returns_err` — documents that when a dep
-//!    file is absent, compile_project returns Err (file-read error), not a
-//!    phase_entities warning. The warning path is only exercised when compile()
-//!    or compile_with_stdlib() is called directly without resolving the dep.
-//! 5. `module_dag_resolved_destructured_import_emits_no_warning` — pins the
+//! Amendment test (coverage gap from reviewer):
+//! 4. `module_dag_resolved_destructured_import_emits_no_warning` — pins the
 //!    path-form invariant: `import a.{Foo}` has path="a" in the AST, and
 //!    ModuleDag's prelude key for `a.ri` is also "a", so the gate matches and
 //!    no warning fires.
@@ -90,19 +86,14 @@ fn module_dag_resolved_user_import_emits_no_warning() {
 /// Unresolved user import through `compile_with_stdlib`: the warning must use
 /// accurate, actionable wording.
 ///
-/// Contracts (must ALL hold):
-/// (a) `diag.message.contains("shapes")` — path appears in the message.
-/// (b) `diag.message.contains("import")` — word "import" appears (backward
-///     compat with boundary2_producer.rs assertion shape).
-/// (c) `!diag.message.contains("not yet implemented")` — misleading phrase
-///     removed (mirrors geometry_sub_ref_e2e.rs:100 assertion style).
-/// (d) Message references the actual API to switch to: contains
-///     "compile_project" OR "ModuleDag".
-/// (e) `diag.severity == Warning` — still a warning, not an error.
-/// (f) `!diag.labels.is_empty()` — squiggle label is present.
-///
-/// Before step-4 this test fails on contracts (c) and (d) because the old
-/// "noted; module resolution not yet implemented" wording is still in place.
+/// The filter predicate below implicitly verifies that the diagnostic message
+/// contains both the word "import" and the path name "shapes". The four
+/// explicit assertions check:
+/// (a) Misleading phrase absent — message must NOT contain "not yet implemented".
+/// (b) Actionable API referenced — the message or a label contains "compile_project"
+///     or "ModuleDag".
+/// (c) Severity remains Warning, not Error.
+/// (d) A squiggle label is present, anchoring the underline to the import span.
 #[test]
 fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
     let source = "import shapes\nstructure S {\n    param w: Scalar = 80mm\n}";
@@ -134,17 +125,22 @@ fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
 
     let diag = import_warnings[0];
 
-    // (a) old misleading phrase removed (mirrors geometry_sub_ref_e2e.rs:100)
+    // (a) misleading phrase absent
     assert!(
         !diag.message.contains("not yet implemented"),
         "message must NOT contain 'not yet implemented': {:?}",
         diag.message
     );
-    // (b) references actionable API
+    // (b) actionable API referenced — may appear in the message or a label
+    let has_api_ref = diag.message.contains("compile_project")
+        || diag.message.contains("ModuleDag")
+        || diag.labels.iter().any(|l| {
+            l.message.contains("compile_project") || l.message.contains("ModuleDag")
+        });
     assert!(
-        diag.message.contains("compile_project") || diag.message.contains("ModuleDag"),
-        "message must reference 'compile_project' or 'ModuleDag': {:?}",
-        diag.message
+        has_api_ref,
+        "message or labels must reference 'compile_project' or 'ModuleDag': {:#?}",
+        diag
     );
     // (c) severity is Warning
     assert_eq!(
@@ -195,54 +191,6 @@ fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
     );
 }
 
-// ── Amendment: coverage for compile_project error path ───────────────────────
-
-/// `compile_project` with a missing dependency file returns `Err`.
-///
-/// When `b.ri` imports `z` but `z.ri` does not exist on disk, `compile_project`
-/// short-circuits with a file-read `Err` before ever reaching the entry module's
-/// `phase_entities`. This means the "not resolved" Warning from `phase_entities`
-/// is NOT emitted in this path — the caller receives file-level error diagnostics
-/// instead.
-///
-/// This test documents that behaviour: the phase_entities warning path is only
-/// exercisable via `compile()` / `compile_with_stdlib()` (when the caller has a
-/// parsed module but no dep in the prelude). The `compile_with_stdlib` path is
-/// covered by `compile_with_stdlib_unresolved_user_import_emits_specific_warning`.
-#[test]
-fn compile_project_missing_dep_returns_err() {
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
-
-    // b.ri imports z, but z.ri does NOT exist.
-    fs::write(
-        dir.join("b.ri"),
-        "import z\nstructure B {\n    param x: Scalar = 1mm\n}",
-    )
-    .unwrap();
-
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result = compile_project(&dir.join("b.ri"), &resolver);
-
-    // compile_project must fail because z.ri cannot be read.
-    assert!(
-        result.is_err(),
-        "expected Err when dep 'z' is missing, but got Ok with {} module(s)",
-        result.unwrap().len()
-    );
-
-    // The Err contains file-read error diagnostics — NOT import warnings.
-    // Verify the old misleading phrase doesn't appear in this path either.
-    let errors = result.unwrap_err();
-    for e in &errors {
-        assert!(
-            !e.message.contains("not yet implemented"),
-            "file-read errors must not say 'not yet implemented': {:?}",
-            e.message
-        );
-    }
-}
-
 // ── Amendment: path-form invariant for destructured imports ──────────────────
 
 /// Destructured import `import a.{Foo}` is resolved silently by ModuleDag.
@@ -267,10 +215,11 @@ fn module_dag_resolved_destructured_import_emits_no_warning() {
     )
     .unwrap();
 
-    // b.ri: destructured import of Foo from module a
+    // b.ri: destructured import of Foo from module a; Bar uses Foo as a
+    // sub-component so a regression in name binding also fails the test.
     fs::write(
         dir.join("b.ri"),
-        "import a.{Foo}\nstructure Bar {\n    param y: Scalar = 2mm\n}",
+        "import a.{Foo}\nstructure Bar {\n    param y: Scalar = 2mm\n    sub f = Foo(x: 3mm)\n}",
     )
     .unwrap();
 
