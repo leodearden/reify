@@ -49035,11 +49035,11 @@
         "description": "In `crates/reify-compiler/tests/termination_check_tests.rs:770-779`, the (a) sanity check infers the underlying compile error by substring-matching `\"unresolved\"` or `\"unknown\"` in the lowercased message:\n\n```rust\nlet has_compile_error = errors.iter().any(|d| {\n    let msg = d.message.to_lowercase();\n    msg.contains(\"unresolved\") || msg.contains(\"unknown\")\n});\n```\n\nIf the diagnostic text is reworded (e.g. to \"undeclared identifier\"), the (a) sanity assertion silently passes for the wrong reason — there could be zero compile errors and zero termination errors and the test would still pass.\n\nFix: replace with `assert!(!errors.is_empty(), ...)` (or match a stable diagnostic code/kind if available), since the goal of the (a) check is just to ensure compilation actually fails — the specific wording is irrelevant.\n\nSource: post-merge review suggestion S2 from esc-1296-114 on task 1296.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:44:38.734Z",
+        "updatedAt": "2026-04-26T11:59:10.923Z",
         "metadata": {
           "memory_hints": {
             "entities": [
@@ -49067,16 +49067,16 @@
         "description": "In `crates/reify-eval/src/engine_eval.rs:1384-1387`, the `override_check` binding clones the override `Value` unconditionally when computing the validation result, even though the cache fast-path / cache-reuse arms (lines ~1419-1457) never consume the cloned value — only the rejection diagnostic uses it. Pre-task-2267 the clone only happened in the success arm of the cache-miss `match` via `self.param_overrides.get(...)`.\n\nFix: split the pre-check from value retention. Compute `override_rejection: Option<Result<(), ParamOverrideRejection>>` from `self.param_overrides.get(&cell.id).map(|v| validate_param_override(v, &cell.cell_type))` (no clone). For the diagnostic formatting, re-borrow `self.param_overrides.get(&cell.id)` inside the `if let Some(rejection) = ...` block to access the value without holding a clone alive across the fast-path. In the cache-miss match below, also re-borrow `self.param_overrides.get(&cell.id)` and clone only in the `Ok(())` arm.\n\nDone means: no `Value::clone` on the LSP-keystroke fast-path when an override is set; existing param_override tests (incl. task-2267 step-3 regression locks) still pass; the validate_param_override-once invariant from amend 5f328bd1cf is preserved (single call per eval_cached invocation per cell).\n\nSpawned from review of task 2267 (esc-2267-2, suggestion 1).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T11:54:08.620Z"
+        "updatedAt": "2026-04-26T11:59:11.051Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:59:10.802Z",
+      "lastModified": "2026-04-26T11:59:11.051Z",
       "taskCount": 2262,
       "completedCount": 2028,
       "tags": [
