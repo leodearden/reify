@@ -144,7 +144,7 @@ pub fn compute_diagnostics_with_state(
         // constructs this state to verify the cold-start branch is taken; the right
         // response is to handle it correctly (which we do below) and warn.
         #[cfg(debug_assertions)]
-        if state.last_content_hash.map_or(false, |h| h == compiled.content_hash)
+        if state.last_content_hash == Some(compiled.content_hash)
             && !state.is_engine_initialized()
         {
             eprintln!(
