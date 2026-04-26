@@ -51104,6 +51104,19 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-04-26T20:23:25.866Z"
+      },
+      {
+        "id": "2372",
+        "title": "match-block decls: GuardedDeclGroup symbol-table representation",
+        "description": "Introduce `GuardedDeclGroup` for match-block declared-name groups and suppress duplicate-name errors when recognized as a match-arm group.",
+        "details": "Implement a new symbol-table representation `GuardedDeclGroup` with fields `name` and `arms: Vec<(GuardExpr, Decl)>`. This structure will encapsulate match-block declared-name groups, allowing for the suppression of duplicate-name errors when the cluster is identified as a match-arm group. Update the parser and symbol table logic to recognize and correctly handle these groups. Ensure compliance with the specification outlined in docs/prds/match-block-decls.md and spec §6.4.",
+        "testStrategy": "1. Update existing unit tests to include scenarios with match-block declared-name groups.\n2. Add new tests to verify that duplicate-name errors are suppressed when the group is recognized as a match-arm group.\n3. Ensure all tests pass by running `cargo test` in the relevant crates.\n4. Validate that the symbol table correctly represents `GuardedDeclGroup` instances and handles them as expected.",
+        "status": "pending",
+        "dependencies": [
+          "2363"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51115,7 +51128,8 @@
         "master"
       ],
       "created": "2026-04-26T20:23:53.945Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:23:58.518Z"
     }
   }
 }
