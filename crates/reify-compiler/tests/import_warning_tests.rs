@@ -9,12 +9,14 @@ use reify_types::Severity;
 
 /// Assert that compiling `b.ri` (with content `b_source`) alongside a canonical
 /// `a.ri` via `compile_project` produces no Warning diagnostic whose message
-/// contains `import "<expected_path_substr>"`.
+/// contains `import "<module_name>"`.
 ///
-/// Creates a temporary directory, writes the canonical `a.ri` (`pub structure Foo`),
-/// writes `b.ri` with the caller-supplied source, runs `compile_project`, and
-/// asserts the resulting entry module has no matching import warning.
-fn assert_no_import_warning_for(b_source: &str, expected_path_substr: &str) {
+/// `module_name` must match the stem of the module file written by this helper
+/// (currently `a.ri`). Creates a temporary directory, writes the canonical
+/// `a.ri` (`pub structure Foo`), writes `b.ri` with the caller-supplied source,
+/// runs `compile_project`, and asserts the resulting entry module has no matching
+/// import warning.
+fn assert_no_import_warning_for(b_source: &str, module_name: &str) {
     let _tmp = tempfile::tempdir().unwrap();
     let dir = _tmp.path().to_path_buf();
 
@@ -32,7 +34,7 @@ fn assert_no_import_warning_for(b_source: &str, expected_path_substr: &str) {
 
     let b_module = modules.last().expect("expected at least one module in result");
 
-    let needle = format!("import \"{}\"", expected_path_substr);
+    let needle = format!("import \"{}\"", module_name);
     let import_warnings: Vec<_> = b_module
         .diagnostics
         .iter()
@@ -42,7 +44,7 @@ fn assert_no_import_warning_for(b_source: &str, expected_path_substr: &str) {
     assert!(
         import_warnings.is_empty(),
         "expected no import-warning for path '{}', but got: {:?}",
-        expected_path_substr,
+        module_name,
         import_warnings
             .iter()
             .map(|d| &d.message)
@@ -133,8 +135,7 @@ fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
     assert_eq!(
         diag.labels.len(),
         1,
-        "diagnostic must have exactly one (actionable) label, got {:?}: {:#?}",
-        diag.labels.len(),
+        "diagnostic must have exactly one (actionable) label: {:#?}",
         diag
     );
 }
