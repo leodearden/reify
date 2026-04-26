@@ -191,6 +191,7 @@ pub(crate) fn check_trait_arg_conformance(
                         "type '{}' does not conform to trait '{}' required by param '{}'",
                         struct_name, required_trait, arg_name
                     ))
+                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
                     .with_label(DiagnosticLabel::new(
                         span,
                         format!(
@@ -210,6 +211,7 @@ pub(crate) fn check_trait_arg_conformance(
                         "type '{}' does not conform to trait '{}' required by param '{}'",
                         arg_trait_name, required_trait, arg_name
                     ))
+                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
                     .with_label(DiagnosticLabel::new(
                         span,
                         format!(
@@ -240,6 +242,7 @@ pub(crate) fn check_trait_arg_conformance(
                     "type '{}' does not conform to trait '{}' required by param '{}'",
                     arg_type, required_trait, arg_name
                 ))
+                .with_code(DiagnosticCode::TypeNotConformingToTrait)
                 .with_label(DiagnosticLabel::new(
                     span,
                     format!("expected a type conforming to trait '{}'", required_trait),
