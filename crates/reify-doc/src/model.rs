@@ -76,4 +76,81 @@ mod tests {
         assert_eq!(pragma, back);
         assert_eq!(back.args.len(), 1);
     }
+
+    #[test]
+    fn param_doc_serde_round_trip() {
+        let param = ParamDoc {
+            name: "width".to_string(),
+            doc: Some("Width of the component.".to_string()),
+            type_repr: "Length".to_string(),
+            default_repr: Some("100 mm".to_string()),
+            annotations: vec![AnnotationDoc {
+                name: "units".to_string(),
+                args: vec!["mm".to_string()],
+            }],
+        };
+        let json = serde_json::to_string(&param).expect("serialize");
+        let back: ParamDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(param, back);
+        assert_eq!(back.annotations.len(), 1);
+    }
+
+    #[test]
+    fn port_doc_serde_round_trip() {
+        let port = PortDoc {
+            name: "power_in".to_string(),
+            direction: "in".to_string(),
+            type_name: "Power".to_string(),
+            members: vec!["voltage".to_string(), "current".to_string()],
+        };
+        let json = serde_json::to_string(&port).expect("serialize");
+        let back: PortDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(port, back);
+        assert_eq!(back.members.len(), 2);
+    }
+
+    #[test]
+    fn constraint_doc_serde_round_trip() {
+        let constraint = ConstraintDoc {
+            label: Some("voltage_range".to_string()),
+            expr_repr: "voltage >= 3.0 V && voltage <= 5.5 V".to_string(),
+            annotations: vec![],
+        };
+        let json = serde_json::to_string(&constraint).expect("serialize");
+        let back: ConstraintDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(constraint, back);
+        assert!(back.annotations.is_empty());
+    }
+
+    #[test]
+    fn sub_component_doc_serde_round_trip() {
+        let sub = SubComponentDoc {
+            name: "cpu".to_string(),
+            structure_name: "MCU".to_string(),
+            args: vec!["flash = 512 kB".to_string()],
+            annotations: vec![AnnotationDoc {
+                name: "supplier".to_string(),
+                args: vec!["\"STMicro\"".to_string()],
+            }],
+        };
+        let json = serde_json::to_string(&sub).expect("serialize");
+        let back: SubComponentDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(sub, back);
+        assert_eq!(back.args.len(), 1);
+    }
+
+    #[test]
+    fn realization_doc_serde_round_trip() {
+        let real = RealizationDoc {
+            name: "SchematicView".to_string(),
+            op_summaries: vec![
+                "place cpu at (10, 20)".to_string(),
+                "route power_in -> cpu.vcc".to_string(),
+            ],
+        };
+        let json = serde_json::to_string(&real).expect("serialize");
+        let back: RealizationDoc = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(real, back);
+        assert_eq!(back.op_summaries.len(), 2);
+    }
 }
