@@ -1184,7 +1184,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         // Empty solved_values: both params are missing → both hit the None branch
@@ -1235,7 +1235,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         // Empty solved_values: param is missing → early-return path should fire
@@ -1309,7 +1309,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         // Value::Undef: as_f64() returns None → early-return path should fire
@@ -1690,7 +1690,7 @@ mod tests {
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -1989,7 +1989,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -2054,7 +2054,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -2118,7 +2118,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: Some(objective),
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -2207,7 +2207,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -2268,7 +2268,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -2331,7 +2331,7 @@ mod tests {
             ],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -2896,7 +2896,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: current,
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -3013,7 +3013,7 @@ mod tests {
             constraints: vec![(cnid("Part", 0), gt_expr)],
             current_values: current,
             objective: Some(objective),
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -3066,7 +3066,7 @@ mod tests {
             constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
             current_values: ValueMap::new(),
             objective: None,
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -3275,7 +3275,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: current,
             objective: Some(objective),
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -3395,7 +3395,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
             current_values: current,
             objective: Some(objective),
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
@@ -3509,7 +3509,7 @@ mod tests {
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
             current_values: current,
             objective: Some(objective),
-            functions: vec![],
+            functions: std::sync::Arc::new(vec![]),
         };
 
         let result = solver.solve(&problem);
