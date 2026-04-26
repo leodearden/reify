@@ -47165,11 +47165,11 @@
         "description": "Task 2181's regular-member branch at `crates/reify-compiler/src/expr.rs:1197` emits `ValueCellId::new(&id.entity, member)` where `id.entity == scope.entity_name == purpose_name`. For a hypothetical multi-param purpose `purpose check(a : Structure, b : Structure) { constraint a.mass > b.mass }`, BOTH `a.mass` and `b.mass` would compile to the same `ValueRef(check, mass)` — per-param identity is lost. Not exercised today (single-entity `activate_purpose` + single-param purposes in m5_purpose.ri), but the encoding offers no forward path: `remap_entity` rewrites a single `from_entity` at a time. Fix either by rejecting multi-StructureRef-param purposes with a clear diagnostic until the binding scheme is designed, OR by encoding per-param identity in the ValueCellId entity stamp.",
         "details": "**Hook point:** `crates/reify-compiler/src/expr.rs:1161-1200` (purpose-subject member-access branch).\n\n**Two acceptable approaches:**\n\n1. **Reject (safer, minimal scope):** in `compile_purpose`, if more than one param has `Type::StructureRef(_)`, emit a compile-time error \"multi-StructureRef purpose params not supported; binding scheme TBD\" and refuse to compile. Lets us delay the design until a real use case appears.\n\n2. **Encode per-param identity:** change the ValueCellId entity stamp from `id.entity` (= purpose_name) to e.g. `format!(\"{}::{}\", purpose_name, param_name)`. `activate_purpose` / `remap_entity` would need to know which synthetic stamp maps to which caller-supplied entity, so this requires a multi-arg activate_purpose signature design.\n\n**Tests to add:**\n- A pinning test for current single-param behavior.\n- Whichever approach is chosen, a test that documents the multi-param case (either rejection diagnostic or collision-free ValueRef stamping).\n\n**Source:** esc-2181-18 S3 (reviewer_comprehensive on task 2181)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-25T06:58:09.394Z",
+        "updatedAt": "2026-04-26T08:32:29.263Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -48443,7 +48443,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T08:32:28.793Z",
+      "lastModified": "2026-04-26T08:32:29.263Z",
       "taskCount": 2243,
       "completedCount": 2007,
       "tags": [
