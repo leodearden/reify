@@ -830,8 +830,10 @@ mod tests {
         );
 
         // None of the eval-time diagnostics must match the exact "constraint {id} violated"
-        // format produced by the merge loop (compute_diagnostics_with_state:174):
-        //   format!("constraint {} violated", e.id)
+        // format produced by the constraint-violation builder in
+        // `compute_diagnostics_with_state` (look for
+        // `format!("constraint {} violated", entry.id)`):
+        //   format!("constraint {} violated", entry.id)
         // where `e.id` is a single-token ConstraintNodeId (no spaces).
         // The check mirrors that construction: strip the "constraint " prefix and
         // " violated" suffix; if both succeed and the middle is a non-empty,
