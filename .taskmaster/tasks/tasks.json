@@ -48619,7 +48619,7 @@
         "description": "Task 2205 (status=done, commit 359fb3bf4cc73fe45937794b949a2190ea78ae51) introduced the typed `DiagnosticCode` enum and **explicitly listed** four variants the producer sites in conformance/checker.rs and conformance/mod.rs were supposed to attach via `.with_code(...)`:\n\n- `MissingRequiredMember`\n- `MissingRequiredSubComponent`\n- `TypeMismatchForTraitMember`\n- `TypeNotConformingToTrait`\n\nThe task description (docstring excerpt from tasks.json:2205) is unambiguous:\n> Wire `.with_code(DiagnosticCode::X)` at the matching `diagnostics.push(...)` sites in:\n> - crates/reify-compiler/src/conformance/checker.rs (~lines 810, 840, 866, 890, 895)\n> - crates/reify-compiler/src/conformance/mod.rs (~lines 191, 197, 210, 240)\n\nBut a global grep across the repo shows **zero producers** for any of those four variants — only the enum declaration (`crates/reify-types/src/diagnostics.rs:184–195`) and the historical task-tree entries. Concretely, the affected emission sites are still un-coded:\n\n- `conformance/checker.rs:808-814` \"missing required sub-component '{}' of type '{}'\" → needs `.with_code(MissingRequiredSubComponent)`\n- `conformance/checker.rs:838-844` \"type mismatch for trait member '{}': expected {}, got {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/checker.rs:864-871` \"type mismatch for trait member '{}': requirement expects {}, available default has {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/checker.rs:899-904` \"missing required member '{}' (expected type: {})\" (and the let/param-kind variant just above) → needs `.with_code(MissingRequiredMember)`\n- `conformance/checker.rs:1163-1171` \"type mismatch for trait let '{}': annotation expects {}, expression evaluates to {}\" → needs `.with_code(TypeMismatchForTraitMember)`\n- `conformance/mod.rs:189-201` \"type '{}' does not conform to trait '{}' required by param '{}'\" (StructureRef arm) → needs `.with_code(TypeNotConformingToTrait)`\n- `conformance/mod.rs:208-220` same message, TraitObject arm → needs `.with_code(TypeNotConformingToTrait)`\n- `conformance/mod.rs:238-247` same message, fallback arm → needs `.with_code(TypeNotConformingToTrait)`\n\nWhy this matters at the integration boundary:\n1. The enum's `#[non_exhaustive]` and PascalCase serde wire format were committed deliberately so downstream tooling (MCP wire layer, tests) can match codes instead of substrings. Four reserved-but-unwired variants make those contracts a polite fiction.\n2. The follow-up tests called out in 2205's description (\"Migrate conformance-related tests from substring matching to code-based assertions\") cannot be done while the producer sites still emit `code: None`.\n3. The briefing convention \"Quality is king — issues may dangle briefly only if there is a task in the queue that will resolve them\" is currently being violated: the original task was closed, the variants exist, but no tracking task remains.\n\nDone means: every emission site listed above attaches the indicated `DiagnosticCode`; at least one test per variant in `crates/reify-compiler/tests/{trait_conformance_tests.rs,collection_sub_tests.rs,qualified_access_compile_tests.rs,m9_error_cases.rs}` asserts on `d.code == Some(DiagnosticCode::X)` (in addition to whatever message assertion remains as a secondary check); cargo test passes for `-p reify-compiler -p reify-types`.\n\nmemory_hints:\n- search: \"DiagnosticCode TraitNotImplemented MissingRequiredMember\"\n- search: \"task 2205 producer wiring conformance\"\n- entity: \"DiagnosticCode\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -48650,7 +48650,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-26T11:59:10.666Z"
+        "updatedAt": "2026-04-26T11:59:13.229Z"
       },
       {
         "id": "2259",
@@ -49076,7 +49076,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T11:59:12.702Z",
+      "lastModified": "2026-04-26T11:59:13.229Z",
       "taskCount": 2262,
       "completedCount": 2028,
       "tags": [
