@@ -36,20 +36,25 @@ use crate::{
 pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 
 /// Returns `true` when `ty` may legitimately appear as the `cell_type` of a
-/// `ValueCellDecl` post-compilation. The two unrepresentable variants are
-/// `Type::TypeParam(_)` and `Type::Geometry` — neither has a corresponding
-/// `Value` variant, so any non-Undef value supplied to a cell of those types
-/// would fall through `value_type_kind_matches` (lib.rs) and trigger
+/// `ValueCellDecl` post-compilation. The two variants the predicate *rejects*
+/// are `Type::TypeParam(_)` and `Type::Geometry` — any non-Undef value
+/// supplied to a cell of those types would fall through
+/// `value_type_kind_matches` (lib.rs) and trigger
 /// `EngineError::TypeKindMismatch`.
 ///
 /// Single source of truth shared by the runtime invariant
 /// `assert_value_cell_types_representable` (this file) and the CI regression
 /// walker `assert_template_cells_representable`
 /// (`crates/reify-eval/tests/value_cell_type_invariants.rs`). Adding a third
-/// unrepresentable variant requires updating only this function.
+/// rejected variant requires updating only this function.
 ///
-/// `Type::StructureRef` is intentionally permitted (task 1876) — see
-/// `assert_value_cell_types_representable` doc below for the rationale.
+/// `Type::StructureRef` (task 1876) and `Type::TraitObject` (task 2287) are
+/// intentionally permitted despite also having no corresponding `Value` arm:
+/// defaults for these cells evaluate to `Value::Undef`, which passes the
+/// kind-match for any type (the `Value::Undef => true` arm of
+/// `value_type_kind_matches`). If a `Value` variant is ever added for either,
+/// add a matching arm in `value_type_kind_matches` and relax the runtime
+/// assertion so the compiler enforces completeness.
 ///
 /// Re-exported from the crate root with `#[doc(hidden)] pub use` so the
 /// integration test crate can reach it; not part of the documented public API.
@@ -93,17 +98,23 @@ pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
 }
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
-/// evaluation graph has a `cell_type` that has a corresponding `Value`
-/// variant.  `Type::TypeParam` and `Type::Geometry` have no `Value`
-/// counterpart, so any non-Undef value against such a cell triggers
-/// `TypeKindMismatch` — see `value_type_kind_matches` in lib.rs.
+/// evaluation graph has a representable `cell_type`. The two rejected variants
+/// are `Type::TypeParam` and `Type::Geometry` — any non-Undef value against
+/// such a cell triggers `TypeKindMismatch`; see `value_type_kind_matches` in
+/// lib.rs.
 ///
-/// `Type::StructureRef` is permitted (task 1876): user code may declare
+/// `Type::StructureRef` (task 1876) and `Type::TraitObject` (task 2287) are
+/// intentionally permitted despite also having no corresponding `Value` arm.
+/// For StructureRef: user code may declare
 /// `param material : Material = Material(...)` where `Material` is a
 /// canonical struct. The struct-call default evaluates to `Value::Undef`
 /// (structure constructors are not builtins; `reify_stdlib::eval_builtin`
-/// returns Undef for unknown names), and Undef is accepted by the
-/// kind-match against any `Type` variant.
+/// returns Undef for unknown names), and Undef is accepted by the kind-match
+/// against any `Type` variant. Trait-typed params are safe for the same
+/// reason: their defaults evaluate to `Value::Undef`. If a future
+/// `Value::TraitObjectInstance` or `Value::StructureInstance` variant is
+/// added, add a matching arm in `value_type_kind_matches` and relax the
+/// runtime assertion so the compiler enforces completeness.
 ///
 /// Fully elided in release builds (cfg-gated, not debug_assert!-wrapped) to
 /// avoid the HashMap walk on the hot eval() path.  Tests run under
