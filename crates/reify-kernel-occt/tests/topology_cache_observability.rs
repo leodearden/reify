@@ -8,7 +8,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{OcctKernel, TopologyCacheBuildCounts};
-use reify_types::{GeometryError, GeometryHandleId, GeometryOp, Value};
+use reify_types::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
 /// Helper: build a kernel containing one 10×10×10 box, return the kernel and
 /// the handle id of the box.
@@ -22,6 +22,29 @@ fn box_kernel() -> (OcctKernel, GeometryHandleId) {
         })
         .expect("Box creation should succeed");
     (kernel, box_h.id)
+}
+
+/// Helper: issue `AdjacentFaces { face_index }` and unwrap the result.
+fn query_adjacent_faces(kernel: &OcctKernel, shape: GeometryHandleId, face_index: usize) {
+    kernel
+        .query(&GeometryQuery::AdjacentFaces { shape, face_index })
+        .expect("AdjacentFaces query should succeed");
+}
+
+/// Helper: issue `SharedEdges { face_a, face_b }` and unwrap the result.
+fn query_shared_edges(
+    kernel: &OcctKernel,
+    shape: GeometryHandleId,
+    face_a: usize,
+    face_b: usize,
+) {
+    kernel
+        .query(&GeometryQuery::SharedEdges {
+            shape,
+            face_a,
+            face_b,
+        })
+        .expect("SharedEdges query should succeed");
 }
 
 /// A freshly constructed shape should have zero build counts for all three
@@ -61,4 +84,34 @@ fn topology_cache_starts_empty_on_fresh_shape() {
             other
         ),
     }
+}
+
+/// After calling `AdjacentFaces` for every face of a 10×10×10 box (6 calls
+/// total), the face_map and edge_face_map caches should each have been built
+/// exactly once, and the edge_map should remain untouched (adjacent_faces
+/// does not use the global edge map).
+#[test]
+fn adjacent_faces_repeated_calls_build_face_and_edge_face_map_exactly_once() {
+    let (kernel, box_id) = box_kernel();
+
+    // Six calls — one per face of the box.
+    for i in 0..6 {
+        query_adjacent_faces(&kernel, box_id, i);
+    }
+
+    let counts = kernel
+        .topology_cache_build_counts(box_id)
+        .expect("topology_cache_build_counts should succeed");
+
+    assert_eq!(
+        counts,
+        TopologyCacheBuildCounts {
+            face_map_builds: 1,
+            edge_map_builds: 0,
+            edge_face_map_builds: 1,
+        },
+        "after 6 adjacent_faces calls: face_map and edge_face_map should each \
+         be built once; edge_map should be untouched. Got {:?}",
+        counts
+    );
 }
