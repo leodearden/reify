@@ -49628,23 +49628,21 @@
         "description": "Three small post-merge polish items from the task 2281 review on crates/reify-compiler/src/conformance/mod.rs and trait_typed_param_tests.rs.",
         "details": "Source: review suggestions on task 2281 (esc-2281-2).\n\n1. **Extract StructureRef-promotion helper (code_reuse)** — `walk_param_against_arg`'s fallback arm (mod.rs:241-258) duplicates the `Real|Int FunctionCall → StructureRef` promotion logic that `check_leaf_trait_conformance` performs at mod.rs:~423-440. Extract a small helper:\n\n```rust\nfn promote_function_call_to_structure_ref(\n    arg: &CompiledExpr,\n    templates: &HashMap<...>,\n) -> Option<Type>\n```\n\nand call it from both sites so future wrapper kinds stay in sync.\n\n2. **Hoist Type::Error anti-cascade guard (robustness)** — In `walk_param_against_arg_type` (mod.rs:340-394), the `if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) { return; }` guard sits inside the `_` fallback arm (mod.rs:373). The `(Type::TraitObject, arg_ty)` arm above relies on `emit_leaf_conformance_for_arg_type` silently skipping non-struct/non-trait arg types — correct today, but the safety contract is implicit. Hoist the guard above the entire `match` so the anti-cascade behavior is explicit and uniform across all match arms. Update the docstring at mod.rs:325-339 accordingly.\n\n3. **Tighten wrapper-shape test assertions (test_quality)** — The six new tests in trait_typed_param_tests.rs at lines 1255-1268, 1289-1302, 1323-1336, 1356-1369, 1393-1406, 1430-1443 use `errors.iter().any(|d| ...)` substring matches. Replace with:\n\n```rust\nlet matching: Vec<_> = errors.iter().filter(...).collect();\nassert_eq!(matching.len(), 1, \"expected exactly one wrapper-shape diagnostic, got {:?}\", matching);\n```\n\nso accidental duplicate emissions in future refactors are caught.\n\nAcceptance:\n- Helper extracted; both call sites use it.\n- Type::Error guard at top of `walk_param_against_arg_type` match.\n- Six tests assert `len() == 1` for the matching diagnostic.\n- `cargo test -p reify-compiler --test trait_typed_param_tests` still green.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T19:03:43.482Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T18:42:52.494Z",
-      "taskCount": 2278,
+      "lastModified": "2026-04-26T19:03:43.482Z",
+      "taskCount": 2279,
       "completedCount": 2053,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T18:52:26.278Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T19:03:30.063Z"
+      ]
     }
   }
 }
