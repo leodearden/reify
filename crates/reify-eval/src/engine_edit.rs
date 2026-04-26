@@ -128,7 +128,7 @@ fn reelaborate_guarded_group(
 ///
 /// (b) Groups Phase 1 **skipped via per-group unchanged-guard short-circuit** —
 ///     guard is in Phase 1's iteration but its value is unchanged, so the group
-///     takes `continue` at line 593 without entering `phase1_reelaborated`.
+///     takes the per-group unchanged-guard short-circuit (`continue`) without entering `phase1_reelaborated`.
 ///     Wave2 can still overwrite the inactive-branch member.  Previously *not*
 ///     covered — this was the task 2144 bug.
 ///
@@ -141,24 +141,25 @@ fn reelaborate_guarded_group(
 ///
 /// ## Guard-value source
 ///
-/// Phase 1 writes every group's current guard value into `values` at line 589
-/// even when it takes the per-group unchanged-guard short-circuit (line 593-595).
+/// Phase 1 writes every group's current guard value into `values` even when it
+/// takes the per-group unchanged-guard short-circuit (`continue`).
 /// For groups outside Phase 1's dirty-guard trigger, `values` holds the pre-edit
-/// guard value seeded from `new_snapshot.values` at edit-start (line 432-437),
+/// guard value seeded from `new_snapshot.values` at edit-start (the
+/// edit-start snapshot-to-values seeding pass),
 /// which is non-empty for every guard cell that `eval()` has populated.
 /// A `debug_assert!` verifies that the guard cell is present in `values`; a
 /// missing entry indicates a real invariant violation (the cell was neither
 /// seeded by Phase 1 nor by the edit-start snapshot pass) and should be caught
 /// early in debug builds.  In release builds the `unwrap_or(Value::Undef)`
-/// fallback mirrors how Phase 1 itself handles a missing guard node (line 564),
+/// fallback mirrors how Phase 1 itself handles a missing guard node (Phase 1's missing-guard-node fallback),
 /// treating both branches as inactive rather than panicking.
 ///
 /// ## Note on `phase1_reelaborated`
 ///
 /// This helper no longer takes `phase1_reelaborated` as a parameter — the set
 /// was only used to gate which groups to iterate, and that gate is now removed.
-/// Phase 3's cross-phase dedup (`phase1_reelaborated.contains(...)` at lines
-/// 833 / 1892) is unaffected; those sets remain in the caller.
+/// Phase 3's `phase1_reelaborated.contains(...)` dedup gates in `edit_param` and
+/// `edit_source` are unaffected; those sets remain in the caller.
 ///
 /// Called from both `edit_param` post-wave2 and `edit_source` post-wave2.
 /// Field-level borrow splitting still applies: `graph` and `snapshot_values`
