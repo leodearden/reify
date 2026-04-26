@@ -148,6 +148,8 @@ def main() -> int:
     # ------------------------------------------------------------------ #
     # Emit results                                                         #
     # ------------------------------------------------------------------ #
+    # --json: emit structured list to stdout for programmatic consumers
+    # (e.g. Stage 2 reconciliation).  No WARN lines on stderr in this mode.
     if args.json_output:
         print(json.dumps(mismatches, indent=2))
     else:
