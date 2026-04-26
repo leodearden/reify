@@ -1021,3 +1021,68 @@ fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
         "journal must have a Completed event for p (S4 path)"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// task-2195 step-3: guarded-group active-branch Param records journal + cache
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `eval_guarded_group_param_cell` (engine_eval.rs:180-254) currently emits
+/// neither journal events nor cache writes for any of its four value-write paths.
+/// Task-2195 fixes that. This test drives the implementation.
+///
+/// Setup: `guarded_module(true, "Scalar", "5mm")` — guard is `active: Bool = true`
+/// so the `members` loop runs `eval_guarded_group_param_cell` on `S.x`. The
+/// override bucket is empty on a fresh engine, so the default-eval path fires
+/// and produces `Value::Scalar { si_value: 0.005, dimension: LENGTH }`.
+///
+/// Assertions after `engine.eval(&module)`:
+///   (a) `engine.journal().events_for_node(&NodeId::Value(x_id))` has at least
+///       one `EventKind::Started` AND one `EventKind::Completed { .. }`.
+///       Currently FAILS — the helper emits no journal events.
+///   (b) `engine.cache_store().get(&NodeId::Value(x_id))` is Some with
+///       `CachedResult::Value(Value::Scalar { 0.005m LENGTH }, Determined)`.
+///       Currently FAILS — the helper writes no cache entries.
+#[test]
+fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_param() {
+    let mut engine = fresh_engine();
+    let module = guarded_module(true, "Scalar", "5mm");
+    engine.eval(&module);
+
+    let x_id = ValueCellId::new("S", "x");
+    let node_id = NodeId::Value(x_id.clone());
+
+    // (a) Journal: Started + Completed events — FAILS before step-4 impl.
+    let events = engine.journal().events_for_node(&node_id);
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
+        "guarded-group active-branch Param must emit a Started journal event (task-2195)"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e.kind, EventKind::Completed { .. })),
+        "guarded-group active-branch Param must emit a Completed journal event (task-2195)"
+    );
+
+    // (b) Cache entry: CachedResult::Value(5mm as SI, Determined) — FAILS before step-4 impl.
+    let entry = engine
+        .cache_store()
+        .get(&node_id)
+        .expect("guarded-group active-branch Param must write a cache entry (task-2195)");
+    match &entry.result {
+        CachedResult::Value(val, det) => {
+            assert_eq!(
+                *val,
+                length_scalar(0.005),
+                "guarded-group x cache value must be 5mm (0.005 m SI)"
+            );
+            assert_eq!(
+                *det,
+                DeterminacyState::Determined,
+                "guarded-group x cache determinacy must be Determined (has default)"
+            );
+        }
+        other => panic!(
+            "expected CachedResult::Value for guarded-group active-branch x, got {:?}",
+            other
+        ),
+    }
+}
