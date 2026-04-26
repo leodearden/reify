@@ -27,6 +27,18 @@ pub mod ffi {
         normals: Vec<f32>,
     }
 
+    /// Topology-map cache build counts for an OcctShape.
+    ///
+    /// Each counter is 0 on a fresh shape and increments to 1 on the first
+    /// call that needs that map. Used by integration tests to assert that
+    /// repeated queries hit the cache instead of rebuilding the map.
+    #[derive(Debug, PartialEq, Eq)]
+    struct TopologyCacheBuildCounts {
+        face_map_builds: u32,
+        edge_map_builds: u32,
+        edge_face_map_builds: u32,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -254,6 +266,11 @@ pub mod ffi {
 
         fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
+
+        /// Return cache build counts for all three topology-map slots of `shape`.
+        /// Each counter is 0 on a fresh shape, 1 after first use, and never changes
+        /// again (immutable post-construction guarantee on OcctShape).
+        fn topology_cache_build_counts(shape: &OcctShape) -> TopologyCacheBuildCounts;
 
         /// Faces sharing at least one edge with `face_index` (0-based, TopExp order).
         /// Excludes the queried face; deduplicated; returned ascending.

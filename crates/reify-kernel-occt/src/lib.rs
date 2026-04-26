@@ -22,6 +22,8 @@ pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 #[cfg(has_occt)]
 #[allow(dead_code)]
 mod ffi;
+#[cfg(has_occt)]
+pub use ffi::ffi::TopologyCacheBuildCounts;
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
 #[cfg(has_occt)]
@@ -38,7 +40,7 @@ const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ
 #[cfg(not(has_occt))]
 mod stubs;
 #[cfg(not(has_occt))]
-pub use stubs::{OcctKernel, OcctKernelHandle};
+pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 
 #[cfg(has_occt)]
 use std::collections::HashMap;
@@ -198,6 +200,19 @@ impl OcctKernel {
             .ok_or(GeometryError::InvalidReference(id))?;
         ptr.as_ref()
             .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))
+    }
+
+    /// Return the topology-map cache build counts for the shape identified by
+    /// `handle`. Each counter is 0 on a fresh shape and increments to 1 when
+    /// the corresponding lazy cache slot is first populated.
+    ///
+    /// Returns [`GeometryError::InvalidReference`] if `handle` is unknown.
+    pub fn topology_cache_build_counts(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<ffi::ffi::TopologyCacheBuildCounts, GeometryError> {
+        let shape = self.get_shape(handle)?;
+        Ok(ffi::ffi::topology_cache_build_counts(shape))
     }
 }
 

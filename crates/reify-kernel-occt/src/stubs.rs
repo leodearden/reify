@@ -9,6 +9,14 @@ use reify_types::{
     GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
 };
 
+/// Stub topology cache build counts (OCCT not available).
+#[derive(Debug, PartialEq, Eq)]
+pub struct TopologyCacheBuildCounts {
+    pub face_map_builds: u32,
+    pub edge_map_builds: u32,
+    pub edge_face_map_builds: u32,
+}
+
 const NOT_AVAILABLE: &str = "OCCT libraries not available at build time";
 
 /// Stub OpenCASCADE kernel — all operations return errors.
@@ -44,6 +52,13 @@ impl OcctKernel {
         _tolerance: f64,
     ) -> Result<Mesh, TessError> {
         Err(TessError::TessellationFailed(NOT_AVAILABLE.into()))
+    }
+
+    pub fn topology_cache_build_counts(
+        &self,
+        _handle: GeometryHandleId,
+    ) -> Result<TopologyCacheBuildCounts, GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 }
 

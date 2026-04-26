@@ -1503,6 +1503,14 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
     }
 }
 
+TopologyCacheBuildCounts topology_cache_build_counts(const OcctShape& shape) {
+    TopologyCacheBuildCounts counts;
+    counts.face_map_builds = shape.face_map_builds_;
+    counts.edge_map_builds = shape.edge_map_builds_;
+    counts.edge_face_map_builds = shape.edge_face_map_builds_;
+    return counts;
+}
+
 rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index) {
     try {
         // Build a stable 0-based face index via TopExp::MapShapes (the
