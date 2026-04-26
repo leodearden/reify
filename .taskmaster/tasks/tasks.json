@@ -49318,23 +49318,21 @@
         "description": "Extract a shared predicate (e.g. `pub(crate) fn is_representable_cell_type(ty: &Type) -> bool` or `#[doc(hidden)] pub`) from `engine_eval.rs::assert_value_cell_types_representable` and have `tests/value_cell_type_invariants.rs::assert_template_cells_representable` consume it. Today both sites copy-paste `Type::TypeParam(_) | Type::Geometry`; if a third unrepresentable variant is added to the production assertion, the test silently keeps passing.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T14:11:19.584Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T13:59:45.291Z",
-      "taskCount": 2271,
+      "lastModified": "2026-04-26T14:11:19.584Z",
+      "taskCount": 2272,
       "completedCount": 2039,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T14:06:20.363Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T14:11:18.088Z"
+      ]
     }
   }
 }
