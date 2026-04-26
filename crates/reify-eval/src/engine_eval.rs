@@ -1951,9 +1951,13 @@ mod invariant_tests {
                 .or_else(|| err.downcast_ref::<&str>().copied())
                 .unwrap_or("<non-string panic>");
             assert!(
-                msg.contains(super::ASSERT_MSG_PREFIX),
-                "panic message did not contain expected substring {:?}: {msg}",
+                msg.starts_with(&format!("{}:", super::ASSERT_MSG_PREFIX)),
+                "panic message did not start with {:?} followed by colon: {msg}",
                 super::ASSERT_MSG_PREFIX,
+            );
+            assert!(
+                msg.contains("has cell_type "),
+                "panic message did not contain \"has cell_type \": {msg}",
             );
         }
     }
