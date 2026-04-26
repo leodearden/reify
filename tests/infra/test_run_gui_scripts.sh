@@ -307,4 +307,22 @@ assert "run-gui-dev.sh with non-existent .ri exits non-zero" \
 assert "run-gui-dev.sh non-existent .ri error message mentions 'not found'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "not found"' _ "$dev_miss_out"
 
+# -- Test 25: source-level — vite-process-died check inside polling loop ------
+echo ""
+echo "--- Test 25: run-gui-dev.sh polling loop checks vite process liveness ---"
+
+assert "polling loop checks vite process liveness via 'kill -0'" \
+    bash -c 'grep -qE '"'"'kill -0[[:space:]]+"$VITE_PID"'"'"' "$1"' _ "$RUN_GUI_DEV"
+
+assert "script emits a 'vite process exited' error message" \
+    bash -c 'grep -qF '"'"'vite process exited'"'"' "$1"' _ "$RUN_GUI_DEV"
+
+assert "kill -0 check is inside the readiness polling loop" \
+    bash -c '
+        kill_line=$(grep -n '"'"'kill -0[[:space:]]+"$VITE_PID"'"'"' "$1" | head -1 | cut -d: -f1)
+        for_line=$(grep -n '"'"'for _ in $(seq 1 60); do'"'"' "$1" | head -1 | cut -d: -f1)
+        done_line=$(awk -v s="$for_line" '"'"'NR>s && /^done$/ { print NR; exit }'"'"' "$1")
+        [ -n "$kill_line" ] && [ "$kill_line" -gt "$for_line" ] && [ "$kill_line" -lt "$done_line" ]
+    ' _ "$RUN_GUI_DEV"
+
 test_summary
