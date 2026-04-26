@@ -51180,11 +51180,26 @@
         "description": "Verify that slot 9 of the Money dimension is correctly populated, displayed, hashed, and serialized in both the compiler and runtime environments.",
         "details": "Review the Money dimension representation in the compiler and runtime to ensure slot 9 is correctly handled. This involves checking the population of slot 9, its display output, hashing mechanisms, and serialization processes. Reference the PRD document at docs/prds/money-dimension.md and spec section §3.2 for detailed requirements. Identify any paths that are Money-blind and add necessary unit tests to cover these paths. Ensure that the implementation aligns with the dimensional integrity and expected behavior outlined in the specification.",
         "testStrategy": "1. Create unit tests to verify that slot 9 is populated correctly in both the compiler and runtime.\n2. Test the display output to ensure slot 9 is represented accurately.\n3. Verify the hashing mechanism includes slot 9 correctly.\n4. Check the serialization process to confirm slot 9 is serialized as expected.\n5. Add tests for any previously uncovered paths that were Money-blind, ensuring comprehensive coverage.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1221",
           "1290",
           "38"
+        ],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:24:27.082Z"
+      },
+      {
+        "id": "2378",
+        "title": "Money dimension: ship `unit USD : Money` in stdlib",
+        "description": "Add the `unit USD : Money` to the standard library and ensure it is registered correctly in the unit registry.",
+        "details": "Implement the `unit USD : Money` in the file `std/units/money.ri` or an equivalent path as specified in the project documentation. Ensure that the unit is correctly defined with its dimension and any necessary conversion factors. Update the unit registry to include this new unit, verifying that it is recognized during the compilation process. Follow the specifications outlined in the PRD document `docs/prds/money-dimension.md`, specifically task 2 and section §4.6. Ensure that the implementation aligns with existing unit declaration patterns and integrates seamlessly with the current system.",
+        "testStrategy": "1. Verify that the `unit USD : Money` is correctly parsed and compiled without errors. \n2. Check that the unit appears in the unit registry by inspecting the registry output or logs. \n3. Conduct tests to ensure that the unit can be used in quantity literals and that any conversion factors are applied correctly. \n4. Run `cargo test -p reify-compiler -- units_money` to execute relevant test cases.",
+        "status": "pending",
+        "dependencies": [
+          "208",
+          "209"
         ],
         "priority": "high",
         "subtasks": []
@@ -51192,15 +51207,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:24:07.818Z",
-      "taskCount": 2363,
+      "lastModified": "2026-04-26T20:24:27.082Z",
+      "taskCount": 2367,
       "completedCount": 2060,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-26T20:24:07.914Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-26T20:24:21.016Z"
+      ]
     }
   }
 }
