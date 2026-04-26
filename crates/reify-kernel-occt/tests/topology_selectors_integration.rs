@@ -318,3 +318,107 @@ fn shared_edges_with_out_of_range_face_index_returns_query_failed() {
         Err(other) => panic!("expected QueryFailed for face_b=99, got {:?}", other),
     }
 }
+
+/// Helper: count the number of faces of `shape` by probing
+/// `AdjacentFaces` for indices 0..N and stopping at the first
+/// out-of-range error. Returns N (the count of in-range face indices).
+fn face_count(kernel: &OcctKernel, shape: GeometryHandleId) -> usize {
+    for n in 0..256 {
+        match kernel.query(&GeometryQuery::AdjacentFaces {
+            shape,
+            face_index: n,
+        }) {
+            Ok(_) => continue,
+            Err(QueryError::QueryFailed(msg)) if msg.contains("out of range") => return n,
+            Err(other) => panic!("unexpected error probing face count at {}: {:?}", n, other),
+        }
+    }
+    panic!("face_count probe ran past 256 without hitting out-of-range");
+}
+
+#[test]
+fn topology_selectors_on_fused_two_box_solid_handle_complex_topology() {
+    // Build two 10x10x10 boxes; translate the second by +10 along X so
+    // it abuts the first along one face; union them. The resulting solid
+    // is more complex than a single box (additional internal-or-merged
+    // edges + non-trivial face count) and exercises the FFI's robustness.
+    let mut kernel = OcctKernel::new();
+    let box_a = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        })
+        .expect("Box A creation should succeed");
+    let box_b_raw = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        })
+        .expect("Box B creation should succeed");
+    let box_b = kernel
+        .execute(&GeometryOp::Translate {
+            target: box_b_raw.id,
+            dx: 10.0,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("Box B translate should succeed");
+    let fused = kernel
+        .execute(&GeometryOp::Union {
+            left: box_a.id,
+            right: box_b.id,
+        })
+        .expect("Union should succeed");
+    let fused_id = fused.id;
+
+    let n_faces = face_count(&kernel, fused_id);
+    assert!(
+        n_faces >= 6,
+        "fused two-box solid should have at least 6 faces, got {}",
+        n_faces
+    );
+
+    // Assert AdjacentFaces returns Ok(Value::List(_)) for every face;
+    // at least one face must have a nonempty neighbor list.
+    let mut any_nonempty = false;
+    for face in 0..n_faces {
+        let result = kernel.query(&GeometryQuery::AdjacentFaces {
+            shape: fused_id,
+            face_index: face,
+        });
+        let items = match result {
+            Ok(Value::List(items)) => items,
+            Ok(other) => panic!("expected Value::List for face {}, got {:?}", face, other),
+            Err(e) => panic!("AdjacentFaces({}) returned Err: {:?}", face, e),
+        };
+        if !items.is_empty() {
+            any_nonempty = true;
+        }
+    }
+    assert!(
+        any_nonempty,
+        "expected at least one face of the fused solid to have neighbors"
+    );
+
+    // Sample a couple of in-range face pairs and assert SharedEdges
+    // succeeds (Ok(Value::List(_))). Both empty and nonempty results
+    // are acceptable — the regression check is "no panic, no Err".
+    let pairs: &[(usize, usize)] = &[(0, 1), (0, n_faces - 1)];
+    for &(a, b) in pairs {
+        let result = kernel.query(&GeometryQuery::SharedEdges {
+            shape: fused_id,
+            face_a: a,
+            face_b: b,
+        });
+        match result {
+            Ok(Value::List(_)) => {}
+            Ok(other) => panic!(
+                "expected Value::List for SharedEdges({}, {}), got {:?}",
+                a, b, other
+            ),
+            Err(e) => panic!("SharedEdges({}, {}) returned Err: {:?}", a, b, e),
+        }
+    }
+}
