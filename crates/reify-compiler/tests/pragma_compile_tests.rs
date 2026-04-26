@@ -928,3 +928,101 @@ fn purpose_level_precision_pragma_emits_deferred_warning() {
         warns
     );
 }
+
+/// Same deferred-warning behaviour for `constraint def`-level `#precision`.
+///
+/// `warn_block_level_precision` walks `module.constraint_defs` alongside
+/// templates / trait_defs / compiled_purposes. Without this test, a refactor
+/// that dropped the constraint-def branch would slip through unnoticed.
+#[test]
+fn constraint_def_level_precision_pragma_emits_deferred_warning() {
+    let source = r#"
+        constraint def C { #precision(0.001m) param x : Real }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "constraint-def-level #precision must NOT set the module default, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns = deferred_v02_warnings(&module);
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 deferred-to-v0.2 warning for constraint-def-level \
+         #precision, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// `#precision()` (zero args) hits the catch-all "expected a Length literal"
+/// branch and emits exactly one warning; `default_tolerance` stays None.
+///
+/// Distinct match arm from the bare-Number / KeyValue / float64-Ident cases.
+#[test]
+fn precision_pragma_with_zero_args_warns_and_does_not_set_tolerance() {
+    let module = compile_source("#precision()\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for zero-arg #precision, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("expected a Length literal"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 'expected a Length literal' warning for #precision(), got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
+/// `#precision(0.001m, 0.002m)` (multi-arg) hits the catch-all branch and emits
+/// exactly one warning; `default_tolerance` stays None even though the first
+/// arg in isolation would have been a valid Length quantity. Multi-arg is its
+/// own match arm — the catch-all `_` — separate from the well-formed
+/// single-Quantity arm above it.
+#[test]
+fn precision_pragma_with_multiple_args_warns_and_does_not_set_tolerance() {
+    let module =
+        compile_source("#precision(0.001m, 0.002m)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.default_tolerance.is_none(),
+        "expected default_tolerance None for multi-arg #precision, got {:?}",
+        module.default_tolerance
+    );
+
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("expected a Length literal"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 'expected a Length literal' warning for multi-arg \
+         #precision, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
