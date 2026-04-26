@@ -357,13 +357,17 @@ esac
 NPM_STUB
 chmod +x "$_t25_tmpdir/bin/npm"
 
-# Stub curl: always exit 1 so the polling loop never thinks vite is ready.
-# Belt-and-suspenders defense (with the ephemeral REIFY_VITE_PORT below): even
-# if some unrelated listener happens to be bound to our randomly-chosen port,
-# curl still fails and the loop falls through to the kill-0 vite-death branch.
+# Stub curl: always fail so the readiness check never succeeds regardless of
+# what happens to be listening on the test's vite port in the environment
+# (e.g. an unrelated vite dev server from a concurrent task).  The polling
+# loop must reach the `kill -0 "$VITE_PID"` death-detection branch, not the
+# curl-success branch.
+# Exit 7 = CURLE_COULDNT_CONNECT, mimicking the real "no listener" behaviour.
+# The script only checks curl's success/failure (`if curl ...; then`), so any
+# non-zero exit works; 7 is chosen for semantic accuracy.
 cat > "$_t25_tmpdir/bin/curl" <<'CURL_STUB'
 #!/usr/bin/env bash
-exit 1
+exit 7
 CURL_STUB
 chmod +x "$_t25_tmpdir/bin/curl"
 

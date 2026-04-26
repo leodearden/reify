@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
-    OpaqueState, RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId, ValueMap,
-    VersionId,
+    OpaqueState, RealizationNodeId, ResolutionNodeId, ResultRef, Satisfaction, Value, ValueCellId,
+    ValueMap, VersionId,
 };
 
 use crate::deps::DependencyTrace;
@@ -357,7 +357,7 @@ impl CacheStore {
     pub fn mark_pending(&mut self, node: &NodeId) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = Freshness::Pending {
-                last_substantive: Some(entry.result_hash),
+                last_substantive: ResultRef::of_hash(entry.result_hash),
             };
             self.pending_transition_count += 1;
             true
@@ -1875,7 +1875,7 @@ mod tests {
         assert_eq!(
             entry.freshness,
             Freshness::Pending {
-                last_substantive: Some(original_hash)
+                last_substantive: ResultRef::of_hash(original_hash)
             }
         );
     }
