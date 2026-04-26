@@ -2070,7 +2070,7 @@ fn from_compiled_unit_populates_shared_fields() {
     let entry = UnitEntry::from(&cu);
 
     assert_eq!(entry.name, "newton");
-    assert_eq!(entry.is_pub, true);
+    assert!(entry.is_pub);
     assert_eq!(entry.dimension, DimensionVector::FORCE);
     assert!((entry.factor - 1.5).abs() < 1e-12, "factor mismatch: {}", entry.factor);
     assert_eq!(entry.offset, Some(2.5));
