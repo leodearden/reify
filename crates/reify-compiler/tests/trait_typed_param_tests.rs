@@ -515,3 +515,177 @@ fn sub_component_arg_structure_instantiation_with_args_accepted() {
         errors
     );
 }
+
+// ─── Wrapped-trait param resolution (task 2227) ──────────────────────────────
+//
+// Each test declares a trait and a structure whose param is wrapped in one of
+// the four collection/option builtins, then asserts that the param's cell_type
+// is the expected compound Type (e.g. Type::Option(Box::new(Type::TraitObject(...)))).
+//
+// All four tests MUST fail on the base branch with an "unresolved type" error
+// because resolve_parameterized_builtin_type does not thread trait_names through
+// to its inner-arg resolution, so `Option<MyTrait>` is treated as a wrapped
+// unknown name rather than a wrapped trait object.
+
+/// Verifies that `param m : Option<MyTrait>` resolves to
+/// `Type::Option(Box::new(Type::TraitObject("MyTrait")))`.
+#[test]
+fn option_traitobject_param_resolves_to_option_traitobject() {
+    let source = r#"
+        trait MyTrait {}
+        structure def Host { param m : Option<MyTrait> }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for Option<MyTrait> param, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .expect("Host template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::Option(Box::new(Type::TraitObject("MyTrait".to_string()))),
+        "param m : Option<MyTrait> should resolve to Type::Option(Type::TraitObject(\"MyTrait\")), got: {:?}",
+        m_cell.cell_type
+    );
+}
+
+/// Verifies that `param m : List<MyTrait>` resolves to
+/// `Type::List(Box::new(Type::TraitObject("MyTrait")))`.
+#[test]
+fn list_traitobject_param_resolves_to_list_traitobject() {
+    let source = r#"
+        trait MyTrait {}
+        structure def Host { param m : List<MyTrait> }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for List<MyTrait> param, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .expect("Host template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::List(Box::new(Type::TraitObject("MyTrait".to_string()))),
+        "param m : List<MyTrait> should resolve to Type::List(Type::TraitObject(\"MyTrait\")), got: {:?}",
+        m_cell.cell_type
+    );
+}
+
+/// Verifies that `param m : Set<MyTrait>` resolves to
+/// `Type::Set(Box::new(Type::TraitObject("MyTrait")))`.
+#[test]
+fn set_traitobject_param_resolves_to_set_traitobject() {
+    let source = r#"
+        trait MyTrait {}
+        structure def Host { param m : Set<MyTrait> }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for Set<MyTrait> param, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .expect("Host template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::Set(Box::new(Type::TraitObject("MyTrait".to_string()))),
+        "param m : Set<MyTrait> should resolve to Type::Set(Type::TraitObject(\"MyTrait\")), got: {:?}",
+        m_cell.cell_type
+    );
+}
+
+/// Verifies that `param m : Map<String, MyTrait>` resolves to
+/// `Type::Map(Box::new(Type::String), Box::new(Type::TraitObject("MyTrait")))`.
+#[test]
+fn map_string_to_traitobject_param_resolves_to_map_string_traitobject() {
+    let source = r#"
+        trait MyTrait {}
+        structure def Host { param m : Map<String, MyTrait> }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for Map<String, MyTrait> param, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Host")
+        .expect("Host template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+
+    assert_eq!(
+        m_cell.cell_type,
+        Type::Map(
+            Box::new(Type::String),
+            Box::new(Type::TraitObject("MyTrait".to_string()))
+        ),
+        "param m : Map<String, MyTrait> should resolve to Type::Map(Type::String, Type::TraitObject(\"MyTrait\")), got: {:?}",
+        m_cell.cell_type
+    );
+}
