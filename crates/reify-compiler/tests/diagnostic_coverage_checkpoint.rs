@@ -342,18 +342,24 @@ structure def S : NonExistentTrait {
         module.diagnostics
     );
 
-    let has_msg = errors
-        .iter()
-        .any(|d| d.message.contains("unresolved trait") && d.message.contains("NonExistentTrait"));
+    let has_msg = errors.iter().any(|d| {
+        d.code == Some(DiagnosticCode::UnresolvedTrait)
+            // Keep the 'NonExistentTrait' name-token check: it carries semantic content
+            // beyond wording.
+            && d.message.contains("NonExistentTrait")
+    });
     assert!(
         has_msg,
-        "expected 'unresolved trait' mentioning 'NonExistentTrait', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        "expected DiagnosticCode::UnresolvedTrait mentioning 'NonExistentTrait', got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("unresolved trait"))
+        .find(|d| d.code == Some(DiagnosticCode::UnresolvedTrait))
         .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
