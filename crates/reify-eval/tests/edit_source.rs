@@ -650,6 +650,48 @@ fn edit_source_preserves_param_overrides_for_unchanged_params() {
     );
 }
 
+/// After `edit_source` populates `last_diff_value_cells`, a subsequent
+/// `edit_param` must clear the snapshot so callers cannot observe a stale
+/// diff from the prior `edit_source`.  The "most recent `edit_source`"
+/// invariant is enforced by a cfg-gated reset at the top of `edit_param`
+/// (task 2265).
+#[test]
+fn edit_param_clears_last_diff_value_cells_from_prior_edit_source() {
+    let mut engine = fresh_engine();
+
+    // 1. Populate last_diff_value_cells via eval + edit_source.
+    let module_a = parse_and_compile(&bracket_with_volume_expr("width * height * thickness"));
+    engine.eval(&module_a);
+
+    // Module B mutates the let binding — guarantees a non-empty `changed` set
+    // so that last_diff_value_cells is populated (not `None`).
+    let module_b =
+        parse_and_compile(&bracket_with_volume_expr("width * height * thickness * 2.0"));
+    engine
+        .edit_source(&module_b)
+        .expect("edit_source must succeed");
+
+    // 2. Precondition: edit_source must have populated the field.
+    assert!(
+        engine.last_diff_value_cells().is_some(),
+        "edit_source must populate last_diff_value_cells (precondition)"
+    );
+
+    // 3. Act: run edit_param; it must clear the snapshot.
+    let width_id = ValueCellId::new("Bracket", "width");
+    engine
+        .edit_param(width_id, Value::length(0.12))
+        .expect("edit_param must succeed");
+
+    // 4. The prior edit_source's diff is no longer current.
+    assert!(
+        engine.last_diff_value_cells().is_none(),
+        "edit_param must clear last_diff_value_cells — the prior edit_source's diff \
+         is no longer current (if Some, the cfg-gated reset at the top of edit_param \
+         was dropped)"
+    );
+}
+
 /// When the new module REMOVES a param that carried an override, the removed
 /// cell must be absent from the post-edit values map and from the installed
 /// snapshot's graph. Any dormant override in `param_overrides` has no cell to

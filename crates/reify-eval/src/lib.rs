@@ -246,22 +246,25 @@ pub struct Engine {
     /// the writer sites in `engine_edit.rs` need no cfg-gating.
     last_role_flip_probes: usize,
     /// The `(changed, added, removed)` triple returned by `diff_value_cells`
-    /// during the most recent `edit_source` call. `None` means no `edit_source`
-    /// has been called on this `Engine` yet (distinct from an empty diff).
+    /// during the most recent `edit_source` call. `None` means either no
+    /// `edit_source` has been called yet on this `Engine`, or a subsequent
+    /// `edit_param` has cleared the snapshot (both are the "no current
+    /// edit_source diff" state; distinct from an empty diff).
     ///
     /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
     /// via `Engine::last_diff_value_cells()` in `engine_admin.rs`.
-    /// The field itself is always present (module-private, no `pub`) so that
-    /// the writer site in `engine_edit.rs` needs no cfg-gating.
+    /// The field itself is always present (module-private, no `pub`) so the
+    /// struct layout is identical in test and non-test builds; the writer site
+    /// in `engine_edit.rs` is `#[cfg(any(test, feature = "test-instrumentation"))]`-gated
+    /// to skip the three `HashSet` clones in production. The reset at the top
+    /// of `edit_param` is gated for the same reason. In non-test builds the
+    /// field is therefore neither written nor read, which is why
+    /// `#[allow(dead_code)]` is required on this line.
     ///
     /// Canonical use case: T3 premise lock — asserts that `S.x` and `S.y` are
     /// absent from all three sets after a role-flip-only edit, confirming that
     /// `ValueCellNode::content_hash` does not incorporate the member/else_member
     /// role (task 2170).
-    ///
-    /// Unlike the `usize` instrumentation fields (which are read via `+=` even
-    /// without cfg-gating), this field is written via plain assignment and read
-    /// only through the cfg-gated accessor, so dead_code must be silenced here.
     #[allow(dead_code)]
     last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
     /// Event journal recording evaluation events.
