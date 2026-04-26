@@ -50962,12 +50962,13 @@
         "description": "Introduce two new AST/IR node kinds (`ForallConnect`, `ForallConstraint`) for statement-form forall per docs/prds/forall-statement-form.md task 2 / spec §5.4. Distinguishes statement form from existing expression form.",
         "details": "Acceptance: parser emits `ForallConnect` / `ForallConstraint` for the new alternatives; expression form remains an `Expr` AST node. Pretty-printer / span info preserved.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "63"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:22:12.511Z"
       },
       {
         "id": "2364",
@@ -50982,12 +50983,26 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2365",
+        "title": "forall statement-form: empty-collection + undef-count handling",
+        "description": "Implement handling for empty and undefined-count collections in the forall statement-form as per specification §5.4.",
+        "details": "Update the SchemaNode.compute() method to handle cases where the bound collection is empty or has an undefined count. For empty collections, ensure that no declarations are generated and no errors are thrown. For collections with an undefined count, initially emit zero declarations and re-elaborate once the count is determined, as specified in §6.2. This requires integrating with the existing SchemaNode re-elaboration logic to update the declarations when the count becomes known. Refer to docs/prds/forall-statement-form.md task 4 for additional context and requirements.",
+        "testStrategy": "1. Write unit tests to verify that no declarations are emitted for empty collections and that no errors occur.\n2. Create tests for collections with undefined counts to ensure zero declarations are initially emitted.\n3. Verify that once the count is determined, the SchemaNode correctly re-elaborates and emits the appropriate declarations.\n4. Ensure all tests cover edge cases and adhere to the specification in §5.4 and §6.2.",
+        "status": "pending",
+        "dependencies": [
+          "2363",
+          "2364"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:22:08.219Z",
-      "taskCount": 2353,
+      "lastModified": "2026-04-26T20:22:12.511Z",
+      "taskCount": 2354,
       "completedCount": 2060,
       "tags": [
         "master"
