@@ -49788,7 +49788,15 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:40:42.063Z"
+        "updatedAt": "2026-04-26T19:40:42.063Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prds/geometry-traits.md",
+          "modules": [
+            "crates/reify-compiler"
+          ],
+          "agent_id": "claude-prd-stdlib",
+          "milestone": "v0.1-stdlib-geometry-traits"
+        }
       },
       {
         "id": "2298",
@@ -49800,7 +49808,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-26T19:46:40.952Z"
+        "updatedAt": "2026-04-26T19:46:40.952Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: [v0.2] Per-purpose representation-tolerance contract"
+            ]
+          }
+        }
       },
       {
         "id": "2299",
@@ -49884,7 +49900,9 @@
       "completedCount": 2058,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T19:46:42.738Z",
+      "description": "Tasks for master context"
     }
   }
 }
