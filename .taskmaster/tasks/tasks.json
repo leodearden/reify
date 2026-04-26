@@ -50795,15 +50795,16 @@
         "description": "Two parts. (1) crates/reify-doc/src/fmt_json.rs: serde_json serialisation of DocModel; pretty-printed by default, --compact flag for single-line. snake_case field naming. Schema is the DocModel definition; consumers can rely on it being stable across v0.1 patch releases (no backward-compat across v0.1→v0.2 — bump #version pragma to signal). (2) crates/reify-cli/src/main.rs: new cmd_doc routing 'reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]'. Defaults: html format, stdout when -o omitted. --split markdown only (errors out for html/json). --compact json only. Exit codes: 0 ok, 1 compile errors blocked doc generation (errors printed to stderr exactly as cmd_check does), 2 CLI usage errors. Add reify-doc to reify-cli Cargo.toml. End-to-end test running 'reify doc' as subprocess via reify-test-support harness. PRD: docs/prds/reify-doc-tool.md slice 6.</description>\n<parameter name=\"priority\">medium</parameter>\n</invoke>",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-26T20:16:24.132Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-26T20:16:18.757Z",
+      "lastModified": "2026-04-26T20:16:24.132Z",
       "taskCount": 2350,
       "completedCount": 2060,
       "tags": [
