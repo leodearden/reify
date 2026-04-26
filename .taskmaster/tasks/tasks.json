@@ -51203,6 +51203,21 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": "2379",
+        "title": "Money dimension: quantity-literal + currency-mass arithmetic integration tests",
+        "description": "Develop end-to-end tests for quantity-literal and currency-mass arithmetic in the Money dimension, including user-defined unit conversions.",
+        "details": "Implement integration tests for the Money dimension in the `tests/` directory. Focus on scenarios involving quantity literals like `25USD` and `25USD/kg`, and arithmetic operations such as `25USD/kg * 2kg = 50USD`. Additionally, test user-defined unit conversions, e.g., `unit GBP : Money = 1.25USD`. Ensure the tests cover both direct arithmetic and conversion scenarios, verifying that the system correctly handles these operations as specified in the PRD (docs/prds/money-dimension.md, task 3).",
+        "testStrategy": "Run comprehensive integration tests using `cargo test --workspace`. Verify that all arithmetic operations and conversions produce the expected results. Ensure that user-defined units are correctly registered and used in calculations. Validate that the system handles both successful operations and potential errors gracefully.",
+        "status": "pending",
+        "dependencies": [
+          "57",
+          "208",
+          "209"
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -51212,7 +51227,10 @@
       "completedCount": 2060,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-26T20:24:27.194Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-26T20:24:31.587Z"
     }
   }
 }
