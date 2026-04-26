@@ -48205,17 +48205,14 @@
         "updatedAt": "2026-04-26T07:13:34.095Z",
         "metadata": {
           "memory_hints": {
-            "entities": [
-              "scripts/run-gui-dev.sh",
-              "tests/infra/test_run_gui_scripts.sh"
-            ],
+            "entities": [],
             "queries": [
-              "run-gui-dev.sh vite-process-died early exit VITE_PID kill -0 detection Task 2237",
-              "tests/infra shell script behavioral test patterns",
-              "run-gui scripts file-existence preflight hardening"
+              "vite process died early exit run-gui-dev.sh hardening",
+              "GUI launcher scripts test infra test_run_gui_scripts.sh",
+              "run-gui-dev.sh file existence preflight vite process death detection"
             ]
           },
-          "_causation_id": "0e987211-645a-476e-8c45-46a2c156d351"
+          "_causation_id": "94644130-2f15-41ed-9dc9-f2551db2f971"
         }
       },
       {
