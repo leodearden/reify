@@ -206,6 +206,7 @@ pub(crate) fn collect_all_requirements(
                                  trait '{}' and trait '{}' provide different expressions",
                                 name, existing_trait, trait_name
                             ))
+                            .with_code(DiagnosticCode::ConflictingTraitLetBindings)
                             .with_label(DiagnosticLabel::new(
                                 span,
                                 format!(
